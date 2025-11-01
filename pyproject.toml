@@ -1,3 +1,43 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "legiscope"
+version = "0.1.0"
+description = "Automated analysis of municipal codes for legal epidemiology"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Johnathan Jenkins", email = "jj@jsqr.org"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "openai",
+    "marvin",
+    "psycopg[binary]",
+    "marimo",
+    "instructor",
+    "tiktoken",
+    "loguru",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "ruff",
+    "black",
+]
+
+[project.urls]
+Homepage = "https://github.com/jsqr/legiscope"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/legiscope"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
