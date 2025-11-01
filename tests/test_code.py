@@ -1,6 +1,6 @@
-from muni.code import split_paragraph, match_heading
-from muni.code import HeadingPattern, Heading
-from muni.code import chunkify_paragraph, chunkify_paragraphs
+from legiscope.code import split_paragraph, match_heading
+from legiscope.code import HeadingPattern, Heading
+from legiscope.code import chunkify_paragraph, chunkify_paragraphs
 
 def test_split_paragraph():
     assert split_paragraph("") == ("", "")
