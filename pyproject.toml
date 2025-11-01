@@ -21,6 +21,9 @@ dependencies = [
     "marvin",
     "psycopg[binary]",
     "marimo",
+    "instructor",
+    "tiktoken",
+    "loguru",
 ]
 
 [project.optional-dependencies]

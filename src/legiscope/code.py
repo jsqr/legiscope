@@ -1,4 +1,3 @@
-from enum import Enum, unique
 from dataclasses import dataclass, field
 import re
 from warnings import warn
@@ -13,28 +12,32 @@ from warnings import warn
 
 LEVELS = [0, 1, 2, 3, 4, 5]
 
+
 @dataclass
 class HeadingPattern:
-    level: int #Level
+    level: int  # Level
     regex: str
-    multi_line: bool # whether the heading spans multiple lines
+    multi_line: bool  # whether the heading spans multiple lines
+
 
 @dataclass
 class Heading:
-    level: int #Level
+    level: int  # Level
     # level_name: str # e.g. "Title", "Chapter", "Article", "Section"
-    enumeration: str # number or letter (e.g. "1", "a", "i", "A", "XVII")
+    enumeration: str  # number or letter (e.g. "1", "a", "i", "A", "XVII")
     heading_text: str
+
 
 @dataclass
 class Segment:
-    level: int #Level
+    level: int  # Level
     headings: dict[int, Heading] = field(default_factory=dict)
-    paragraphs: list[str] = field(default_factory=list) # list of paragraphs
-    chunks: list[str] = field(default_factory=list) # sized for embeddings
+    paragraphs: list[str] = field(default_factory=list)  # list of paragraphs
+    chunks: list[str] = field(default_factory=list)  # sized for embeddings
 
     def chunkify(self, max_words: int):
         self.chunks = chunkify_paragraphs(self.paragraphs, max_words)
+
 
 ## FIXME: rewrite repeated code in chunkify_paragraph and chunkify_paragraphs
 def chunkify_paragraph(paragraph: str, max_words: int) -> list[str]:
@@ -43,7 +46,7 @@ def chunkify_paragraph(paragraph: str, max_words: int) -> list[str]:
     words = paragraph.split()
     if not words:
         return []
-    
+
     chunks = []
     current_chunk = words[0]
     for word in words[1:]:
@@ -51,10 +54,11 @@ def chunkify_paragraph(paragraph: str, max_words: int) -> list[str]:
             chunks.append(current_chunk)
             current_chunk = word
         else:
-            current_chunk += ' ' + word
+            current_chunk += " " + word
     if current_chunk:
         chunks.append(current_chunk)
     return chunks
+
 
 def chunkify_paragraphs(paragraphs: list[str], max_words: int) -> list[str]:
     """Chunkify a list of paragraphs into chunks of at most `max_words` words.
@@ -80,28 +84,33 @@ def chunkify_paragraphs(paragraphs: list[str], max_words: int) -> list[str]:
             chunks.append(current_chunk)
             current_chunk = paragraph
         else:
-            current_chunk += '\n' + paragraph
-    
+            current_chunk += "\n" + paragraph
+
     if current_chunk:
         chunks.append(current_chunk)
     return chunks
 
+
 ## For our purposes, a document is just a list of segments -- the structure is
 ## implicit in the headings, which will be uploaded to a relational database
 
+
 def split_paragraph(paragraph: str) -> tuple[str, str]:
-    """"Split a paragraph into its first line and the rest of the paragraph."""
-    lines = paragraph.split('\n', 1)
+    """ "Split a paragraph into its first line and the rest of the paragraph."""
+    lines = paragraph.split("\n", 1)
     if len(lines) == 0:
-        return '', ''
+        return "", ""
     first_line = lines[0]
-    rest_of_paragraph = lines[1] if len(lines) > 1 else ''
+    rest_of_paragraph = lines[1] if len(lines) > 1 else ""
     return first_line, rest_of_paragraph
 
-def match_heading(paragraph: str, patterns: dict[int, HeadingPattern]) -> Heading | None:
+
+def match_heading(
+    paragraph: str, patterns: dict[int, HeadingPattern]
+) -> Heading | None:
     """For each patern in `patterns`, check if the paragraph matches (e.g., pattern '^Chapter [IVXLC]+'
     matches 'Chapter VII'). If a match is found, return a Heading object. Otherwise, return None."""
-    
+
     paragraph = paragraph.strip()
 
     for level, pattern in patterns.items():
@@ -112,40 +121,48 @@ def match_heading(paragraph: str, patterns: dict[int, HeadingPattern]) -> Headin
             # For multi-line headings, assume group(1) exists and rest is taken as heading text.
             if match is not None:
                 if len(match.groups()) >= 1:
-                    return Heading(level=level, enumeration=match.group(1), heading_text=rest)
+                    return Heading(
+                        level=level, enumeration=match.group(1), heading_text=rest
+                    )
                 else:
-                    print(f"[DEBUG] Ignoring multi-line paragraph due to insufficient groups for level {level}: {paragraph}")
+                    print(
+                        f"[DEBUG] Ignoring multi-line paragraph due to insufficient groups for level {level}: {paragraph}"
+                    )
                     continue
-            #if match:
+            # if match:
             #    return Heading(level=level, enumeration=match.group(1), heading_text=rest)
         else:
             match = pattern_regex.match(paragraph)
             if match is None:
                 continue  # No match found; try next pattern.
-            #if match:
-                # Check that we have at least two groups (enumeration and heading text).
+            # if match:
+            # Check that we have at least two groups (enumeration and heading text).
             if len(match.groups()) < 2:
-                print(f"[DEBUG] Incomplete match for level {level} in paragraph: {paragraph}\nGroups: {match.groups()}")
-                continue 
-            return Heading(level=level, enumeration=match.group(1), heading_text=match.group(2))
+                print(
+                    f"[DEBUG] Incomplete match for level {level} in paragraph: {paragraph}\nGroups: {match.groups()}"
+                )
+                continue
+            return Heading(
+                level=level, enumeration=match.group(1), heading_text=match.group(2)
+            )
     return None  # No matches found for any pattern.
+
 
 class StateMachineParser:
     def __init__(self, document_name: str, heading_patterns: dict[int, HeadingPattern]):
         self.document = []
-        self.document_name = document_name # heading_names = {Level.H0: document_name}
+        self.document_name = document_name  # heading_names = {Level.H0: document_name}
         self.patterns = heading_patterns
-        self.state = 0 #Level.H0
+        self.state = 0  # Level.H0
 
     def parse(self, text):
-        paragraphs = text.split('\n\n')
+        paragraphs = text.split("\n\n")
 
-        segment_headings = {0: Heading(0, '', self.document_name)}
-        segment = Segment(level=0, headings=segment_headings, paragraphs=[]) # preamble
+        segment_headings = {0: Heading(0, "", self.document_name)}
+        segment = Segment(level=0, headings=segment_headings, paragraphs=[])  # preamble
 
         for paragraph in paragraphs:
-
-            #print(f"[DEBUG]Parsing paragraph: {paragraph}") # DEBUG print statement
+            # print(f"[DEBUG]Parsing paragraph: {paragraph}") # DEBUG print statement
             match = match_heading(paragraph, self.patterns)
 
             # no heading found, so add paragraph to the current segment
@@ -154,23 +171,30 @@ class StateMachineParser:
                 continue
 
             # found a heading!
-            self.document.append(segment) # add the last segment to document
+            self.document.append(segment)  # add the last segment to document
 
             self.state = match.level
             new_headings = segment.headings.copy()
             new_headings[match.level] = match
-            for level in LEVELS: # have to delete the headings at higher levels in case of skips later
+            for level in (
+                LEVELS
+            ):  # have to delete the headings at higher levels in case of skips later
                 if level in new_headings and level > match.level:
                     del new_headings[level]
-            segment = Segment(level=self.state, headings=new_headings, paragraphs=[]) # start a new segment
+            segment = Segment(
+                level=self.state, headings=new_headings, paragraphs=[]
+            )  # start a new segment
         return self.document
-    
+
     def summarize_matches(self, text):
-        paragraphs = text.split('\n\n')
+        paragraphs = text.split("\n\n")
         for paragraph in paragraphs:
             match = match_heading(paragraph, self.patterns)
             if match:
-                print(f"{' ' * 4 * match.level}{match.level} heading: {match.enumeration} {match.heading_text}")
+                print(
+                    f"{' ' * 4 * match.level}{match.level} heading: {match.enumeration} {match.heading_text}"
+                )
+
 
 ##################################################
 ## Parsing
@@ -185,29 +209,27 @@ from openai import OpenAI
 marvin
 openai_client = OpenAI()
 
+
 def llm(prompt: str, system: str = "", model: str = "gpt-4o") -> str | None:
     chat_completion = openai_client.chat.completions.create(
         messages=[
-            {
-                "role": "system",
-                "content": system
-            },
-            {
-                "role": "user",
-                "content": prompt
-            }
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
         ],
         model=model,
     )
     return chat_completion.choices[0].message.content
 
+
 @marvin.fn
-def infer_regex(examples: list[str]) -> str: # FIXME: do marvin functions return None on failure?
+def infer_regex(
+    examples: list[str],
+) -> str:  # FIXME: do marvin functions return None on failure?
     """
     Return a regular expression matching the provided examples, which are the first
     lines of headings in a document. Return a string representing the regular expression,
     according to the following Guidelines and Examples
-    
+
     **Guidelines:**
 
     1. The regular expression should match the examples and any similar headings,
@@ -236,19 +258,29 @@ def infer_regex(examples: list[str]) -> str: # FIXME: do marvin functions return
     Your regular expresion (just the expression string itself, without quotation marks or any other text):
     """
 
+
 def infer_regex_stripped(examples: list[str]) -> str:
-    first_lines = [example.split('\n')[0] for example in examples]
+    first_lines = [example.split("\n")[0] for example in examples]
     inferred = infer_regex(first_lines)
-    return inferred.strip("\'\"") # needed because the LLM ignores instructions
+    return inferred.strip("'\"")  # needed because the LLM ignores instructions
+
 
 def is_multi_line(examples: list[str]) -> bool:
-    return any('\n' in example.strip() for example in examples)
+    return any("\n" in example.strip() for example in examples)
 
-def infer_heading_patterns(example_headings: dict[int, list[str]]) -> dict[int, HeadingPattern]:
+
+def infer_heading_patterns(
+    example_headings: dict[int, list[str]],
+) -> dict[int, HeadingPattern]:
     """Infer heading patterns from examples. Return a dictionary mapping levels to
     HeadingPattern objects."""
-    return {k: HeadingPattern(level=k, regex=infer_regex_stripped(v), multi_line=is_multi_line(v))
-            for k, v in example_headings.items()}
+    return {
+        k: HeadingPattern(
+            level=k, regex=infer_regex_stripped(v), multi_line=is_multi_line(v)
+        )
+        for k, v in example_headings.items()
+    }
+
 
 @marvin.fn
 def infer_level_name(pattern: HeadingPattern) -> str:
@@ -259,15 +291,19 @@ def infer_level_name(pattern: HeadingPattern) -> str:
     '^\\d+\\-\\d+\\-\\d+'), return 'Section'.
     """
 
+
 # shouldn't be necessary, but the LLM sometimes ignores the instructions about letters
 def letters_only(s: str) -> str:
-    return ''.join(c for c in s if c.isalpha())
+    return "".join(c for c in s if c.isalpha())
+
 
 def infer_level_names(patterns: dict[int, HeadingPattern]) -> dict[int, str]:
     return {k: letters_only(infer_level_name(v)) for k, v in patterns.items()}
 
+
 def remove_newlines(s: str) -> str:
-    return re.sub(r'[\n\r]', ' ', s)
+    return re.sub(r"[\n\r]", " ", s)
+
 
 @dataclass
 class Jurisdiction:
@@ -275,9 +311,9 @@ class Jurisdiction:
     title: str
     patterns: dict[int, HeadingPattern]
     level_names: dict[int, str]
-    source_local: str = ''
-    source_url: str = ''
-    raw_text: str = ''
+    source_local: str = ""
+    source_url: str = ""
+    raw_text: str = ""
     parser: StateMachineParser | None = None
     document: list[Segment] = field(default_factory=list)
     autoload: bool = True
@@ -311,22 +347,29 @@ class Jurisdiction:
         for segment in self.document:
             if len(segment.paragraphs) == 0:
                 continue
-            text = '\n'.join(segment.paragraphs)
+            text = "\n".join(segment.paragraphs)
             heading = segment.headings[segment.level]
-            #level_name = self.level_names[segment.level]
+            # level_name = self.level_names[segment.level]
             if segment.level == 0:
-                level_name = segment.headings.get(0, 'Unnamed Document')
+                level_name = segment.headings.get(0, "Unnamed Document")
                 print(f"Document Name: {segment.headings.get(0, 'Unnamed Document')}")
             else:
                 level_name = self.level_names[segment.level]
-            print(f"{' ' * 4 * segment.level}H{segment.level} {level_name}", end='')
-            print(f" {heading.enumeration} ({remove_newlines(heading.heading_text)})", end='') if heading else print()
-            print(f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters")
+            print(f"{' ' * 4 * segment.level}H{segment.level} {level_name}", end="")
+            print(
+                f" {heading.enumeration} ({remove_newlines(heading.heading_text)})",
+                end="",
+            ) if heading else print()
+            print(
+                f": {len(segment.chunks)} chunks, {len(segment.paragraphs)} paragraphs, {len(text)} characters"
+            )
+
 
 ##################################################
 ## Embeddings
 
 EMBEDDING_MODEL = "text-embedding-3-small"
+
 
 def create_embedding(text: str, model=EMBEDDING_MODEL) -> list[float]:
     """Create an embedding for a single text block."""
@@ -334,14 +377,16 @@ def create_embedding(text: str, model=EMBEDDING_MODEL) -> list[float]:
     response = client.embeddings.create(input=text, model=model)
     return response.data[0].embedding
 
+
 import tiktoken
 
 EMBEDDING_MODEL = "text-embedding-3-small"
 MAX_TOKENS_PER_BATCH = 250000
 
+
 def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[float]]:
     """
-    Generate embeddings for a list of text inputs using the specified OpenAI embedding model, 
+    Generate embeddings for a list of text inputs using the specified OpenAI embedding model,
     while respecting the maximum token limit per API request by batching inputs.
 
     Args:
@@ -363,7 +408,7 @@ def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[floa
     """
     client = OpenAI()
     enc = tiktoken.encoding_for_model(model)
-    
+
     all_embeddings = []
     batch = []
     batch_tokens = 0
@@ -372,12 +417,14 @@ def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[floa
         tokens = len(enc.encode(text))
 
         if tokens > MAX_TOKENS_PER_BATCH:
-            print(f"Skipping text {i} with {tokens} tokens (too large for a single request)")
+            print(
+                f"Skipping text {i} with {tokens} tokens (too large for a single request)"
+            )
             continue
 
         # Flush batch if adding this would exceed token limit
         if batch and batch_tokens + tokens > MAX_TOKENS_PER_BATCH:
-            #print(f"Submitting batch of {len(batch)} texts with {batch_tokens} tokens") #[DEBUG]
+            # print(f"Submitting batch of {len(batch)} texts with {batch_tokens} tokens") #[DEBUG]
             response = client.embeddings.create(input=batch, model=model)
             all_embeddings.extend([e.embedding for e in response.data])
             batch = []
@@ -388,11 +435,12 @@ def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[floa
 
     # Final batch
     if batch:
-        #print(f"Submitting final batch of {len(batch)} texts with {batch_tokens} tokens") #[DEBUG]
+        # print(f"Submitting final batch of {len(batch)} texts with {batch_tokens} tokens") #[DEBUG]
         response = client.embeddings.create(input=batch, model=model)
         all_embeddings.extend([e.embedding for e in response.data])
 
     return all_embeddings
+
 
 ##################################################
 ## Uploading to database
@@ -401,13 +449,12 @@ from psycopg import connect
 
 # EMBEDDING_LENGTH = len(create_embeddings(["test"])[0])
 
+
 def connection(db: dict):
     return connect(
-        dbname=db['dbname'],
-        host=db['host'],
-        port=db['port'],
-        autocommit=True
+        dbname=db["dbname"], host=db["host"], port=db["port"], autocommit=True
     )
+
 
 def fill_in(place: Jurisdiction) -> tuple[dict[int, str], dict[int, HeadingPattern]]:
     """Fill in missing level names and patterns with blanks."""
@@ -417,12 +464,13 @@ def fill_in(place: Jurisdiction) -> tuple[dict[int, str], dict[int, HeadingPatte
         if level in place.level_names:
             level_names[level] = place.level_names[level]
         else:
-            level_names[level] = ''
+            level_names[level] = ""
         if level in place.patterns:
             patterns[level] = place.patterns[level]
         else:
-            patterns[level] = HeadingPattern(level=level, regex='', multi_line=False)
+            patterns[level] = HeadingPattern(level=level, regex="", multi_line=False)
     return level_names, patterns
+
 
 def upload_code(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True) -> None:
     """Upload metadata about the jurisdiction to the `codes` table."""
@@ -439,18 +487,17 @@ def upload_code(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True) ->
                         WHERE code_id =(SELECT code_id FROM codes WHERE jurisdiction=%s)
                     );
                     """,
-                    (jurisdiction.name,)
+                    (jurisdiction.name,),
                 )
                 cursor.execute(
                     """
                     DELETE FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s);
                     """,
-                    (jurisdiction.name,)
+                    (jurisdiction.name,),
                 )
                 ## Then, delete the code metadata
                 cursor.execute(
-                    "DELETE FROM codes WHERE jurisdiction=%s;",
-                    (jurisdiction.name,)
+                    "DELETE FROM codes WHERE jurisdiction=%s;", (jurisdiction.name,)
                 )
             cursor.execute(
                 """
@@ -463,15 +510,26 @@ def upload_code(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True) ->
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (jurisdiction) DO NOTHING;
                 """,
-                (jurisdiction.title, jurisdiction.name,
-                level_names[1], patterns[1].regex,
-                level_names[2], patterns[2].regex,
-                level_names[3], patterns[3].regex,
-                level_names[4], patterns[4].regex,
-                level_names[5], patterns[5].regex)
+                (
+                    jurisdiction.title,
+                    jurisdiction.name,
+                    level_names[1],
+                    patterns[1].regex,
+                    level_names[2],
+                    patterns[2].regex,
+                    level_names[3],
+                    patterns[3].regex,
+                    level_names[4],
+                    patterns[4].regex,
+                    level_names[5],
+                    patterns[5].regex,
+                ),
             )
 
-def upload_segments(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True) -> None:
+
+def upload_segments(
+    db: dict, jurisdiction: Jurisdiction, overwrite: bool = True
+) -> None:
     """Upload segments of the code to the `segments` table."""
     with connection(db) as conn:
         with conn.cursor() as cursor:
@@ -480,14 +538,18 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True
                     """
                     DELETE FROM segments WHERE code_id=(SELECT code_id FROM codes WHERE jurisdiction=%s);
                     """,
-                    (jurisdiction.name,)
+                    (jurisdiction.name,),
                 )
             for segment in jurisdiction.document:
                 if not segment.paragraphs:
-                    continue # skip empty segments (usually part of a table of contents)
+                    continue  # skip empty segments (usually part of a table of contents)
                 headings = [segment.headings.get(i, None) for i in LEVELS]
-                heading_enumerations = [heading.enumeration if heading else None for heading in headings]
-                heading_texts = [heading.heading_text if heading else None for heading in headings]
+                heading_enumerations = [
+                    heading.enumeration if heading else None for heading in headings
+                ]
+                heading_texts = [
+                    heading.heading_text if heading else None for heading in headings
+                ]
                 cursor.execute(
                     """
                     INSERT INTO segments (code_id, segment_level,
@@ -503,27 +565,38 @@ def upload_segments(db: dict, jurisdiction: Jurisdiction, overwrite: bool = True
                                 H3_enumeration, H4_enumeration, H5_enumeration) DO NOTHING
                     RETURNING segment_id;
                     """,
-                    (jurisdiction.name, segment.level,
-                    heading_enumerations[1], heading_texts[1],
-                    heading_enumerations[2], heading_texts[2],
-                    heading_enumerations[3], heading_texts[3],
-                    heading_enumerations[4], heading_texts[4],
-                    heading_enumerations[5], heading_texts[5],
-                    '\n\n'.join(segment.paragraphs))
+                    (
+                        jurisdiction.name,
+                        segment.level,
+                        heading_enumerations[1],
+                        heading_texts[1],
+                        heading_enumerations[2],
+                        heading_texts[2],
+                        heading_enumerations[3],
+                        heading_texts[3],
+                        heading_enumerations[4],
+                        heading_texts[4],
+                        heading_enumerations[5],
+                        heading_texts[5],
+                        "\n\n".join(segment.paragraphs),
+                    ),
                 )
                 retval = cursor.fetchone()
                 if retval:
                     segment_id = retval[0]
                 else:
-                    warn(f"Failed to upload segment {segment.level} for {jurisdiction.name}")
+                    warn(
+                        f"Failed to upload segment {segment.level} for {jurisdiction.name}"
+                    )
                     continue
                 cursor.executemany(
                     """
                     INSERT INTO chunks (segment_id, chunk_idx, content)
                     VALUES (%s, %s, %s)
                     """,
-                    [(segment_id, i, chunk) for i, chunk in enumerate(segment.chunks)]
+                    [(segment_id, i, chunk) for i, chunk in enumerate(segment.chunks)],
                 )
+
 
 def enhance_chunks(db: dict, place: Jurisdiction) -> None:
     """Enhance the chunks in the `chunks` table by prepending the heading info
@@ -546,12 +619,14 @@ def enhance_chunks(db: dict, place: Jurisdiction) -> None:
                 """
             )
 
+
 def upload(db: dict, jurisdiction: Jurisdiction) -> None:
     """Upload (1) metadata about the jurisdiction, to the `codes` table, (2) segments of the code,
     to the `segments` table, and (3) chunks to the `chunks` table."""
     upload_code(db, jurisdiction)
     upload_segments(db, jurisdiction)
     enhance_chunks(db, jurisdiction)
+
 
 def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
     """Create embeddings for the chunks in the `chunks` table."""
@@ -567,13 +642,15 @@ def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
                     WHERE code_id = (SELECT code_id FROM codes WHERE jurisdiction=%s)
                 );
                 """,
-                (jurisdiction.name,)
+                (jurisdiction.name,),
             )
             # Collect all texts and their corresponding chunk_ids
-            texts, chunk_ids = zip(*[(text, chunk_id) for chunk_id, text in cursor.fetchall()])
+            texts, chunk_ids = zip(
+                *[(text, chunk_id) for chunk_id, text in cursor.fetchall()]
+            )
             """DEBUG BLOCK"""
-            #print("Length of texts:", len(texts))
-            #print("Text", texts)
+            # print("Length of texts:", len(texts))
+            # print("Text", texts)
 
             enc = tiktoken.encoding_for_model("text-embedding-3-small")
             total_tokens = 0
@@ -582,14 +659,14 @@ def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
                 token_count = len(enc.encode(t))
                 total_tokens += token_count
                 max_tokens = max(max_tokens, token_count)
-                #print(f"[{i}] Tokens: {token_count}")
+                # print(f"[{i}] Tokens: {token_count}")
 
-            #print(f"Total tokens: {total_tokens}") #[DEBUG]
-            #print(f"Max tokens in a single text: {max_tokens}") #[DEBUG]
+            # print(f"Total tokens: {total_tokens}") #[DEBUG]
+            # print(f"Max tokens in a single text: {max_tokens}") #[DEBUG]
 
             # Create embeddings for the texts
             embeddings = create_embeddings(texts)
-            #print("Length of Embeddings:", len(embeddings)) #[DEBUG]
+            # print("Length of Embeddings:", len(embeddings)) #[DEBUG]
             # Update the chunks with the embeddings
             for chunk_id, embedding in zip(chunk_ids, embeddings):
                 cursor.execute(
@@ -598,8 +675,9 @@ def upload_embeddings(db: dict, jurisdiction: Jurisdiction) -> None:
                     SET embedding = %s
                     WHERE chunk_id = %s;
                     """,
-                    (str(embedding), chunk_id)
+                    (str(embedding), chunk_id),
                 )
+
 
 def refresh_views(db: dict) -> None:
     """Refresh the materialized views in the database."""
@@ -607,21 +685,25 @@ def refresh_views(db: dict) -> None:
         with conn.cursor() as cursor:
             cursor.execute("REFRESH MATERIALIZED VIEW mv_chunks;")
 
+
 ##################################################
 ## Associations
 
 ## FIXME: all need to be updated for new schema, and to use GPT-4o output constraints
 
 CONTEXT_TYPES = {
-    'rule': 'Statement of a rule, obligation, or prohibition',
-    'penalty': 'Penalties for violations of rules specified in other parts of the code',
-    'definition': 'Definition of terms used in other parts of the code',
-    'interpretation': 'Guidance about interpretation of language or rules, other than definitions',
-    'date': 'Effective dates of rules in the document or enacting legistlation, or termination dates',
-    'other': 'Any other type of context not covered by the above categories',
-    }
+    "rule": "Statement of a rule, obligation, or prohibition",
+    "penalty": "Penalties for violations of rules specified in other parts of the code",
+    "definition": "Definition of terms used in other parts of the code",
+    "interpretation": "Guidance about interpretation of language or rules, other than definitions",
+    "date": "Effective dates of rules in the document or enacting legistlation, or termination dates",
+    "other": "Any other type of context not covered by the above categories",
+}
 
-def classify_context(text: str, headings: dict[str, str], model=LANGUAGE_MODEL) -> str | None:
+
+def classify_context(
+    text: str, headings: dict[str, str], model=LANGUAGE_MODEL
+) -> str | None:
     """Determines the nature of the text among predetermined CONTEXT_TYPES.keys().
     Args:
         text: a block of text taken from a municipal code or ordinance
@@ -632,9 +714,9 @@ def classify_context(text: str, headings: dict[str, str], model=LANGUAGE_MODEL) 
     """
     client = OpenAI()
 
-    heading = next(reversed(list(headings.values()))) # last value in dict
+    heading = next(reversed(list(headings.values())))  # last value in dict
 
-    fmt_string = '\n'.join( [f" * '{k}': {v}" for k, v in CONTEXT_TYPES.items()] )
+    fmt_string = "\n".join([f" * '{k}': {v}" for k, v in CONTEXT_TYPES.items()])
 
     system_prompt = f"""
 You will be given a text block, which may provide context about other parts of
@@ -650,9 +732,9 @@ provided on each line:
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"{heading}\n{text}"}
+            {"role": "user", "content": f"{heading}\n{text}"},
         ],
-        temperature=0.7, # from OpenAI prompt examples page for similar prompts
+        temperature=0.7,  # from OpenAI prompt examples page for similar prompts
         max_tokens=5,
         top_p=1,
     )
@@ -662,11 +744,15 @@ provided on each line:
         if response in CONTEXT_TYPES:
             return response
 
-    warn(f'LLM FAILED TO CLASSIFY CONTEXT. Response: {response} not in {list(CONTEXT_TYPES.keys())}')
+    warn(
+        f"LLM FAILED TO CLASSIFY CONTEXT. Response: {response} not in {list(CONTEXT_TYPES.keys())}"
+    )
     return None
 
 
-def context_scope(text: str, headings: dict[str, str], context_type: str, model=LANGUAGE_MODEL) -> str | None:
+def context_scope(
+    text: str, headings: dict[str, str], context_type: str, model=LANGUAGE_MODEL
+) -> str | None:
     """Finds the scope of the supplied context.
     Args:
         text: a block of text taken from a municipal code or ordinance
@@ -677,13 +763,14 @@ def context_scope(text: str, headings: dict[str, str], context_type: str, model=
         A single word scope, from among headings.keys(), or None upon failure
     """
     assert context_type in CONTEXT_TYPES.keys()
-    if context_type == 'rule': return 'global'
+    if context_type == "rule":
+        return "global"
 
     client = OpenAI()
 
-    heading = next(reversed(list(headings.values()))) # last value in dict
+    heading = next(reversed(list(headings.values())))  # last value in dict
     hierarchy = ", ".join(list(headings.keys()))
- 
+
     system_prompt = f"""
 You will be given a text block, which may provide context about other parts of
 the document (a municipal code or ordinance) from which it was taken.
@@ -715,23 +802,27 @@ Example: if the text begins 'for the purposes of sections A through F', the scop
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"{heading}\n{text}"}
+            {"role": "user", "content": f"{heading}\n{text}"},
         ],
-        temperature=0.7, # from OpenAI prompt examples page for similar prompts
+        temperature=0.7,  # from OpenAI prompt examples page for similar prompts
         max_tokens=5,
         top_p=1,
     )
     response = response.choices[0].message.content
     if response is not None:
         response = letters_only(response)
-        if response in headings or response == 'global':
+        if response in headings or response == "global":
             return response
 
-    warn(f'LLM FAILED TO CLASSIFY SCOPE. Response: {response} not in {list(headings.keys())}')
+    warn(
+        f"LLM FAILED TO CLASSIFY SCOPE. Response: {response} not in {list(headings.keys())}"
+    )
     return None
 
 
-def analyze_context(text: str, headings: dict[str, str], model=LANGUAGE_MODEL) -> tuple[str, str] | None:
+def analyze_context(
+    text: str, headings: dict[str, str], model=LANGUAGE_MODEL
+) -> tuple[str, str] | None:
     """Given a block of text and headings, determines the type of context and its scope.
     Args:
         text: a block of text
@@ -750,7 +841,9 @@ def analyze_context(text: str, headings: dict[str, str], model=LANGUAGE_MODEL) -
     return context_type, scope
 
 
-def is_relevant(text: str, query: str, threshold: int = 4, model: str = LANGUAGE_MODEL) -> bool:
+def is_relevant(
+    text: str, query: str, threshold: int = 4, model: str = LANGUAGE_MODEL
+) -> bool:
     client = OpenAI()
 
     system_prompt = """You will be given a text block and a query. Your task is
@@ -771,20 +864,22 @@ Your response (1, 2, 3, 4, or 5):
         model=model,
         messages=[
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ],
         temperature=0.7,
         max_tokens=2,
-        top_p=1
+        top_p=1,
     )
     response = response.choices[0].message.content
     if response is not None:
         try:
-            if int(response) >= threshold: return True
+            if int(response) >= threshold:
+                return True
         except ValueError as e:
-            print(f'WARNING: cannot convert response {response} to integer. Error: {e}')
-    
+            print(f"WARNING: cannot convert response {response} to integer. Error: {e}")
+
     return False
+
 
 # Go through rows in the muni database and identify definitions
 
@@ -804,14 +899,16 @@ sql_assoc = """
     ON CONFLICT (jurisdiction, association, left_id, right_id) DO NOTHING;
     """
 
+
 def scope_map(scope):
     """For a given scope, what are the columns in muni that need to match?"""
-    table = {'global': ['jurisdiction'],
-             'title': ['jurisdiction', 'L1_ref'],
-             'chapter': ['jurisdiction', 'L1_ref', 'L2_ref'],
-             'article': ['jurisdiction', 'L1_ref', 'L2_ref', 'L3_ref'],
-             'section': ['jurisdiction', 'L1_ref', 'L2_ref', 'L3_ref', 'L4_ref']
-             }
+    table = {
+        "global": ["jurisdiction"],
+        "title": ["jurisdiction", "L1_ref"],
+        "chapter": ["jurisdiction", "L1_ref", "L2_ref"],
+        "article": ["jurisdiction", "L1_ref", "L2_ref", "L3_ref"],
+        "section": ["jurisdiction", "L1_ref", "L2_ref", "L3_ref", "L4_ref"],
+    }
     if scope not in table.keys():
         return None
     return table[scope]
@@ -827,55 +924,87 @@ def set_associations(conn, id_, scope, context_type):
     """
     with conn.cursor() as cursor:
         # get the jurisdiction and the references
-        cursor.execute(f"SELECT jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref FROM muni WHERE id = {id_}")
+        cursor.execute(
+            f"SELECT jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref FROM muni WHERE id = {id_}"
+        )
         jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref = cursor.fetchone()
         # get the columns that need to match
         columns = scope_map(scope)
         if not columns:
             return
         # get the rows that match the scope
-        match_str = ' AND '.join([f"{col} = '{val}'" for col, val in zip(columns, [jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref])])
+        match_str = " AND ".join(
+            [
+                f"{col} = '{val}'"
+                for col, val in zip(
+                    columns, [jurisdiction, L1_ref, L2_ref, L3_ref, L4_ref]
+                )
+            ]
+        )
         cursor.execute(f"SELECT id FROM muni WHERE {match_str} AND id != {id_}")
         rows = cursor.fetchall()
         # set the associations
         for row in rows:
             cursor.execute(sql_assoc, (jurisdiction, context_type, id_, row[0]))
 
+
 def find_associations(conn, jurisdiction):
     return
     ## FIXME: update for new schema
-    allowed_types = ['penalty', 'definition', 'interpretation', 'date']
+    allowed_types = ["penalty", "definition", "interpretation", "date"]
     with conn.cursor() as cursor:
         cursor.execute(sql_select)
         rows = cursor.fetchall()
         for row in rows:
-            id_, L1_ref, L1_heading, L2_ref, L2_heading, L3_ref, L3_heading, L4_ref, L4_heading, text = row
-            headings = {'title': L1_heading, 'chapter': L2_heading, 'article': L3_heading, 'section': L4_heading}
-            r = analyze_context(text, headings, model='gpt-4')
+            (
+                id_,
+                L1_ref,
+                L1_heading,
+                L2_ref,
+                L2_heading,
+                L3_ref,
+                L3_heading,
+                L4_ref,
+                L4_heading,
+                text,
+            ) = row
+            headings = {
+                "title": L1_heading,
+                "chapter": L2_heading,
+                "article": L3_heading,
+                "section": L4_heading,
+            }
+            r = analyze_context(text, headings, model="gpt-4")
             if r:
                 context_type, scope = r
                 if context_type in allowed_types:
                     print(f"* Setting associations for id {id_}")
                     print(f"  Context type: {context_type}; Scope: {scope}")
-                    print("  --> %s ..." % text[:80].replace('\n', ' '))
+                    print("  --> %s ..." % text[:80].replace("\n", " "))
                     set_associations(conn, id_, scope, context_type)
+
 
 ##################################################
 ## Querying
+
 
 def simple_semantic_query(db: dict, jurisdiction: Jurisdiction, query: str, limit=10):
     with connection(db) as conn:
         query_embedding = create_embedding(query)
         with conn.cursor() as cursor:
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT chunk_id, enhanced_content
                 FROM mv_chunks
                 WHERE jurisdiction = %s
                 ORDER BY embedding <=> %s
                 LIMIT %s;
-                """, (jurisdiction.name, str(query_embedding), limit))
+                """,
+                (jurisdiction.name, str(query_embedding), limit),
+            )
             return cursor.fetchall()
-        
+
+
 @marvin.fn
 def extract_keywords(text: str) -> list[str] | None:
     """Extract keywords from a block of text. The keywords should be single words
@@ -883,7 +1012,7 @@ def extract_keywords(text: str) -> list[str] | None:
     Do not include common words like 'the', 'and', 'or', etc., and do not include
     framing language such as references to municipal codes, regulations, purpose,
     relationships, etc. Return a list of keywords, in order of importance.
-    
+
     # Examples:
     1. extract_keywords("The purpose of this chapter is to establish regulations for the use of public parks.")
     -> ['use', 'public', 'parks']
@@ -891,7 +1020,8 @@ def extract_keywords(text: str) -> list[str] | None:
     -> ['definitions', 'park', 'public', 'space', 'recreation']
     """
 
-def simple_full_text_query(db:dict, jurisdiction: Jurisdiction, query: str, limit=10):
+
+def simple_full_text_query(db: dict, jurisdiction: Jurisdiction, query: str, limit=10):
     with connection(db) as conn:
         with conn.cursor() as cursor:
             cursor.execute(
@@ -905,14 +1035,17 @@ def simple_full_text_query(db:dict, jurisdiction: Jurisdiction, query: str, limi
                 AND jurisdiction = %s
                 -- ORDER BY ts_rank_cd(to_tsvector(enhanced_content), tsq) DESC
                 LIMIT %s;
-                """, (query, jurisdiction.name, limit)
+                """,
+                (query, jurisdiction.name, limit),
             )
             return cursor.fetchall()
 
-# Now we do a more complicated hybrid search, borrowing and adapting from 
+
+# Now we do a more complicated hybrid search, borrowing and adapting from
 # https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search_rrf.py
 
-def hybrid_query(db:dict, jurisdiction: Jurisdiction, query: str, limit=10):
+
+def hybrid_query(db: dict, jurisdiction: Jurisdiction, query: str, limit=10):
     embedding = create_embedding(query)
 
     with connection(db) as conn:
@@ -944,13 +1077,21 @@ def hybrid_query(db:dict, jurisdiction: Jurisdiction, query: str, limit=10):
     ORDER BY score DESC
     LIMIT %(limit)s;
     """,
-    {'jurisdiction': jurisdiction.name, 'query': query,
-     'embedding': str(embedding), 'limit': limit, 'k': 60})
-            
+                {
+                    "jurisdiction": jurisdiction.name,
+                    "query": query,
+                    "embedding": str(embedding),
+                    "limit": limit,
+                    "k": 60,
+                },
+            )
+
             return cursor.fetchall()
+
 
 ##################################################
 ## Reports
+
 
 @marvin.fn
 def is_relevant(text: str, query: str) -> bool | None:
@@ -959,19 +1100,21 @@ def is_relevant(text: str, query: str) -> bool | None:
     and False if it is not. If the relevance is unclear, return True.
     """
 
+
 def gather_context(db: dict, jurisdiction: Jurisdiction, query: str) -> list[str]:
     """Create context for a query on a jurisdiction's code."""
     context = []
     results = simple_semantic_query(db, jurisdiction, query)
-    #print(results) #Debugging
+    # print(results) #Debugging
     for result in results:
         _, text = result
-        #print("Text snippet:", text[:100])  # Print first 100 characters
-        #print("Is relevant?", is_relevant(text, query))
+        # print("Text snippet:", text[:100])  # Print first 100 characters
+        # print("Is relevant?", is_relevant(text, query))
         if is_relevant(text, query):
             context.append(text)
-    print(context) #Debugging
+    print(context)  # Debugging
     return context
+
 
 @marvin.fn
 def answer_query(context: str, query: str, jurisdiction: str) -> str | None:
@@ -983,6 +1126,7 @@ def answer_query(context: str, query: str, jurisdiction: str) -> str | None:
     with citations to the relevant sections of the code or ordinance supporting your answer.
     """
 
+
 @marvin.fn
 def true_or_false(text: str, query: str) -> bool | None:
     """Given a block of text and a query, determine whether the text tends to support
@@ -991,12 +1135,14 @@ def true_or_false(text: str, query: str) -> bool | None:
     and `False` if it does not.
     """
 
+
 @marvin.fn
 def supports(text: str, proposition: str) -> bool | None:
     """Given a block of text and a proposition, determine whether the text supports the proposition.
     Return True if the text supports the proposition, and False if it does not.
     If the level of support is unclear, return False.
     """
+
 
 class Report:
     jurisdiction: Jurisdiction
@@ -1017,20 +1163,26 @@ class Report:
         self.context = None
         self.context_list = gather_context(db, jurisdiction, query)
         if not self.context_list:
-            warn(f"No relevant context found for query '{query}' in {jurisdiction.name}")
+            warn(
+                f"No relevant context found for query '{query}' in {jurisdiction.name}"
+            )
             return
-        print(f"Found {len(self.context_list)} relevant context blocks for query '{query}' in {jurisdiction.name}")
-        self.context = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(self.context_list)      
+        print(
+            f"Found {len(self.context_list)} relevant context blocks for query '{query}' in {jurisdiction.name}"
+        )
+        self.context = "#### Excerpt:\n\n" + "\n\n#### Excerpt:\n\n".join(
+            self.context_list
+        )
         self.full_answer = answer_query(self.context, query, jurisdiction.name)
-        
+
         """
         Handle case where no answer is returned by setting default fallback responses.
         """
         if self.full_answer == None:
-            self.full_answer  = 'No answer found'
-            self.short_answer = 'no'
-            return  
-        self.short_answer = 'yes' if true_or_false(self.full_answer, query) else 'no'
+            self.full_answer = "No answer found"
+            self.short_answer = "no"
+            return
+        self.short_answer = "yes" if true_or_false(self.full_answer, query) else "no"
         support_list = []
         other_list = []
         for text in self.context_list:
@@ -1038,8 +1190,8 @@ class Report:
                 support_list.append(text)
             else:
                 other_list.append(text)
-        self.support = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(support_list)
-        self.other = '#### Excerpt:\n\n' + '\n\n#### Excerpt:\n\n'.join(other_list)
+        self.support = "#### Excerpt:\n\n" + "\n\n#### Excerpt:\n\n".join(support_list)
+        self.other = "#### Excerpt:\n\n" + "\n\n#### Excerpt:\n\n".join(other_list)
 
     def __str__(self):
         ret = f"### Query: {self.query}\n\n"
@@ -1051,8 +1203,10 @@ class Report:
             ret += f"### Other context:\n\n{self.other}\n\n"
         return ret
 
+
 ##################################################
 ## Uploading reports to database
+
 
 def upload_report(db: dict, report: Report) -> None:
     """Upload a report for a query on a jurisdiction's code to the `reports` table."""
@@ -1061,11 +1215,13 @@ def upload_report(db: dict, report: Report) -> None:
         with conn.cursor() as cursor:
             cursor.execute(
                 "SELECT code_id FROM codes WHERE jurisdiction=%s;",
-                (report.jurisdiction.name,)
+                (report.jurisdiction.name,),
             )
             result = cursor.fetchone()
             if not result or len(result) < 1:
-                warn(f"Failed to find code_id for jurisdiction {report.jurisdiction.name}")
+                warn(
+                    f"Failed to find code_id for jurisdiction {report.jurisdiction.name}"
+                )
                 code_id = 0
             else:
                 code_id = result[0]
@@ -1078,7 +1234,13 @@ def upload_report(db: dict, report: Report) -> None:
                 VALUES (%s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (code_id, query) DO NOTHING;
                 """,
-                (code_id, report.query, report.short_answer, report.full_answer,
-                report.context, report.support, report.other)
+                (
+                    code_id,
+                    report.query,
+                    report.short_answer,
+                    report.full_answer,
+                    report.context,
+                    report.support,
+                    report.other,
+                ),
             )
-            

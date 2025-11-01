@@ -128,12 +128,44 @@ uv run marimo edit notebooks/<jurisdiction>.py
 
 Then update the jurisdiction-specific parameters in the notebook.
 
+### Structured LLM Outputs
+
+This project includes the [Instructor](https://github.com/jxnl/instructor) library for structured outputs from language models. The `legiscope.utils` module provides the core `ask` function for getting type-safe, structured responses from LLMs, while `legiscope.convert` provides conversion-specific utilities.
+
+#### Example Usage
+
+```python
+import instructor
+from openai import OpenAI
+from legiscope.utils import ask
+from legiscope.convert import LegalAnalysis
+
+# Setup instructor client
+client = instructor.from_openai(OpenAI())
+
+# Extract structured legal analysis
+analysis = ask(
+    client=client,
+    prompt="Analyze this municipal code for zoning provisions...",
+    response_model=LegalAnalysis,
+    system="You are a helpful legal assistant.",
+    model="gpt-5-mini",
+    temperature=0.1
+)
+
+print(f"Found {len(analysis.provisions)} provisions")
+print(f"Summary: {analysis.summary}")
+```
+
 ### Project Structure
 
 ```
 .
 ├── src/
 │   └── legiscope/       # Main package source code
+│       ├── convert.py   # Conversion utilities and response models
+│       ├── utils.py     # Core utility functions (ask function)
+│       └── code.py      # Core municipal code parsing
 ├── tests/               # Test files
 ├── notebooks/           # Marimo notebooks for analysis
 ├── scripts/             # Utility scripts
