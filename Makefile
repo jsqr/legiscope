@@ -1,4 +1,4 @@
-.PHONY: help env clean-env test test-cov lint format fix list clean install
+.PHONY: help env clean-env test test-cov lint format fix list clean install convert-to-markdown
 
 # Default target
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  list       - Show installed packages"
 	@echo "  clean      - Clean build artifacts"
 	@echo "  install    - Install package in development mode"
+	@echo "  convert-to-markdown - Convert jurisdiction text to Markdown (requires JURISDICTION env var)"
 
 # Environment management
 env:
@@ -73,3 +74,13 @@ install:
 	@echo "Installing package in development mode..."
 	@source .venv/bin/activate && uv pip install -e ".[dev]"
 	@echo "Installation complete."
+
+# Jurisdiction conversion
+convert-to-markdown:
+	@if [ -z "$(JURISDICTION)" ]; then \
+		echo "Error: JURISDICTION environment variable not set"; \
+		echo "Usage: make convert-to-markdown JURISDICTION=data/laws/IL-WindyCity"; \
+		exit 1; \
+	fi
+	@echo "Converting jurisdiction: $(JURISDICTION)"
+	@source .venv/bin/activate && python scripts/convert_to_markdown.py $(JURISDICTION)

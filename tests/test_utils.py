@@ -2,7 +2,6 @@
 
 import pytest
 import tempfile
-import os
 from unittest.mock import Mock, patch
 from pydantic import BaseModel
 
@@ -142,7 +141,7 @@ class TestAskFunction:
 
         # Verify default parameters were used
         call_args = mock_client.chat.completions.create.call_args
-        assert call_args.kwargs["model"] == "gpt-5-mini"
+        assert call_args.kwargs["model"] == "gpt-4.1-mini"
         assert call_args.kwargs["temperature"] == 0.1
         assert call_args.kwargs["max_retries"] == 3
 

@@ -2,6 +2,11 @@ from dataclasses import dataclass, field
 import re
 from warnings import warn
 
+import marvin
+import tiktoken
+from openai import OpenAI
+from psycopg import connect
+
 ###################
 # Because the outline structure of most legal codes is so simple, it's feasible
 # to implement a parser using a hand-coded state machine that shifts between
@@ -200,17 +205,14 @@ class StateMachineParser:
 ## Parsing
 ## FIXME: consider moving to a separate llm  tools module?
 
-LANGUAGE_MODEL = "gpt-4o"
+LANGUAGE_MODEL = "gpt-4.1-mini"
 CONTEXT_WINDOW = 128000
-
-import marvin
-from openai import OpenAI
 
 marvin
 openai_client = OpenAI()
 
 
-def llm(prompt: str, system: str = "", model: str = "gpt-4o") -> str | None:
+def llm(prompt: str, system: str = "", model: str = "gpt-4.1-mini") -> str | None:
     chat_completion = openai_client.chat.completions.create(
         messages=[
             {"role": "system", "content": system},
@@ -378,8 +380,6 @@ def create_embedding(text: str, model=EMBEDDING_MODEL) -> list[float]:
     return response.data[0].embedding
 
 
-import tiktoken
-
 EMBEDDING_MODEL = "text-embedding-3-small"
 MAX_TOKENS_PER_BATCH = 250000
 
@@ -444,8 +444,6 @@ def create_embeddings(texts: list[str], model=EMBEDDING_MODEL) -> list[list[floa
 
 ##################################################
 ## Uploading to database
-
-from psycopg import connect
 
 # EMBEDDING_LENGTH = len(create_embeddings(["test"])[0])
 
@@ -1094,7 +1092,7 @@ def hybrid_query(db: dict, jurisdiction: Jurisdiction, query: str, limit=10):
 
 
 @marvin.fn
-def is_relevant(text: str, query: str) -> bool | None:
+def is_relevant_marvin(text: str, query: str) -> bool | None:
     """Given a block of text and a query, determine whether the text is relevant to the query
     (that is, if the text could help to answer the query). Return True if the text is relevant,
     and False if it is not. If the relevance is unclear, return True.
@@ -1178,7 +1176,7 @@ class Report:
         """
         Handle case where no answer is returned by setting default fallback responses.
         """
-        if self.full_answer == None:
+        if self.full_answer is None:
             self.full_answer = "No answer found"
             self.short_answer = "no"
             return
