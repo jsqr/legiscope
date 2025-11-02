@@ -137,7 +137,7 @@ This will open the notebook in your browser at `http://localhost:2718`
      --input-file municipal_code.txt \
      --output-file code.md \
      --max-lines 200 \
-     --model gpt-4o \
+     --model gpt-4.1-mini \
      --verbose
    ```
 2. **Configure**: Update the `heading_examples` dictionary in the notebook with your jurisdiction's heading patterns
@@ -236,7 +236,7 @@ client = instructor.from_openai(OpenAI())
 structure = scan_legal_text(
     client=client,
     file_path="data/laws/IL-WindyCity/processed/code.txt",
-    model="gpt-4o"  # Optional: specify model
+    model="gpt-4.1-mini"  # Optional: specify model
 )
 
 # Step 2: Convert to Markdown
@@ -326,7 +326,7 @@ analysis = ask(
     prompt="Analyze this municipal code for zoning provisions...",
     response_model=LegalAnalysis,
     system="You are a helpful legal assistant.",
-    model="gpt-5-mini",
+    model="gpt-4.1-mini",
     temperature=0.1
 )
 

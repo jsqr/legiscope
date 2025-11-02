@@ -91,7 +91,7 @@ def ask(
         response_model: Pydantic model class for structured output
         system: Optional system prompt to set as system role
         **kwargs: Additional arguments passed to LLM call
-            - model: str - Model name (e.g., "gpt-4.1", "gpt-5-mini")
+            - model: str - Model name (e.g., "gpt-4.1", "gpt-4.1-mini")
             - temperature: float - Sampling temperature (0.0-1.0)
             - max_retries: int - Maximum retry attempts
             - Any other model-specific parameters
@@ -121,7 +121,7 @@ def ask(
         ...     prompt="Extract legal fruits from this text...",
         ...     response_model=LegalFruits,
         ...     system="You are an expert on law and types of fruit.",
-        ...     model="gpt-5-mini",
+        ...     model="gpt-4.1-mini",
         ...     temperature=0.1
         ... )
         >>> print(result.title)
@@ -160,7 +160,7 @@ def ask(
 
     # Set up default parameters
     default_params = {
-        "model": "gpt-5-mini",
+        "model": "gpt-4.1-mini",
         "temperature": 0.1,
         "max_retries": 3,
     }

@@ -130,7 +130,7 @@ def find_input_file(jurisdiction_path: Path, input_filename: str) -> Path:
     return input_path
 
 
-def setup_instructor_client(model: str = "gpt-4o") -> instructor.Instructor:
+def setup_instructor_client(model: str = "gpt-4.1-mini") -> instructor.Instructor:
     """
     Setup and return an Instructor client for LLM interactions.
     
@@ -163,7 +163,7 @@ def convert_jurisdiction_to_markdown(
     input_filename: str = "code.txt",
     output_filename: str = "code.md",
     max_lines: int = 150,
-    model: str = "gpt-4o",
+    model: str = "gpt-4.1-mini",
     verbose: bool = False,
 ) -> None:
     """
@@ -269,7 +269,7 @@ Examples:
   %(prog)s data/laws/IL-WindyCity
   %(prog)s data/laws/CA-LosAngeles --verbose
   %(prog)s data/laws/NY-NewYork --input-file municipal_code.txt --output-file code.md
-  %(prog)s data/laws/TX-Houston --max-lines 200 --model gpt-4o --verbose
+  %(prog)s data/laws/TX-Houston --max-lines 200 --model gpt-4.1-mini --verbose
 
 Expected directory structure:
   data/laws/STATE-MUNICIPALITY/
@@ -308,8 +308,8 @@ creates Markdown output files in the same directory.
     
     parser.add_argument(
         "--model",
-        default="gpt-4o",
-        help="OpenAI model to use for analysis (default: gpt-4o)"
+        default="gpt-4.1-mini",
+        help="OpenAI model to use for analysis (default: gpt-4.1-mini)"
     )
     
     parser.add_argument(

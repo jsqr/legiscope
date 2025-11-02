@@ -41,7 +41,7 @@ def scan_legal_text(
     client: Instructor,
     file_path: str,
     max_lines: int = 150,
-    model: str = "gpt-4o",
+    model: str = "gpt-4.1-mini",
 ) -> HeadingStructure:
     """
     Analyze legal text to identify heading structure and patterns.
@@ -54,7 +54,7 @@ def scan_legal_text(
         client: Instructor client instance for LLM calls
         file_path: Path to the .txt file containing municipal ordinance or statute
         max_lines: Maximum number of lines to analyze (default: 150)
-        model: OpenAI model to use for analysis (default: "gpt-4o")
+        model: OpenAI model to use for analysis (default: "gpt-4.1-mini")
 
     Returns:
         HeadingStructure: Analysis of heading levels, patterns, and formatting

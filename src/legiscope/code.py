@@ -205,14 +205,14 @@ class StateMachineParser:
 ## Parsing
 ## FIXME: consider moving to a separate llm  tools module?
 
-LANGUAGE_MODEL = "gpt-4o"
+LANGUAGE_MODEL = "gpt-4.1-mini"
 CONTEXT_WINDOW = 128000
 
 marvin
 openai_client = OpenAI()
 
 
-def llm(prompt: str, system: str = "", model: str = "gpt-4o") -> str | None:
+def llm(prompt: str, system: str = "", model: str = "gpt-4.1-mini") -> str | None:
     chat_completion = openai_client.chat.completions.create(
         messages=[
             {"role": "system", "content": system},
