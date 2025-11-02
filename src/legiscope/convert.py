@@ -289,17 +289,19 @@ def text2md(
     except IOError as e:
         raise ValueError(f"Error reading input file {input_path}: {str(e)}")
 
-    # Process lines and convert headings
+    # Process lines and convert headings with proper paragraph handling
     converted_lines = []
     heading_lines_processed = set()
+    i = 0
 
-    for line_num, line in enumerate(lines):
+    while i < len(lines):
         # Skip lines already processed as headings (to avoid duplicate processing)
-        if line_num in heading_lines_processed:
+        if i in heading_lines_processed:
+            i += 1
             continue
 
+        line = lines[i]
         line_stripped = line.rstrip("\n\r")
-        original_line = line_stripped
 
         # Check if this line matches any heading pattern
         heading_found = False
@@ -308,13 +310,54 @@ def text2md(
                 # Convert to Markdown format
                 markdown_heading = f"{level.markdown_prefix} {line_stripped.strip()}"
                 converted_lines.append(markdown_heading + "\n")
-                heading_lines_processed.add(line_num)
+                heading_lines_processed.add(i)
                 heading_found = True
+                i += 1
                 break
 
-        if not heading_found:
-            # Not a heading, keep original line
-            converted_lines.append(original_line + "\n")
+        if heading_found:
+            continue
+
+        # Not a heading - process as paragraph content
+        if line_stripped.strip() == "":
+            # Empty line - add as paragraph break
+            converted_lines.append("\n")
+            i += 1
+        else:
+            # Start of a paragraph - collect consecutive non-empty lines
+            paragraph_lines = []
+            while i < len(lines):
+                current_line = lines[i]
+                current_stripped = current_line.rstrip("\n\r")
+
+                # Check if current line is a heading
+                is_heading = False
+                for level, pattern in compiled_patterns:
+                    if pattern.match(current_stripped.strip()):
+                        is_heading = True
+                        break
+
+                if is_heading:
+                    # Hit a heading, stop collecting paragraph lines
+                    break
+
+                if current_stripped.strip() == "":
+                    # Empty line - end of paragraph
+                    break
+
+                # Add line to paragraph
+                paragraph_lines.append(current_stripped.strip())
+                i += 1
+
+            # Join paragraph lines with spaces and add as single paragraph
+            if paragraph_lines:
+                paragraph_text = " ".join(paragraph_lines)
+                converted_lines.append(paragraph_text + "\n")
+
+                # Check if we stopped at an empty line and add paragraph break if needed
+                if i < len(lines) and lines[i].rstrip("\n\r").strip() == "":
+                    converted_lines.append("\n")
+                    i += 1
 
     # Generate YAML frontmatter
     frontmatter = _generate_frontmatter(structure, state, municipality)
