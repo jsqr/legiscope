@@ -11,14 +11,15 @@ from loguru import logger
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)
 
+# Environment variable for content logging
+LOG_CONTENT = os.getenv("LOG_ASK_CONTENT", "false").lower() == "true"
+
 
 # Configure logging for the ask function
 def _setup_ask_logger():
     """Configure logger for the ask function with file rotation."""
-    # Remove default handler to avoid duplicate logs
     logger.remove()
 
-    # Create logs directory if it doesn't exist
     log_dir = os.path.join(os.getcwd(), "logs")
     os.makedirs(log_dir, exist_ok=True)
 
@@ -43,8 +44,31 @@ def _setup_ask_logger():
     )
 
 
+def _setup_content_logger():
+    """Configure logger for prompt/response content with optional enable."""
+    log_dir = os.path.join(os.getcwd(), "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Add file handler for content logs with larger rotation and longer retention
+    content_log_file = os.path.join(log_dir, "ask_content.log")
+    logger.add(
+        content_log_file,
+        level="DEBUG",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {message}",
+        rotation="50 MB",  # Larger rotation due to content
+        retention="30 days",
+        compression="zip",
+        filter=lambda record: "ask" in record["function"]
+        and record["extra"].get("log_content", False),
+    )
+
+
 # Setup logger when module is imported
 _setup_ask_logger()
+
+# Setup content logger if enabled
+if LOG_CONTENT:
+    _setup_content_logger()
 
 
 def ask(
@@ -57,8 +81,8 @@ def ask(
     """
     Send a prompt to a language model using Instructor library.
 
-    This function provides a skeleton for using Instructor library to get
-    structured outputs from language models. It handles basic setup and
+    Provide a skeleton for using Instructor library to get
+    structured outputs from language models. Handle basic setup and
     execution pattern while allowing customization through additional parameters.
 
     Args:
@@ -85,20 +109,18 @@ def ask(
         >>> from openai import OpenAI
         >>> from pydantic import BaseModel
         >>>
-        >>> class LegalExtraction(BaseModel):
+        >>> class LegalFruits(BaseModel):
         ...     title: str
-        ...     provisions: list[str]
+        ...     fruits: list[str]
         ...     confidence: float
         >>>
-        >>> # Setup instructor client
         >>> client = instructor.from_openai(OpenAI())
         >>>
-        >>> # Use the function with a system prompt
         >>> result = ask(
         ...     client=client,
-        ...     prompt="Extract legal provisions from this text...",
-        ...     response_model=LegalExtraction,
-        ...     system="You are a helpful legal assistant.",
+        ...     prompt="Extract legal fruits from this text...",
+        ...     response_model=LegalFruits,
+        ...     system="You are an expert on law and types of fruit.",
         ...     model="gpt-5-mini",
         ...     temperature=0.1
         ... )
@@ -115,6 +137,12 @@ def ask(
         len(prompt) if prompt else 0,
         list(kwargs.keys()),
     )
+
+    # Log content if enabled
+    if LOG_CONTENT:
+        logger.bind(log_content=True).debug("USER PROMPT:\n{}", prompt)
+        if system and system.strip():
+            logger.bind(log_content=True).debug("SYSTEM PROMPT:\n{}", system)
 
     # Validate client
     if not (hasattr(client, "chat") and hasattr(client.chat, "completions")):
@@ -184,6 +212,18 @@ def ask(
             else str(response_model),
         )
 
+        # Log response content if enabled
+        if LOG_CONTENT:
+            try:
+                response_json = response.model_dump_json(indent=2)
+                logger.bind(log_content=True).debug(
+                    "MODEL RESPONSE:\n{}", response_json
+                )
+            except Exception:
+                logger.bind(log_content=True).debug(
+                    "MODEL RESPONSE (raw):\n{}", str(response)
+                )
+
         return response
 
     except Exception as e:
@@ -194,3 +234,77 @@ def ask(
             params["model"],
         )
         raise type(e)(f"Error in ask_llm: {str(e)}") from e
+
+
+def create_jurisdiction_structure(state: str, municipality: str) -> str:
+    """
+    Create the directory structure for a new jurisdiction.
+
+    Create the standard directory hierarchy under data/laws/ for a given
+    state and municipality, following the pattern: data/laws/{state}-{municipality}/
+
+    Args:
+        state: Two-letter state abbreviation (e.g., "IL", "CA", "NY")
+        municipality: Municipality name (e.g., "WindyCity", "LosAngeles", "NewYork")
+
+    Returns:
+        str: The base path to the created jurisdiction directory
+
+    Raises:
+        ValueError: If state or municipality is empty or contains invalid characters
+
+    Example:
+        >>> base_path = create_jurisdiction_structure("CA", "LosAngeles")
+        >>> print(base_path)
+        data/laws/CA-LosAngeles
+
+        # Creates directories:
+        # data/laws/CA-LosAngeles/
+        # ├── raw/
+        # ├── processed/
+        # └── tables/
+    """
+    # Validate inputs
+    if not state or not state.strip():
+        raise ValueError("State cannot be empty")
+    if not municipality or not municipality.strip():
+        raise ValueError("Municipality cannot be empty")
+
+    # Clean and format inputs
+    state = state.strip().upper()
+    municipality = municipality.strip().replace(" ", "")
+
+    # Validate characters (allow only letters, numbers, and hyphens)
+    if not state.replace("-", "").isalnum():
+        raise ValueError("State must contain only alphanumeric characters")
+    if not municipality.replace("-", "").isalnum():
+        raise ValueError("Municipality must contain only alphanumeric characters")
+
+    # Construct the jurisdiction directory name
+    jurisdiction_name = f"{state}-{municipality}"
+
+    # Define the base path and subdirectories
+    base_path = os.path.join("data", "laws", jurisdiction_name)
+    subdirs = ["raw", "processed", "tables"]
+
+    logger.info("Creating jurisdiction structure for {}", jurisdiction_name)
+
+    try:
+        # Create the base directory
+        os.makedirs(base_path, exist_ok=True)
+        logger.debug("Created base directory: {}", base_path)
+
+        # Create subdirectories
+        for subdir in subdirs:
+            subdir_path = os.path.join(base_path, subdir)
+            os.makedirs(subdir_path, exist_ok=True)
+            logger.debug("Created subdirectory: {}", subdir_path)
+
+        logger.info("Successfully created jurisdiction structure: {}", base_path)
+        return base_path
+
+    except OSError as e:
+        logger.error("Failed to create jurisdiction structure: {}", str(e))
+        raise OSError(
+            f"Failed to create directory structure for {jurisdiction_name}: {str(e)}"
+        ) from e

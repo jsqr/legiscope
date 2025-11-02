@@ -1,6 +1,6 @@
 # Agents
 
-This document contains information about available commands, workflows, and development practices for the legiscope project.
+This document contains information about available commands, workflows, and development practices for legiscope project.
 
 ## Environment Setup
 
@@ -9,16 +9,61 @@ This project uses `uv` for dependency management and Python environment handling
 ### Initial Setup
 
 ```bash
-# Install uv if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Create virtual environment and install dependencies
 make env
+```
 
-# Or manually:
+Or manually:
+
+```bash
 uv venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv pip install -e ".[dev]"
+```
+
+## Development Commands
+
+### Testing
+
+```bash
+make test
+```
+
+Or manually:
+
+```bash
+pytest
+pytest --cov=src/legiscope --cov-report=html
+pytest tests/test_code.py
+```
+
+### Linting and Formatting
+
+```bash
+make lint
+```
+
+Or manually:
+
+```bash
+ruff check src/ tests/
+ruff format --check src/ tests/
+ruff format src/ tests/
+ruff check --fix src/ tests/
+```
+
+### Environment Management
+
+```bash
+make env
+make clean-env
+make list
+```
+
+Or manually:
+
+```bash
+uv pip list
 ```
 
 ## Development Commands
@@ -92,27 +137,37 @@ uv pip list
 ## Key Dependencies
 
 - `openai`: OpenAI API client for embeddings and language models
-- `marvin`: AI-powered function calls and structured outputs
+- `instructor`: AI-powered function calls and structured outputs
 - `psycopg[binary]`: PostgreSQL database adapter
 - `pytest`: Testing framework
 - `ruff`: Fast Python linter and formatter
 
 ## Database Setup
 
-The project requires a PostgreSQL database with the `vector` extension. See README.md for detailed setup instructions.
+The project requires a PostgreSQL database with `vector` extension. See README.md for detailed setup instructions.
 
 ## Common Workflows
 
 ### Adding New Dependencies
 
 ```bash
-# Add production dependency
 uv pip add package_name
-
-# Add development dependency
 uv pip add --dev package_name
+```
 
-# Update pyproject.toml manually if preferred
+### Creating New Jurisdictions
+
+```bash
+python scripts/create_jurisdiction.py NY "New York"
+python scripts/create_jurisdiction.py CA LosAngeles --verbose
+./scripts/create_jurisdiction.py IL Chicago
+```
+
+### Converting Jurisdictions to Markdown
+
+```bash
+python scripts/convert_to_markdown.py data/laws/IL-WindyCity
+make convert-to-markdown JURISDICTION=data/laws/IL-WindyCity
 ```
 
 ### Running the Full Pipeline
@@ -129,6 +184,8 @@ uv pip add --dev package_name
 - Follow existing code patterns and naming conventions
 - Add type hints where appropriate
 - Include docstrings for public functions and classes
+- Use modern type hints (e.g., `str | None` instead of Union or Optional)
+- Use imperative mood for docstrings (e.g., "Compute the square root" not "Computes the square root")
 
 ## Testing Strategy
 

@@ -2,7 +2,6 @@
 
 import pytest
 import tempfile
-import os
 from unittest.mock import Mock, patch
 from pydantic import BaseModel
 
