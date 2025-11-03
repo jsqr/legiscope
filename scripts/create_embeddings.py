@@ -18,7 +18,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import polars as pl
-from legiscope.embeddings import create_embeddings_df
+from legiscope.embeddings import (
+    create_embeddings_df,
+    create_and_persist_embeddings,
+    get_or_create_legal_collection,
+)
 
 
 def parse_jurisdiction_directory(jurisdiction_path: str) -> tuple[str, str]:
@@ -272,20 +276,26 @@ def create_embeddings(
     model: str = "embeddinggemma",
     segments_filename: str = "segments.parquet",
     embeddings_filename: str = "embeddings.parquet",
+    use_shared_chroma: bool = True,
+    chroma_db_path: str = "data/chroma_db",
+    collection_name: str = "legal_code_all",
     verbose: bool = False,
 ) -> None:
     """
-    Process a jurisdiction directory to create embeddings parquet file.
+    Process a jurisdiction directory to create embeddings parquet file and/or ChromaDB index.
     
     Args:
         jurisdiction_path: Path to jurisdiction directory
-        model: Name of the embedding model
+        model: Name of embedding model
         segments_filename: Name of segments parquet file
         embeddings_filename: Name of embeddings parquet file to create
+        use_shared_chroma: Whether to use shared ChromaDB approach. Defaults to True
+        chroma_db_path: Path to shared ChromaDB. Defaults to 'data/chroma_db'
+        collection_name: Name of ChromaDB collection. Defaults to 'legal_code_all'
         verbose: Enable verbose output
         
     Raises:
-        ValueError: If any step in the workflow fails
+        ValueError: If any step in workflow fails
     """
     if verbose:
         print(f"Processing embeddings for jurisdiction: {jurisdiction_path}")
@@ -327,24 +337,42 @@ def create_embeddings(
     except ValueError as e:
         raise ValueError(f"Embedding client setup failed: {str(e)}") from e
     
-    # Create embeddings DataFrame
+    # Create embeddings and persist
     try:
         if verbose:
-            print("   Creating embeddings...")
+            print("   Creating embeddings and persisting...")
         
-        embeddings_df = create_embeddings_dataframe(segments_df, client, model, verbose)
+        if use_shared_chroma:
+            # Use unified workflow with shared ChromaDB
+            embeddings_df, collection = create_and_persist_embeddings(
+                df=segments_df,
+                client=client,
+                model=model,
+                jurisdiction_id=f"{state}-{municipality}",
+                state=state,
+                municipality=municipality,
+                persist_directory=chroma_db_path,
+                collection_name=collection_name,
+                save_parquet=True,
+                parquet_path=tables_dir / embeddings_filename,
+
+            )
+            
+            print(f"Successfully created embeddings for {state}-{municipality}")
+            print(f"   Parquet: {tables_dir / embeddings_filename} ({len(embeddings_df)} embeddings)")
+            print(f"   ChromaDB: {collection_name} collection ({collection.count()} documents)")
+            print(f"   Database: {chroma_db_path}")
+            
+        else:
+            # Legacy approach: parquet only
+            embeddings_df = create_embeddings_dataframe(segments_df, client, model, verbose)
+            save_embeddings_dataframe(embeddings_df, tables_dir, embeddings_filename, verbose)
+            
+            print(f"Successfully created embeddings for {state}-{municipality}")
+            print(f"   Embeddings: {tables_dir / embeddings_filename} ({len(embeddings_df)} embeddings)")
+            
     except ValueError as e:
         raise ValueError(f"Embeddings creation failed: {str(e)}") from e
-    
-    # Save embeddings DataFrame
-    try:
-        save_embeddings_dataframe(embeddings_df, tables_dir, embeddings_filename, verbose)
-    except ValueError as e:
-        raise ValueError(f"Saving failed: {str(e)}") from e
-    
-    # Success message
-    print(f"Successfully created embeddings for {state}-{municipality}")
-    print(f"   Embeddings: {tables_dir / embeddings_filename} ({len(embeddings_df)} embeddings)")
 
 
 def main():
@@ -368,12 +396,20 @@ Expected directory structure:
 The script reads segments.parquet from the 'tables/' subdirectory and
 creates embeddings.parquet in the same subdirectory.
 
-Prerequisites:
-  - ollama package installed: pip install ollama
-  - ollama service running with the specified model available
+ Prerequisites:
+   - ollama package installed: pip install ollama
+   - ollama service running with the specified model available
 
-Output file:
+Output files:
   - embeddings.parquet: Segments with embedding vectors for vector search
+  - ChromaDB collection: Shared vector database for all jurisdictions (when using shared ChromaDB)
+
+Examples:
+  %(prog)s data/laws/IL-WindyCity
+  %(prog)s data/laws/CA-LosAngeles --verbose
+  %(prog)s data/laws/NY-NewYork --model nomic-embed-text
+  %(prog)s data/laws/TX-Houston --no-shared-chroma  # Legacy parquet-only mode
+  %(prog)s data/laws/FL-Miami --chroma-db-path ./custom_chroma
         """
     )
     
@@ -401,6 +437,24 @@ Output file:
     )
     
     parser.add_argument(
+        "--no-shared-chroma",
+        action="store_true",
+        help="Use legacy parquet-only approach instead of shared ChromaDB"
+    )
+    
+    parser.add_argument(
+        "--chroma-db-path",
+        default="data/chroma_db",
+        help="Path to shared ChromaDB directory (default: data/chroma_db)"
+    )
+    
+    parser.add_argument(
+        "--collection-name",
+        default="legal_code_all",
+        help="Name of ChromaDB collection (default: legal_code_all)"
+    )
+    
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable verbose output with detailed progress information"
@@ -414,6 +468,9 @@ Output file:
             model=args.model,
             segments_filename=args.segments_file,
             embeddings_filename=args.embeddings_file,
+            use_shared_chroma=not args.no_shared_chroma,
+            chroma_db_path=args.chroma_db_path,
+            collection_name=args.collection_name,
             verbose=args.verbose,
         )
     except ValueError as e:

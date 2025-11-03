@@ -84,8 +84,8 @@ pipeline:
 	fi
 	@echo "Running complete pipeline for $(STATE)-$(MUNICIPALITY)..."
 	@if [ -n "$(ARGS)" ]; then \
-		./pipeline.sh "$(STATE)" $(MUNICIPALITY) $(ARGS); \
+		./scripts/pipeline.sh "$(STATE)" $(MUNICIPALITY) $(ARGS); \
 	else \
-		./pipeline.sh "$(STATE)" $(MUNICIPALITY); \
+		./scripts/pipeline.sh "$(STATE)" $(MUNICIPALITY); \
 	fi
 

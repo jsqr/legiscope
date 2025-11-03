@@ -94,7 +94,7 @@ results = retrieve_sections(
 ## Scripts and Modules
 
 ### Scripts
-- `pipeline.sh` - Complete jurisdiction processing workflow automation
+- `scripts/pipeline.sh` - Complete jurisdiction processing workflow automation
 - `create_jurisdiction.py` - Create jurisdiction directory structure
 - `convert_docx.sh` - Convert DOCX files to plain text using pandoc
 - `convert_to_markdown.py` - Convert legal text to structured Markdown
