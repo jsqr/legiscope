@@ -34,7 +34,6 @@ Or manually:
 ```bash
 pytest
 pytest --cov=src/legiscope --cov-report=html
-pytest tests/test_code.py
 ```
 
 ### Linting and Formatting
@@ -82,7 +81,6 @@ make test-cov
 pytest --cov=src/legiscope --cov-report=html
 
 # Run specific test file
-pytest tests/test_code.py
 ```
 
 ### Linting and Formatting
@@ -138,90 +136,6 @@ uv pip list
 
 - `openai`: OpenAI API client for embeddings and language models
 - `instructor`: AI-powered function calls and structured outputs
-- `psycopg[binary]`: PostgreSQL database adapter
 - `pytest`: Testing framework
 - `ruff`: Fast Python linter and formatter
 
-## Database Setup
-
-The project requires a PostgreSQL database with `vector` extension. See README.md for detailed setup instructions.
-
-## Common Workflows
-
-### Adding New Dependencies
-
-```bash
-uv pip add package_name
-uv pip add --dev package_name
-```
-
-### Creating New Jurisdictions
-
-```bash
-python scripts/create_jurisdiction.py NY "New York"
-python scripts/create_jurisdiction.py CA LosAngeles --verbose
-./scripts/create_jurisdiction.py IL Chicago
-```
-
-### Converting Jurisdictions to Markdown
-
-```bash
-python scripts/convert_to_markdown.py data/laws/IL-WindyCity
-python scripts/convert_to_markdown.py data/laws/CA-LosAngeles --verbose
-```
-
-### Segmenting Legal Code into Sections and Segments
-
-```bash
-python scripts/segment_legal_code.py data/laws/IL-WindyCity
-python scripts/segment_legal_code.py data/laws/CA-LosAngeles --verbose
-```
-
-### Running the Full Pipeline
-
-1. Set up database (see README.md)
-2. Activate environment: `source .venv/bin/activate`
-3. Run tests: `make test`
-4. Process municipal codes using notebooks or scripts
-
-#### Complete Processing Workflow
-
-```bash
-# 1. Create jurisdiction structure
-python scripts/create_jurisdiction.py IL "Windy City"
-
-# 2. Convert raw text to markdown
-python scripts/convert_to_markdown.py data/laws/IL-WindyCity
-
-# 3. Segment into sections and segments for vector database
-python scripts/segment_legal_code.py data/laws/IL-WindyCity
-
-# Output files created:
-# - data/laws/IL-WindyCity/tables/sections.parquet (hierarchical structure)
-# - data/laws/IL-WindyCity/tables/segments.parquet (flat format for embeddings)
-```
-
-### Code Quality Standards
-
-- Use `ruff` for both linting and formatting
-- All tests must pass before committing
-- Follow existing code patterns and naming conventions
-- Add type hints where appropriate
-- Include docstrings for public functions and classes
-- Use comments sparingly, avoiding them where the code is straightforward
-- Use modern type hints (e.g., `str | None` instead of Union or Optional)
-- Use imperative mood for docstrings (e.g., "Compute the square root" not "Computes the square root")
-
-## Testing Strategy
-
-- Unit tests for core parsing and text processing functions
-- Integration tests for database operations
-- Test data and examples included in `tests/test_code.py`
-- Use pytest fixtures for database setup when needed
-
-## Performance Considerations
-
-- Embeddings are batched to respect API limits
-- Database operations use connection pooling
-- Large text documents are chunked for processing
-- Vector similarity search uses materialized views
