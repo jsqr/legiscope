@@ -25,6 +25,7 @@ dependencies = [
     "tiktoken",
     "loguru",
     "PyYAML",
+    "polars",
 ]
 
 [project.optional-dependencies]

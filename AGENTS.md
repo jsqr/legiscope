@@ -167,7 +167,14 @@ python scripts/create_jurisdiction.py CA LosAngeles --verbose
 
 ```bash
 python scripts/convert_to_markdown.py data/laws/IL-WindyCity
-make convert-to-markdown JURISDICTION=data/laws/IL-WindyCity
+python scripts/convert_to_markdown.py data/laws/CA-LosAngeles --verbose
+```
+
+### Segmenting Legal Code into Sections and Segments
+
+```bash
+python scripts/segment_legal_code.py data/laws/IL-WindyCity
+python scripts/segment_legal_code.py data/laws/CA-LosAngeles --verbose
 ```
 
 ### Running the Full Pipeline
@@ -177,6 +184,23 @@ make convert-to-markdown JURISDICTION=data/laws/IL-WindyCity
 3. Run tests: `make test`
 4. Process municipal codes using notebooks or scripts
 
+#### Complete Processing Workflow
+
+```bash
+# 1. Create jurisdiction structure
+python scripts/create_jurisdiction.py IL "Windy City"
+
+# 2. Convert raw text to markdown
+python scripts/convert_to_markdown.py data/laws/IL-WindyCity
+
+# 3. Segment into sections and segments for vector database
+python scripts/segment_legal_code.py data/laws/IL-WindyCity
+
+# Output files created:
+# - data/laws/IL-WindyCity/tables/sections.parquet (hierarchical structure)
+# - data/laws/IL-WindyCity/tables/segments.parquet (flat format for embeddings)
+```
+
 ### Code Quality Standards
 
 - Use `ruff` for both linting and formatting
@@ -184,6 +208,7 @@ make convert-to-markdown JURISDICTION=data/laws/IL-WindyCity
 - Follow existing code patterns and naming conventions
 - Add type hints where appropriate
 - Include docstrings for public functions and classes
+- Use comments sparingly, avoiding them where the code is straightforward
 - Use modern type hints (e.g., `str | None` instead of Union or Optional)
 - Use imperative mood for docstrings (e.g., "Compute the square root" not "Computes the square root")
 
