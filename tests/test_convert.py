@@ -575,3 +575,272 @@ This is a test chapter."""
         finally:
             os.unlink(input_file)
             os.unlink(output_file)
+
+    def test_text2md_paragraph_handling(self):
+        """Test proper paragraph handling with single and double newlines."""
+        input_text = """CHAPTER 1: GENERAL PROVISIONS
+
+This is the first paragraph.
+It has multiple lines but should be one paragraph.
+
+This is the second paragraph.
+It also has multiple lines
+that should be joined together.
+
+SECTION 1.1: PURPOSE
+
+The purpose of this chapter is to establish rules.
+These rules apply to all residents
+and visitors in the municipality.
+
+This is another paragraph in the section.
+It demonstrates proper paragraph separation."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+            output_file = f.name
+
+        try:
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: GENERAL PROVISIONS",
+                    ),
+                    HeadingLevel(
+                        level=2,
+                        regex_pattern=r"^SECTION\s+[\d.]+:\s+.+$",
+                        markdown_prefix="##",
+                        example_heading="SECTION 1.1: PURPOSE",
+                    ),
+                ],
+                total_levels=2,
+                file_sample_size=15,
+            )
+
+            text2md(structure, input_file, output_file, "IL", "TestCity")
+
+            with open(output_file, "r", encoding="utf-8") as f:
+                output_content = f.read()
+
+            # Check headings were converted
+            assert "# CHAPTER 1: GENERAL PROVISIONS" in output_content
+            assert "## SECTION 1.1: PURPOSE" in output_content
+
+            # Check that lines within paragraphs are properly joined
+            assert (
+                "This is the first paragraph. It has multiple lines but should be one paragraph."
+                in output_content
+            )
+            assert (
+                "This is the second paragraph. It also has multiple lines that should be joined together."
+                in output_content
+            )
+            assert (
+                "The purpose of this chapter is to establish rules. These rules apply to all residents and visitors in the municipality."
+                in output_content
+            )
+            assert (
+                "This is another paragraph in the section. It demonstrates proper paragraph separation."
+                in output_content
+            )
+
+            # Check that paragraphs are separated by blank lines (double newlines)
+            lines = output_content.split("\n")
+
+            # Find the first paragraph and check it's followed by a blank line
+            first_para_idx = next(
+                i
+                for i, line in enumerate(lines)
+                if "This is the first paragraph" in line
+            )
+            assert lines[first_para_idx + 1] == "", (
+                "First paragraph should be followed by blank line"
+            )
+
+            # Find the second paragraph and check it's followed by a blank line
+            second_para_idx = next(
+                i
+                for i, line in enumerate(lines)
+                if "This is the second paragraph" in line
+            )
+            assert lines[second_para_idx + 1] == "", (
+                "Second paragraph should be followed by blank line"
+            )
+
+        finally:
+            os.unlink(input_file)
+            os.unlink(output_file)
+
+    def test_text2md_paragraph_edge_cases(self):
+        """Test paragraph handling with edge cases like multiple consecutive empty lines."""
+        input_text = """CHAPTER 1: TEST
+
+Single line paragraph.
+
+Line 1 of multi-line paragraph.
+Line 2 of multi-line paragraph.
+Line 3 of multi-line paragraph.
+
+
+Multiple empty lines above this paragraph.
+
+Last paragraph without trailing empty line."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+            output_file = f.name
+
+        try:
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: TEST",
+                    ),
+                ],
+                total_levels=1,
+                file_sample_size=10,
+            )
+
+            text2md(structure, input_file, output_file, "IL", "TestCity")
+
+            with open(output_file, "r", encoding="utf-8") as f:
+                output_content = f.read()
+
+            # Check heading conversion
+            assert "# CHAPTER 1: TEST" in output_content
+
+            # Check single line paragraph
+            assert "Single line paragraph." in output_content
+
+            # Check multi-line paragraph is properly joined
+            assert (
+                "Line 1 of multi-line paragraph. Line 2 of multi-line paragraph. Line 3 of multi-line paragraph."
+                in output_content
+            )
+
+            # Check paragraph after multiple empty lines
+            assert "Multiple empty lines above this paragraph." in output_content
+
+            # Check last paragraph
+            assert "Last paragraph without trailing empty line." in output_content
+
+            # Verify no unintended line breaks within paragraphs
+            assert (
+                "Line 1 of multi-line paragraph.\nLine 2 of multi-line paragraph."
+                not in output_content
+            )
+            assert (
+                "Line 2 of multi-line paragraph.\nLine 3 of multi-line paragraph."
+                not in output_content
+            )
+
+        finally:
+            os.unlink(input_file)
+            os.unlink(output_file)
+
+    def test_text2md_mixed_content_with_paragraphs(self):
+        """Test conversion with headings, paragraphs, and mixed content."""
+        input_text = """CHAPTER 1: INTRODUCTION
+
+This chapter introduces the municipal code.
+
+It provides important context
+for understanding the regulations
+that follow.
+
+ARTICLE 1: DEFINITIONS
+
+Term: Definition
+Term 2: Definition 2
+
+SECTION 1.1: GENERAL TERMS
+
+These terms are used throughout
+the entire municipal code.
+
+Additional definitions may be found
+in specific sections as needed."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+            output_file = f.name
+
+        try:
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: INTRODUCTION",
+                    ),
+                    HeadingLevel(
+                        level=2,
+                        regex_pattern=r"^ARTICLE\s+\d+:\s+.+$",
+                        markdown_prefix="##",
+                        example_heading="ARTICLE 1: DEFINITIONS",
+                    ),
+                    HeadingLevel(
+                        level=3,
+                        regex_pattern=r"^SECTION\s+[\d.]+:\s+.+$",
+                        markdown_prefix="###",
+                        example_heading="SECTION 1.1: GENERAL TERMS",
+                    ),
+                ],
+                total_levels=3,
+                file_sample_size=12,
+            )
+
+            text2md(structure, input_file, output_file, "IL", "TestCity")
+
+            with open(output_file, "r", encoding="utf-8") as f:
+                output_content = f.read()
+
+            # Check all heading levels
+            assert "# CHAPTER 1: INTRODUCTION" in output_content
+            assert "## ARTICLE 1: DEFINITIONS" in output_content
+            assert "### SECTION 1.1: GENERAL TERMS" in output_content
+
+            # Check paragraph joining
+            assert "This chapter introduces the municipal code." in output_content
+            assert (
+                "It provides important context for understanding the regulations that follow."
+                in output_content
+            )
+            assert (
+                "These terms are used throughout the entire municipal code."
+                in output_content
+            )
+            assert (
+                "Additional definitions may be found in specific sections as needed."
+                in output_content
+            )
+
+            # Check that definition lines (non-paragraph content) are preserved
+            assert "Term: Definition" in output_content
+            assert "Term 2: Definition 2" in output_content
+
+        finally:
+            os.unlink(input_file)
+            os.unlink(output_file)

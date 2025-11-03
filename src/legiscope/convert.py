@@ -71,14 +71,12 @@ def scan_legal_text(
         >>> for level in structure.levels:
         ...     print(f"Level {level.level}: {level.example_heading}")
     """
-    # Validate file path and existence
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
     if not os.path.isfile(file_path):
         raise ValueError(f"Path is not a file: {file_path}")
 
-    # Read file and limit lines
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -95,8 +93,7 @@ def scan_legal_text(
     except IOError as e:
         raise ValueError(f"Error reading file {file_path}: {str(e)}")
 
-    # Create system prompt for LLM
-    system_prompt = """You are an expert at analyzing legal documents and municipal codes. 
+    system_prompt = """You are a lawyer skilled at analyzing legal documents and municipal codes.
 Your task is to identify the hierarchical heading structure in legal text.
 
 Analyze the provided text sample and identify all distinct heading levels. For each level:
@@ -107,14 +104,13 @@ Analyze the provided text sample and identify all distinct heading levels. For e
 
 Focus on patterns like:
 - "CHAPTER X: Title"
-- "SECTION X.Y: Title" 
+- "SECTION X.Y: Title"
 - "ARTICLE X: Title"
 - "PART X: Title"
 - Numbered sections like "1. Title" or "1.1. Title"
 
 Return your analysis in the structured format requested. Be precise with regex patterns."""
 
-    # Create user prompt with text sample
     user_prompt = f"""Analyze the heading structure in this legal text sample:
 
 {sample_text}
@@ -123,7 +119,6 @@ Identify all heading levels, create regex patterns for each level, and suggest a
 The text contains {len(sample_lines)} lines (limited sample for analysis)."""
 
     try:
-        # Call LLM to analyze heading structure
         structure = ask(
             client=client,
             prompt=user_prompt,
@@ -152,10 +147,8 @@ The text contains {len(sample_lines)} lines (limited sample for analysis)."""
 
     except Exception as e:
         if "instructor" in str(type(e)).lower():
-            # Re-raise instructor errors as-is
-            raise
+            raise  # Re-raise instructor errors as-is
         else:
-            # Wrap other errors
             raise ValueError(f"Error analyzing legal text: {str(e)}") from e
 
 
@@ -178,13 +171,11 @@ def _generate_frontmatter(
     Returns:
         str: YAML frontmatter string with proper formatting
     """
-    # Validate inputs
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
     if not municipality or not municipality.strip():
         raise ValueError("Municipality cannot be empty")
 
-    # Create frontmatter data structure
     frontmatter_data: Dict[str, Any] = {
         "jurisdiction": {
             "state": state.strip().upper(),
@@ -203,7 +194,6 @@ def _generate_frontmatter(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
 
-    # Convert to YAML string
     try:
         yaml_content = yaml.dump(
             frontmatter_data, default_flow_style=False, sort_keys=False
@@ -249,7 +239,6 @@ def text2md(
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")
     """
-    # Validate inputs
     if not structure or not hasattr(structure, "levels"):
         raise ValueError("Invalid HeadingStructure provided")
 
@@ -262,12 +251,10 @@ def text2md(
     if not os.path.isfile(input_path):
         raise ValueError(f"Input path is not a file: {input_path}")
 
-    # Create output directory if needed
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
-    # Compile regex patterns for efficiency
     compiled_patterns = []
     for level in sorted(structure.levels, key=lambda x: x.level):
         try:
@@ -278,7 +265,6 @@ def text2md(
                 f"Invalid regex pattern in HeadingStructure: {level.regex_pattern}. Error: {str(e)}"
             )
 
-    # Read input file
     try:
         with open(input_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
@@ -289,17 +275,19 @@ def text2md(
     except IOError as e:
         raise ValueError(f"Error reading input file {input_path}: {str(e)}")
 
-    # Process lines and convert headings
+    # Process lines and convert headings with proper paragraph handling
     converted_lines = []
     heading_lines_processed = set()
+    i = 0
 
-    for line_num, line in enumerate(lines):
+    while i < len(lines):
         # Skip lines already processed as headings (to avoid duplicate processing)
-        if line_num in heading_lines_processed:
+        if i in heading_lines_processed:
+            i += 1
             continue
 
+        line = lines[i]
         line_stripped = line.rstrip("\n\r")
-        original_line = line_stripped
 
         # Check if this line matches any heading pattern
         heading_found = False
@@ -308,18 +296,54 @@ def text2md(
                 # Convert to Markdown format
                 markdown_heading = f"{level.markdown_prefix} {line_stripped.strip()}"
                 converted_lines.append(markdown_heading + "\n")
-                heading_lines_processed.add(line_num)
+                heading_lines_processed.add(i)
                 heading_found = True
+                i += 1
                 break
 
-        if not heading_found:
-            # Not a heading, keep original line
-            converted_lines.append(original_line + "\n")
+        if heading_found:
+            continue
 
-    # Generate YAML frontmatter
+        # Not a heading - process as paragraph content
+        if line_stripped.strip() == "":
+            # Empty line - add as paragraph break
+            converted_lines.append("\n")
+            i += 1
+        else:
+            # Start of a paragraph - collect consecutive non-empty lines
+            paragraph_lines = []
+            while i < len(lines):
+                current_line = lines[i]
+                current_stripped = current_line.rstrip("\n\r")
+
+                # Check if current line is a heading
+                is_heading = False
+                for level, pattern in compiled_patterns:
+                    if pattern.match(current_stripped.strip()):
+                        is_heading = True
+                        break
+
+                if is_heading:
+                    break  # Hit a heading, stop collecting paragraph lines
+
+                if current_stripped.strip() == "":
+                    break  # Empty line - end of paragraph
+
+                paragraph_lines.append(current_stripped.strip())
+                i += 1
+
+            # Join paragraph lines with spaces and add as single paragraph
+            if paragraph_lines:
+                paragraph_text = " ".join(paragraph_lines)
+                converted_lines.append(paragraph_text + "\n")
+
+                # Check if we stopped at an empty line and add paragraph break if needed
+                if i < len(lines) and lines[i].rstrip("\n\r").strip() == "":
+                    converted_lines.append("\n")
+                    i += 1
+
     frontmatter = _generate_frontmatter(structure, state, municipality)
 
-    # Write output file with frontmatter
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(frontmatter)
@@ -327,7 +351,6 @@ def text2md(
     except IOError as e:
         raise ValueError(f"Error writing output file {output_path}: {str(e)}")
 
-    # Log completion if content logging is enabled
     from legiscope.utils import LOG_CONTENT
 
     if LOG_CONTENT:
