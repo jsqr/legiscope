@@ -5,7 +5,7 @@ Code to convert text files with outline structure and section headings to Markdo
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any
 from pydantic import BaseModel
 
 import yaml
@@ -176,7 +176,7 @@ def _generate_frontmatter(
     if not municipality or not municipality.strip():
         raise ValueError("Municipality cannot be empty")
 
-    frontmatter_data: Dict[str, Any] = {
+    frontmatter_data: dict[str, Any] = {
         "jurisdiction": {
             "state": state.strip().upper(),
             "municipality": municipality.strip(),

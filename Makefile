@@ -1,4 +1,4 @@
-.PHONY: help env clean-env test test-cov lint format fix list clean install
+.PHONY: help env clean-env test test-cov lint format fix list clean install pipeline
 
 # Default target
 help:
@@ -13,6 +13,7 @@ help:
 	@echo "  list       - Show installed packages"
 	@echo "  clean      - Clean build artifacts"
 	@echo "  install    - Install package in development mode"
+	@echo "  pipeline   - Run complete jurisdiction processing pipeline"
 
 # Environment management
 env:
@@ -73,4 +74,18 @@ install:
 	@echo "Installing package in development mode..."
 	@source .venv/bin/activate && uv pip install -e ".[dev]"
 	@echo "Installation complete."
+
+# Pipeline
+pipeline:
+	@if [ -z "$(STATE)" ] || [ -z "$(MUNICIPALITY)" ]; then \
+		echo "Usage: make pipeline STATE=NY MUNICIPALITY=\"New York\""; \
+		echo "Example: make pipeline STATE=CA MUNICIPALITY=LosAngeles"; \
+		exit 1; \
+	fi
+	@echo "Running complete pipeline for $(STATE)-$(MUNICIPALITY)..."
+	@if [ -n "$(ARGS)" ]; then \
+		./pipeline.sh "$(STATE)" $(MUNICIPALITY) $(ARGS); \
+	else \
+		./pipeline.sh "$(STATE)" $(MUNICIPALITY); \
+	fi
 
