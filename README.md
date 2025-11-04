@@ -45,10 +45,31 @@ make format
 make fix
 ```
 
+## Usage
+
+### Processing Municipal Codes
+
+To process a new municipal code from DOCX files to searchable embeddings:
+
+```bash
+# Basic usage
+./scripts/pipeline.sh NY "New York"
+
+# Another example
+./scripts/pipeline.sh CA LosAngeles
+```
+
+The pipeline performs these steps automatically:
+1. Creates directory structure for the jurisdiction
+2. Converts DOCX files to plain text (if present)
+3. Converts text to structured Markdown with headings
+4. Segments the code into searchable sections
+5. Generates embeddings for semantic search
+
 ## Scripts and Modules
 
 ### Scripts
-- `scripts/pipeline.sh` - Complete jurisdiction processing workflow automation
+- `scripts/pipeline.sh` - Simple jurisdiction processing workflow automation
 - `scripts/create_jurisdiction.py` - Create jurisdiction directory structure
 - `scripts/convert_docx.sh` - Convert DOCX files to plain text using pandoc
 - `scripts/convert_to_markdown.py` - Convert legal text to structured Markdown
