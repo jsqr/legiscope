@@ -1,9 +1,41 @@
 from pathlib import Path
+from dataclasses import dataclass
 
 import chromadb
 import ollama
 import polars as pl
 from loguru import logger
+
+
+@dataclass
+class EmbeddingConfig:
+    """Configuration for embedding operations."""
+
+    model: str = "embeddinggemma"
+    heading_col: str = "section_heading"
+    text_col: str = "segment_text"
+    embedding_col: str = "embedding"
+    id_col: str = "segment_idx"
+
+
+@dataclass
+class PersistenceConfig:
+    """Configuration for persistence operations."""
+
+    persist_directory: str | Path = "data/chroma_db"
+    collection_name: str = "legal_code_all"
+    save_parquet: bool = True
+    parquet_path: str | Path | None = None
+    metadata_cols: list[str] | None = None
+
+
+@dataclass
+class JurisdictionConfig:
+    """Configuration for jurisdiction information."""
+
+    jurisdiction_id: str | None = None
+    state: str | None = None
+    municipality: str | None = None
 
 
 def get_embeddings(
@@ -397,38 +429,18 @@ def add_jurisdiction_embeddings(
 def create_and_persist_embeddings(
     df: pl.DataFrame,
     client: ollama.Client,
-    model: str = "embeddinggemma",
-    jurisdiction_id: str | None = None,
-    state: str | None = None,
-    municipality: str | None = None,
-    persist_directory: str | Path = "data/chroma_db",
-    collection_name: str = "legal_code_all",
-    save_parquet: bool = True,
-    parquet_path: str | Path | None = None,
-    heading_col: str = "section_heading",
-    text_col: str = "segment_text",
-    embedding_col: str = "embedding",
-    id_col: str = "segment_idx",
-    metadata_cols: list[str] | None = None,
+    embedding_config: EmbeddingConfig | None = None,
+    persistence_config: PersistenceConfig | None = None,
+    jurisdiction_config: JurisdictionConfig | None = None,
 ) -> tuple[pl.DataFrame, chromadb.Collection]:
     """Unified workflow: create embeddings, save parquet, and/or create ChromaDB index.
 
     Args:
         df: DataFrame with segment information (from create_segments_df)
         client: Ollama client instance
-        model: Name of the embedding model to use. Defaults to 'embeddinggemma'
-        jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
-        state: State code (e.g., 'IL')
-        municipality: Municipality name (e.g., 'WindyCity')
-        persist_directory: Directory for ChromaDB persistence. Defaults to 'data/chroma_db'
-        collection_name: Name of ChromaDB collection. Defaults to 'legal_code_all'
-        save_parquet: Whether to save embeddings to parquet file. Defaults to True
-        parquet_path: Path to save parquet file. If None, auto-generated from jurisdiction_id
-        heading_col: Name of column containing section headings. Defaults to 'section_heading'
-        text_col: Name of column containing segment text. Defaults to 'segment_text'
-        embedding_col: Name of column to create for embeddings. Defaults to 'embedding'
-        id_col: Name of column containing unique IDs. Defaults to 'segment_idx'
-        metadata_cols: List of additional columns to include as metadata
+        embedding_config: Configuration for embedding operations
+        persistence_config: Configuration for persistence operations
+        jurisdiction_config: Configuration for jurisdiction information
 
     Returns:
         Tuple of (embeddings_df, chroma_collection)
@@ -441,11 +453,18 @@ def create_and_persist_embeddings(
         embeddings_df, collection = create_and_persist_embeddings(
             segments_df,
             client=ollama.Client(),
-            jurisdiction_id="IL-WindyCity",
-            state="IL",
-            municipality="WindyCity"
+            jurisdiction_config=JurisdictionConfig(
+                jurisdiction_id="IL-WindyCity",
+                state="IL",
+                municipality="WindyCity"
+            )
         )
     """
+    # Use defaults if configs not provided
+    emb_config = embedding_config or EmbeddingConfig()
+    pers_config = persistence_config or PersistenceConfig()
+    jur_config = jurisdiction_config or JurisdictionConfig()
+
     logger.info("Starting unified embeddings creation and persistence workflow")
 
     # Step 1: Create embeddings DataFrame
@@ -453,24 +472,24 @@ def create_and_persist_embeddings(
     embeddings_df = create_embeddings_df(
         df=df,
         client=client,
-        model=model,
-        heading_col=heading_col,
-        text_col=text_col,
-        embedding_col=embedding_col,
+        model=emb_config.model,
+        heading_col=emb_config.heading_col,
+        text_col=emb_config.text_col,
+        embedding_col=emb_config.embedding_col,
     )
 
     # Step 2: Save parquet file if requested
-    if save_parquet:
+    if pers_config.save_parquet:
         logger.info("Step 2: Saving embeddings to parquet file")
-        if parquet_path is None:
-            if jurisdiction_id:
+        if pers_config.parquet_path is None:
+            if jur_config.jurisdiction_id:
                 parquet_path = Path(
-                    f"data/laws/{jurisdiction_id}/tables/embeddings.parquet"
+                    f"data/laws/{jur_config.jurisdiction_id}/tables/embeddings.parquet"
                 )
             else:
                 parquet_path = Path("embeddings.parquet")
         else:
-            parquet_path = Path(parquet_path)
+            parquet_path = Path(pers_config.parquet_path)
 
         parquet_path.parent.mkdir(parents=True, exist_ok=True)
         embeddings_df.write_parquet(parquet_path)
@@ -480,28 +499,28 @@ def create_and_persist_embeddings(
     logger.info("Step 3: Creating ChromaDB index")
 
     # Parse jurisdiction information if not provided
-    if not jurisdiction_id and (state or municipality):
-        if state and municipality:
-            jurisdiction_id = f"{state}-{municipality}"
+    if not jur_config.jurisdiction_id and (jur_config.state or jur_config.municipality):
+        if jur_config.state and jur_config.municipality:
+            jur_config.jurisdiction_id = f"{jur_config.state}-{jur_config.municipality}"
         else:
             logger.warning("Incomplete jurisdiction information provided")
 
     collection = create_embedding_index(
         df=embeddings_df,
-        collection_name=collection_name,
-        persist_directory=persist_directory,
-        id_col=id_col,
-        text_col=text_col,
-        embedding_col=embedding_col,
-        metadata_cols=metadata_cols,
-        jurisdiction_id=jurisdiction_id,
-        state=state,
-        municipality=municipality,
+        collection_name=pers_config.collection_name,
+        persist_directory=pers_config.persist_directory,
+        id_col=emb_config.id_col,
+        text_col=emb_config.text_col,
+        embedding_col=emb_config.embedding_col,
+        metadata_cols=pers_config.metadata_cols,
+        jurisdiction_id=jur_config.jurisdiction_id,
+        state=jur_config.state,
+        municipality=jur_config.municipality,
     )
 
     logger.info("Successfully completed unified embeddings workflow")
     logger.info(f"  - Embeddings DataFrame: {len(embeddings_df)} rows")
-    logger.info(f"  - ChromaDB collection: {collection_name}")
+    logger.info(f"  - ChromaDB collection: {pers_config.collection_name}")
     logger.info(f"  - Collection documents: {collection.count()}")
 
     return embeddings_df, collection

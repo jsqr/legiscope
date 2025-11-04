@@ -350,16 +350,3 @@ def text2md(
             f.writelines(converted_lines)
     except IOError as e:
         raise ValueError(f"Error writing output file {output_path}: {str(e)}")
-
-    from legiscope.utils import LOG_CONTENT
-
-    if LOG_CONTENT:
-        from loguru import logger
-
-        logger.bind(log_content=True).debug(
-            "TEXT2MD CONVERSION:\nInput: {}\nOutput: {}\nLines processed: {}\nHeadings converted: {}",
-            input_path,
-            output_path,
-            len(lines),
-            len(heading_lines_processed),
-        )

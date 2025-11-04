@@ -43,24 +43,6 @@ from legiscope.retrieve import (
     compare_jurisdictions,
 )
 
-# Backward compatibility - moved functions
-import warnings
-from legiscope.embeddings import create_embedding_index as _create_embedding_index
-
-
-def __getattr__(name):
-    """Handle backward compatibility for moved functions."""
-    if name == "create_embedding_index":
-        warnings.warn(
-            "create_embedding_index has moved from legiscope.retrieve to legiscope.embeddings. "
-            "Please update your imports. This compatibility will be removed in a future version.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return _create_embedding_index
-
-    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
-
 
 # Version
 __version__ = "0.1.0"
