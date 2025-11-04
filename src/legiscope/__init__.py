@@ -27,7 +27,6 @@ from legiscope.segment import (
 )
 
 from legiscope.embeddings import (
-    EmbeddingClient,
     get_embeddings,
     create_embeddings_df,
     create_embedding_index,
@@ -80,7 +79,6 @@ __all__ = [
     "add_segments_to_sections",
     "create_segments_df",
     # Embeddings module
-    "EmbeddingClient",
     "get_embeddings",
     "create_embeddings_df",
     "create_embedding_index",

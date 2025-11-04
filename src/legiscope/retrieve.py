@@ -7,7 +7,8 @@ from loguru import logger
 import polars as pl
 
 from legiscope.utils import ask
-from legiscope.embeddings import get_embeddings, EmbeddingClient
+from legiscope.embeddings import get_embeddings
+import ollama
 
 
 class HydeRewrite(BaseModel):
@@ -381,9 +382,9 @@ def retrieve_embeddings(
     rewrite: bool = False,
     client: Instructor | None = None,
     model: str = "gpt-4.1-mini",
-    embedding_client: EmbeddingClient | None = None,
+    embedding_client: ollama.Client | None = None,
     embedding_model: str = "embeddinggemma",
-) -> Dict[str, Any]:
+) -> dict:
     """Retrieve similar documents from the embedding index using semantic search.
 
     Args:
