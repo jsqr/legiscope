@@ -5,26 +5,22 @@ import pytest
 import polars as pl
 
 from legiscope.embeddings import (
-    EmbeddingClient,
     get_embeddings,
     create_embeddings_df,
 )
 
 
-class TestEmbeddingClient:
-    """Test cases for EmbeddingClient protocol."""
+class TestOllamaClient:
+    """Test cases for ollama client usage."""
 
-    def test_embedding_client_protocol(self):
-        """Test that EmbeddingClient is a proper protocol."""
-        # Create a mock client that follows the protocol
+    def test_ollama_client_mocking(self):
+        """Test that ollama client can be mocked properly."""
+        # Create a mock client that mimics ollama.Client
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        # Should be able to use it as EmbeddingClient
-        def use_client(client: EmbeddingClient):
-            return client.embeddings(model="test", prompt="test")
-
-        result = use_client(mock_client)
+        # Should be able to use it as ollama.Client
+        result = mock_client.embeddings(model="test", prompt="test")
         assert result == {"embedding": [0.1, 0.2, 0.3]}
 
 

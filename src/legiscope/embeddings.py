@@ -1,27 +1,18 @@
 from pathlib import Path
-from typing import Protocol, runtime_checkable
 
 import chromadb
+import ollama
 import polars as pl
 from loguru import logger
 
 
-@runtime_checkable
-class EmbeddingClient(Protocol):
-    """Protocol for embedding clients."""
-
-    def embeddings(self, model: str, prompt: str) -> dict:
-        """Generate embedding for a single text prompt."""
-        ...
-
-
 def get_embeddings(
-    client: EmbeddingClient, texts: list[str], model: str = "embeddinggemma"
+    client: ollama.Client, texts: list[str], model: str = "embeddinggemma"
 ) -> list[list[float]]:
     """Generate embedding vectors for a list of text strings.
 
     Args:
-        client: Embedding client instance (e.g., ollama.Client())
+        client: Ollama client instance
         texts: List of text strings to embed
         model: Name of the embedding model to use. Defaults to 'embeddinggemma'
 
@@ -32,7 +23,6 @@ def get_embeddings(
         ValueError: If texts is empty or embedding fails
 
     Example:
-        import ollama
         client = ollama.Client()
         embeddings = get_embeddings(client, ["text1", "text2"], "embeddinggemma")
     """
@@ -65,7 +55,7 @@ def get_embeddings(
 
 def create_embeddings_df(
     df: pl.DataFrame,
-    client: EmbeddingClient,
+    client: ollama.Client,
     model: str = "embeddinggemma",
     heading_col: str = "section_heading",
     text_col: str = "segment_text",
@@ -78,7 +68,7 @@ def create_embeddings_df(
 
     Args:
         df: DataFrame from create_segments_df() with segment information
-        client: Embedding client instance (e.g., ollama.Client())
+        client: Ollama client instance
         model: Name of the embedding model to use. Defaults to 'embeddinggemma'
         heading_col: Name of column containing section headings. Defaults to 'section_heading'
         text_col: Name of column containing segment text. Defaults to 'segment_text'
@@ -92,7 +82,6 @@ def create_embeddings_df(
         TypeError: If df is not a polars DataFrame
 
     Example:
-        import ollama
         from legiscope.segment import create_segments_df
         client = ollama.Client()
         segments_df = create_segments_df(sections)
@@ -407,7 +396,7 @@ def add_jurisdiction_embeddings(
 
 def create_and_persist_embeddings(
     df: pl.DataFrame,
-    client: EmbeddingClient,
+    client: ollama.Client,
     model: str = "embeddinggemma",
     jurisdiction_id: str | None = None,
     state: str | None = None,
@@ -426,7 +415,7 @@ def create_and_persist_embeddings(
 
     Args:
         df: DataFrame with segment information (from create_segments_df)
-        client: Embedding client instance (e.g., ollama.Client())
+        client: Ollama client instance
         model: Name of the embedding model to use. Defaults to 'embeddinggemma'
         jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
         state: State code (e.g., 'IL')

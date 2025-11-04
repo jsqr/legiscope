@@ -25,6 +25,7 @@ dependencies = [
     "PyYAML",
     "polars",
     "chromadb",
+    "ollama",
 ]
 
 [project.optional-dependencies]
