@@ -247,7 +247,7 @@ def create_embedding_index(
     logger.debug("Preparing data for ChromaDB insertion")
 
     # Extract IDs, documents, embeddings, and metadata
-    ids = df[id_col].to_list()
+    ids = [str(id) for id in df[id_col].to_list()]
     documents = df[text_col].to_list()
     embeddings = df[embedding_col].to_list()
 
@@ -297,7 +297,7 @@ def create_embedding_index(
 
     for i in range(0, len(df), batch_size):
         end_idx = min(i + batch_size, len(df))
-        batch_ids = ids[i:end_idx]
+        batch_ids = [str(id) for id in ids[i:end_idx]]
         batch_documents = documents[i:end_idx]
         batch_embeddings = embeddings[i:end_idx]
         batch_metadata = metadata_list[i:end_idx] if metadata_list else None

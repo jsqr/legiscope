@@ -7,6 +7,7 @@ from loguru import logger
 import polars as pl
 
 from legiscope.utils import ask
+from legiscope.embeddings import get_embeddings, EmbeddingClient
 
 
 class HydeRewrite(BaseModel):
@@ -130,6 +131,8 @@ def retrieve_embeddings(
     rewrite: bool = False,
     client: Instructor | None = None,
     model: str = "gpt-4.1-mini",
+    embedding_client: EmbeddingClient | None = None,
+    embedding_model: str = "embeddinggemma",
 ) -> Dict[str, Any]:
     """Retrieve similar documents from the embedding index using semantic search.
 
@@ -145,6 +148,8 @@ def retrieve_embeddings(
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
         client: Instructor client for LLM-powered HYDE rewriting
         model: LLM model to use for HYDE rewriting. Defaults to 'gpt-4.1-mini'
+        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
+        embedding_model: Embedding model name. Defaults to 'embeddinggemma'
 
     Returns:
         dict: Query results containing documents, metadata, distances, and IDs
@@ -218,8 +223,23 @@ def retrieve_embeddings(
         combined_where = where
         logger.debug(f"Using custom filters only: {where}")
 
+    # Generate embeddings explicitly to avoid dimension mismatch
+    if embedding_client is None:
+        # Try to import ollama as default embedding client
+        try:
+            import ollama
+
+            embedding_client = ollama.Client()  # type: ignore
+        except ImportError:
+            logger.error("No embedding client provided and ollama not available")
+            raise ValueError("Embedding client is required for querying")
+
+    # Generate embedding for the query
+    # Type ignore because ollama.Client is compatible with EmbeddingClient protocol
+    query_embeddings = get_embeddings(embedding_client, [query_text], embedding_model)  # type: ignore[arg-type]
+
     results = collection.query(
-        query_texts=[query_text],
+        query_embeddings=query_embeddings,  # type: ignore
         n_results=n_results,
         where=combined_where,  # type: ignore
         where_document=where_document,
