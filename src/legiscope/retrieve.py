@@ -7,6 +7,7 @@ from loguru import logger
 import polars as pl
 
 from legiscope.utils import ask
+from legiscope.embeddings import get_embeddings, EmbeddingClient
 
 
 class HydeRewrite(BaseModel):
@@ -22,7 +23,21 @@ class HydeRewrite(BaseModel):
         description="Brief explanation of the rewrite approach and key changes made"
     )
     query_type: str = Field(
-        description="Type of legal query (e.g., 'parking', 'zoning', 'permit', 'licensing')"
+        description="Type of legal query (e.g., 'zoning', 'permit', 'licensing')"
+    )
+
+
+class RelevanceAssessment(BaseModel):
+    """Structured response for relevance assessment of text to a query."""
+
+    is_relevant: bool = Field(
+        description="Whether the text is directly relevant to answering the query"
+    )
+    confidence: float = Field(
+        description="Confidence score 0-1 for the relevance assessment", ge=0.0, le=1.0
+    )
+    reasoning: str = Field(
+        description="Explanation of why the text is or is not relevant to the query"
     )
 
 
@@ -54,7 +69,6 @@ def hyde_rewriter(
         print(result.confidence)
         print(result.query_type)
     """
-    # Validate input
     if not query or not query.strip():
         logger.error("Query cannot be empty for HYDE rewriting")
         raise ValueError("Query cannot be empty for HYDE rewriting")
@@ -65,9 +79,8 @@ def hyde_rewriter(
 
     logger.info(f"Using LLM for HYDE rewrite: '{query[:50]}...'")
 
-    # System prompt for HYDE query rewriting
-    system_prompt = """You are an expert in municipal law and legal drafting. 
-Transform the given natural language query into the style and format of municipal 
+    system_prompt = """You are an expert in municipal law and legal drafting.
+Transform the given natural language query into the style and format of municipal
 code text to improve semantic search matching against legal documents.
 
 The rewritten query should:
@@ -84,10 +97,9 @@ Common municipal code patterns:
 - "The municipal code addresses [topic] as follows:"
 - "The following rules apply to [topic]:"
 
-Classify the query type (e.g., parking, zoning, permits, licensing, noise, animals, etc.)
+Classify the query type (e.g., zoning, permits, licensing, noise, animals, etc.)
 and provide a confidence score for the rewrite quality."""
 
-    # User prompt with the query
     user_prompt = f"""Rewrite the following natural language query into municipal code style:
 
 Original query: "{query}"
@@ -118,6 +130,245 @@ Provide a rewritten query that would be effective for semantic search against mu
         raise
 
 
+def is_relevant(
+    query: str, text: str, client: Instructor, model: str = "gpt-4.1-mini"
+) -> RelevanceAssessment:
+    """Assess whether text is directly relevant to answering a query using LLM analysis.
+
+    Uses LLM-powered analysis to determine if the given text directly helps answer
+    the query, providing a structured assessment with confidence score and reasoning.
+
+    Args:
+        query: The query being answered
+        text: The text to assess for relevance
+        client: Instructor client for LLM-powered analysis
+        model: LLM model to use. Defaults to "gpt-4.1-mini"
+
+    Returns:
+        RelevanceAssessment: Structured assessment with relevance determination
+
+    Raises:
+        ValueError: If query or text is empty, or client is invalid
+
+    Example:
+        import instructor
+        from openai import OpenAI
+        client = instructor.from_openai(OpenAI())
+        result = is_relevant(
+            "parking regulations",
+            "No vehicle shall be parked on any street between 2 AM and 6 AM",
+            client
+        )
+        print(result.is_relevant)
+        print(result.confidence)
+        print(result.reasoning)
+    """
+    if not query or not query.strip():
+        logger.error("Query cannot be empty for relevance assessment")
+        raise ValueError("Query cannot be empty for relevance assessment")
+
+    if not text or not text.strip():
+        logger.error("Text cannot be empty for relevance assessment")
+        raise ValueError("Text cannot be empty for relevance assessment")
+
+    if client is None:
+        logger.error("Client is required for relevance assessment")
+        raise ValueError("Client is required for relevance assessment")
+
+    logger.info(
+        f"Using LLM for relevance assessment: query '{query[:30]}...', text '{text[:30]}...'"
+    )
+
+    system_prompt = """You are an expert legal analyst. Determine whether the given text
+is directly relevant to answering the query.
+
+The text is considered relevant if it:
+1. Directly addresses the query topic
+2. Contains specific information that helps answer the query
+3. Provides rules, regulations, or guidance related to the query
+4. Is not merely tangentially related but substantially useful
+
+The text is NOT relevant if it:
+1. Discusses unrelated topics
+2. Is too general or vague to be useful
+3. Mentions the topic but provides no actionable information
+4. Is administrative or procedural content unrelated to the query substance
+
+Provide a confidence score (0-1) indicating how certain you are of the assessment."""
+
+    user_prompt = f"""Assess whether the following text is directly relevant to answering the query:
+
+Query: "{query}"
+
+Text to assess:
+
+"{text}"
+
+Determine if this text directly helps answer the query and provide your assessment with confidence."""
+
+    try:
+        result = ask(
+            client=client,
+            prompt=user_prompt,
+            response_model=RelevanceAssessment,
+            system=system_prompt,
+            model=model,
+            temperature=0.1,  # Low temperature
+            max_retries=3,
+        )
+
+        logger.info(
+            f"LLM relevance assessment completed - relevant: {result.is_relevant}, "
+            f"confidence: {result.confidence:.2f}, query: '{query[:20]}...', "
+            f"text: '{text[:20]}...'"
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"LLM relevance assessment failed: {str(e)}")
+        raise
+
+
+def filter_results(
+    results: Dict[str, Any],
+    query: str,
+    client: Instructor,
+    threshold: float = 0.5,
+    model: str = "gpt-4.1-mini",
+) -> Dict[str, Any]:
+    """Filter retrieval results by relevance using LLM-powered assessment.
+
+    Applies relevance assessment to each document in retrieval results and filters
+    out documents that are not relevant or fall below the confidence threshold.
+
+    Args:
+        results: Retrieval results from retrieve_embeddings or similar functions
+        query: Original query used for retrieval
+        client: Instructor client for LLM-powered relevance assessment
+        threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
+        model: LLM model to use for relevance assessment. Defaults to "gpt-4.1-mini"
+
+    Returns:
+        dict: Filtered results with same structure as input but only relevant documents:
+            {
+                "ids": [filtered_ids],
+                "documents": [filtered_documents],
+                "distances": [filtered_distances],
+                "metadatas": [filtered_metadatas],
+                "filtering_metadata": {
+                    "original_count": int,
+                    "filtered_count": int,
+                    "threshold": float,
+                    "assessments": [
+                        {
+                            "index": int,
+                            "is_relevant": bool,
+                            "confidence": float,
+                            "reasoning": str
+                        }
+                    ]
+                },
+                # Any additional keys from original results are preserved
+            }
+
+    Raises:
+        ValueError: If results structure is invalid or client is missing
+
+    Example:
+        results = retrieve_embeddings(collection, "parking rules", n_results=10)
+        filtered = filter_results(results, "parking rules", client, threshold=0.7)
+        print(f"Filtered from {filtered['filtering_metadata']['original_count']} "
+              f"to {filtered['filtering_metadata']['filtered_count']} results")
+    """
+    if results is None:
+        logger.error("Invalid results structure")
+        raise ValueError("Invalid results structure")
+
+    if client is None:
+        logger.error("Client is required for result filtering")
+        raise ValueError("Client is required for result filtering")
+
+    required_keys = {"ids", "documents", "distances"}
+    missing_keys = required_keys - set(results.keys())
+    if missing_keys:
+        logger.error(f"Results missing required keys: {missing_keys}")
+        raise ValueError(f"Results missing required keys: {missing_keys}")
+
+    logger.info(
+        f"Filtering {len(results['ids'][0])} results for query: '{query[:30]}...'"
+    )
+
+    ids = results["ids"][0]
+    documents = results["documents"][0]
+    distances = results["distances"][0]
+    metadatas = results.get("metadatas", [None])[0]
+
+    original_count = len(ids)
+    assessments = []
+
+    # Assess relevance for each document
+    for i, (doc_id, document, distance) in enumerate(zip(ids, documents, distances)):
+        try:
+            assessment = is_relevant(query, document, client, model)
+            assessments.append(
+                {
+                    "index": i,
+                    "is_relevant": assessment.is_relevant,
+                    "confidence": assessment.confidence,
+                    "reasoning": assessment.reasoning,
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Failed to assess document {i}: {str(e)}")
+            # Mark as not relevant on failure
+            assessments.append(
+                {
+                    "index": i,
+                    "is_relevant": False,
+                    "confidence": 0.0,
+                    "reasoning": f"Assessment failed: {str(e)}",
+                }
+            )
+
+    # Filter results based on relevance and threshold
+    filtered_indices = []
+    for i, assessment in enumerate(assessments):
+        if assessment["is_relevant"] and assessment["confidence"] >= threshold:
+            filtered_indices.append(i)
+
+    filtered_ids = [ids[i] for i in filtered_indices]
+    filtered_documents = [documents[i] for i in filtered_indices]
+    filtered_distances = [distances[i] for i in filtered_indices]
+    filtered_metadatas = [metadatas[i] if metadatas else None for i in filtered_indices]
+
+    filtered_results = {
+        "ids": [filtered_ids],
+        "documents": [filtered_documents],
+        "distances": [filtered_distances],
+        "metadatas": [filtered_metadatas],
+        "filtering_metadata": {
+            "original_count": original_count,
+            "filtered_count": len(filtered_indices),
+            "threshold": threshold,
+            "assessments": assessments,
+        },
+    }
+
+    # Preserve any additional keys from original results
+    for key, value in results.items():
+        if key not in {"ids", "documents", "distances", "metadatas"}:
+            filtered_results[key] = value
+
+    filtered_count = len(filtered_indices)
+    logger.info(
+        f"Filtered {original_count} results to {filtered_count} relevant results "
+        f"(threshold: {threshold})"
+    )
+
+    return filtered_results
+
+
 def retrieve_embeddings(
     collection: chromadb.Collection,
     query_text: str,
@@ -130,6 +381,8 @@ def retrieve_embeddings(
     rewrite: bool = False,
     client: Instructor | None = None,
     model: str = "gpt-4.1-mini",
+    embedding_client: EmbeddingClient | None = None,
+    embedding_model: str = "embeddinggemma",
 ) -> Dict[str, Any]:
     """Retrieve similar documents from the embedding index using semantic search.
 
@@ -145,6 +398,8 @@ def retrieve_embeddings(
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
         client: Instructor client for LLM-powered HYDE rewriting
         model: LLM model to use for HYDE rewriting. Defaults to 'gpt-4.1-mini'
+        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
+        embedding_model: Embedding model name. Defaults to 'embeddinggemma'
 
     Returns:
         dict: Query results containing documents, metadata, distances, and IDs
@@ -191,7 +446,6 @@ def retrieve_embeddings(
 
     logger.info(f"Retrieving embeddings for: '{query_text[:50]}...'")
 
-    # Build jurisdiction filters
     jurisdiction_filters = {}
 
     if jurisdiction_id:
@@ -218,10 +472,23 @@ def retrieve_embeddings(
         combined_where = where
         logger.debug(f"Using custom filters only: {where}")
 
+    # Generate embeddings explicitly to avoid dimension mismatch
+    if embedding_client is None:
+        # Try to import ollama as default embedding client
+        try:
+            import ollama
+
+            embedding_client = ollama.Client()  # type: ignore
+        except ImportError:
+            logger.error("No embedding client provided and ollama not available")
+            raise ValueError("Embedding client is required for querying")
+
+    query_embeddings = get_embeddings(embedding_client, [query_text], embedding_model)
+
     results = collection.query(
-        query_texts=[query_text],
+        query_embeddings=query_embeddings,
         n_results=n_results,
-        where=combined_where,  # type: ignore
+        where=combined_where,
         where_document=where_document,
     )
 
@@ -253,7 +520,7 @@ def retrieve_embeddings(
             if municipalities:
                 logger.debug(f"Results from municipalities: {sorted(municipalities)}")
 
-    return results  # type: ignore
+    return results
 
 
 def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
@@ -460,15 +727,12 @@ def retrieve_sections(
     """
     logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
 
-    # Convert path to Path object for consistency
     sections_path = Path(sections_parquet_path)
 
-    # Validate sections parquet file exists
     if not sections_path.exists():
         logger.error(f"Sections parquet file not found: {sections_path}")
         raise FileNotFoundError(f"Sections parquet file not found: {sections_path}")
 
-    # Step 1: Retrieve segment-level results using existing function
     logger.debug("Step 1: Retrieving segment-level results")
     segment_results = retrieve_embeddings(
         collection=collection,
@@ -484,7 +748,6 @@ def retrieve_sections(
         model=model,
     )
 
-    # Extract query information
     original_query = query_text
     rewritten_query = segment_results.get("rewritten_query") if rewrite else None
 
@@ -504,7 +767,6 @@ def retrieve_sections(
     total_segments_found = len(segment_results["ids"][0])
     logger.info(f"Found {total_segments_found} segment results")
 
-    # Step 2: Extract segment data and group by section
     logger.debug("Step 2: Processing segment results")
 
     segment_ids = segment_results["ids"][0]
@@ -516,20 +778,17 @@ def retrieve_sections(
     sections_to_segments: Dict[int, List[Dict[str, Any]]] = {}
 
     for i, seg_id in enumerate(segment_ids):
-        # Get metadata for this segment
         metadata = (
             segment_metadatas[i]
             if segment_metadatas and i < len(segment_metadatas)
             else {}
         )
 
-        # Extract section_ref from metadata
         section_ref = metadata.get("section_ref")
         if section_ref is None:
             logger.warning(f"Segment {seg_id} missing section_ref in metadata")
             continue
 
-        # Create segment data
         segment_data = {
             "segment_idx": int(seg_id),
             "segment_text": segment_documents[i],
@@ -559,7 +818,6 @@ def retrieve_sections(
             },
         }
 
-    # Step 3: Load sections data from parquet
     logger.debug("Step 3: Loading sections data from parquet")
 
     try:
@@ -595,7 +853,6 @@ def retrieve_sections(
         logger.error(f"Failed to load sections parquet: {str(e)}")
         raise ValueError(f"Failed to load sections parquet: {str(e)}") from e
 
-    # Step 4: Build final results
     logger.debug("Step 4: Building section-level results")
 
     section_results = []
@@ -613,7 +870,6 @@ def retrieve_sections(
         # Sort segments by distance (most relevant first)
         segments_sorted = sorted(segments, key=lambda x: x["distance"])
 
-        # Build section result
         section_result = {
             "section_idx": section_idx,
             "heading_text": section_data["heading_text"],
@@ -640,7 +896,6 @@ def retrieve_sections(
 
     logger.info(f"Returning {len(section_results)} sections with context")
 
-    # Step 5: Return final results
     return {
         "sections": section_results,
         "query_info": {

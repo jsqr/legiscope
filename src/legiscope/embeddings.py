@@ -100,7 +100,6 @@ def create_embeddings_df(
     """
     logger.info(f"Creating embeddings DataFrame with model: {model}")
 
-    # Validate inputs
     if not isinstance(df, pl.DataFrame):
         logger.error(f"df must be a polars DataFrame, got {type(df)}")
         raise TypeError(f"df must be a polars DataFrame, got {type(df)}")
@@ -149,10 +148,8 @@ def create_embeddings_df(
         f"Concatenated {len(concatenated_texts)} texts for embedding generation"
     )
 
-    # Generate embeddings for all concatenated texts
     embeddings = get_embeddings(client, concatenated_texts, model)
 
-    # Add embeddings as new column
     result_df = df.with_columns(
         pl.Series(embedding_col, embeddings, dtype=pl.List(pl.Float64))
     )
@@ -247,7 +244,7 @@ def create_embedding_index(
     logger.debug("Preparing data for ChromaDB insertion")
 
     # Extract IDs, documents, embeddings, and metadata
-    ids = df[id_col].to_list()
+    ids = [str(id) for id in df[id_col].to_list()]
     documents = df[text_col].to_list()
     embeddings = df[embedding_col].to_list()
 
@@ -297,7 +294,7 @@ def create_embedding_index(
 
     for i in range(0, len(df), batch_size):
         end_idx = min(i + batch_size, len(df))
-        batch_ids = ids[i:end_idx]
+        batch_ids = [str(id) for id in ids[i:end_idx]]
         batch_documents = documents[i:end_idx]
         batch_embeddings = embeddings[i:end_idx]
         batch_metadata = metadata_list[i:end_idx] if metadata_list else None
@@ -310,7 +307,7 @@ def create_embedding_index(
             ids=batch_ids,
             documents=batch_documents,
             embeddings=batch_embeddings,
-            metadatas=batch_metadata,  # ChromaDB API uses 'metadatas' parameter
+            metadatas=batch_metadata,  # ChromaDB API uses 'metadatas' parameter (ugh)
         )
 
     logger.info(
@@ -334,7 +331,6 @@ def get_or_create_legal_collection(
     """
     logger.info(f"Getting or creating legal collection: {collection_name}")
 
-    # Initialize ChromaDB client
     client = chromadb.PersistentClient(path=str(persist_directory))
 
     # Create or get collection

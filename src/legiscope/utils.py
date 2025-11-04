@@ -11,11 +11,9 @@ from loguru import logger
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)
 
-# Environment variable for content logging
 LOG_CONTENT = os.getenv("LOG_ASK_CONTENT", "false").lower() == "true"
 
 
-# Configure logging for the ask function
 def _setup_ask_logger():
     """Configure logger for the ask function with file rotation."""
     logger.remove()
@@ -66,7 +64,6 @@ def _setup_content_logger():
 # Setup logger when module is imported
 _setup_ask_logger()
 
-# Setup content logger if enabled
 if LOG_CONTENT:
     _setup_content_logger()
 
@@ -127,7 +124,6 @@ def ask(
         >>> print(result.title)
         >>> print(result.provisions)
     """
-    # Log function entry with key parameters
     logger.debug(
         "ask() called - response_model: {}, system_prompt: {}, prompt_length: {}, kwargs_keys: {}",
         response_model.__name__
@@ -138,27 +134,23 @@ def ask(
         list(kwargs.keys()),
     )
 
-    # Log content if enabled
     if LOG_CONTENT:
         logger.bind(log_content=True).debug("USER PROMPT:\n{}", prompt)
         if system and system.strip():
             logger.bind(log_content=True).debug("SYSTEM PROMPT:\n{}", system)
 
-    # Validate client
     if not (hasattr(client, "chat") and hasattr(client.chat, "completions")):
         logger.error("Client validation failed - missing chat.completions attributes")
         raise ValueError("Client does not appear to be an Instructor instance")
 
     logger.debug("Client validation passed")
 
-    # Validate prompt
     if not prompt or not prompt.strip():
         logger.error("Prompt validation failed - empty or whitespace only")
         raise ValueError("Prompt cannot be empty")
 
     logger.debug("Prompt validation passed - length: {}", len(prompt))
 
-    # Set up default parameters
     default_params = {
         "model": "gpt-4.1-mini",
         "temperature": 0.1,
@@ -175,7 +167,6 @@ def ask(
         {k: v for k, v in kwargs.items() if k not in default_params},
     )
 
-    # Build messages
     messages = []
     if system is not None and str(system).strip():
         messages.append({"role": "system", "content": system})
@@ -212,7 +203,6 @@ def ask(
             else str(response_model),
         )
 
-        # Log response content if enabled
         if LOG_CONTENT:
             try:
                 response_json = response.model_dump_json(indent=2)
@@ -264,37 +254,30 @@ def create_jurisdiction_structure(state: str, municipality: str) -> str:
         # ├── processed/
         # └── tables/
     """
-    # Validate inputs
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
     if not municipality or not municipality.strip():
         raise ValueError("Municipality cannot be empty")
 
-    # Clean and format inputs
     state = state.strip().upper()
     municipality = municipality.strip().replace(" ", "")
 
-    # Validate characters (allow only letters, numbers, and hyphens)
     if not state.replace("-", "").isalnum():
         raise ValueError("State must contain only alphanumeric characters")
     if not municipality.replace("-", "").isalnum():
         raise ValueError("Municipality must contain only alphanumeric characters")
 
-    # Construct the jurisdiction directory name
     jurisdiction_name = f"{state}-{municipality}"
 
-    # Define the base path and subdirectories
     base_path = os.path.join("data", "laws", jurisdiction_name)
     subdirs = ["raw", "processed", "tables"]
 
     logger.info("Creating jurisdiction structure for {}", jurisdiction_name)
 
     try:
-        # Create the base directory
         os.makedirs(base_path, exist_ok=True)
         logger.debug("Created base directory: {}", base_path)
 
-        # Create subdirectories
         for subdir in subdirs:
             subdir_path = os.path.join(base_path, subdir)
             os.makedirs(subdir_path, exist_ok=True)
