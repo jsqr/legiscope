@@ -45,56 +45,31 @@ make format
 make fix
 ```
 
-## Features
+## Usage
 
-### Query Rewriting (HYDE)
+### Processing Municipal Codes
 
-The project includes a HYDE (Hypothetical Document Embeddings) implementation that improves semantic search accuracy:
+To process a new municipal code from DOCX files to searchable embeddings:
 
-- **LLM-powered Rewriting**: Uses LLMs through the `instructor` client for query transformation
-- **Structured Output**: Returns confidence scores, reasoning, and query classification
+```bash
+# Basic usage
+./scripts/pipeline.sh NY "New York"
 
-#### Usage Examples
-
-```python
-import instructor
-from openai import OpenAI
-from legiscope.retrieve import retrieve_embeddings, retrieve_sections
-
-# Basic segment-level search without HYDE
-results = retrieve_embeddings(collection, "where can I park my car", rewrite=False)
-
-# Section-level search with full legal context
-results = retrieve_sections(
-    collection,
-    "parking regulations",
-    sections_parquet_path="data/laws/IL-WindyCity/tables/sections.parquet"
-)
-
-# Access section content and matching segments
-for section in results["sections"]:
-    print(f"Section: {section['heading_text']}")
-    print(f"Content: {section['body_text'][:100]}...")
-    print(f"Found {section['segment_count']} matching segments")
-    for segment in section["matching_segments"]:
-        print(f"  Segment: {segment['segment_text'][:50]}...")
-
-# LLM-powered HYDE rewriting with section retrieval
-client = instructor.from_openai(OpenAI())
-results = retrieve_sections(
-    collection,
-    "where can I park my car",
-    sections_parquet_path="data/laws/IL-WindyCity/tables/sections.parquet",
-    rewrite=True,
-    client=client,
-    model="gpt-4.1-mini"
-)
+# Another example
+./scripts/pipeline.sh CA LosAngeles
 ```
+
+The pipeline performs these steps automatically:
+1. Creates directory structure for the jurisdiction
+2. Converts DOCX files to plain text (if present)
+3. Converts text to structured Markdown with headings
+4. Segments the code into searchable sections
+5. Generates embeddings for semantic search
 
 ## Scripts and Modules
 
 ### Scripts
-- `scripts/pipeline.sh` - Complete jurisdiction processing workflow automation
+- `scripts/pipeline.sh` - Simple jurisdiction processing workflow automation
 - `scripts/create_jurisdiction.py` - Create jurisdiction directory structure
 - `scripts/convert_docx.sh` - Convert DOCX files to plain text using pandoc
 - `scripts/convert_to_markdown.py` - Convert legal text to structured Markdown
