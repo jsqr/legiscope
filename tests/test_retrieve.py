@@ -11,7 +11,10 @@ from legiscope.retrieve import (
     hyde_rewriter,
     retrieve_embeddings,
     retrieve_sections,
+    is_relevant,
+    filter_results,
     HydeRewrite,
+    RelevanceAssessment,
 )
 
 
@@ -223,23 +226,33 @@ class TestRetrieveEmbeddings:
         )
 
         with patch("legiscope.retrieve.hyde_rewriter", return_value=mock_result):
-            mock_client = Mock(spec=Instructor)
+            with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
+                mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
+                mock_client = Mock(spec=Instructor)
 
-            retrieve_embeddings(
-                collection=mock_collection,
-                query_text="where can I park",
-                rewrite=True,
-                client=mock_client,
-            )
+                retrieve_embeddings(
+                    collection=mock_collection,
+                    query_text="where can I park",
+                    rewrite=True,
+                    client=mock_client,
+                )
 
-            # Verify query was called with rewritten text
-            mock_collection.query.assert_called_once()
-            call_args = mock_collection.query.call_args
-            rewritten_query = call_args[1]["query_texts"][0]
-            assert (
-                rewritten_query
-                == "The following provisions regulate vehicle parking within municipal boundaries."
-            )
+                # Verify embeddings were generated with rewritten text
+                mock_get_embeddings.assert_called_once()
+                embedding_call_args = mock_get_embeddings.call_args[0]
+                query_text_passed = embedding_call_args[1][
+                    0
+                ]  # Second arg is list of texts
+                assert (
+                    query_text_passed
+                    == "The following provisions regulate vehicle parking within municipal boundaries."
+                )
+
+                # Verify query was called with embeddings
+                mock_collection.query.assert_called_once()
+                call_args = mock_collection.query.call_args
+                assert "query_embeddings" in call_args[1]
+                assert call_args[1]["query_embeddings"] == [[0.1, 0.2, 0.3]]
 
     def test_retrieve_embeddings_without_hyde(self):
         """Test retrieve_embeddings without HYDE rewriting."""
@@ -251,15 +264,24 @@ class TestRetrieveEmbeddings:
             "distances": [[0.1, 0.2]],
         }
 
-        retrieve_embeddings(
-            collection=mock_collection, query_text="where can I park", rewrite=False
-        )
+        with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
+            mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
 
-        # Verify query was called with original text
-        mock_collection.query.assert_called_once()
-        call_args = mock_collection.query.call_args
-        original_query = call_args[1]["query_texts"][0]
-        assert original_query == "where can I park"
+            retrieve_embeddings(
+                collection=mock_collection, query_text="where can I park", rewrite=False
+            )
+
+            # Verify embeddings were generated with original text
+            mock_get_embeddings.assert_called_once()
+            embedding_call_args = mock_get_embeddings.call_args[0]
+            query_text_passed = embedding_call_args[1][0]  # Second arg is list of texts
+            assert query_text_passed == "where can I park"
+
+            # Verify query was called with embeddings
+            mock_collection.query.assert_called_once()
+            call_args = mock_collection.query.call_args
+            assert "query_embeddings" in call_args[1]
+            assert call_args[1]["query_embeddings"] == [[0.1, 0.2, 0.3]]
 
     def test_retrieve_embeddings_with_jurisdiction_filter(self):
         """Test retrieve_embeddings with jurisdiction filtering."""
@@ -294,18 +316,20 @@ class TestRetrieveEmbeddings:
         }
 
         with patch("legiscope.retrieve.hyde_rewriter") as mock_hyde:
-            mock_client = Mock(spec=Instructor)
+            with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
+                mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
+                mock_client = Mock(spec=Instructor)
 
-            retrieve_embeddings(
-                collection=mock_collection,
-                query_text="test query",
-                rewrite=True,
-                client=mock_client,
-                model="gpt-4",
-            )
+                retrieve_embeddings(
+                    collection=mock_collection,
+                    query_text="test query",
+                    rewrite=True,
+                    client=mock_client,
+                    model="gpt-4",
+                )
 
-            # Verify custom model was passed to hyde_rewriter
-            mock_hyde.assert_called_once_with("test query", mock_client, "gpt-4")
+                # Verify custom model was passed to hyde_rewriter
+                mock_hyde.assert_called_once_with("test query", mock_client, "gpt-4")
 
 
 class TestRetrieveSections:
@@ -703,3 +727,356 @@ class TestRetrieveSections:
 
                 # Verify relevance score is the best segment score
                 assert section["relevance_score"] == 0.1
+
+
+class TestRelevanceAssessment:
+    """Test the RelevanceAssessment Pydantic model."""
+
+    def test_relevance_assessment_model_valid(self):
+        """Test creating a valid RelevanceAssessment instance."""
+        assessment = RelevanceAssessment(
+            is_relevant=True,
+            confidence=0.85,
+            reasoning="The text directly addresses parking regulations with specific rules",
+        )
+
+        assert assessment.is_relevant is True
+        assert assessment.confidence == 0.85
+        assert (
+            assessment.reasoning
+            == "The text directly addresses parking regulations with specific rules"
+        )
+
+    def test_relevance_assessment_model_confidence_bounds(self):
+        """Test confidence score bounds validation."""
+        # Valid confidence scores
+        assessment1 = RelevanceAssessment(
+            is_relevant=True,
+            confidence=0.0,
+            reasoning="Test",
+        )
+        assert assessment1.confidence == 0.0
+
+        assessment2 = RelevanceAssessment(
+            is_relevant=False,
+            confidence=1.0,
+            reasoning="Test",
+        )
+        assert assessment2.confidence == 1.0
+
+    def test_relevance_assessment_model_invalid_confidence(self):
+        """Test that invalid confidence scores are rejected."""
+        with pytest.raises(ValueError):
+            RelevanceAssessment(
+                is_relevant=True,
+                confidence=-0.1,
+                reasoning="Test",
+            )
+
+        with pytest.raises(ValueError):
+            RelevanceAssessment(
+                is_relevant=False,
+                confidence=1.1,
+                reasoning="Test",
+            )
+
+
+class TestIsRelevant:
+    """Test the is_relevant function."""
+
+    def test_is_relevant_success(self):
+        """Test successful relevance assessment."""
+        mock_result = RelevanceAssessment(
+            is_relevant=True,
+            confidence=0.9,
+            reasoning="The text contains specific parking regulations that directly answer the query",
+        )
+
+        with patch("legiscope.retrieve.ask", return_value=mock_result) as mock_ask:
+            mock_client = Mock(spec=Instructor)
+
+            result = is_relevant(
+                "parking regulations",
+                "No vehicle shall be parked on any street between 2 AM and 6 AM",
+                mock_client,
+            )
+
+            assert isinstance(result, RelevanceAssessment)
+            assert result.is_relevant is True
+            assert result.confidence == 0.9
+            assert "parking regulations" in result.reasoning
+
+            # Verify ask was called correctly
+            mock_ask.assert_called_once()
+            call_args = mock_ask.call_args
+            assert call_args[1]["client"] == mock_client
+            assert "parking regulations" in call_args[1]["prompt"]
+            assert call_args[1]["response_model"] == RelevanceAssessment
+            assert call_args[1]["model"] == "gpt-4.1-mini"
+
+    def test_is_relevant_custom_model(self):
+        """Test relevance assessment with custom model."""
+        mock_result = RelevanceAssessment(
+            is_relevant=False,
+            confidence=0.8,
+            reasoning="The text discusses unrelated topics",
+        )
+
+        with patch("legiscope.retrieve.ask", return_value=mock_result) as mock_ask:
+            mock_client = Mock(spec=Instructor)
+
+            is_relevant("test query", "test text", mock_client, model="gpt-4")
+
+            # Verify custom model was used
+            mock_ask.assert_called_once()
+            call_args = mock_ask.call_args
+            assert call_args[1]["model"] == "gpt-4"
+
+    def test_is_relevant_empty_query(self):
+        """Test that empty query raises ValueError."""
+        mock_client = Mock(spec=Instructor)
+
+        with pytest.raises(ValueError, match="Query cannot be empty"):
+            is_relevant("", "some text", mock_client)
+
+        with pytest.raises(ValueError, match="Query cannot be empty"):
+            is_relevant("   ", "some text", mock_client)
+
+    def test_is_relevant_empty_text(self):
+        """Test that empty text raises ValueError."""
+        mock_client = Mock(spec=Instructor)
+
+        with pytest.raises(ValueError, match="Text cannot be empty"):
+            is_relevant("some query", "", mock_client)
+
+        with pytest.raises(ValueError, match="Text cannot be empty"):
+            is_relevant("some query", "   ", mock_client)
+
+    def test_is_relevant_no_client(self):
+        """Test that missing client raises ValueError."""
+        with pytest.raises(ValueError, match="Client is required"):
+            is_relevant("query", "text", None)
+
+    def test_is_relevant_api_failure(self):
+        """Test handling of LLM API failures."""
+        with patch("legiscope.retrieve.ask", side_effect=Exception("API Error")):
+            mock_client = Mock(spec=Instructor)
+
+            with pytest.raises(Exception, match="API Error"):
+                is_relevant("test query", "test text", mock_client)
+
+
+class TestFilterResults:
+    """Test the filter_results function."""
+
+    def test_filter_results_basic(self):
+        """Test basic result filtering."""
+        # Mock relevance assessments
+        mock_assessments = [
+            RelevanceAssessment(is_relevant=True, confidence=0.9, reasoning="Relevant"),
+            RelevanceAssessment(
+                is_relevant=False, confidence=0.8, reasoning="Not relevant"
+            ),
+            RelevanceAssessment(is_relevant=True, confidence=0.7, reasoning="Relevant"),
+        ]
+
+        # Mock input results
+        input_results = {
+            "ids": [["1", "2", "3"]],
+            "documents": [["doc1", "doc2", "doc3"]],
+            "distances": [[0.1, 0.2, 0.3]],
+            "metadatas": [[{"meta": "1"}, {"meta": "2"}, {"meta": "3"}]],
+        }
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
+            mock_client = Mock(spec=Instructor)
+
+            result = filter_results(
+                input_results,
+                "test query",
+                mock_client,
+                threshold=0.5,
+            )
+
+            # Verify structure
+            assert "ids" in result
+            assert "documents" in result
+            assert "distances" in result
+            assert "metadatas" in result
+            assert "filtering_metadata" in result
+
+            # Verify filtering results
+            assert len(result["ids"][0]) == 2  # Only relevant documents
+            assert result["ids"][0] == ["1", "3"]
+            assert result["documents"][0] == ["doc1", "doc3"]
+            assert result["distances"][0] == [0.1, 0.3]
+            assert result["metadatas"][0] == [{"meta": "1"}, {"meta": "3"}]
+
+            # Verify metadata
+            metadata = result["filtering_metadata"]
+            assert metadata["original_count"] == 3
+            assert metadata["filtered_count"] == 2
+            assert metadata["threshold"] == 0.5
+            assert len(metadata["assessments"]) == 3
+
+    def test_filter_results_with_threshold(self):
+        """Test filtering with confidence threshold."""
+        # Mock relevance assessments with varying confidence
+        mock_assessments = [
+            RelevanceAssessment(
+                is_relevant=True, confidence=0.9, reasoning="High confidence"
+            ),
+            RelevanceAssessment(
+                is_relevant=True, confidence=0.3, reasoning="Low confidence"
+            ),
+            RelevanceAssessment(
+                is_relevant=True, confidence=0.7, reasoning="Medium confidence"
+            ),
+        ]
+
+        input_results = {
+            "ids": [["1", "2", "3"]],
+            "documents": [["doc1", "doc2", "doc3"]],
+            "distances": [[0.1, 0.2, 0.3]],
+            "metadatas": [[None, None, None]],
+        }
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
+            mock_client = Mock(spec=Instructor)
+
+            result = filter_results(
+                input_results,
+                "test query",
+                mock_client,
+                threshold=0.6,
+            )
+
+            # Only documents 1 and 3 should pass threshold
+            assert len(result["ids"][0]) == 2
+            assert result["ids"][0] == ["1", "3"]
+
+    def test_filter_results_no_client(self):
+        """Test that missing client raises ValueError."""
+        input_results = {
+            "ids": [["1"]],
+            "documents": [["doc1"]],
+            "distances": [[0.1]],
+        }
+
+        with pytest.raises(ValueError, match="Client is required"):
+            filter_results(input_results, "query", None)
+
+    def test_filter_results_invalid_structure(self):
+        """Test handling of invalid results structure."""
+        mock_client = Mock(spec=Instructor)
+
+        # Empty results
+        with pytest.raises(ValueError, match="Invalid results structure"):
+            filter_results(None, "query", mock_client)
+
+        # Missing required keys
+        with pytest.raises(ValueError, match="Results missing required keys"):
+            filter_results({"wrong": "structure"}, "query", mock_client)
+
+    def test_filter_results_empty_results(self):
+        """Test filtering with empty results."""
+        empty_results = {
+            "ids": [[]],
+            "documents": [[]],
+            "distances": [[]],
+        }
+
+        mock_client = Mock(spec=Instructor)
+
+        result = filter_results(empty_results, "query", mock_client)
+
+        assert result["filtering_metadata"]["original_count"] == 0
+        assert result["filtering_metadata"]["filtered_count"] == 0
+        assert len(result["filtering_metadata"]["assessments"]) == 0
+
+    def test_filter_results_assessment_failure(self):
+        """Test handling of assessment failures."""
+
+        def failing_assessment(query, text, client, model):
+            if text == "doc2":
+                raise Exception("Assessment failed")
+            return RelevanceAssessment(
+                is_relevant=True, confidence=0.9, reasoning="Good"
+            )
+
+        input_results = {
+            "ids": [["1", "2", "3"]],
+            "documents": [["doc1", "doc2", "doc3"]],
+            "distances": [[0.1, 0.2, 0.3]],
+            "metadatas": [[None, None, None]],
+        }
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=failing_assessment):
+            mock_client = Mock(spec=Instructor)
+
+            result = filter_results(input_results, "query", mock_client)
+
+            # Should still work, with failed assessment marked as not relevant
+            assert len(result["ids"][0]) == 2  # doc1 and doc3
+            assert result["ids"][0] == ["1", "3"]
+
+            # Check assessment metadata
+            assessments = result["filtering_metadata"]["assessments"]
+            assert len(assessments) == 3
+
+            # Find failed assessment
+            failed_assessment = next(a for a in assessments if a["index"] == 1)
+            assert failed_assessment["is_relevant"] is False
+            assert failed_assessment["confidence"] == 0.0
+            assert "Assessment failed" in failed_assessment["reasoning"]
+
+    def test_filter_results_preserves_extra_keys(self):
+        """Test that extra keys in results are preserved."""
+        input_results = {
+            "ids": [["1"]],
+            "documents": [["doc1"]],
+            "distances": [[0.1]],
+            "extra_key": "extra_value",
+            "another_key": {"nested": "data"},
+        }
+
+        mock_assessment = RelevanceAssessment(
+            is_relevant=True, confidence=0.9, reasoning="Relevant"
+        )
+
+        with patch("legiscope.retrieve.is_relevant", return_value=mock_assessment):
+            mock_client = Mock(spec=Instructor)
+
+            result = filter_results(input_results, "query", mock_client)
+
+            # Extra keys should be preserved
+            assert result["extra_key"] == "extra_value"
+            assert result["another_key"] == {"nested": "data"}
+
+    def test_filter_results_no_metadatas(self):
+        """Test filtering when metadatas are missing."""
+        input_results = {
+            "ids": [["1", "2"]],
+            "documents": [["doc1", "doc2"]],
+            "distances": [[0.1, 0.2]],
+            # No metadatas key
+        }
+
+        mock_assessments = [
+            RelevanceAssessment(is_relevant=True, confidence=0.9, reasoning="Relevant"),
+            RelevanceAssessment(
+                is_relevant=False, confidence=0.8, reasoning="Not relevant"
+            ),
+        ]
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
+            mock_client = Mock(spec=Instructor)
+
+            result = filter_results(input_results, "query", mock_client)
+
+            # Should work without metadatas
+            assert len(result["ids"][0]) == 1
+            assert result["ids"][0] == ["1"]
+            assert result["metadatas"] == [
+                [None]
+            ]  # Should be [[None]] when no original metadatas

@@ -100,7 +100,6 @@ def create_embeddings_df(
     """
     logger.info(f"Creating embeddings DataFrame with model: {model}")
 
-    # Validate inputs
     if not isinstance(df, pl.DataFrame):
         logger.error(f"df must be a polars DataFrame, got {type(df)}")
         raise TypeError(f"df must be a polars DataFrame, got {type(df)}")
@@ -149,10 +148,8 @@ def create_embeddings_df(
         f"Concatenated {len(concatenated_texts)} texts for embedding generation"
     )
 
-    # Generate embeddings for all concatenated texts
     embeddings = get_embeddings(client, concatenated_texts, model)
 
-    # Add embeddings as new column
     result_df = df.with_columns(
         pl.Series(embedding_col, embeddings, dtype=pl.List(pl.Float64))
     )
@@ -310,7 +307,7 @@ def create_embedding_index(
             ids=batch_ids,
             documents=batch_documents,
             embeddings=batch_embeddings,
-            metadatas=batch_metadata,  # ChromaDB API uses 'metadatas' parameter
+            metadatas=batch_metadata,  # ChromaDB API uses 'metadatas' parameter (ugh)
         )
 
     logger.info(
@@ -334,7 +331,6 @@ def get_or_create_legal_collection(
     """
     logger.info(f"Getting or creating legal collection: {collection_name}")
 
-    # Initialize ChromaDB client
     client = chromadb.PersistentClient(path=str(persist_directory))
 
     # Create or get collection

@@ -1,16 +1,13 @@
 """
 Code to segment markdown text into sections based on headings.
 
-This module provides functions for parsing markdown text and extracting hierarchical
-section structures. The main functions are:
+The main functions are:
 
 - divide_into_sections(): Split markdown into sections based on headings
 - add_parent_relationships(): Add parent-child relationships between sections
 - segment_text(): Segment text into chunks with paragraph preservation
 - create_segments_df(): Create flattened DataFrame (one row per segment)
 - add_segments_to_sections(): Add segment information to sections (backward compatible)
-
-Both functions return polars DataFrames for efficient data manipulation.
 """
 
 import re
