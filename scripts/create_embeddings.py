@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
 """
-Command-line script to create embeddings for segmented legal code.
+Create embeddings for segmented legal code.
 
-This script processes jurisdiction directories containing segments.parquet files
-and generates embeddings.parquet files with vector embeddings for each segment.
-
-Example usage:
+Usage:
     python scripts/create_embeddings.py data/laws/IL-WindyCity
-    python scripts/create_embeddings.py data/laws/CA-LosAngeles --verbose --model nomic-embed-text
 """
 
-import argparse
 import sys
 from pathlib import Path
 
@@ -19,472 +14,101 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import polars as pl
 from legiscope.embeddings import (
-    create_embeddings_df,
     create_and_persist_embeddings,
-    get_or_create_legal_collection,
+    EmbeddingConfig,
+    PersistenceConfig,
+    JurisdictionConfig,
 )
 
 
-def parse_jurisdiction_directory(jurisdiction_path: str) -> tuple[str, str]:
-    """
-    Parse jurisdiction directory path to extract state and municipality.
-    
-    Args:
-        jurisdiction_path: Path like 'data/laws/IL-WindyCity'
-        
-    Returns:
-        Tuple of (state, municipality)
-        
-    Raises:
-        ValueError: If directory name doesn't follow expected pattern
-    """
-    dir_name = Path(jurisdiction_path).name
-    
-    if '-' not in dir_name:
-        raise ValueError(
-            f"Jurisdiction directory name must contain '-': {dir_name}. "
-            "Expected format: STATE-MUNICIPALITY (e.g., IL-WindyCity)"
-        )
-    
-    parts = dir_name.split('-', 1)
-    if len(parts) != 2:
-        raise ValueError(
-            f"Invalid jurisdiction directory format: {dir_name}. "
-            "Expected format: STATE-MUNICIPALITY (e.g., IL-WindyCity)"
-        )
-    
-    state, municipality = parts
-    if not state or not municipality:
-        raise ValueError(
-            f"Invalid jurisdiction directory format: {dir_name}. "
-            "Both state and municipality must be non-empty."
-        )
-    
-    return state.upper(), municipality
-
-
-def validate_jurisdiction_directory(jurisdiction_path: str) -> Path:
-    """
-    Validate that the jurisdiction directory exists and has the expected structure.
-    
-    Args:
-        jurisdiction_path: Path to jurisdiction directory
-        
-    Returns:
-        Path object for the validated directory
-        
-    Raises:
-        ValueError: If directory doesn't exist or has invalid structure
-    """
+def create_embeddings(jurisdiction_path: str) -> None:
+    """Create embeddings for a jurisdiction directory."""
     path = Path(jurisdiction_path)
     
     if not path.exists():
-        raise ValueError(f"Jurisdiction directory does not exist: {path}")
+        print(f"Error: Directory does not exist: {path}")
+        sys.exit(1)
     
-    if not path.is_dir():
-        raise ValueError(f"Path is not a directory: {path}")
+    # Parse state and municipality from directory name
+    dir_name = path.name
+    if "-" not in dir_name:
+        print(f"Error: Directory name must contain '-': {dir_name}")
+        sys.exit(1)
+    
+    state, municipality = dir_name.split("-", 1)
+    state = state.upper()
     
     # Check for required subdirectories
-    required_subdirs = ["processed", "tables"]
-    for subdir in required_subdirs:
-        subdir_path = path / subdir
-        if not subdir_path.exists():
-            raise ValueError(f"Missing required subdirectory: {subdir_path}")
+    for subdir in ["processed", "tables"]:
+        if not (path / subdir).exists():
+            print(f"Error: Missing required subdirectory: {path / subdir}")
+            sys.exit(1)
     
-    return path
-
-
-def validate_segments_file(tables_dir: Path, segments_filename: str) -> Path:
-    """
-    Validate that the segments parquet file exists.
-    
-    Args:
-        tables_dir: Path to tables directory
-        segments_filename: Name of segments parquet file
-        
-    Returns:
-        Path to the segments parquet file
-        
-    Raises:
-        ValueError: If segments file is not found
-    """
-    segments_path = tables_dir / segments_filename
-    
+    # Check for segments file
+    segments_path = path / "tables" / "segments.parquet"
     if not segments_path.exists():
-        raise ValueError(f"Segments file not found: {segments_path}")
+        print(f"Error: Segments file not found: {segments_path}")
+        sys.exit(1)
     
-    if not segments_path.is_file():
-        raise ValueError(f"Segments path is not a file: {segments_path}")
+    print(f"Creating embeddings for {state}-{municipality}...")
     
-    return segments_path
-
-
-def load_segments_dataframe(segments_path: Path, verbose: bool = False) -> pl.DataFrame:
-    """
-    Load segments DataFrame from parquet file.
-    
-    Args:
-        segments_path: Path to segments parquet file
-        verbose: Enable verbose output
-        
-    Returns:
-        DataFrame with segment information
-        
-    Raises:
-        ValueError: If loading fails or DataFrame is invalid
-    """
     try:
+        # Load segments
         segments_df = pl.read_parquet(segments_path)
+        print(f"Loaded {len(segments_df)} segments")
         
-        if verbose:
-            print(f"   Loaded segments: {len(segments_df)} rows")
+        # Create ollama client
+        try:
+            ollama_module = __import__("ollama")
+            client = ollama_module.Client()
+        except ImportError:
+            print("Error: ollama package required. Install with: pip install ollama")
+            sys.exit(1)
         
-        # Validate required columns
-        required_columns = {"section_heading", "segment_text"}
-        missing_columns = required_columns - set(segments_df.columns)
-        if missing_columns:
-            raise ValueError(
-                f"Segments DataFrame missing required columns: {missing_columns}. "
-                f"Available columns: {segments_df.columns}"
-            )
+        # Test model availability
+        model = "embeddinggemma"
+        try:
+            test_response = client.embeddings(model=model, prompt="test")
+            if not test_response or "embedding" not in test_response:
+                raise ValueError
+        except:
+            print(f"Error: Model '{model}' not available. Make sure ollama is running and model is pulled.")
+            sys.exit(1)
         
-        if len(segments_df) == 0:
-            raise ValueError("Segments DataFrame is empty")
-        
-        return segments_df
-        
-    except Exception as e:
-        raise ValueError(f"Failed to load segments DataFrame: {str(e)}") from e
-
-
-def create_embedding_client(model: str, verbose: bool = False):
-    """
-    Create and validate embedding client.
-    
-    Args:
-        model: Name of the embedding model
-        verbose: Enable verbose output
-        
-    Returns:
-        Embedding client instance
-        
-    Raises:
-        ValueError: If client creation or validation fails
-    """
-    try:
-        # Dynamic import to avoid linter issues when ollama is not installed
-        ollama_module = __import__("ollama")
-        client = ollama_module.Client()
-        
-        if verbose:
-            print("   Created ollama client")
-            print(f"   Using model: {model}")
-        
-        # Test the client with a simple embedding
-        test_response = client.embeddings(model=model, prompt="test")
-        if not test_response or "embedding" not in test_response:
-            raise ValueError(f"Model '{model}' is not available or not working properly")
-        
-        if verbose:
-            print("   Model validation successful")
-        
-        return client
-        
-    except ImportError as e:
-        raise ValueError(
-            "ollama package is required. Install with: pip install ollama"
-        ) from e
-    except Exception as e:
-        raise ValueError(f"Failed to create embedding client: {str(e)}") from e
-
-
-def create_embeddings_dataframe(
-    segments_df: pl.DataFrame, 
-    client, 
-    model: str, 
-    verbose: bool = False
-) -> pl.DataFrame:
-    """
-    Create embeddings DataFrame from segments DataFrame.
-    
-    Args:
-        segments_df: DataFrame with segment information
-        client: Embedding client instance
-        model: Name of the embedding model
-        verbose: Enable verbose output
-        
-    Returns:
-        DataFrame with embeddings added
-        
-    Raises:
-        ValueError: If embedding creation fails
-    """
-    try:
-        if verbose:
-            print(f"   Creating embeddings for {len(segments_df)} segments...")
-        
-        embeddings_df = create_embeddings_df(segments_df, client, model)
-        
-        if verbose:
-            print("   Embeddings created successfully")
-            
-            # Show embedding statistics
-            if len(embeddings_df) > 0:
-                embedding_col = embeddings_df.select(pl.col("embedding")).to_series()
-                first_embedding = embedding_col[0]
-                print(f"   Embedding dimension: {len(first_embedding)}")
-                print(f"   Total embeddings: {len(embeddings_df)}")
-        
-        return embeddings_df
-        
-    except Exception as e:
-        raise ValueError(f"Failed to create embeddings: {str(e)}") from e
-
-
-def save_embeddings_dataframe(
-    embeddings_df: pl.DataFrame, 
-    tables_dir: Path, 
-    embeddings_filename: str,
-    verbose: bool = False
-) -> None:
-    """
-    Save embeddings DataFrame to parquet file.
-    
-    Args:
-        embeddings_df: DataFrame with embeddings
-        tables_dir: Directory to save parquet file
-        embeddings_filename: Name of output embeddings file
-        verbose: Enable verbose output
-        
-    Raises:
-        ValueError: If saving fails
-    """
-    try:
-        embeddings_path = tables_dir / embeddings_filename
-        embeddings_df.write_parquet(embeddings_path)
-        
-        if verbose:
-            print(f"   Saved embeddings: {embeddings_path}")
-            print(f"   Embeddings count: {len(embeddings_df)}")
-        
-    except Exception as e:
-        raise ValueError(f"Failed to save embeddings DataFrame: {str(e)}") from e
-
-
-def create_embeddings(
-    jurisdiction_path: str,
-    model: str = "embeddinggemma",
-    segments_filename: str = "segments.parquet",
-    embeddings_filename: str = "embeddings.parquet",
-    use_shared_chroma: bool = True,
-    chroma_db_path: str = "data/chroma_db",
-    collection_name: str = "legal_code_all",
-    verbose: bool = False,
-) -> None:
-    """
-    Process a jurisdiction directory to create embeddings parquet file and/or ChromaDB index.
-    
-    Args:
-        jurisdiction_path: Path to jurisdiction directory
-        model: Name of embedding model
-        segments_filename: Name of segments parquet file
-        embeddings_filename: Name of embeddings parquet file to create
-        use_shared_chroma: Whether to use shared ChromaDB approach. Defaults to True
-        chroma_db_path: Path to shared ChromaDB. Defaults to 'data/chroma_db'
-        collection_name: Name of ChromaDB collection. Defaults to 'legal_code_all'
-        verbose: Enable verbose output
-        
-    Raises:
-        ValueError: If any step in workflow fails
-    """
-    if verbose:
-        print(f"Processing embeddings for jurisdiction: {jurisdiction_path}")
-    
-    # Parse and validate directory structure
-    try:
-        path = validate_jurisdiction_directory(jurisdiction_path)
-        state, municipality = parse_jurisdiction_directory(jurisdiction_path)
-        if verbose:
-            print(f"   State: {state}")
-            print(f"   Municipality: {municipality}")
-    except ValueError as e:
-        raise ValueError(f"Directory validation failed: {str(e)}") from e
-    
-    # Validate segments file
-    try:
-        tables_dir = path / "tables"
-        segments_path = validate_segments_file(tables_dir, segments_filename)
-        if verbose:
-            print(f"   Segments file: {segments_path}")
-    except ValueError as e:
-        raise ValueError(f"Segments file validation failed: {str(e)}") from e
-    
-    # Load segments DataFrame
-    try:
-        if verbose:
-            print("   Loading segments DataFrame...")
-        
-        segments_df = load_segments_dataframe(segments_path, verbose)
-    except ValueError as e:
-        raise ValueError(f"Segments loading failed: {str(e)}") from e
-    
-    # Create embedding client
-    try:
-        if verbose:
-            print("   Setting up embedding client...")
-        
-        client = create_embedding_client(model, verbose)
-    except ValueError as e:
-        raise ValueError(f"Embedding client setup failed: {str(e)}") from e
-    
-    # Create embeddings and persist
-    try:
-        if verbose:
-            print("   Creating embeddings and persisting...")
-        
-        if use_shared_chroma:
-            # Use unified workflow with shared ChromaDB
-            embeddings_df, collection = create_and_persist_embeddings(
-                df=segments_df,
-                client=client,
-                model=model,
+        # Create embeddings and persist to ChromaDB
+        embeddings_df, collection = create_and_persist_embeddings(
+            df=segments_df,
+            client=client,
+            embedding_config=EmbeddingConfig(model=model),
+            persistence_config=PersistenceConfig(
+                persist_directory="data/chroma_db",
+                collection_name="legal_code_all",
+                save_parquet=True,
+                parquet_path=path / "tables" / "embeddings.parquet",
+            ),
+            jurisdiction_config=JurisdictionConfig(
                 jurisdiction_id=f"{state}-{municipality}",
                 state=state,
                 municipality=municipality,
-                persist_directory=chroma_db_path,
-                collection_name=collection_name,
-                save_parquet=True,
-                parquet_path=tables_dir / embeddings_filename,
-
-            )
-            
-            print(f"Successfully created embeddings for {state}-{municipality}")
-            print(f"   Parquet: {tables_dir / embeddings_filename} ({len(embeddings_df)} embeddings)")
-            print(f"   ChromaDB: {collection_name} collection ({collection.count()} documents)")
-            print(f"   Database: {chroma_db_path}")
-            
-        else:
-            # Legacy approach: parquet only
-            embeddings_df = create_embeddings_dataframe(segments_df, client, model, verbose)
-            save_embeddings_dataframe(embeddings_df, tables_dir, embeddings_filename, verbose)
-            
-            print(f"Successfully created embeddings for {state}-{municipality}")
-            print(f"   Embeddings: {tables_dir / embeddings_filename} ({len(embeddings_df)} embeddings)")
-            
-    except ValueError as e:
-        raise ValueError(f"Embeddings creation failed: {str(e)}") from e
+            ),
+        )
+        
+        print(f"Successfully created embeddings for {state}-{municipality}")
+        print(f"  Parquet: {path / 'tables' / 'embeddings.parquet'} ({len(embeddings_df)} embeddings)")
+        print(f"  ChromaDB: legal_code_all collection ({collection.count()} documents)")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+        sys.exit(1)
 
 
 def main():
-    """Main entry point for the command-line script."""
-    parser = argparse.ArgumentParser(
-        description="Create embeddings for segmented legal code",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s data/laws/IL-WindyCity
-  %(prog)s data/laws/CA-LosAngeles --verbose
-  %(prog)s data/laws/NY-NewYork --model nomic-embed-text
-  %(prog)s data/laws/TX-Houston --segments-file custom_segments.parquet --embeddings-file custom_embeddings.parquet
-
-Expected directory structure:
-  data/laws/STATE-MUNICIPALITY/
-  ├── raw/           # Original files
-  ├── processed/     # Markdown files
-  └── tables/        # Parquet files
-
-The script reads segments.parquet from the 'tables/' subdirectory and
-creates embeddings.parquet in the same subdirectory.
-
- Prerequisites:
-   - ollama package installed: pip install ollama
-   - ollama service running with the specified model available
-
-Output files:
-  - embeddings.parquet: Segments with embedding vectors for vector search
-  - ChromaDB collection: Shared vector database for all jurisdictions (when using shared ChromaDB)
-
-Examples:
-  %(prog)s data/laws/IL-WindyCity
-  %(prog)s data/laws/CA-LosAngeles --verbose
-  %(prog)s data/laws/NY-NewYork --model nomic-embed-text
-  %(prog)s data/laws/TX-Houston --no-shared-chroma  # Legacy parquet-only mode
-  %(prog)s data/laws/FL-Miami --chroma-db-path ./custom_chroma
-        """
-    )
-    
-    parser.add_argument(
-        "jurisdiction_path",
-        help="Path to jurisdiction directory (e.g., data/laws/IL-WindyCity)"
-    )
-    
-    parser.add_argument(
-        "--model",
-        default="embeddinggemma",
-        help="Embedding model name (default: embeddinggemma)"
-    )
-    
-    parser.add_argument(
-        "--segments-file",
-        default="segments.parquet",
-        help="Name of segments parquet file in tables/ directory (default: segments.parquet)"
-    )
-    
-    parser.add_argument(
-        "--embeddings-file",
-        default="embeddings.parquet",
-        help="Name of embeddings parquet file to create (default: embeddings.parquet)"
-    )
-    
-    parser.add_argument(
-        "--no-shared-chroma",
-        action="store_true",
-        help="Use legacy parquet-only approach instead of shared ChromaDB"
-    )
-    
-    parser.add_argument(
-        "--chroma-db-path",
-        default="data/chroma_db",
-        help="Path to shared ChromaDB directory (default: data/chroma_db)"
-    )
-    
-    parser.add_argument(
-        "--collection-name",
-        default="legal_code_all",
-        help="Name of ChromaDB collection (default: legal_code_all)"
-    )
-    
-    parser.add_argument(
-        "-v", "--verbose",
-        action="store_true",
-        help="Enable verbose output with detailed progress information"
-    )
-    
-    args = parser.parse_args()
-    
-    try:
-        create_embeddings(
-            jurisdiction_path=args.jurisdiction_path,
-            model=args.model,
-            segments_filename=args.segments_file,
-            embeddings_filename=args.embeddings_file,
-            use_shared_chroma=not args.no_shared_chroma,
-            chroma_db_path=args.chroma_db_path,
-            collection_name=args.collection_name,
-            verbose=args.verbose,
-        )
-    except ValueError as e:
-        print(f"Error: {e}", file=sys.stderr)
+    if len(sys.argv) != 2:
+        print("Usage: python create_embeddings.py <jurisdiction_path>")
+        print("Example: python create_embeddings.py data/laws/IL-WindyCity")
         sys.exit(1)
-    except KeyboardInterrupt:
-        print("\nOperation cancelled by user", file=sys.stderr)
-        sys.exit(1)
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}", file=sys.stderr)
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
-        sys.exit(1)
+    
+    create_embeddings(sys.argv[1])
 
 
 if __name__ == "__main__":
