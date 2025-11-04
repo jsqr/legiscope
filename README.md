@@ -45,52 +45,6 @@ make format
 make fix
 ```
 
-## Features
-
-### Query Rewriting (HYDE)
-
-The project includes a HYDE (Hypothetical Document Embeddings) implementation that improves semantic search accuracy:
-
-- **LLM-powered Rewriting**: Uses LLMs through the `instructor` client for query transformation
-- **Structured Output**: Returns confidence scores, reasoning, and query classification
-
-#### Usage Examples
-
-```python
-import instructor
-from openai import OpenAI
-from legiscope.retrieve import retrieve_embeddings, retrieve_sections
-
-# Basic segment-level search without HYDE
-results = retrieve_embeddings(collection, "where can I park my car", rewrite=False)
-
-# Section-level search with full legal context
-results = retrieve_sections(
-    collection,
-    "parking regulations",
-    sections_parquet_path="data/laws/IL-WindyCity/tables/sections.parquet"
-)
-
-# Access section content and matching segments
-for section in results["sections"]:
-    print(f"Section: {section['heading_text']}")
-    print(f"Content: {section['body_text'][:100]}...")
-    print(f"Found {section['segment_count']} matching segments")
-    for segment in section["matching_segments"]:
-        print(f"  Segment: {segment['segment_text'][:50]}...")
-
-# LLM-powered HYDE rewriting with section retrieval
-client = instructor.from_openai(OpenAI())
-results = retrieve_sections(
-    collection,
-    "where can I park my car",
-    sections_parquet_path="data/laws/IL-WindyCity/tables/sections.parquet",
-    rewrite=True,
-    client=client,
-    model="gpt-4.1-mini"
-)
-```
-
 ## Scripts and Modules
 
 ### Scripts
