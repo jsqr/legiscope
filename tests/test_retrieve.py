@@ -16,6 +16,7 @@ from legiscope.retrieve import (
     HydeRewrite,
     RelevanceAssessment,
 )
+from legiscope.utils import DEFAULT_MODEL
 
 
 class TestHydeRewrite:
@@ -111,7 +112,7 @@ class TestHydeRewriter:
             assert call_args[1]["client"] == mock_client
             assert "where can I park my car" in call_args[1]["prompt"]
             assert call_args[1]["response_model"] == HydeRewrite
-            assert call_args[1]["model"] == "gpt-4.1-mini"
+            assert call_args[1]["model"] == DEFAULT_MODEL
 
     def test_hyde_rewriter_llm_custom_model(self):
         """Test LLM rewrite with custom model."""
@@ -812,7 +813,7 @@ class TestIsRelevant:
             assert call_args[1]["client"] == mock_client
             assert "parking regulations" in call_args[1]["prompt"]
             assert call_args[1]["response_model"] == RelevanceAssessment
-            assert call_args[1]["model"] == "gpt-4.1-mini"
+            assert call_args[1]["model"] == DEFAULT_MODEL
 
     def test_is_relevant_custom_model(self):
         """Test relevance assessment with custom model."""

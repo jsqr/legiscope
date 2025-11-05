@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import Mock
 from pydantic import BaseModel
 
-from legiscope.utils import ask
+from legiscope.utils import ask, DEFAULT_MODEL
 
 
 class MockResponseModel(BaseModel):
@@ -117,7 +117,7 @@ class TestAskFunction:
         mock_client.chat.completions.create.assert_called_once_with(
             messages=[{"role": "user", "content": "test prompt"}],
             response_model=MockResponseModel,
-            model="gpt-4.1-mini",
+            model=DEFAULT_MODEL,
             temperature=0.1,
             max_retries=3,
         )

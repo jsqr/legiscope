@@ -19,6 +19,15 @@ import instructor
 from openai import OpenAI
 from legiscope.query import query_legal_documents, format_query_response, run_queries
 
+# Import model constants
+try:
+    from legiscope.utils import DEFAULT_MODEL
+
+    DEFAULT_POWERFUL_MODEL = "gpt-4.1"
+except ImportError:
+    DEFAULT_MODEL = "gpt-4.1-mini"
+    DEFAULT_POWERFUL_MODEL = "gpt-4.1"
+
 
 def example_query_processing():
     """Demonstrate query processing with sample data."""
@@ -65,14 +74,20 @@ results_df = run_queries(
     jurisdiction_id="IL-WindyCity",
     sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
     collection=collection,
-    model="gpt-4.1"
+    model=DEFAULT_POWERFUL_MODEL
 )
 
 print(results_df.select(["query", "short_answer", "confidence"]))
         """)
         return
 
-    client = instructor.from_openai(OpenAI())
+    # Use configured client with RESPONSES_TOOLS mode if available
+    try:
+        from legiscope.config import Config
+
+        client = Config.get_openai_client()
+    except ImportError:
+        client = instructor.from_openai(OpenAI())
 
     print("=== Example 1: Single Query Processing ===")
 
@@ -112,7 +127,7 @@ print(results_df.select(["query", "short_answer", "confidence"]))
             client=client,
             query=query,
             retrieval_results=sample_results,
-            model="gpt-4.1",  # Use more powerful model as requested
+            model=DEFAULT_POWERFUL_MODEL,  # Use more powerful model as requested
             temperature=0.1,
             max_retries=3,
         )

@@ -12,6 +12,7 @@ from legiscope.query import (
     query_legal_documents,
     format_query_response,
     run_queries,
+    DEFAULT_POWERFUL_MODEL,
 )
 
 
@@ -162,7 +163,7 @@ class TestQueryLegalDocuments:
             client=client,
             query="Are there restrictions on drug paraphernalia sales?",
             retrieval_results=retrieval_results,
-            model="gpt-4.1",
+            model=DEFAULT_POWERFUL_MODEL,
             temperature=0.2,
             max_retries=5,
         )
@@ -175,7 +176,7 @@ class TestQueryLegalDocuments:
         # Verify mock was called correctly
         mock_ask.assert_called_once()
         call_args = mock_ask.call_args
-        assert call_args[1]["model"] == "gpt-4.1"
+        assert call_args[1]["model"] == DEFAULT_POWERFUL_MODEL
         assert call_args[1]["temperature"] == 0.2
         assert call_args[1]["max_retries"] == 5
 
@@ -432,7 +433,7 @@ class TestRunQueries:
             jurisdiction_id="IL-WindyCity",
             sections_parquet_path="test.parquet",
             collection=collection,
-            model="gpt-4.1",
+            model=DEFAULT_POWERFUL_MODEL,
             n_results=5,
         )
 
@@ -488,7 +489,7 @@ class TestRunQueries:
             sections_parquet_path="test.parquet",
             collection=collection,
             use_hyde=True,
-            model="gpt-4.1",
+            model=DEFAULT_POWERFUL_MODEL,
         )
 
         # Verify retrieve_sections was called with HYDE parameters
@@ -496,7 +497,7 @@ class TestRunQueries:
         call_args = mock_retrieve.call_args
         assert call_args[1]["rewrite"] is True
         assert call_args[1]["client"] == client
-        assert call_args[1]["model"] == "gpt-4.1"
+        assert call_args[1]["model"] == DEFAULT_POWERFUL_MODEL
 
     @patch("legiscope.query.retrieve_sections")
     @patch("legiscope.query.query_legal_documents")

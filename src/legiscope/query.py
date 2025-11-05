@@ -8,8 +8,11 @@ from instructor import Instructor
 from loguru import logger
 import polars as pl
 
-from legiscope.utils import ask
+from legiscope.utils import ask, DEFAULT_MODEL
 from legiscope.retrieve import retrieve_sections
+
+# Define powerful model constant
+DEFAULT_POWERFUL_MODEL = "gpt-4.1"
 
 
 class LegalQueryResponse(BaseModel):
@@ -41,7 +44,7 @@ def query_legal_documents(
     client: Instructor,
     query: str,
     retrieval_results: Dict[str, Any],
-    model: str = "gpt-4.1",
+    model: str = DEFAULT_MODEL,
     temperature: float = 0.1,
     max_retries: int = 3,
 ) -> LegalQueryResponse:
@@ -247,7 +250,7 @@ def run_queries(
     jurisdiction_id: str,
     sections_parquet_path: str,
     collection,
-    model: str = "gpt-4.1",
+    model: str = DEFAULT_MODEL,
     temperature: float = 0.1,
     max_retries: int = 3,
     n_results: int = 10,
@@ -313,7 +316,7 @@ def run_queries(
             jurisdiction_id="IL-WindyCity",
             sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
             collection=collection,
-            model="gpt-4.1"
+            model=DEFAULT_POWERFUL_MODEL
         )
 
         # View results
