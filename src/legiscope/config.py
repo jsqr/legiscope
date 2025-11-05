@@ -23,14 +23,7 @@ class Config:
 
     @classmethod
     def get_openai_client(cls) -> Instructor:
-        """
-        Create and return a configured OpenAI instructor client.
-
-        Uses RESPONSES_TOOLS mode for better performance with structured outputs.
-
-        Returns:
-            Instructor: Configured instructor client
-        """
+        """Create and return a configured OpenAI instructor client."""
         if not os.getenv("OPENAI_API_KEY"):
             logger.warning("OPENAI_API_KEY environment variable not set")
 
@@ -45,28 +38,12 @@ class Config:
 
     @classmethod
     def get_default_model(cls, powerful: bool = False) -> str:
-        """
-        Get the default model name.
-
-        Args:
-            powerful: If True, returns the more powerful model
-
-        Returns:
-            str: Model name
-        """
+        """Get the default model name, optionally the powerful version."""
         return cls.DEFAULT_POWERFUL_MODEL if powerful else cls.DEFAULT_MODEL
 
     @classmethod
     def get_llm_params(cls, **kwargs) -> dict:
-        """
-        Get default LLM parameters with optional overrides.
-
-        Args:
-            **kwargs: Parameter overrides
-
-        Returns:
-            dict: LLM parameters
-        """
+        """Get default LLM parameters with optional overrides."""
         params = {
             "model": cls.DEFAULT_MODEL,
             "temperature": cls.DEFAULT_TEMPERATURE,
@@ -80,5 +57,5 @@ class Config:
 try:
     import instructor
 except ImportError:
-    logger.error("instructor package not found. Install with: pip install instructor")
+    logger.error("instructor package not found. Install with: uv add instructor")
     raise
