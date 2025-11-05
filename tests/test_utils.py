@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from legiscope.utils import ask
 
 
-class TestResponseModel(BaseModel):
+class MockResponseModel(BaseModel):
     """Simple test model for testing purposes."""
 
     name: str
@@ -22,23 +22,23 @@ class TestAskFunction:
         mock_client = Mock()
 
         with pytest.raises(ValueError, match="Prompt cannot be empty"):
-            ask(client=mock_client, prompt="", response_model=TestResponseModel)
+            ask(client=mock_client, prompt="", response_model=MockResponseModel)
 
         with pytest.raises(ValueError, match="Prompt cannot be empty"):
-            ask(client=mock_client, prompt="   ", response_model=TestResponseModel)
+            ask(client=mock_client, prompt="   ", response_model=MockResponseModel)
 
     def test_successful_call(self):
         """Test successful LLM call with structured response."""
         # Setup mock client
         mock_client = Mock()
-        mock_response = TestResponseModel(name="test", value=42)
+        mock_response = MockResponseModel(name="test", value=42)
         mock_client.chat.completions.create.return_value = mock_response
 
         # Call function
         result = ask(
             client=mock_client,
             prompt="Extract name and value from this text",
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
             model="gpt-4",
             temperature=0.5,
         )
@@ -48,7 +48,7 @@ class TestAskFunction:
             messages=[
                 {"role": "user", "content": "Extract name and value from this text"}
             ],
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
             model="gpt-4",
             temperature=0.5,
             max_retries=3,  # Default parameter
@@ -61,14 +61,14 @@ class TestAskFunction:
         """Test successful LLM call with system prompt."""
         # Setup mock client
         mock_client = Mock()
-        mock_response = TestResponseModel(name="test", value=42)
+        mock_response = MockResponseModel(name="test", value=42)
         mock_client.chat.completions.create.return_value = mock_response
 
         # Call function with system prompt
         result = ask(
             client=mock_client,
             prompt="Extract name and value from this text",
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
             system="You are a helpful assistant.",
             model="gpt-4",
         )
@@ -79,7 +79,7 @@ class TestAskFunction:
                 {"role": "system", "content": "You are a helpful assistant."},
                 {"role": "user", "content": "Extract name and value from this text"},
             ],
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
             model="gpt-4",
             temperature=0.1,  # Default parameter
             max_retries=3,  # Default parameter
@@ -97,26 +97,26 @@ class TestAskFunction:
             ask(
                 client=mock_client,
                 prompt="test prompt",
-                response_model=TestResponseModel,
+                response_model=MockResponseModel,
             )
 
     def test_default_parameters(self):
         """Test that default parameters are applied correctly."""
         mock_client = Mock()
-        mock_response = TestResponseModel(name="test", value=42)
+        mock_response = MockResponseModel(name="test", value=42)
         mock_client.chat.completions.create.return_value = mock_response
 
         # Call function without specifying model/temperature
         ask(
             client=mock_client,
             prompt="test prompt",
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
         )
 
         # Verify defaults were applied
         mock_client.chat.completions.create.assert_called_once_with(
             messages=[{"role": "user", "content": "test prompt"}],
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
             model="gpt-4.1-mini",
             temperature=0.1,
             max_retries=3,

@@ -16,7 +16,7 @@ from legiscope.convert import (
 )
 
 
-class TestResponseModel(BaseModel):
+class MockResponseModel(BaseModel):
     """Simple test model for testing purposes."""
 
     name: str
@@ -39,14 +39,14 @@ class TestConvertModule:
         """Test that ask function works as expected when imported from convert."""
         # Setup mock client
         mock_client = Mock()
-        mock_response = TestResponseModel(name="test", value=42)
+        mock_response = MockResponseModel(name="test", value=42)
         mock_client.chat.completions.create.return_value = mock_response
 
         # Call function imported from convert module
         result = ask(
             client=mock_client,
             prompt="Extract name and value from this text",
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
             model="gpt-4",
             temperature=0.5,
         )
@@ -56,7 +56,7 @@ class TestConvertModule:
             messages=[
                 {"role": "user", "content": "Extract name and value from this text"}
             ],
-            response_model=TestResponseModel,
+            response_model=MockResponseModel,
             model="gpt-4",
             temperature=0.5,
             max_retries=3,  # Default parameter
