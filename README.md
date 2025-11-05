@@ -75,7 +75,7 @@ The pipeline performs these steps automatically:
 - `scripts/convert_to_markdown.py` - Convert legal text to structured Markdown
 - `scripts/segment_legal_code.py` - Segment Markdown into sections and segments
 - `scripts/create_embeddings.py` - Generate embeddings and populate ChromaDB
-- `scripts/example_query.py` - Example script demonstrating query functionality
+- `scripts/run_queries.py` - Run batch queries against legal code database
 
 ### Notebooks
 - `demo_query.py` - Interactive Marimo notebook demonstrating section-level retrieval with drug paraphernalia query
