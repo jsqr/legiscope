@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 import yaml
 from instructor import Instructor
-from legiscope.utils import ask
+from legiscope.utils import ask, DEFAULT_MODEL
 
 
 class BooleanResult(BaseModel):
@@ -41,7 +41,7 @@ def scan_legal_text(
     client: Instructor,
     file_path: str,
     max_lines: int = 150,
-    model: str = "gpt-4.1-mini",
+    model: str = DEFAULT_MODEL,
 ) -> HeadingStructure:
     """
     Analyze legal text to identify heading structure and patterns.
@@ -54,7 +54,7 @@ def scan_legal_text(
         client: Instructor client instance for LLM calls
         file_path: Path to the .txt file containing municipal ordinance or statute
         max_lines: Maximum number of lines to analyze (default: 150)
-        model: OpenAI model to use for analysis (default: "gpt-4.1-mini")
+        model: OpenAI model to use for analysis (default: DEFAULT_MODEL)
 
     Returns:
         HeadingStructure: Analysis of heading levels, patterns, and formatting

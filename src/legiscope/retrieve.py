@@ -6,7 +6,7 @@ from instructor import Instructor
 from loguru import logger
 import polars as pl
 
-from legiscope.utils import ask
+from legiscope.utils import ask, DEFAULT_MODEL
 from legiscope.embeddings import get_embeddings
 import ollama
 
@@ -43,7 +43,7 @@ class RelevanceAssessment(BaseModel):
 
 
 def hyde_rewriter(
-    query: str, client: Instructor, model: str = "gpt-4.1-mini"
+    query: str, client: Instructor, model: str = DEFAULT_MODEL
 ) -> HydeRewrite:
     """Rewrite a natural language query into municipal code style text using HYDE approach.
 
@@ -132,7 +132,7 @@ Provide a rewritten query that would be effective for semantic search against mu
 
 
 def is_relevant(
-    query: str, text: str, client: Instructor, model: str = "gpt-4.1-mini"
+    query: str, text: str, client: Instructor, model: str = DEFAULT_MODEL
 ) -> RelevanceAssessment:
     """Assess whether text is directly relevant to answering a query using LLM analysis.
 
@@ -143,7 +143,7 @@ def is_relevant(
         query: The query being answered
         text: The text to assess for relevance
         client: Instructor client for LLM-powered analysis
-        model: LLM model to use. Defaults to "gpt-4.1-mini"
+        model: LLM model to use. Defaults to DEFAULT_MODEL
 
     Returns:
         RelevanceAssessment: Structured assessment with relevance determination
@@ -236,7 +236,7 @@ def filter_results(
     query: str,
     client: Instructor,
     threshold: float = 0.5,
-    model: str = "gpt-4.1-mini",
+    model: str = DEFAULT_MODEL,
 ) -> Dict[str, Any]:
     """Filter retrieval results by relevance using LLM-powered assessment.
 
@@ -248,7 +248,7 @@ def filter_results(
         query: Original query used for retrieval
         client: Instructor client for LLM-powered relevance assessment
         threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
-        model: LLM model to use for relevance assessment. Defaults to "gpt-4.1-mini"
+        model: LLM model to use for relevance assessment. Defaults to DEFAULT_MODEL
 
     Returns:
         dict: Filtered results with same structure as input but only relevant documents:
@@ -381,7 +381,7 @@ def retrieve_embeddings(
     where_document: dict | None = None,
     rewrite: bool = False,
     client: Instructor | None = None,
-    model: str = "gpt-4.1-mini",
+    model: str = DEFAULT_MODEL,
     embedding_client: ollama.Client | None = None,
     embedding_model: str = "embeddinggemma",
 ) -> dict:
@@ -418,7 +418,7 @@ def retrieve_embeddings(
             "where can I park my car",
             rewrite=True,
             client=client,
-            model="gpt-4.1-mini"
+            model=DEFAULT_MODEL
         )
 
         # Retrieve from all Illinois municipalities
@@ -642,7 +642,7 @@ def retrieve_sections(
     where_document: dict | None = None,
     rewrite: bool = False,
     client: Instructor | None = None,
-    model: str = "gpt-4.1-mini",
+    model: str = DEFAULT_MODEL,
 ) -> dict:
     """Retrieve sections by searching embeddings at segment level but returning full section context.
 

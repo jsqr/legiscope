@@ -26,14 +26,18 @@ with app.setup:
         retrieve_sections,
         get_jurisdiction_stats,
     )
-    from legiscope.utils import ask
-    from legiscope.query import query_legal_documents, format_query_response
-    import traceback
+from legiscope.utils import ask, DEFAULT_MODEL
+from legiscope.query import query_legal_documents, format_query_response
+import traceback
+
+# Define powerful model constant
+DEFAULT_POWERFUL_MODEL = "gpt-4.1"
 
 
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -99,7 +103,9 @@ def _():
 
         embedding_client = ollama.Client()
 
-        test_response = embedding_client.embeddings(model=embedding_model, prompt="test")
+        test_response = embedding_client.embeddings(
+            model=embedding_model, prompt="test"
+        )
         if test_response and "embedding" in test_response:
             embedding_dim = len(test_response["embedding"])
             print(f"=== Embedding Client Setup ===")
@@ -212,10 +218,12 @@ def _(
                 jurisdiction_id=jurisdiction_id,
                 rewrite=use_hyde,
                 client=instructor_client if use_hyde else None,
-                model="gpt-4.1-mini",
+                model=DEFAULT_MODEL,
             )
 
-            print(f"Raw results structure: {list(results.keys()) if results else 'None'}")
+            print(
+                f"Raw results structure: {list(results.keys()) if results else 'None'}"
+            )
 
             if results and results.get("sections"):
                 sections = results["sections"]
@@ -333,7 +341,9 @@ def _(instructor_client, query_processing_available, results):
     query_response = None
 
     print("=== Query Processing ===")
-    print(f"Query processing available: {'Yes' if query_processing_available else 'No'}")
+    print(
+        f"Query processing available: {'Yes' if query_processing_available else 'No'}"
+    )
     print(
         f"Instructor client available: {'Yes' if instructor_client is not None else 'No'}"
     )
@@ -355,7 +365,7 @@ def _(instructor_client, query_processing_available, results):
                 client=instructor_client,
                 query=user_query,
                 retrieval_results=results,
-                model="gpt-4.1",  # Use more powerful model as requested
+                model=DEFAULT_POWERFUL_MODEL,  # Use more powerful model as requested
                 temperature=0.1,
                 max_retries=3,
             )

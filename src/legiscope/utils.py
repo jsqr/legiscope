@@ -11,6 +11,25 @@ from loguru import logger
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)
 
+# Global configuration constants
+DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_TEMPERATURE = 0.1
+DEFAULT_MAX_RETRIES = 3
+
+
+def get_default_client() -> Instructor:
+    """
+    Create a default OpenAI instructor client with RESPONSES_TOOLS mode.
+
+    Returns:
+        Instructor: Configured instructor client using RESPONSES_TOOLS mode
+    """
+    import instructor
+    from openai import OpenAI
+
+    openai_client = OpenAI()
+    return instructor.from_openai(openai_client, mode=instructor.Mode.RESPONSES_TOOLS)
+
 
 def ask(
     client: Instructor,
@@ -28,7 +47,7 @@ def ask(
         response_model: Pydantic model class for structured output
         system: Optional system prompt to set as system role
         **kwargs: Additional arguments passed to LLM call
-            - model: str - Model name (e.g., "gpt-4.1-mini")
+            - model: str - Model name (e.g., DEFAULT_MODEL)
             - temperature: float - Sampling temperature (0.0-1.0)
             - max_retries: int - Maximum retry attempts
 
@@ -55,15 +74,20 @@ def ask(
         ...     prompt="Extract legal fruits from this text...",
         ...     response_model=LegalFruits,
         ...     system="You are an expert on law and types of fruit.",
-        ...     model="gpt-4.1-mini",
+        ...     model=DEFAULT_MODEL,
         ...     temperature=0.1
         ... )
     """
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty")
 
-    # Set sensible defaults
-    params = {"model": "gpt-4.1-mini", "temperature": 0.1, "max_retries": 3, **kwargs}
+    # Set sensible defaults using global configuration
+    params = {
+        "model": DEFAULT_MODEL,
+        "temperature": DEFAULT_TEMPERATURE,
+        "max_retries": DEFAULT_MAX_RETRIES,
+        **kwargs,
+    }
 
     # Build messages
     messages = []
