@@ -26,12 +26,10 @@ with app.setup:
         retrieve_sections,
         get_jurisdiction_stats,
     )
-from legiscope.utils import ask, DEFAULT_MODEL
-from legiscope.query import query_legal_documents, format_query_response
-import traceback
-
-# Define powerful model constant
-DEFAULT_POWERFUL_MODEL = "gpt-4.1"
+    from legiscope.utils import ask
+    from legiscope.config import Config
+    from legiscope.query import query_legal_documents, format_query_response
+    import traceback
 
 
 @app.cell
@@ -52,7 +50,7 @@ def _(mo):
 @app.cell
 def _():
     collection_name = "legal_code_all"
-    chroma_path = "./data/chroma_db"
+    chroma_path = "../data/chroma_db"
 
     try:
         chroma_client = chromadb.PersistentClient(path=chroma_path)
@@ -150,7 +148,7 @@ def _():
     # municipality = "WindyCity"  # Specific municipality
 
     # Sections parquet path for full section context
-    sections_parquet_path = "./data/laws/IL-WindyCity/tables/sections.parquet"
+    sections_parquet_path = "../data/laws/IL-WindyCity/tables/sections.parquet"
 
     print("=== Query Configuration ===")
     print(f"Query: {query}")
@@ -218,7 +216,7 @@ def _(
                 jurisdiction_id=jurisdiction_id,
                 rewrite=use_hyde,
                 client=instructor_client if use_hyde else None,
-                model=DEFAULT_MODEL,
+                model=Config.DEFAULT_MODEL,
             )
 
             print(
@@ -337,7 +335,12 @@ def _():
 
 
 @app.cell
-def _(instructor_client, query_processing_available, results):
+def _(
+    DEFAULT_POWERFUL_MODEL,
+    instructor_client,
+    query_processing_available,
+    results,
+):
     query_response = None
 
     print("=== Query Processing ===")
@@ -365,7 +368,7 @@ def _(instructor_client, query_processing_available, results):
                 client=instructor_client,
                 query=user_query,
                 retrieval_results=results,
-                model=DEFAULT_POWERFUL_MODEL,  # Use more powerful model as requested
+                model=Config.DEFAULT_POWERFUL_MODEL,  # Use more powerful model as requested
                 temperature=0.1,
                 max_retries=3,
             )
