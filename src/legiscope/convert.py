@@ -65,7 +65,8 @@ def scan_legal_text(
         instructor.exceptions.InstructorError: If LLM call fails
 
     Example:
-        >>> client = instructor.from_openai(OpenAI())
+        >>> from legiscope.config import Config
+        >>> client = Config.get_openai_client()
         >>> structure = scan_legal_text(client, "data/laws/IL-WindyCity/processed/code.txt")
         >>> print(f"Found {structure.total_levels} heading levels")
         >>> for level in structure.levels:
@@ -234,7 +235,8 @@ def text2md(
         IOError: If output file cannot be written
 
     Example:
-        >>> client = instructor.from_openai(OpenAI())
+        >>> from legiscope.config import Config
+        >>> client = Config.get_openai_client()
         >>> structure = scan_legal_text(client, "municipal_code.txt")
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")

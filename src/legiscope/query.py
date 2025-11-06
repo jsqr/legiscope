@@ -70,13 +70,12 @@ def query_legal_documents(
         instructor.exceptions.InstructorError: If LLM call fails
 
     Example:
-        import instructor
-        from openai import OpenAI
+        from legiscope.config import Config
         from legiscope.retrieve import retrieve_sections
         from legiscope.query import query_legal_documents
 
         # Setup client
-        client = instructor.from_openai(OpenAI())
+        client = Config.get_openai_client()
 
         # Retrieve relevant sections
         results = retrieve_sections(
@@ -293,13 +292,12 @@ def run_queries(
         instructor.exceptions.InstructorError: If LLM calls fail
 
     Example:
-        import instructor
-        from openai import OpenAI
+        from legiscope.config import Config
         from legiscope.query import run_queries
         import chromadb
 
         # Setup
-        client = instructor.from_openai(OpenAI())
+        client = Config.get_openai_client()
         chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
         collection = chroma_client.get_collection("legal_code_all")
 

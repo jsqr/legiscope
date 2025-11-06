@@ -42,7 +42,7 @@ def ask(
     Send a prompt to a language model using Instructor library.
 
     Args:
-        client: Instructor client instance (e.g., instructor.from_openai(OpenAI()))
+        client: Instructor client instance (e.g., from legiscope.config import Config; Config.get_openai_client())
         prompt: The prompt to send to LLM
         response_model: Pydantic model class for structured output
         system: Optional system prompt to set as system role
@@ -59,8 +59,7 @@ def ask(
         Exception: If LLM call fails
 
     Example:
-        >>> import instructor
-        >>> from openai import OpenAI
+        >>> from legiscope.config import Config
         >>> from pydantic import BaseModel
         >>>
         >>> class LegalFruits(BaseModel):
@@ -68,7 +67,7 @@ def ask(
         ...     fruits: list[str]
         ...     confidence: float
         >>>
-        >>> client = instructor.from_openai(OpenAI())
+        >>> client = Config.get_openai_client()
         >>> result = ask(
         ...     client=client,
         ...     prompt="Extract legal fruits from this text...",

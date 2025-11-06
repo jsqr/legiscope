@@ -62,9 +62,8 @@ def hyde_rewriter(
         ValueError: If query is empty or client is invalid
 
     Example:
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.config import Config
+        client = Config.get_openai_client()
         result = hyde_rewriter("where can I park my car", client)
         print(result.rewritten_query)
         print(result.confidence)
@@ -152,9 +151,8 @@ def is_relevant(
         ValueError: If query or text is empty, or client is invalid
 
     Example:
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.config import Config
+        client = Config.get_openai_client()
         result = is_relevant(
             "parking regulations",
             "No vehicle shall be parked on any street between 2 AM and 6 AM",
@@ -410,9 +408,8 @@ def retrieve_embeddings(
         results = retrieve_embeddings(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
 
         # Retrieve with LLM-powered HYDE rewriting
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.config import Config
+        client = Config.get_openai_client()
         results = retrieve_embeddings(
             collection,
             "where can I park my car",
@@ -707,9 +704,8 @@ def retrieve_sections(
         )
 
         # Section retrieval with HYDE rewriting
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.config import Config
+        client = Config.get_openai_client()
         results = retrieve_sections(
             collection,
             "where can I park my car",
