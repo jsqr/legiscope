@@ -4,10 +4,19 @@ Run multiple queries against legal code database.
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import chromadb
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, continue without it
 
 from legiscope.llm_config import Config
 from legiscope.query import run_queries
@@ -38,7 +47,9 @@ def main():
         "--sections-parquet", required=True, help="Path to sections.parquet"
     )
     parser.add_argument(
-        "--collection-name", default="legal_code_all", help="ChromaDB collection name"
+        "--collection-name",
+        default=os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_all"),
+        help="ChromaDB collection name",
     )
     parser.add_argument(
         "--output", default="query_results.parquet", help="Output file path"

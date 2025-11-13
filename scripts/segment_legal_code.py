@@ -6,8 +6,17 @@ Usage:
     python scripts/segment_legal_code.py data/laws/IL-WindyCity
 """
 
+import os
 import sys
 from pathlib import Path
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, continue without it
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))

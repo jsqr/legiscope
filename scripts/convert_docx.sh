@@ -10,11 +10,11 @@ municipality_name=$1
 
 echo "Converting docx files to plain text for $municipality_name"
 
-# Set the input directory to be data/municipality_name
-input_dir="data/$municipality_name" 
+# Set the input directory to be data/laws/municipality_name
+input_dir="data/laws/$municipality_name/raw" 
 
-# Set the output to go into data/municipality_name/output.txt
-output_file="data/$municipality_name/code.txt"
+# Set the output to go into data/laws/municipality_name/processed/code.txt
+output_file="data/laws/$municipality_name/processed/code.txt"
 
 # Use a temporary directory to store the intermediate text files
 temp_dir="data/temp"

@@ -3,7 +3,6 @@ Tests for the llm_config module environment variable functionality.
 """
 
 import os
-import pytest
 from legiscope.llm_config import Config
 
 

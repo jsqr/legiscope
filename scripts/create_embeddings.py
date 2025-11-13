@@ -6,10 +6,19 @@ Usage:
     python scripts/create_embeddings.py data/laws/IL-WindyCity
 """
 
+import os
 import sys
 from pathlib import Path
 
 import polars as pl
+
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, continue without it
 
 from legiscope.embeddings import (
     EmbeddingConfig,
@@ -23,8 +32,10 @@ from legiscope.embeddings import (
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-# Embedding provider configuration
-EMBEDDING_PROVIDER = "mistral"  # Options: "ollama", "mistral"
+# Embedding provider configuration from environment
+EMBEDDING_PROVIDER = os.getenv(
+    "LEGISCOPE_EMBEDDING_PROVIDER", "mistral"
+)  # Options: "ollama", "mistral"
 
 
 def create_embeddings(jurisdiction_path: str) -> None:
@@ -90,7 +101,9 @@ def create_embeddings(jurisdiction_path: str) -> None:
             embedding_config=EmbeddingConfig(model=model, provider=provider),
             persistence_config=PersistenceConfig(
                 persist_directory="data/chroma_db",
-                collection_name="legal_code_all",
+                collection_name=os.getenv(
+                    "LEGISCOPE_COLLECTION_NAME", "legal_code_all"
+                ),
                 save_parquet=True,
                 parquet_path=path / "tables" / "embeddings.parquet",
                 provider=provider,
