@@ -15,6 +15,7 @@ with app.setup:
     from openai import OpenAI
     import sys
     import os
+    import traceback
 
     # Add src to path to import legiscope modules
     src_path = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -27,29 +28,31 @@ with app.setup:
         get_jurisdiction_stats,
     )
     from legiscope.utils import ask
-    from legiscope.config import Config
+    from legiscope.model_config import Config
     from legiscope.query import query_legal_documents, format_query_response
-    import traceback
 
 
 @app.cell
 def _():
     import marimo as mo
-
     return (mo,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## ChromaDB setup
+
+    We use a different collection name for different embedding models. In particular,
+    - `legal_code_ollama` holds vectors created with Google's `embeddinggemma` model, running locally on ollama
+    - `legal_code_mistral` holds vectors created with Mistral AI's `mistral-embed` model, running on Mistral AI's cloud platform.
     """)
     return
 
 
 @app.cell
 def _():
-    collection_name = "legal_code_all"
+    collection_name = "legal_code_mistral"
     chroma_path = "../data/chroma_db"
 
     try:
@@ -93,21 +96,25 @@ def _(mo):
 
 @app.cell
 def _():
+    from legiscope.embeddings import get_embedding_client, get_embeddings
+
     embedding_client = None
-    embedding_model = "embeddinggemma"
+    embedding_model = "mistral-embed"
+    embedding_provider = "mistral"
 
     try:
-        import ollama
+        embedding_client = get_embedding_client(embedding_provider)
 
-        embedding_client = ollama.Client()
-
-        test_response = embedding_client.embeddings(
-            model=embedding_model, prompt="test"
+        test_response = get_embeddings(
+            embedding_client,
+            ["test"],
+            model=embedding_model,
+            provider=embedding_provider,
         )
-        if test_response and "embedding" in test_response:
-            embedding_dim = len(test_response["embedding"])
+        if test_response and len(test_response) > 0:
+            embedding_dim = len(test_response[0])
             print(f"=== Embedding Client Setup ===")
-            print(f"Client: ollama")
+            print(f"Client: {embedding_provider}")
             print(f"Model: {embedding_model}")
             print(f"Dimension: {embedding_dim}")
             print("Client setup successful")
@@ -115,13 +122,10 @@ def _():
             print("ERROR: Embedding client test failed")
             embedding_client = None
 
-    except ImportError:
-        print("ERROR: ollama package not available")
-        print("Install with: uv pip install ollama")
     except Exception as e:
         print(f"ERROR: Embedding client setup failed: {str(e)}")
         embedding_client = None
-    return
+    return embedding_client, embedding_model
 
 
 @app.cell
@@ -148,7 +152,15 @@ def _():
     # municipality = "WindyCity"  # Specific municipality
 
     # Sections parquet path for full section context
-    sections_parquet_path = "../data/laws/IL-WindyCity/tables/sections.parquet"
+    sections_parquet_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "data",
+        "laws",
+        "IL-WindyCity",
+        "tables",
+        "sections.parquet",
+    )
 
     print("=== Query Configuration ===")
     print(f"Query: {query}")
@@ -160,29 +172,25 @@ def _():
 
 @app.cell
 def _():
-    openai_api_key = os.getenv("OPENAI_API_KEY")
     instructor_client = None
 
-    print("=== OpenAI Client Setup ===")
-    print(f"OpenAI API Key found: {'Yes' if openai_api_key else 'No'}")
+    print("=== LLM Client Setup ===")
+    print("Using instructor with Mistral provider")
 
-    if openai_api_key:
-        try:
-            openai_client = OpenAI(api_key=openai_api_key)
-            instructor_client = instructor.from_openai(openai_client)
-            print("Instructor client created successfully")
-        except Exception as e:
-            print(f"ERROR: Failed to create instructor client: {str(e)}")
-            instructor_client = None
-    else:
-        print("ERROR: OpenAI API key not found in environment")
-        print("Set OPENAI_API_KEY environment variable to use query processing")
+    try:
+        instructor_client = Config.get_default_client()
+        print("Instructor client created successfully")
+    except Exception as e:
+        print(f"ERROR: Failed to create instructor client: {str(e)}")
+        instructor_client = None
     return (instructor_client,)
 
 
 @app.cell
 def _(
     collection,
+    embedding_client,
+    embedding_model,
     instructor_client,
     jurisdiction_id,
     n_results,
@@ -208,6 +216,7 @@ def _(
         try:
             print("Executing retrieval...")
 
+            # Use the existing embedding client from setup
             results = retrieve_sections(
                 collection=collection,
                 query_text=query,
@@ -216,7 +225,8 @@ def _(
                 jurisdiction_id=jurisdiction_id,
                 rewrite=use_hyde,
                 client=instructor_client if use_hyde else None,
-                model=Config.DEFAULT_MODEL,
+                embedding_client=embedding_client,
+                embedding_model=embedding_model,
             )
 
             print(
@@ -335,12 +345,7 @@ def _():
 
 
 @app.cell
-def _(
-    DEFAULT_POWERFUL_MODEL,
-    instructor_client,
-    query_processing_available,
-    results,
-):
+def _(instructor_client, query_processing_available, results):
     query_response = None
 
     print("=== Query Processing ===")
@@ -368,9 +373,9 @@ def _(
                 client=instructor_client,
                 query=user_query,
                 retrieval_results=results,
-                model=Config.DEFAULT_POWERFUL_MODEL,  # Use more powerful model as requested
                 temperature=0.1,
                 max_retries=3,
+                model="mistral-large-latest",
             )
 
             print("Query processing completed successfully")
@@ -395,7 +400,7 @@ def _(
             print("  - No retrieval results available")
         elif not results.get("sections"):
             print("  - No sections in retrieval results")
-    return (query_response,)
+    return
 
 
 @app.cell
@@ -403,19 +408,6 @@ def _(mo):
     mo.md(r"""
     ## Query Response
     """)
-    return
-
-
-@app.cell
-def _(query_response):
-    print("=== Query Response ===")
-
-    if query_response is None:
-        print("No query response to display")
-    else:
-        # Format and display the response
-        formatted_response = format_query_response(query_response)
-        print(formatted_response)
     return
 
 

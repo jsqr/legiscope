@@ -8,7 +8,7 @@ from instructor import Instructor
 from loguru import logger
 import polars as pl
 
-from legiscope.utils import ask, DEFAULT_MODEL
+from legiscope.utils import ask
 from legiscope.retrieve import retrieve_sections
 
 # Define powerful model constant
@@ -44,7 +44,7 @@ def query_legal_documents(
     client: Instructor,
     query: str,
     retrieval_results: Dict[str, Any],
-    model: str = DEFAULT_MODEL,
+    model: str = "gpt-4.1-mini",
     temperature: float = 0.1,
     max_retries: int = 3,
 ) -> LegalQueryResponse:
@@ -70,12 +70,12 @@ def query_legal_documents(
         instructor.exceptions.InstructorError: If LLM call fails
 
     Example:
-        from legiscope.config import Config
+        from legiscope.model_config import Config
         from legiscope.retrieve import retrieve_sections
         from legiscope.query import query_legal_documents
 
         # Setup client
-        client = Config.get_openai_client()
+        client = Config.get_default_client()
 
         # Retrieve relevant sections
         results = retrieve_sections(
@@ -249,7 +249,7 @@ def run_queries(
     jurisdiction_id: str,
     sections_parquet_path: str,
     collection,
-    model: str = DEFAULT_MODEL,
+    model: str = "gpt-4.1-mini",
     temperature: float = 0.1,
     max_retries: int = 3,
     n_results: int = 10,
@@ -292,12 +292,12 @@ def run_queries(
         instructor.exceptions.InstructorError: If LLM calls fail
 
     Example:
-        from legiscope.config import Config
+        from legiscope.model_config import Config
         from legiscope.query import run_queries
         import chromadb
 
         # Setup
-        client = Config.get_openai_client()
+        client = Config.get_default_client()
         chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
         collection = chroma_client.get_collection("legal_code_all")
 

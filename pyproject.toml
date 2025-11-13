@@ -18,6 +18,7 @@ classifiers = [
 requires-python = ">=3.12"
 dependencies = [
     "openai",
+    "mistralai",
     "marimo",
     "instructor",
     "tiktoken",

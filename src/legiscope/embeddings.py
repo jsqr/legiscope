@@ -1,17 +1,115 @@
 from pathlib import Path
 from dataclasses import dataclass
+import os
 
 import chromadb
-import ollama
 import polars as pl
 from loguru import logger
+
+# Embedding model constants
+OLLAMA_MODEL = "embeddinggemma"
+MISTRAL_MODEL = "mistral-embed"
+DEFAULT_PROVIDER = "ollama"  # Can be "ollama" or "mistral"
+
+
+def get_ollama_client():
+    """Get Ollama client for local embedding generation.
+
+    Returns:
+        ollama.Client: Configured Ollama client
+
+    Raises:
+        ImportError: If ollama package is not installed
+    """
+    try:
+        import ollama
+
+        return ollama.Client()
+    except ImportError:
+        logger.error("ollama package not found. Install with: uv add ollama")
+        raise ImportError(
+            "ollama package is required for Ollama embeddings. Install with: uv add ollama"
+        )
+
+
+def get_mistral_client():
+    """Get Mistral client for cloud embedding generation.
+
+    Returns:
+        mistralai.Mistral: Configured Mistral client
+
+    Raises:
+        ValueError: If MISTRAL_API_KEY environment variable is not set
+        ImportError: If mistralai package is not installed
+    """
+    try:
+        from mistralai import Mistral
+    except ImportError:
+        logger.error("mistralai package not found. Install with: uv add mistralai")
+        raise ImportError(
+            "mistralai package is required for Mistral embeddings. Install with: uv add mistralai"
+        )
+
+    api_key = os.getenv("MISTRAL_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "MISTRAL_API_KEY environment variable is required for Mistral embeddings"
+        )
+
+    return Mistral(api_key=api_key)
+
+
+def get_default_model(provider: str) -> str:
+    """Get the default model name for a given provider.
+
+    Args:
+        provider: The embedding provider ("ollama" or "mistral")
+
+    Returns:
+        str: The default model name for the provider
+
+    Raises:
+        ValueError: If provider is not supported
+    """
+    if provider == "ollama":
+        return OLLAMA_MODEL
+    elif provider == "mistral":
+        return MISTRAL_MODEL
+    else:
+        raise ValueError(
+            f"Unsupported provider: {provider}. Supported providers: ollama, mistral"
+        )
+
+
+def get_embedding_client(provider: str = DEFAULT_PROVIDER):
+    """Get embedding client for the specified provider.
+
+    Args:
+        provider: The embedding provider ("ollama" or "mistral"). Defaults to DEFAULT_PROVIDER
+
+    Returns:
+        Embedding client instance (either ollama.Client or mistralai.Mistral)
+
+    Raises:
+        ValueError: If provider is not supported
+        ImportError: If required package is not installed
+    """
+    if provider == "ollama":
+        return get_ollama_client()
+    elif provider == "mistral":
+        return get_mistral_client()
+    else:
+        raise ValueError(
+            f"Unsupported provider: {provider}. Supported providers: ollama, mistral"
+        )
 
 
 @dataclass
 class EmbeddingConfig:
     """Configuration for embedding operations."""
 
-    model: str = "embeddinggemma"
+    model: str | None = None  # Default model name (None means use provider default)
+    provider: str = DEFAULT_PROVIDER  # Embedding provider ("ollama" or "mistral")
     heading_col: str = "section_heading"
     text_col: str = "segment_text"
     embedding_col: str = "embedding"
@@ -27,6 +125,7 @@ class PersistenceConfig:
     save_parquet: bool = True
     parquet_path: str | Path | None = None
     metadata_cols: list[str] | None = None
+    provider: str | None = None  # Embedding provider for collection naming
 
 
 @dataclass
@@ -39,14 +138,15 @@ class JurisdictionConfig:
 
 
 def get_embeddings(
-    client: ollama.Client, texts: list[str], model: str = "embeddinggemma"
+    client, texts: list[str], model: str | None = None, provider: str | None = None
 ) -> list[list[float]]:
     """Generate embedding vectors for a list of text strings.
 
     Args:
-        client: Ollama client instance
+        client: Embedding client instance (use get_embedding_client() for configured client)
         texts: List of text strings to embed
-        model: Name of the embedding model to use. Defaults to 'embeddinggemma'
+        model: Name of the embedding model to use. If None, uses default for provider
+        provider: The embedding provider ("ollama" or "mistral"). If None, auto-detects from client
 
     Returns:
         List of embedding vectors, one for each input text
@@ -55,31 +155,105 @@ def get_embeddings(
         ValueError: If texts is empty or embedding fails
 
     Example:
-        client = ollama.Client()
-        embeddings = get_embeddings(client, ["text1", "text2"], "embeddinggemma")
+        from legiscope.embeddings import get_embedding_client, get_embeddings
+        client = get_embedding_client("ollama")
+        embeddings = get_embeddings(client, ["text1", "text2"])
     """
     if not texts:
         logger.error("texts parameter cannot be empty")
         raise ValueError("texts parameter cannot be empty")
 
-    logger.info(f"Generating embeddings for {len(texts)} texts using model: {model}")
+    # Auto-detect provider if not specified
+    if provider is None:
+        client_type = type(client).__name__
+        client_module = type(client).__module__
 
+        # Check both class name and module for better detection
+        if "ollama" in client_type.lower() or "ollama" in client_module.lower():
+            provider = "ollama"
+        elif "mistral" in client_type.lower() or "mistral" in client_module.lower():
+            provider = "mistral"
+        else:
+            # Try to detect by checking available methods/attributes
+            if hasattr(client, "embeddings") and hasattr(client, "chat"):
+                # Likely Mistral client
+                provider = "mistral"
+            elif hasattr(client, "embed"):
+                # Likely Ollama client
+                provider = "ollama"
+            else:
+                raise ValueError(
+                    f"Unable to detect provider from client type: {client_type} (module: {client_module})"
+                )
+
+    # Use default model if not specified
+    if model is None:
+        model = get_default_model(provider)
+
+    logger.info(
+        f"Generating embeddings for {len(texts)} texts using {provider} with model: {model}"
+    )
+
+    # Process embeddings - Mistral supports batching, Ollama processes individually
     embeddings: list[list[float]] = []
-    for i, text in enumerate(texts):
-        try:
-            response = client.embeddings(model=model, prompt=text)
-            if response is None:
-                logger.error(f"Failed to get embedding for text {i}: {text[:50]}...")
-                raise ValueError(f"Failed to get embedding for text: {text[:50]}...")
-            embeddings.append(response["embedding"])
 
-            # Log progress for larger batches
-            if len(texts) > 10 and (i + 1) % 10 == 0:
-                logger.debug(f"Processed {i + 1}/{len(texts)} embeddings")
+    try:
+        if provider == "mistral":
+            # Mistral supports batch processing
+            BATCH_SIZE = 100
+            total_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
+            logger.info(
+                f"Processing {len(texts)} texts in {total_batches} batches of {BATCH_SIZE} (Mistral)"
+            )
 
-        except Exception as e:
-            logger.error(f"Error generating embedding for text {i}: {str(e)}")
-            raise
+            # Mistral API format - batch processing
+            for batch_num in range(total_batches):
+                start_idx = batch_num * BATCH_SIZE
+                end_idx = min(start_idx + BATCH_SIZE, len(texts))
+                batch_texts = texts[start_idx:end_idx]
+
+                response = client.embeddings.create(model=model, inputs=batch_texts)
+                if (
+                    response is None
+                    or not hasattr(response, "data")
+                    or len(response.data) == 0
+                ):
+                    logger.error(f"Failed to get embeddings for batch {batch_num + 1}")
+                    raise ValueError(
+                        f"Failed to get embeddings for batch {batch_num + 1}"
+                    )
+                batch_embeddings = [item.embedding for item in response.data]
+                embeddings.extend(batch_embeddings)
+
+                # Log progress for larger datasets
+                logger.debug(
+                    f"Processed batch {batch_num + 1}/{total_batches} ({len(batch_texts)} texts)"
+                )
+
+        elif provider == "ollama":
+            # Ollama processes embeddings individually
+            logger.info(f"Processing {len(texts)} texts individually (Ollama)")
+
+            # Ollama API format - individual processing (no batching support)
+            for i, text in enumerate(texts):
+                response = client.embeddings(model=model, prompt=text)
+                if response is None or "embedding" not in response:
+                    logger.error(f"Failed to get embedding for text: {text[:50]}...")
+                    raise ValueError(
+                        f"Failed to get embedding for text: {text[:50]}..."
+                    )
+                embeddings.append(response["embedding"])
+
+                # Log progress for larger datasets
+                if (i + 1) % 100 == 0 or i == len(texts) - 1:
+                    logger.debug(f"Processed {i + 1}/{len(texts)} texts")
+
+        else:
+            raise ValueError(f"Unsupported provider: {provider}")
+
+    except Exception as e:
+        logger.error(f"Error generating embeddings: {str(e)}")
+        raise
 
     logger.info(f"Successfully generated {len(embeddings)} embeddings")
     return embeddings
@@ -87,8 +261,9 @@ def get_embeddings(
 
 def create_embeddings_df(
     df: pl.DataFrame,
-    client: ollama.Client,
-    model: str = "embeddinggemma",
+    client,
+    model: str | None = None,
+    provider: str | None = None,
     heading_col: str = "section_heading",
     text_col: str = "segment_text",
     embedding_col: str = "embedding",
@@ -100,8 +275,9 @@ def create_embeddings_df(
 
     Args:
         df: DataFrame from create_segments_df() with segment information
-        client: Ollama client instance
-        model: Name of the embedding model to use. Defaults to 'embeddinggemma'
+        client: Embedding client instance (use get_embedding_client() for configured client)
+        model: Name of the embedding model to use. If None, uses default for provider
+        provider: The embedding provider ("ollama" or "mistral"). If None, auto-detects from client
         heading_col: Name of column containing section headings. Defaults to 'section_heading'
         text_col: Name of column containing segment text. Defaults to 'segment_text'
         embedding_col: Name of column to create for embeddings. Defaults to 'embedding'
@@ -115,11 +291,12 @@ def create_embeddings_df(
 
     Example:
         from legiscope.segment import create_segments_df
-        client = ollama.Client()
+        from legiscope.embeddings import get_embedding_client
+        client = get_embedding_client("ollama")
         segments_df = create_segments_df(sections)
         embedded_df = create_embeddings_df(segments_df, client)
     """
-    logger.info(f"Creating embeddings DataFrame with model: {model}")
+    logger.info(f"Creating embeddings DataFrame with model: {model or 'default'}")
 
     if not isinstance(df, pl.DataFrame):
         logger.error(f"df must be a polars DataFrame, got {type(df)}")
@@ -169,7 +346,7 @@ def create_embeddings_df(
         f"Concatenated {len(concatenated_texts)} texts for embedding generation"
     )
 
-    embeddings = get_embeddings(client, concatenated_texts, model)
+    embeddings = get_embeddings(client, concatenated_texts, model, provider)
 
     result_df = df.with_columns(
         pl.Series(embedding_col, embeddings, dtype=pl.List(pl.Float64))
@@ -212,7 +389,8 @@ def create_embedding_index(
         ValueError: If required columns are missing from DataFrame
 
     Example:
-        embedded_df = create_embeddings_df(segments_df, client)
+        from legiscope.embeddings import get_embedding_client
+        embedded_df = create_embeddings_df(segments_df, get_embedding_client())
         collection = create_embedding_index(
             embedded_df,
             persist_directory="./chroma_db",
@@ -308,7 +486,7 @@ def create_embedding_index(
             logger.debug("No metadata columns specified")
 
     # Add to collection in batches to avoid memory issues
-    batch_size = 1000
+    batch_size = 100
     total_batches = (len(df) + batch_size - 1) // batch_size
 
     logger.info(f"Adding {len(df)} documents to collection in {total_batches} batches")
@@ -340,27 +518,39 @@ def create_embedding_index(
 def get_or_create_legal_collection(
     persist_directory: str | Path = "data/chroma_db",
     collection_name: str = "legal_code_all",
+    provider: str | None = None,
 ) -> chromadb.Collection:
     """Get or create the centralized legal code collection.
 
     Args:
         persist_directory: Directory for ChromaDB persistence. Defaults to 'data/chroma_db'
         collection_name: Name of the collection. Defaults to 'legal_code_all'
+        provider: Embedding provider for collection naming. If provided, will create provider-specific collection
 
     Returns:
         chromadb.Collection: The legal code collection
     """
-    logger.info(f"Getting or creating legal collection: {collection_name}")
+    # Generate provider-specific collection name if provider is specified
+    final_collection_name = collection_name
+    if provider:
+        if collection_name == "legal_code_all":
+            # Default collection name - make provider-specific
+            final_collection_name = f"legal_code_{provider}"
+        elif not collection_name.endswith(f"_{provider}"):
+            # Custom collection name - append provider if not already present
+            final_collection_name = f"{collection_name}_{provider}"
+
+    logger.info(f"Getting or creating legal collection: {final_collection_name}")
 
     client = chromadb.PersistentClient(path=str(persist_directory))
 
     # Create or get collection
     try:
-        collection = client.get_collection(name=collection_name)
-        logger.info(f"Using existing collection: {collection_name}")
+        collection = client.get_collection(name=final_collection_name)
+        logger.info(f"Using existing collection: {final_collection_name}")
     except Exception:
-        collection = client.create_collection(name=collection_name)
-        logger.info(f"Created new collection: {collection_name}")
+        collection = client.create_collection(name=final_collection_name)
+        logger.info(f"Created new collection: {final_collection_name}")
 
     return collection
 
@@ -428,7 +618,7 @@ def add_jurisdiction_embeddings(
 
 def create_and_persist_embeddings(
     df: pl.DataFrame,
-    client: ollama.Client,
+    client,
     embedding_config: EmbeddingConfig | None = None,
     persistence_config: PersistenceConfig | None = None,
     jurisdiction_config: JurisdictionConfig | None = None,
@@ -437,7 +627,7 @@ def create_and_persist_embeddings(
 
     Args:
         df: DataFrame with segment information (from create_segments_df)
-        client: Ollama client instance
+        client: Ollama client instance (use get_embedding_client() for configured client)
         embedding_config: Configuration for embedding operations
         persistence_config: Configuration for persistence operations
         jurisdiction_config: Configuration for jurisdiction information
@@ -449,10 +639,11 @@ def create_and_persist_embeddings(
         ValueError: If required columns don't exist in DataFrame or embedding fails
 
     Example:
+        from legiscope.embeddings import get_embedding_client, EmbeddingConfig, JurisdictionConfig
         segments_df = create_segments_df(sections)
         embeddings_df, collection = create_and_persist_embeddings(
             segments_df,
-            client=ollama.Client(),
+            client=get_embedding_client(),
             jurisdiction_config=JurisdictionConfig(
                 jurisdiction_id="IL-WindyCity",
                 state="IL",
@@ -465,6 +656,20 @@ def create_and_persist_embeddings(
     pers_config = persistence_config or PersistenceConfig()
     jur_config = jurisdiction_config or JurisdictionConfig()
 
+    # Set provider in persistence config if not already set
+    if pers_config.provider is None and emb_config.provider:
+        pers_config.provider = emb_config.provider
+
+    # Generate provider-specific collection name if provider is set
+    collection_name = pers_config.collection_name
+    if pers_config.provider:
+        if pers_config.collection_name == "legal_code_all":
+            # Default collection name - make provider-specific
+            collection_name = f"legal_code_{pers_config.provider}"
+        elif not pers_config.collection_name.endswith(f"_{pers_config.provider}"):
+            # Custom collection name - append provider if not already present
+            collection_name = f"{pers_config.collection_name}_{pers_config.provider}"
+
     logger.info("Starting unified embeddings creation and persistence workflow")
 
     # Step 1: Create embeddings DataFrame
@@ -473,6 +678,7 @@ def create_and_persist_embeddings(
         df=df,
         client=client,
         model=emb_config.model,
+        provider=emb_config.provider,
         heading_col=emb_config.heading_col,
         text_col=emb_config.text_col,
         embedding_col=emb_config.embedding_col,
@@ -507,7 +713,7 @@ def create_and_persist_embeddings(
 
     collection = create_embedding_index(
         df=embeddings_df,
-        collection_name=pers_config.collection_name,
+        collection_name=collection_name,
         persist_directory=pers_config.persist_directory,
         id_col=emb_config.id_col,
         text_col=emb_config.text_col,
@@ -520,7 +726,7 @@ def create_and_persist_embeddings(
 
     logger.info("Successfully completed unified embeddings workflow")
     logger.info(f"  - Embeddings DataFrame: {len(embeddings_df)} rows")
-    logger.info(f"  - ChromaDB collection: {pers_config.collection_name}")
+    logger.info(f"  - ChromaDB collection: {collection_name}")
     logger.info(f"  - Collection documents: {collection.count()}")
 
     return embeddings_df, collection

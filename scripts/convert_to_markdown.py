@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 import instructor
 from openai import OpenAI
 from legiscope.convert import scan_legal_text, text2md
-from legiscope.config import Config
+from legiscope.model_config import Config
 
 # Import model constants
 try:
@@ -66,7 +66,7 @@ def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:
     print(f"Converting {state}-{municipality}...")
 
     try:
-        client = Config.get_openai_client()
+        client = Config.get_client()
 
         # Scan for heading structure
         print("Analyzing heading structure...")

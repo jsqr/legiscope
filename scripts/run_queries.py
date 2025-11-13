@@ -14,7 +14,7 @@ if str(src_path) not in sys.path:
 
 import chromadb
 import polars as pl
-from legiscope.config import Config
+from legiscope.model_config import Config
 from legiscope.query import run_queries
 
 
@@ -46,7 +46,7 @@ def main():
 
     args = parser.parse_args()
 
-    client = Config.get_openai_client()
+    client = Config.get_client()
     model = Config.get_default_model(powerful=True)
 
     queries = read_queries(args.queries_path)

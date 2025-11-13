@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 import yaml
 from instructor import Instructor
-from legiscope.utils import ask, DEFAULT_MODEL
+from legiscope.utils import ask
 
 
 class BooleanResult(BaseModel):
@@ -41,7 +41,7 @@ def scan_legal_text(
     client: Instructor,
     file_path: str,
     max_lines: int = 150,
-    model: str = DEFAULT_MODEL,
+    model: str = "gpt-4.1-mini",
 ) -> HeadingStructure:
     """
     Analyze legal text to identify heading structure and patterns.
@@ -65,8 +65,8 @@ def scan_legal_text(
         instructor.exceptions.InstructorError: If LLM call fails
 
     Example:
-        >>> from legiscope.config import Config
-        >>> client = Config.get_openai_client()
+        >>> from legiscope.model_config import Config
+        >>> client = Config.get_default_client()
         >>> structure = scan_legal_text(client, "data/laws/IL-WindyCity/processed/code.txt")
         >>> print(f"Found {structure.total_levels} heading levels")
         >>> for level in structure.levels:
@@ -235,8 +235,8 @@ def text2md(
         IOError: If output file cannot be written
 
     Example:
-        >>> from legiscope.config import Config
-        >>> client = Config.get_openai_client()
+        >>> from legiscope.model_config import Config
+        >>> client = Config.get_default_client()
         >>> structure = scan_legal_text(client, "municipal_code.txt")
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")
