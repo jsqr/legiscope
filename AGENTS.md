@@ -23,11 +23,13 @@ uv pip install -e ".[dev]"
 
 ### LLM Provider Configuration
 
-The project supports both OpenAI and Mistral as LLM providers:
+The project supports both OpenAI and Mistral as LLM providers. The default provider is Mistral.
 
 #### Environment Variables
 
-- `LLM_PROVIDER`: Set to "openai" (default) or "mistral" to select LLM provider
+- `LEGISCOPE_LLM_PROVIDER`: Set to "openai" or "mistral" (default) to select LLM provider
+- `LEGISCOPE_FAST_MODEL`: Override fast model selection
+- `LEGISCOPE_POWERFUL_MODEL`: Override powerful model selection
 - `OPENAI_API_KEY`: Required when using OpenAI provider
 - `MISTRAL_API_KEY`: Required when using Mistral provider
 
@@ -40,11 +42,13 @@ from legiscope.llm_config import Config
 
 # Switch to OpenAI
 Config.LLM_PROVIDER = "openai"
-client = Config.get_default_client()  # Uses gpt-4o-mini
+fast_client = Config.get_fast_client()      # Uses gpt-4.1-mini
+powerful_client = Config.get_powerful_client()  # Uses gpt-4.1
 
-# Switch to Mistral  
+# Switch to Mistral
 Config.LLM_PROVIDER = "mistral"
-client = Config.get_default_client()  # Uses mistral-medium-latest
+fast_client = Config.get_fast_client()      # Uses mistral-medium-latest
+powerful_client = Config.get_powerful_client()  # Uses magistral-medium-latest
 
 # Get appropriate models for different tasks
 fast_model = Config.get_fast_model()        # For quick tasks
@@ -54,8 +58,8 @@ powerful_model = Config.get_powerful_model() # For complex reasoning
 #### Available Models by Provider
 
 **OpenAI Provider:**
-- Fast model: `gpt-4o-mini` (for HYDE, relevance assessment, etc.)
-- Powerful model: `gpt-4o` (for complex legal analysis)
+- Fast model: `gpt-4.1-mini` (for HYDE, relevance assessment, etc.)
+- Powerful model: `gpt-4.1` (for complex legal analysis)
 
 **Mistral Provider:**
 - Fast model: `mistral-medium-latest` (for quick tasks)
@@ -64,54 +68,59 @@ powerful_model = Config.get_powerful_model() # For complex reasoning
 #### Example Setup
 
 ```bash
-# For OpenAI (default)
-export LLM_PROVIDER=openai
+# For OpenAI
+export LEGISCOPE_LLM_PROVIDER=openai
 export OPENAI_API_KEY=your_openai_key
 
-# For Mistral
-export LLM_PROVIDER=mistral
+# For Mistral (default)
+export LEGISCOPE_LLM_PROVIDER=mistral
 export MISTRAL_API_KEY=your_mistral_key
 ```
 
 ### Embedding Model Configuration
 
-The project supports multiple embedding models for generating text embeddings:
+The project supports multiple embedding models for generating text embeddings. The default provider is Mistral.
 
 #### Current Configuration
 
-**Ollama with embeddinggemma (default)**
+**Mistral with mistral-embed (default)**
+- Uses Mistral's API
+- Model: `mistral-embed`
+- Client: `get_embedding_client("mistral")`
+- Requires: `MISTRAL_API_KEY` environment variable
+
+#### Alternative Configuration
+
+**Ollama with embeddinggemma**
 - Uses local Ollama server
 - Model: `embeddinggemma`
 - Client: `get_embedding_client("ollama")`
 - Auto-detected provider and model
 
-#### Alternative Configuration
-
-**Mistral with mistral-embed**
-- Uses Mistral's API
-- Model: `mistral-embed`
-- Requires: `MISTRAL_API_KEY` environment variable
-- Client: `get_embedding_client("mistral")`
-
 #### Switching Between Embedding Models
 
-To switch from Ollama to Mistral embeddings:
+To switch between embedding providers:
 
-1. Set your Mistral API key:
+1. Set your environment variables:
    ```bash
+   # For Mistral (default)
+   export LEGISCOPE_EMBEDDING_PROVIDER=mistral
    export MISTRAL_API_KEY=your_mistral_key
+
+   # For Ollama
+   export LEGISCOPE_EMBEDDING_PROVIDER=ollama
    ```
 
-2. Use the new embedding interface:
+2. Use the embedding interface:
    ```python
    from legiscope.embeddings import get_embedding_client, get_embeddings
-   
-   # For Ollama (default)
-   client = get_embedding_client("ollama")
-   embeddings = get_embeddings(client, ["text1", "text2"])
-   
-   # For Mistral
+
+   # For Mistral (default)
    client = get_embedding_client("mistral")
+   embeddings = get_embeddings(client, ["text1", "text2"])
+
+   # For Ollama
+   client = get_embedding_client("ollama")
    embeddings = get_embeddings(client, ["text1", "text2"])
    ```
 
@@ -121,14 +130,14 @@ To switch from Ollama to Mistral embeddings:
 from legiscope.embeddings import get_embedding_client, get_embeddings, EmbeddingConfig
 
 # Get embedding client for specific provider
-client = get_embedding_client("ollama")  # or "mistral"
+client = get_embedding_client("mistral")  # or "ollama"
 
 # Generate embeddings (auto-detects model)
 texts = ["Legal text 1", "Legal text 2"]
 embeddings = get_embeddings(client, texts)
 
 # Or specify model explicitly
-embeddings = get_embeddings(client, texts, model="embeddinggemma", provider="ollama")
+embeddings = get_embeddings(client, texts, model="mistral-embed", provider="mistral")
 
 # Using with EmbeddingConfig
 config = EmbeddingConfig(provider="mistral")  # Uses default mistral-embed model
@@ -179,6 +188,16 @@ Or manually:
 uv pip list
 ```
 
+### Pipeline Commands
+
+```bash
+# Run complete pipeline for specific jurisdiction
+make pipeline STATE=CA MUNICIPALITY="San Francisco"
+
+# Or manually:
+./scripts/pipeline.sh california "San Francisco"
+```
+
 ## Development Commands
 
 ### Testing
@@ -195,6 +214,7 @@ make test-cov
 pytest --cov=src/legiscope --cov-report=html
 
 # Run specific test file
+pytest tests/test_llm_config.py
 ```
 
 ### Linting and Formatting
@@ -240,7 +260,12 @@ uv pip list
 │   └── legiscope/       # Main package source code
 ├── tests/               # Test files
 ├── notebooks/           # Jupyter notebooks for analysis
+│   ├── demo_nb.py       # Demo notebook
+│   └── README.md
 ├── scripts/             # Utility scripts
+│   ├── pipeline.sh      # Complete processing pipeline
+│   └── ...
+├── .env.example         # Environment variables template
 ├── pyproject.toml       # Project configuration and dependencies
 ├── Makefile            # Development commands
 └── AGENTS.md           # This file
@@ -252,4 +277,8 @@ uv pip list
 - `instructor`: AI-powered function calls and structured outputs
 - `pytest`: Testing framework
 - `ruff`: Fast Python linter and formatter
-
+- `black`: Code formatter
+- `chromadb`: Vector database for embeddings
+- `duckdb`: Analytical database
+- `marimo`: Reactive notebooks
+- `python-dotenv`: Environment variable management
