@@ -84,6 +84,11 @@ class TestHydeRewriter:
 
     def test_hyde_rewriter_llm_success(self):
         """Test successful LLM rewrite."""
+        # Set environment variable for consistent testing
+        import os
+
+        os.environ["LEGISCOPE_LLM_PROVIDER"] = "openai"
+
         # Mock the ask function
         mock_result = HydeRewrite(
             rewritten_query="The following provisions regulate vehicle parking within municipal boundaries.",
@@ -786,6 +791,11 @@ class TestIsRelevant:
 
     def test_is_relevant_success(self):
         """Test successful relevance assessment."""
+        # Set environment variable for consistent testing
+        import os
+
+        os.environ["LEGISCOPE_LLM_PROVIDER"] = "openai"
+
         mock_result = RelevanceAssessment(
             is_relevant=True,
             confidence=0.9,

@@ -46,7 +46,7 @@ def main():
 
     args = parser.parse_args()
 
-    client = Config.get_big_client()
+    client = Config.get_powerful_client()
 
     queries = read_queries(args.queries_path)
     print(f"Loaded {len(queries)} queries from {args.queries_path}")

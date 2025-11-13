@@ -22,6 +22,10 @@ with app.setup:
     if src_path not in sys.path:
         sys.path.insert(0, src_path)
 
+    # Note: Load environment variables before running this notebook:
+    #   export $(cat ../.env | grep -v '^#' | xargs)
+    #   marimo run notebooks/demo_nb.py
+
     from legiscope.retrieve import (
         retrieve_embeddings,
         retrieve_sections,
@@ -46,14 +50,17 @@ def _(mo):
     We use a different collection name for different embedding models. In particular,
     - `legal_code_ollama` holds vectors created with Google's `embeddinggemma` model, running locally on ollama
     - `legal_code_mistral` holds vectors created with Mistral AI's `mistral-embed` model, running on Mistral AI's cloud platform.
+
+    The collection name can be configured via the `LEGISCOPE_COLLECTION_NAME` environment variable.
     """)
     return
 
 
 @app.cell
 def _():
-    collection_name = "legal_code_mistral"
-    # collection_name = "legal_code_ollama"
+    # Use environment variable for collection name, default to mistral
+    collection_name = os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_mistral")
+    # Alternative: collection_name = os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_ollama")
     chroma_path = "../data/chroma_db"
 
     try:
@@ -87,10 +94,28 @@ def _():
     return (collection,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Embedding client setup
+    ## Configuration Summary
+
+    This notebook uses the following environment variables for configuration:
+
+    **LLM Configuration:**
+    - `LEGISCOPE_LLM_PROVIDER`: LLM provider ("openai" or "mistral")
+    - `LEGISCOPE_FAST_MODEL`: Fast model name (overrides provider default)
+    - `LEGISCOPE_POWERFUL_MODEL`: Powerful model name (overrides provider default)
+
+    **Embedding Configuration:**
+    - `LEGISCOPE_EMBEDDING_PROVIDER`: Embedding provider ("ollama" or "mistral")
+    - `LEGISCOPE_EMBEDDING_MODEL`: Embedding model name
+
+    **Database Configuration:**
+    - `LEGISCOPE_COLLECTION_NAME`: ChromaDB collection name
+
+    **Query Configuration:**
+    - `LEGISCOPE_N_RESULTS`: Number of results to retrieve (default: 10)
+    - `LEGISCOPE_USE_HYDE`: Enable HYDE query rewriting ("true" or "false", default: false)
     """)
     return
 
@@ -100,8 +125,9 @@ def _():
     from legiscope.embeddings import get_embedding_client, get_embeddings
 
     embedding_client = None
-    embedding_model = "mistral-embed"
-    embedding_provider = "mistral"
+    # Use environment variables for embedding configuration
+    embedding_provider = os.getenv("LEGISCOPE_EMBEDDING_PROVIDER", "mistral")
+    embedding_model = os.getenv("LEGISCOPE_EMBEDDING_MODEL", "mistral-embed")
 
     try:
         embedding_client = get_embedding_client(embedding_provider)
@@ -143,22 +169,23 @@ def _():
         "Does the jurisdiction have laws that restrict the sale of drug paraphernalia?"
     )
 
-    # Search parameters
-    n_results = 10
-    use_hyde = False  # Disabled for debugging
+    # Search parameters (configurable via environment variables)
+    n_results = int(os.getenv("LEGISCOPE_N_RESULTS", "10"))
+    use_hyde = os.getenv("LEGISCOPE_USE_HYDE", "false").lower() == "true"
 
     # Optional jurisdiction filters
     jurisdiction_id = "IL-WindyCity"
     # state = "IL"  # All jurisdictions in a state
     # municipality = "WindyCity"  # Specific municipality
 
-    # Sections parquet path for full section context
+    # Sections parquet path for full section context (constructed from jurisdiction)
+    jurisdiction_path = "IL-WindyCity"
     sections_parquet_path = os.path.join(
         os.path.dirname(__file__),
         "..",
         "data",
         "laws",
-        "IL-WindyCity",
+        jurisdiction_path,
         "tables",
         "sections.parquet",
     )
@@ -167,6 +194,7 @@ def _():
     print(f"Query: {query}")
     print(f"Max results: {n_results}")
     print(f"HYDE rewriting: {'Enabled' if use_hyde else 'Disabled'}")
+    print(f"Jurisdiction ID: {jurisdiction_id}")
     print(f"Sections file: {sections_parquet_path}")
     return jurisdiction_id, n_results, query, sections_parquet_path, use_hyde
 
@@ -176,11 +204,13 @@ def _():
     instructor_client = None
 
     print("=== LLM Client Setup ===")
-    print("Using instructor with Mistral provider")
+    print(f"Using instructor with {Config.LLM_PROVIDER} provider")
+    print(f"Fast model: {Config.get_fast_model()}")
+    print(f"Powerful model: {Config.get_powerful_model()}")
 
     try:
-        instructor_client = Config.get_default_client()
-        print(f"Instructor client created with model {instructor_client}")
+        instructor_client = Config.get_fast_client()
+        print(f"Instructor client created successfully")
     except Exception as e:
         print(f"ERROR: Failed to create instructor client: {str(e)}")
         instructor_client = None
@@ -332,8 +362,22 @@ def _(results, sections):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## Query Processing
+    ## Embedding client setup
     """)
+    return
+
+
+@app.cell
+def _():
+    print("=== Current Configuration ===")
+    print(f"LLM Provider: {Config.LLM_PROVIDER}")
+    print(f"Fast Model: {Config.get_fast_model()}")
+    print(f"Powerful Model: {Config.get_powerful_model()}")
+    print(f"Embedding Provider: {os.getenv('LEGISCOPE_EMBEDDING_PROVIDER', 'mistral')}")
+    print(f"Embedding Model: {os.getenv('LEGISCOPE_EMBEDDING_MODEL', 'mistral-embed')}")
+    print(
+        f"Collection Name: {os.getenv('LEGISCOPE_COLLECTION_NAME', 'legal_code_mistral')}"
+    )
     return
 
 
@@ -426,6 +470,23 @@ def format_query_response_md(response):
 def _(mo, query_response):
     formatted_response = format_query_response_md(query_response)
     mo.md(formatted_response)
+    return
+
+
+@app.cell
+def _():
+    print("=== Current Configuration ===")
+    print(f"LLM Provider: {Config.LLM_PROVIDER}")
+    print(f"Fast Model: {Config.get_fast_model()}")
+    print(f"Powerful Model: {Config.get_powerful_model()}")
+    print(f"Embedding Provider: {os.getenv('LEGISCOPE_EMBEDDING_PROVIDER', 'mistral')}")
+    print(f"Embedding Model: {os.getenv('LEGISCOPE_EMBEDDING_MODEL', 'mistral-embed')}")
+    print(
+        f"Collection Name: {os.getenv('LEGISCOPE_COLLECTION_NAME', 'legal_code_mistral')}"
+    )
+    print(f"Number of Results: {os.getenv('LEGISCOPE_N_RESULTS', '10')}")
+    print(f"Use HYDE: {os.getenv('LEGISCOPE_USE_HYDE', 'false')}")
+    print(f"Jurisdiction ID: IL-WindyCity")
     return
 
 

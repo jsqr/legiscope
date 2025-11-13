@@ -74,7 +74,7 @@ def query_legal_documents(
         from legiscope.query import query_legal_documents
 
         # Setup client
-        client = Config.get_default_client()
+        client = Config.get_fast_client()
 
         # Retrieve relevant sections
         results = retrieve_sections(
@@ -300,7 +300,7 @@ def run_queries(
         import chromadb
 
         # Setup
-        client = Config.get_default_client()
+        client = Config.get_fast_client()
         chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
         collection = chroma_client.get_collection("legal_code_all")
 

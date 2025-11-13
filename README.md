@@ -22,50 +22,71 @@ make env
 
 # Activate the environment
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Or just run with uv
+# uv run python foo.py
 ```
 
 ### Model Configuration
 
-The project uses a simplified model configuration approach with instructor's provider abstraction. Three main client types are configured:
+The project uses environment variables for model configuration.
 
-- **Default Client** (`Config.get_default_client()`): Uses `gpt-4.1-mini` for general-purpose tasks
-- **Big Client** (`Config.get_big_client()`): Uses `gpt-4.1` for complex reasoning tasks  
-- **Embedding Client** (`get_embedding_client()`): Uses `ollama` with `embeddinggemma` model by default
+The main client types are:
 
-#### Switching Models
+- **Fast Client** (`Config.get_fast_client()`): Uses configured fast model
+- **Powerful Client** (`Config.get_powerful_client()`): Uses configured powerful model
+- **Embedding Client** (`get_embedding_client()`): Uses configured embedding provider
 
-To switch models, simply uncomment the desired alternative in `src/legiscope/llm_config.py`:
-
-```python
-# In get_default_client():
-# return instructor.from_provider("openai:gpt-4o")           # More powerful
-# return instructor.from_provider("openai:gpt-4o-mini")     # Faster
-# return instructor.from_provider("mistral:mistral-medium-latest")  # Mistral
-
-# In get_big_client():
-# return instructor.from_provider("openai:o1-preview")       # Advanced reasoning
-# return instructor.from_provider("openai:o1-mini")          # Lightweight reasoning
-# return instructor.from_provider("mistral:magistral-medium-latest")  # Mistral
-
-# For embeddings, use the new interface:
-# from legiscope.embeddings import get_embedding_client
-# client = get_embedding_client("ollama")  # or "mistral"
-```
+Models are automatically selected based on your `.env` configuration.
 
 #### Environment Variables
 
-Set your API keys in the environment:
+1. Copy the example environment file:
+   ```bash
+   cp .env.example .env
+   ```
 
+2. Edit `.env` with your settings:
+   ```bash
+   # Example: Use OpenAI
+   LEGISCOPE_LLM_PROVIDER=openai
+   LEGISCOPE_FAST_MODEL=gpt-4.1-mini
+   LEGISCOPE_POWERFUL_MODEL=gpt-4.1
+   OPENAI_API_KEY=XXXXXX
+   ```
+
+3. Load environment variables:
+   ```bash
+   export $(cat .env | grep -v '^#' | xargs)
+   ```
+
+### Example Configurations
+
+**OpenAI for language models:**
 ```bash
-# For OpenAI models (default)
-export OPENAI_API_KEY=your_openai_key
-
-# For Mistral models
-export MISTRAL_API_KEY=your_mistral_key
-
-# Optional: Override default provider
-export LLM_PROVIDER=openai  # or "mistral"
+LEGISCOPE_LLM_PROVIDER=openai
+LEGISCOPE_FAST_MODEL=gpt-4.1-mini
+LEGISCOPE_POWERFUL_MODEL=gpt-4.1
 ```
+
+**Ollama for local embeddings:**
+```bash
+LEGISCOPE_EMBEDDING_PROVIDER=ollama
+LEGISCOPE_EMBEDDING_MODEL=embeddinggemma
+LEGISCOPE_COLLECTION_NAME=legal_code_ollama
+```
+
+**Mistral for LLMs and embeddings:**
+```bash
+LEGISCOPE_LLM_PROVIDER=mistral
+LEGISCOPE_FAST_MODEL=mistral-medium-latest
+LEGISCOPE_POWERFUL_MODEL=magistral-medium-latest
+
+LEGISCOPE_EMBEDDING_PROVIDER=mistral
+LEGISCOPE_EMBEDDING_MODEL=mistral-embed
+LEGISCOPE_COLLECTION_NAME=legal_code_mistral
+```
+
 
 ## Development
 
@@ -108,39 +129,6 @@ The pipeline performs these steps automatically:
 3. Converts text to structured Markdown with headings
 4. Segments the code into searchable sections
 5. Generates embeddings for semantic search
-
-### Using Different Models
-
-```python
-from legiscope.llm_config import Config
-from legiscope.utils import ask
-from pydantic import BaseModel
-
-class LegalAnalysis(BaseModel):
-    summary: str
-    relevant_sections: list[str]
-
-# Use default client for general tasks
-default_client = Config.get_default_client()
-result = ask(
-    client=default_client,
-    prompt="Analyze this legal text...",
-    response_model=LegalAnalysis
-)
-
-# Use big client for complex reasoning
-big_client = Config.get_big_client()
-complex_result = ask(
-    client=big_client,
-    prompt="Perform deep legal analysis...",
-    response_model=LegalAnalysis
-)
-
-# Use embedding client for semantic search
-from legiscope.embeddings import get_embedding_client, create_embeddings_df
-embedding_client = get_embedding_client("ollama")  # or "mistral"
-embeddings_df = create_embeddings_df(segments_df, embedding_client)
-```
 
 ## Scripts and Modules
 
