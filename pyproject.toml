@@ -34,6 +34,7 @@ dependencies = [
     "python-lsp-ruff>=2.3.0",
     "nbformat>=5.10.4",
     "altair>=6.0.0",
+    "python-dotenv>=1.2.1",
 ]
 
 [project.optional-dependencies]

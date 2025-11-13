@@ -10,6 +10,14 @@ import os
 import sys
 from pathlib import Path
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, continue without it
+
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
@@ -48,11 +56,6 @@ def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:
             print(f"Error: code.txt not found. Found: {[f.name for f in txt_files]}")
         else:
             print(f"Error: No .txt files found in {path / 'processed'}")
-        sys.exit(1)
-
-    # Setup OpenAI client
-    if not os.getenv("OPENAI_API_KEY"):
-        print("Error: OPENAI_API_KEY environment variable not set")
         sys.exit(1)
 
     print(f"Converting {state}-{municipality}...")
