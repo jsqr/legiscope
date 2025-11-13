@@ -9,12 +9,6 @@ Usage:
 import sys
 from pathlib import Path
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-# Embedding provider configuration
-EMBEDDING_PROVIDER = "mistral"  # Options: "ollama", "mistral"
-
 import polars as pl
 
 from legiscope.embeddings import (
@@ -25,6 +19,12 @@ from legiscope.embeddings import (
     get_default_model,
     get_embedding_client,
 )
+
+# Add src to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
+# Embedding provider configuration
+EMBEDDING_PROVIDER = "mistral"  # Options: "ollama", "mistral"
 
 
 def create_embeddings(jurisdiction_path: str) -> None:

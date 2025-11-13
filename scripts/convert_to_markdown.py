@@ -13,16 +13,8 @@ from pathlib import Path
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-import instructor
-from openai import OpenAI
 from legiscope.convert import scan_legal_text, text2md
 from legiscope.model_config import Config
-
-# Import model constants
-try:
-    from legiscope.utils import DEFAULT_MODEL
-except ImportError:
-    DEFAULT_MODEL = "gpt-4.1-mini"
 
 
 def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:
@@ -66,7 +58,7 @@ def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:
     print(f"Converting {state}-{municipality}...")
 
     try:
-        client = Config.get_client()
+        client = Config.get_default_client()
 
         # Scan for heading structure
         print("Analyzing heading structure...")
@@ -74,7 +66,6 @@ def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:
             client=client,
             file_path=str(input_path),
             max_lines=150,
-            model=DEFAULT_MODEL,
         )
 
         # Convert to Markdown

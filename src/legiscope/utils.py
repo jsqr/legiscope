@@ -3,10 +3,11 @@ Utility functions for the legiscope package.
 """
 
 import os
-from typing import TypeVar, Type
+from typing import Type, TypeVar
+
 from instructor import Instructor
-from pydantic import BaseModel
 from loguru import logger
+from pydantic import BaseModel
 
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)

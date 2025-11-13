@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.17.6"
+__generated_with = "0.17.7"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -53,6 +53,7 @@ def _(mo):
 @app.cell
 def _():
     collection_name = "legal_code_mistral"
+    # collection_name = "legal_code_ollama"
     chroma_path = "../data/chroma_db"
 
     try:
@@ -80,7 +81,7 @@ def _():
     except Exception as e:
         print(f"ERROR: ChromaDB connection failed")
         print(f"Error: {str(e)}")
-        print("Check ChromaDB is set up with embedded legal documents.")
+        print("Check ChromaDB is set up with embedded documents.")
         collection = None
         chroma_client = None
     return (collection,)
@@ -179,7 +180,7 @@ def _():
 
     try:
         instructor_client = Config.get_default_client()
-        print("Instructor client created successfully")
+        print(f"Instructor client created with model {instructor_client}")
     except Exception as e:
         print(f"ERROR: Failed to create instructor client: {str(e)}")
         instructor_client = None
@@ -229,9 +230,7 @@ def _(
                 embedding_model=embedding_model,
             )
 
-            print(
-                f"Raw results structure: {list(results.keys()) if results else 'None'}"
-            )
+            print(f"Raw results structure: {list(results.keys()) if results else 'None'}")
 
             if results and results.get("sections"):
                 sections = results["sections"]
@@ -337,32 +336,16 @@ def _(mo):
 
 
 @app.cell
-def _():
-    print("=== Query Processing Setup ===")
-    print("Query processing functions available from setup imports")
-    query_processing_available = True
-    return (query_processing_available,)
-
-
-@app.cell
 def _(instructor_client, query_processing_available, results):
     query_response = None
 
     print("=== Query Processing ===")
     print(
-        f"Query processing available: {'Yes' if query_processing_available else 'No'}"
-    )
-    print(
         f"Instructor client available: {'Yes' if instructor_client is not None else 'No'}"
     )
     print(f"Results available: {'Yes' if results is not None else 'No'}")
 
-    if (
-        query_processing_available
-        and instructor_client is not None
-        and results is not None
-        and results.get("sections")
-    ):
+    if instructor_client is not None and results is not None and results.get("sections"):
         try:
             print("Processing query with LLM analysis...")
 
@@ -375,7 +358,7 @@ def _(instructor_client, query_processing_available, results):
                 retrieval_results=results,
                 temperature=0.1,
                 max_retries=3,
-                model="mistral-large-latest",
+                model="magistral-medium-latest",
             )
 
             print("Query processing completed successfully")
@@ -400,7 +383,7 @@ def _(instructor_client, query_processing_available, results):
             print("  - No retrieval results available")
         elif not results.get("sections"):
             print("  - No sections in retrieval results")
-    return
+    return (query_response,)
 
 
 @app.cell
@@ -408,6 +391,37 @@ def _(mo):
     mo.md(r"""
     ## Query Response
     """)
+    return
+
+
+@app.function
+def format_query_response_md(response):
+
+    md_output = f"## Query Response\n\n"
+    md_output += f"**Answer:** {response.short_answer}\n\n"
+    md_output += f"**Confidence:** {response.confidence:.1%}\n\n"
+
+    # Add citations if available
+    if response.citations:
+        md_output += "### Citations\n"
+        for i, citation in enumerate(response.citations, 1):
+            md_output += f"{i}. {citation}\n"
+        md_output += "\n"
+
+    # Add supporting passages if available
+    if response.supporting_passages:
+        md_output += "### Supporting Passages\n"
+        for i, passage in enumerate(response.supporting_passages, 1):
+            md_output += f"{i}. {passage}\n"
+        md_output += "\n"
+
+    return md_output
+
+
+@app.cell
+def _(mo, query_response):
+    formatted_response = format_query_response_md(query_response)
+    mo.md(formatted_response)
     return
 
 

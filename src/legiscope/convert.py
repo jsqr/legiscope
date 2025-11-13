@@ -11,6 +11,7 @@ from pydantic import BaseModel
 import yaml
 from instructor import Instructor
 from legiscope.utils import ask
+from legiscope.model_config import Config
 
 
 class BooleanResult(BaseModel):
@@ -41,7 +42,7 @@ def scan_legal_text(
     client: Instructor,
     file_path: str,
     max_lines: int = 150,
-    model: str = "gpt-4.1-mini",
+    model: str | None = None,
 ) -> HeadingStructure:
     """
     Analyze legal text to identify heading structure and patterns.
@@ -72,6 +73,10 @@ def scan_legal_text(
         >>> for level in structure.levels:
         ...     print(f"Level {level.level}: {level.example_heading}")
     """
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 

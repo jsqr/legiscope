@@ -1,15 +1,14 @@
-from pathlib import Path
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
+from pathlib import Path
 
 import chromadb
 import polars as pl
 from loguru import logger
 
-# Embedding model constants
+EMBEDDING_PROVIDER = "mistral"  # Can be "ollama" or "mistral"
 OLLAMA_MODEL = "embeddinggemma"
 MISTRAL_MODEL = "mistral-embed"
-DEFAULT_PROVIDER = "ollama"  # Can be "ollama" or "mistral"
 
 
 def get_ollama_client():
@@ -81,11 +80,11 @@ def get_default_model(provider: str) -> str:
         )
 
 
-def get_embedding_client(provider: str = DEFAULT_PROVIDER):
+def get_embedding_client(provider: str = EMBEDDING_PROVIDER):
     """Get embedding client for the specified provider.
 
     Args:
-        provider: The embedding provider ("ollama" or "mistral"). Defaults to DEFAULT_PROVIDER
+        provider: The embedding provider ("ollama" or "mistral"). Defaults to EMBEDDING_PROVIDER
 
     Returns:
         Embedding client instance (either ollama.Client or mistralai.Mistral)
@@ -109,7 +108,7 @@ class EmbeddingConfig:
     """Configuration for embedding operations."""
 
     model: str | None = None  # Default model name (None means use provider default)
-    provider: str = DEFAULT_PROVIDER  # Embedding provider ("ollama" or "mistral")
+    provider: str = EMBEDDING_PROVIDER  # Embedding provider ("ollama" or "mistral")
     heading_col: str = "section_heading"
     text_col: str = "segment_text"
     embedding_col: str = "embedding"

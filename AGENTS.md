@@ -31,6 +31,36 @@ The project supports both OpenAI and Mistral as LLM providers:
 - `OPENAI_API_KEY`: Required when using OpenAI provider
 - `MISTRAL_API_KEY`: Required when using Mistral provider
 
+#### Code-based Configuration
+
+You can also configure the LLM provider directly in code using the `Config` class:
+
+```python
+from legiscope.model_config import Config
+
+# Switch to OpenAI
+Config.LLM_PROVIDER = "openai"
+client = Config.get_default_client()  # Uses gpt-4o-mini
+
+# Switch to Mistral  
+Config.LLM_PROVIDER = "mistral"
+client = Config.get_default_client()  # Uses mistral-medium-latest
+
+# Get appropriate models for different tasks
+fast_model = Config.get_fast_model()        # For quick tasks
+powerful_model = Config.get_powerful_model() # For complex reasoning
+```
+
+#### Available Models by Provider
+
+**OpenAI Provider:**
+- Fast model: `gpt-4o-mini` (for HYDE, relevance assessment, etc.)
+- Powerful model: `gpt-4o` (for complex legal analysis)
+
+**Mistral Provider:**
+- Fast model: `mistral-medium-latest` (for quick tasks)
+- Powerful model: `magistral-medium-latest` (for complex reasoning)
+
 #### Example Setup
 
 ```bash
