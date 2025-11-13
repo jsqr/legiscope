@@ -6,7 +6,6 @@ Usage:
     python scripts/convert_to_markdown.py data/laws/IL-WindyCity
 """
 
-import os
 import sys
 from pathlib import Path
 
