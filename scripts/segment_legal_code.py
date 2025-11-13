@@ -6,7 +6,6 @@ Usage:
     python scripts/segment_legal_code.py data/laws/IL-WindyCity
 """
 
-import os
 import sys
 from pathlib import Path
 

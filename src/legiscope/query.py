@@ -2,16 +2,16 @@
 Query processing module for the legiscope package.
 """
 
-from typing import Any, Dict, List
+from typing import Any
 
 import polars as pl
 from instructor import Instructor
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from legiscope.llm_config import Config
 from legiscope.retrieve import retrieve_sections
 from legiscope.utils import ask
-from legiscope.llm_config import Config
 
 
 class LegalQueryResponse(BaseModel):
@@ -23,10 +23,10 @@ class LegalQueryResponse(BaseModel):
     reasoning: str = Field(
         description="Detailed explanation of the legal reasoning used to arrive at the answer"
     )
-    citations: List[str] = Field(
+    citations: list[str] = Field(
         description="List of specific legal sections or provisions that support the answer"
     )
-    supporting_passages: List[str] = Field(
+    supporting_passages: list[str] = Field(
         description="Direct excerpts from the retrieved legal text that support the reasoning"
     )
     confidence: float = Field(
@@ -42,7 +42,7 @@ class LegalQueryResponse(BaseModel):
 def query_legal_documents(
     client: Instructor,
     query: str,
-    retrieval_results: Dict[str, Any],
+    retrieval_results: dict[str, Any],
     model: str | None = None,
     temperature: float = 0.1,
     max_retries: int = 3,
@@ -248,7 +248,7 @@ def format_query_response(response: LegalQueryResponse) -> str:
 
 def run_queries(
     client: Instructor,
-    queries: List[str],
+    queries: list[str],
     jurisdiction_id: str,
     sections_parquet_path: str,
     collection,
