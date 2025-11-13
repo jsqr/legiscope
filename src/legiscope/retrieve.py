@@ -64,7 +64,7 @@ def hyde_rewriter(
 
     Example:
         from legiscope.llm_config import Config
-        client = Config.get_default_client()
+        client = Config.get_fast_client()
         result = hyde_rewriter("where can I park my car", client)
         print(result.rewritten_query)
         print(result.confidence)
@@ -157,7 +157,7 @@ def is_relevant(
 
     Example:
         from legiscope.llm_config import Config
-        client = Config.get_default_client()
+        client = Config.get_fast_client()
         result = is_relevant(
             "parking regulations",
             "No vehicle shall be parked on any street between 2 AM and 6 AM",
@@ -422,7 +422,7 @@ def retrieve_embeddings(
 
         # Retrieve with LLM-powered HYDE rewriting
         from legiscope.llm_config import Config
-        client = Config.get_default_client()
+        client = Config.get_fast_client()
         results = retrieve_embeddings(
             collection,
             "where can I park my car",
@@ -725,7 +725,7 @@ def retrieve_sections(
 
         # Section retrieval with HYDE rewriting
         from legiscope.llm_config import Config
-        client = Config.get_default_client()
+        client = Config.get_fast_client()
         results = retrieve_sections(
             collection,
             "where can I park my car",

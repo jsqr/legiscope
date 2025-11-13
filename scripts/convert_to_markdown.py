@@ -58,7 +58,7 @@ def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:
     print(f"Converting {state}-{municipality}...")
 
     try:
-        client = Config.get_default_client()
+        client = Config.get_fast_client()
 
         # Scan for heading structure
         print("Analyzing heading structure...")

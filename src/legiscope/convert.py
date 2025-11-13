@@ -67,7 +67,7 @@ def scan_legal_text(
 
     Example:
         >>> from legiscope.llm_config import Config
-        >>> client = Config.get_default_client()
+        >>> client = Config.get_fast_client()
         >>> structure = scan_legal_text(client, "data/laws/IL-WindyCity/processed/code.txt")
         >>> print(f"Found {structure.total_levels} heading levels")
         >>> for level in structure.levels:
@@ -241,7 +241,7 @@ def text2md(
 
     Example:
         >>> from legiscope.llm_config import Config
-        >>> client = Config.get_default_client()
+        >>> client = Config.get_fast_client()
         >>> structure = scan_legal_text(client, "municipal_code.txt")
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")

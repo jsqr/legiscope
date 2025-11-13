@@ -13,16 +13,16 @@ from pydantic import BaseModel
 T = TypeVar("T", bound=BaseModel)
 
 
-def get_default_client() -> Instructor:
+def get_fast_client() -> Instructor:
     """
-    Create a default instructor client using the new configuration.
+    Create a fast instructor client using the new configuration.
 
     Returns:
         Instructor: Configured instructor client for general tasks
     """
     from legiscope.llm_config import Config
 
-    return Config.get_default_client()
+    return Config.get_fast_client()
 
 
 def ask(
@@ -36,7 +36,7 @@ def ask(
     Send a prompt to a language model using Instructor library.
 
     Args:
-        client: Instructor client instance (e.g., from legiscope.llm_config import Config; Config.get_default_client())
+        client: Instructor client instance (e.g., from legiscope.llm_config import Config; Config.get_fast_client())
         prompt: The prompt to send to LLM
         response_model: Pydantic model class for structured output
         system: Optional system prompt to set as system role
@@ -60,7 +60,7 @@ def ask(
         ...     fruits: list[str]
         ...     confidence: float
         >>>
-        >>> client = Config.get_default_client()
+        >>> client = Config.get_fast_client()
         >>> result = ask(
         ...     client=client,
         ...     prompt="Extract legal fruits from this text...",

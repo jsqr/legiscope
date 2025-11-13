@@ -4,6 +4,7 @@ Configuration module for legiscope package.
 Simplified model configuration using instructor's provider abstraction.
 """
 
+import os
 import instructor
 from instructor import Instructor
 from loguru import logger
@@ -16,7 +17,13 @@ class Config:
     DEFAULT_MAX_RETRIES = 3
 
     # LLM Provider configuration
-    LLM_PROVIDER = "mistral"  # Can be "openai" or "mistral"
+    @classmethod
+    @property
+    def LLM_PROVIDER(cls) -> str:
+        """Get LLM provider from environment variable or use default."""
+        return os.getenv(
+            "LEGISCOPE_LLM_PROVIDER", "mistral"
+        )  # Can be "openai" or "mistral"
 
     OPENAI_FAST_MODEL = "gpt-4.1-mini"  # For quick tasks
     OPENAI_POWERFUL_MODEL = "gpt-4.1"  # For complex reasoning tasks
@@ -24,9 +31,9 @@ class Config:
     MISTRAL_POWERFUL_MODEL = "magistral-medium-latest"  # For complex reasoning tasks
 
     @classmethod
-    def get_default_client(cls) -> Instructor:
+    def get_fast_client(cls) -> Instructor:
         """
-        Get default client for most LLM tasks based on current provider.
+        Get fast client for most LLM tasks based on current provider.
         """
         fast_model = cls.get_fast_model()
 
@@ -42,7 +49,7 @@ class Config:
             raise ValueError(f"Unsupported LLM provider: {cls.LLM_PROVIDER}")
 
     @classmethod
-    def get_big_client(cls) -> Instructor:
+    def get_powerful_client(cls) -> Instructor:
         """
         Get powerful client for complex reasoning tasks based on current provider.
         """
@@ -62,6 +69,12 @@ class Config:
     @classmethod
     def get_fast_model(cls) -> str:
         """Get model name for fast/cheap LLM tasks based on current provider."""
+        # Check environment variable first
+        env_model = os.getenv("LEGISCOPE_FAST_MODEL")
+        if env_model:
+            return env_model
+
+        # Fall back to provider-specific defaults
         if cls.LLM_PROVIDER == "openai":
             return cls.OPENAI_FAST_MODEL
         elif cls.LLM_PROVIDER == "mistral":
@@ -72,6 +85,12 @@ class Config:
     @classmethod
     def get_powerful_model(cls) -> str:
         """Get model name for complex reasoning tasks based on current provider."""
+        # Check environment variable first
+        env_model = os.getenv("LEGISCOPE_POWERFUL_MODEL")
+        if env_model:
+            return env_model
+
+        # Fall back to provider-specific defaults
         if cls.LLM_PROVIDER == "openai":
             return cls.OPENAI_POWERFUL_MODEL
         elif cls.LLM_PROVIDER == "mistral":
