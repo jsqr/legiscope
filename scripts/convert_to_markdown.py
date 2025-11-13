@@ -14,7 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from legiscope.convert import scan_legal_text, text2md
-from legiscope.model_config import Config
+from legiscope.llm_config import Config
 
 
 def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:

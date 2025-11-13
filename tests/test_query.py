@@ -13,7 +13,7 @@ from legiscope.query import (
     format_query_response,
     run_queries,
 )
-from legiscope.model_config import Config
+from legiscope.llm_config import Config
 
 
 class TestLegalQueryResponse:

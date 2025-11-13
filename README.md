@@ -34,7 +34,7 @@ The project uses a simplified model configuration approach with instructor's pro
 
 #### Switching Models
 
-To switch models, simply uncomment the desired alternative in `src/legiscope/model_config.py`:
+To switch models, simply uncomment the desired alternative in `src/legiscope/llm_config.py`:
 
 ```python
 # In get_default_client():
@@ -112,7 +112,7 @@ The pipeline performs these steps automatically:
 ### Using Different Models
 
 ```python
-from legiscope.model_config import Config
+from legiscope.llm_config import Config
 from legiscope.utils import ask
 from pydantic import BaseModel
 
@@ -157,7 +157,7 @@ embeddings_df = create_embeddings_df(segments_df, embedding_client)
 - `demo_query.py` - Interactive Marimo notebook demonstrating section-level retrieval with drug paraphernalia query
 
 ### Source Modules
-- `model_config.py` - Centralized model configuration using instructor's provider abstraction
+- `llm_config.py` - Centralized LLM configuration using instructor's provider abstraction
 - `convert.py` - Text conversion utilities and LLM response models
 - `utils.py` - Core utilities including LLM client and directory functions
 - `embeddings.py` - Embedding generation and ChromaDB management
@@ -184,7 +184,7 @@ data/
 .
 ├── src/
 │   └── legiscope/       # Main package source code
-│       ├── model_config.py    # Model configuration and client management
+│       ├── llm_config.py    # LLM configuration and client management
 │       ├── convert.py   # Conversion utilities and response models
 │       ├── utils.py     # Core utility functions (ask function, directory creation)
 │       ├── embeddings.py # Embedding generation and ChromaDB management

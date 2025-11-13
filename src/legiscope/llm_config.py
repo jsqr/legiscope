@@ -16,7 +16,7 @@ class Config:
     DEFAULT_MAX_RETRIES = 3
 
     # LLM Provider configuration
-    LLM_PROVIDER = "openai"  # Can be "openai" or "mistral"
+    LLM_PROVIDER = "mistral"  # Can be "openai" or "mistral"
 
     OPENAI_FAST_MODEL = "gpt-4.1-mini"  # For quick tasks
     OPENAI_POWERFUL_MODEL = "gpt-4.1"  # For complex reasoning tasks

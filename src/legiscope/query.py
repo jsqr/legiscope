@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from legiscope.retrieve import retrieve_sections
 from legiscope.utils import ask
-from legiscope.model_config import Config
+from legiscope.llm_config import Config
 
 
 class LegalQueryResponse(BaseModel):
@@ -69,7 +69,7 @@ def query_legal_documents(
         instructor.exceptions.InstructorError: If LLM call fails
 
     Example:
-        from legiscope.model_config import Config
+        from legiscope.llm_config import Config
         from legiscope.retrieve import retrieve_sections
         from legiscope.query import query_legal_documents
 
@@ -295,7 +295,7 @@ def run_queries(
         instructor.exceptions.InstructorError: If LLM calls fail
 
     Example:
-        from legiscope.model_config import Config
+        from legiscope.llm_config import Config
         from legiscope.query import run_queries
         import chromadb
 

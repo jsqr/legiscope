@@ -36,7 +36,7 @@ The project supports both OpenAI and Mistral as LLM providers:
 You can also configure the LLM provider directly in code using the `Config` class:
 
 ```python
-from legiscope.model_config import Config
+from legiscope.llm_config import Config
 
 # Switch to OpenAI
 Config.LLM_PROVIDER = "openai"

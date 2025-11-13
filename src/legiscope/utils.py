@@ -20,7 +20,7 @@ def get_default_client() -> Instructor:
     Returns:
         Instructor: Configured instructor client for general tasks
     """
-    from legiscope.model_config import Config
+    from legiscope.llm_config import Config
 
     return Config.get_default_client()
 
@@ -36,7 +36,7 @@ def ask(
     Send a prompt to a language model using Instructor library.
 
     Args:
-        client: Instructor client instance (e.g., from legiscope.model_config import Config; Config.get_default_client())
+        client: Instructor client instance (e.g., from legiscope.llm_config import Config; Config.get_default_client())
         prompt: The prompt to send to LLM
         response_model: Pydantic model class for structured output
         system: Optional system prompt to set as system role
@@ -52,7 +52,7 @@ def ask(
         Exception: If LLM call fails
 
     Example:
-        >>> from legiscope.model_config import Config
+        >>> from legiscope.llm_config import Config
         >>> from pydantic import BaseModel
         >>>
         >>> class LegalFruits(BaseModel):
@@ -73,7 +73,7 @@ def ask(
         raise ValueError("Prompt cannot be empty")
 
     # Set sensible defaults using config
-    from legiscope.model_config import Config
+    from legiscope.llm_config import Config
 
     params = Config.get_llm_params(**kwargs)
 

@@ -28,7 +28,7 @@ with app.setup:
         get_jurisdiction_stats,
     )
     from legiscope.utils import ask
-    from legiscope.model_config import Config
+    from legiscope.llm_config import Config
     from legiscope.query import query_legal_documents, format_query_response
 
 
@@ -230,7 +230,9 @@ def _(
                 embedding_model=embedding_model,
             )
 
-            print(f"Raw results structure: {list(results.keys()) if results else 'None'}")
+            print(
+                f"Raw results structure: {list(results.keys()) if results else 'None'}"
+            )
 
             if results and results.get("sections"):
                 sections = results["sections"]
@@ -345,7 +347,11 @@ def _(instructor_client, query_processing_available, results):
     )
     print(f"Results available: {'Yes' if results is not None else 'No'}")
 
-    if instructor_client is not None and results is not None and results.get("sections"):
+    if (
+        instructor_client is not None
+        and results is not None
+        and results.get("sections")
+    ):
         try:
             print("Processing query with LLM analysis...")
 
@@ -358,7 +364,6 @@ def _(instructor_client, query_processing_available, results):
                 retrieval_results=results,
                 temperature=0.1,
                 max_retries=3,
-                model="magistral-medium-latest",
             )
 
             print("Query processing completed successfully")
@@ -396,7 +401,6 @@ def _(mo):
 
 @app.function
 def format_query_response_md(response):
-
     md_output = f"## Query Response\n\n"
     md_output += f"**Answer:** {response.short_answer}\n\n"
     md_output += f"**Confidence:** {response.confidence:.1%}\n\n"

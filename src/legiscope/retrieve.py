@@ -8,7 +8,7 @@ import polars as pl
 
 from legiscope.utils import ask
 from legiscope.embeddings import get_embeddings
-from legiscope.model_config import Config
+from legiscope.llm_config import Config
 import ollama
 
 
@@ -63,7 +63,7 @@ def hyde_rewriter(
         ValueError: If query is empty or client is invalid
 
     Example:
-        from legiscope.model_config import Config
+        from legiscope.llm_config import Config
         client = Config.get_default_client()
         result = hyde_rewriter("where can I park my car", client)
         print(result.rewritten_query)
@@ -156,7 +156,7 @@ def is_relevant(
         ValueError: If query or text is empty, or client is invalid
 
     Example:
-        from legiscope.model_config import Config
+        from legiscope.llm_config import Config
         client = Config.get_default_client()
         result = is_relevant(
             "parking regulations",
@@ -421,7 +421,7 @@ def retrieve_embeddings(
         results = retrieve_embeddings(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
 
         # Retrieve with LLM-powered HYDE rewriting
-        from legiscope.model_config import Config
+        from legiscope.llm_config import Config
         client = Config.get_default_client()
         results = retrieve_embeddings(
             collection,
@@ -724,7 +724,7 @@ def retrieve_sections(
         )
 
         # Section retrieval with HYDE rewriting
-        from legiscope.model_config import Config
+        from legiscope.llm_config import Config
         client = Config.get_default_client()
         results = retrieve_sections(
             collection,

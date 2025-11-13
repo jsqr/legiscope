@@ -9,7 +9,7 @@ from pathlib import Path
 
 import chromadb
 
-from legiscope.model_config import Config
+from legiscope.llm_config import Config
 from legiscope.query import run_queries
 
 # Add src to path to import legiscope modules
