@@ -2,17 +2,16 @@
 Query processing module for the legiscope package.
 """
 
-from typing import Dict, List, Any
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List
+
+import polars as pl
 from instructor import Instructor
 from loguru import logger
-import polars as pl
+from pydantic import BaseModel, Field
 
-from legiscope.utils import ask, DEFAULT_MODEL
 from legiscope.retrieve import retrieve_sections
-
-# Define powerful model constant
-DEFAULT_POWERFUL_MODEL = "gpt-4.1"
+from legiscope.utils import ask
+from legiscope.llm_config import Config
 
 
 class LegalQueryResponse(BaseModel):
@@ -44,7 +43,7 @@ def query_legal_documents(
     client: Instructor,
     query: str,
     retrieval_results: Dict[str, Any],
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     temperature: float = 0.1,
     max_retries: int = 3,
 ) -> LegalQueryResponse:
@@ -58,7 +57,7 @@ def query_legal_documents(
         client: Instructor client for LLM-powered analysis
         query: The user's legal question or query
         retrieval_results: Results from retrieve_sections or similar retrieval functions
-        model: LLM model to use. Defaults to 'gpt-4.1'
+        model: LLM model to use. Uses Config.get_fast_model() if not specified
         temperature: Sampling temperature for the LLM. Defaults to 0.1
         max_retries: Maximum retry attempts for LLM calls. Defaults to 3
 
@@ -70,13 +69,12 @@ def query_legal_documents(
         instructor.exceptions.InstructorError: If LLM call fails
 
     Example:
-        import instructor
-        from openai import OpenAI
+        from legiscope.llm_config import Config
         from legiscope.retrieve import retrieve_sections
         from legiscope.query import query_legal_documents
 
         # Setup client
-        client = instructor.from_openai(OpenAI())
+        client = Config.get_default_client()
 
         # Retrieve relevant sections
         results = retrieve_sections(
@@ -97,6 +95,10 @@ def query_legal_documents(
         print(f"Reasoning: {response.reasoning}")
         print(f"Citations: {response.citations}")
     """
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
     # Validate inputs
     if not client:
         logger.error("Client is required for query processing")
@@ -250,7 +252,7 @@ def run_queries(
     jurisdiction_id: str,
     sections_parquet_path: str,
     collection,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     temperature: float = 0.1,
     max_retries: int = 3,
     n_results: int = 10,
@@ -269,7 +271,7 @@ def run_queries(
         jurisdiction_id: Jurisdiction identifier (e.g., 'IL-WindyCity')
         sections_parquet_path: Path to sections.parquet file containing section data
         collection: ChromaDB collection to query
-        model: LLM model to use for query processing. Defaults to 'gpt-4.1'
+        model: LLM model to use for query processing. Uses Config.get_fast_model() if not specified
         temperature: Sampling temperature for LLM. Defaults to 0.1
         max_retries: Maximum retry attempts for LLM calls. Defaults to 3
         n_results: Number of results to retrieve per query. Defaults to 10
@@ -293,13 +295,12 @@ def run_queries(
         instructor.exceptions.InstructorError: If LLM calls fail
 
     Example:
-        import instructor
-        from openai import OpenAI
+        from legiscope.llm_config import Config
         from legiscope.query import run_queries
         import chromadb
 
         # Setup
-        client = instructor.from_openai(OpenAI())
+        client = Config.get_default_client()
         chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
         collection = chroma_client.get_collection("legal_code_all")
 
@@ -316,7 +317,7 @@ def run_queries(
             jurisdiction_id="IL-WindyCity",
             sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
             collection=collection,
-            model=DEFAULT_POWERFUL_MODEL
+            model=Config.get_powerful_model()
         )
 
         # View results
@@ -343,6 +344,10 @@ def run_queries(
     if collection is None:
         logger.error("ChromaDB collection is required")
         raise ValueError("ChromaDB collection is required")
+
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
 
     logger.info(
         f"Processing {len(queries)} queries for jurisdiction: {jurisdiction_id}"

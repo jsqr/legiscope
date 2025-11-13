@@ -3,32 +3,26 @@ Utility functions for the legiscope package.
 """
 
 import os
-from typing import TypeVar, Type
+from typing import Type, TypeVar
+
 from instructor import Instructor
-from pydantic import BaseModel
 from loguru import logger
+from pydantic import BaseModel
 
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)
 
-# Global configuration constants
-DEFAULT_MODEL = "gpt-4.1-mini"
-DEFAULT_TEMPERATURE = 0.1
-DEFAULT_MAX_RETRIES = 3
-
 
 def get_default_client() -> Instructor:
     """
-    Create a default OpenAI instructor client with RESPONSES_TOOLS mode.
+    Create a default instructor client using the new configuration.
 
     Returns:
-        Instructor: Configured instructor client using RESPONSES_TOOLS mode
+        Instructor: Configured instructor client for general tasks
     """
-    import instructor
-    from openai import OpenAI
+    from legiscope.llm_config import Config
 
-    openai_client = OpenAI()
-    return instructor.from_openai(openai_client, mode=instructor.Mode.RESPONSES_TOOLS)
+    return Config.get_default_client()
 
 
 def ask(
@@ -42,12 +36,11 @@ def ask(
     Send a prompt to a language model using Instructor library.
 
     Args:
-        client: Instructor client instance (e.g., instructor.from_openai(OpenAI()))
+        client: Instructor client instance (e.g., from legiscope.llm_config import Config; Config.get_default_client())
         prompt: The prompt to send to LLM
         response_model: Pydantic model class for structured output
         system: Optional system prompt to set as system role
         **kwargs: Additional arguments passed to LLM call
-            - model: str - Model name (e.g., DEFAULT_MODEL)
             - temperature: float - Sampling temperature (0.0-1.0)
             - max_retries: int - Maximum retry attempts
 
@@ -59,8 +52,7 @@ def ask(
         Exception: If LLM call fails
 
     Example:
-        >>> import instructor
-        >>> from openai import OpenAI
+        >>> from legiscope.llm_config import Config
         >>> from pydantic import BaseModel
         >>>
         >>> class LegalFruits(BaseModel):
@@ -68,26 +60,22 @@ def ask(
         ...     fruits: list[str]
         ...     confidence: float
         >>>
-        >>> client = instructor.from_openai(OpenAI())
+        >>> client = Config.get_default_client()
         >>> result = ask(
         ...     client=client,
         ...     prompt="Extract legal fruits from this text...",
         ...     response_model=LegalFruits,
         ...     system="You are an expert on law and types of fruit.",
-        ...     model=DEFAULT_MODEL,
         ...     temperature=0.1
         ... )
     """
     if not prompt or not prompt.strip():
         raise ValueError("Prompt cannot be empty")
 
-    # Set sensible defaults using global configuration
-    params = {
-        "model": DEFAULT_MODEL,
-        "temperature": DEFAULT_TEMPERATURE,
-        "max_retries": DEFAULT_MAX_RETRIES,
-        **kwargs,
-    }
+    # Set sensible defaults using config
+    from legiscope.llm_config import Config
+
+    params = Config.get_llm_params(**kwargs)
 
     # Build messages
     messages = []

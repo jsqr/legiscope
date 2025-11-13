@@ -21,6 +21,120 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 uv pip install -e ".[dev]"
 ```
 
+### LLM Provider Configuration
+
+The project supports both OpenAI and Mistral as LLM providers:
+
+#### Environment Variables
+
+- `LLM_PROVIDER`: Set to "openai" (default) or "mistral" to select LLM provider
+- `OPENAI_API_KEY`: Required when using OpenAI provider
+- `MISTRAL_API_KEY`: Required when using Mistral provider
+
+#### Code-based Configuration
+
+You can also configure the LLM provider directly in code using the `Config` class:
+
+```python
+from legiscope.llm_config import Config
+
+# Switch to OpenAI
+Config.LLM_PROVIDER = "openai"
+client = Config.get_default_client()  # Uses gpt-4o-mini
+
+# Switch to Mistral  
+Config.LLM_PROVIDER = "mistral"
+client = Config.get_default_client()  # Uses mistral-medium-latest
+
+# Get appropriate models for different tasks
+fast_model = Config.get_fast_model()        # For quick tasks
+powerful_model = Config.get_powerful_model() # For complex reasoning
+```
+
+#### Available Models by Provider
+
+**OpenAI Provider:**
+- Fast model: `gpt-4o-mini` (for HYDE, relevance assessment, etc.)
+- Powerful model: `gpt-4o` (for complex legal analysis)
+
+**Mistral Provider:**
+- Fast model: `mistral-medium-latest` (for quick tasks)
+- Powerful model: `magistral-medium-latest` (for complex reasoning)
+
+#### Example Setup
+
+```bash
+# For OpenAI (default)
+export LLM_PROVIDER=openai
+export OPENAI_API_KEY=your_openai_key
+
+# For Mistral
+export LLM_PROVIDER=mistral
+export MISTRAL_API_KEY=your_mistral_key
+```
+
+### Embedding Model Configuration
+
+The project supports multiple embedding models for generating text embeddings:
+
+#### Current Configuration
+
+**Ollama with embeddinggemma (default)**
+- Uses local Ollama server
+- Model: `embeddinggemma`
+- Client: `get_embedding_client("ollama")`
+- Auto-detected provider and model
+
+#### Alternative Configuration
+
+**Mistral with mistral-embed**
+- Uses Mistral's API
+- Model: `mistral-embed`
+- Requires: `MISTRAL_API_KEY` environment variable
+- Client: `get_embedding_client("mistral")`
+
+#### Switching Between Embedding Models
+
+To switch from Ollama to Mistral embeddings:
+
+1. Set your Mistral API key:
+   ```bash
+   export MISTRAL_API_KEY=your_mistral_key
+   ```
+
+2. Use the new embedding interface:
+   ```python
+   from legiscope.embeddings import get_embedding_client, get_embeddings
+   
+   # For Ollama (default)
+   client = get_embedding_client("ollama")
+   embeddings = get_embeddings(client, ["text1", "text2"])
+   
+   # For Mistral
+   client = get_embedding_client("mistral")
+   embeddings = get_embeddings(client, ["text1", "text2"])
+   ```
+
+#### Usage Examples
+
+```python
+from legiscope.embeddings import get_embedding_client, get_embeddings, EmbeddingConfig
+
+# Get embedding client for specific provider
+client = get_embedding_client("ollama")  # or "mistral"
+
+# Generate embeddings (auto-detects model)
+texts = ["Legal text 1", "Legal text 2"]
+embeddings = get_embeddings(client, texts)
+
+# Or specify model explicitly
+embeddings = get_embeddings(client, texts, model="embeddinggemma", provider="ollama")
+
+# Using with EmbeddingConfig
+config = EmbeddingConfig(provider="mistral")  # Uses default mistral-embed model
+client = get_embedding_client(config.provider)
+```
+
 ## Development Commands
 
 ### Testing

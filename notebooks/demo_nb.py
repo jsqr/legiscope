@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.17.6"
+__generated_with = "0.17.7"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -15,6 +15,7 @@ with app.setup:
     from openai import OpenAI
     import sys
     import os
+    import traceback
 
     # Add src to path to import legiscope modules
     src_path = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -27,29 +28,32 @@ with app.setup:
         get_jurisdiction_stats,
     )
     from legiscope.utils import ask
-    from legiscope.config import Config
+    from legiscope.llm_config import Config
     from legiscope.query import query_legal_documents, format_query_response
-    import traceback
 
 
 @app.cell
 def _():
     import marimo as mo
-
     return (mo,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## ChromaDB setup
+
+    We use a different collection name for different embedding models. In particular,
+    - `legal_code_ollama` holds vectors created with Google's `embeddinggemma` model, running locally on ollama
+    - `legal_code_mistral` holds vectors created with Mistral AI's `mistral-embed` model, running on Mistral AI's cloud platform.
     """)
     return
 
 
 @app.cell
 def _():
-    collection_name = "legal_code_all"
+    collection_name = "legal_code_mistral"
+    # collection_name = "legal_code_ollama"
     chroma_path = "../data/chroma_db"
 
     try:
@@ -77,7 +81,7 @@ def _():
     except Exception as e:
         print(f"ERROR: ChromaDB connection failed")
         print(f"Error: {str(e)}")
-        print("Check ChromaDB is set up with embedded legal documents.")
+        print("Check ChromaDB is set up with embedded documents.")
         collection = None
         chroma_client = None
     return (collection,)
@@ -93,21 +97,25 @@ def _(mo):
 
 @app.cell
 def _():
+    from legiscope.embeddings import get_embedding_client, get_embeddings
+
     embedding_client = None
-    embedding_model = "embeddinggemma"
+    embedding_model = "mistral-embed"
+    embedding_provider = "mistral"
 
     try:
-        import ollama
+        embedding_client = get_embedding_client(embedding_provider)
 
-        embedding_client = ollama.Client()
-
-        test_response = embedding_client.embeddings(
-            model=embedding_model, prompt="test"
+        test_response = get_embeddings(
+            embedding_client,
+            ["test"],
+            model=embedding_model,
+            provider=embedding_provider,
         )
-        if test_response and "embedding" in test_response:
-            embedding_dim = len(test_response["embedding"])
+        if test_response and len(test_response) > 0:
+            embedding_dim = len(test_response[0])
             print(f"=== Embedding Client Setup ===")
-            print(f"Client: ollama")
+            print(f"Client: {embedding_provider}")
             print(f"Model: {embedding_model}")
             print(f"Dimension: {embedding_dim}")
             print("Client setup successful")
@@ -115,13 +123,10 @@ def _():
             print("ERROR: Embedding client test failed")
             embedding_client = None
 
-    except ImportError:
-        print("ERROR: ollama package not available")
-        print("Install with: uv pip install ollama")
     except Exception as e:
         print(f"ERROR: Embedding client setup failed: {str(e)}")
         embedding_client = None
-    return
+    return embedding_client, embedding_model
 
 
 @app.cell
@@ -148,7 +153,15 @@ def _():
     # municipality = "WindyCity"  # Specific municipality
 
     # Sections parquet path for full section context
-    sections_parquet_path = "../data/laws/IL-WindyCity/tables/sections.parquet"
+    sections_parquet_path = os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "data",
+        "laws",
+        "IL-WindyCity",
+        "tables",
+        "sections.parquet",
+    )
 
     print("=== Query Configuration ===")
     print(f"Query: {query}")
@@ -160,29 +173,25 @@ def _():
 
 @app.cell
 def _():
-    openai_api_key = os.getenv("OPENAI_API_KEY")
     instructor_client = None
 
-    print("=== OpenAI Client Setup ===")
-    print(f"OpenAI API Key found: {'Yes' if openai_api_key else 'No'}")
+    print("=== LLM Client Setup ===")
+    print("Using instructor with Mistral provider")
 
-    if openai_api_key:
-        try:
-            openai_client = OpenAI(api_key=openai_api_key)
-            instructor_client = instructor.from_openai(openai_client)
-            print("Instructor client created successfully")
-        except Exception as e:
-            print(f"ERROR: Failed to create instructor client: {str(e)}")
-            instructor_client = None
-    else:
-        print("ERROR: OpenAI API key not found in environment")
-        print("Set OPENAI_API_KEY environment variable to use query processing")
+    try:
+        instructor_client = Config.get_default_client()
+        print(f"Instructor client created with model {instructor_client}")
+    except Exception as e:
+        print(f"ERROR: Failed to create instructor client: {str(e)}")
+        instructor_client = None
     return (instructor_client,)
 
 
 @app.cell
 def _(
     collection,
+    embedding_client,
+    embedding_model,
     instructor_client,
     jurisdiction_id,
     n_results,
@@ -208,6 +217,7 @@ def _(
         try:
             print("Executing retrieval...")
 
+            # Use the existing embedding client from setup
             results = retrieve_sections(
                 collection=collection,
                 query_text=query,
@@ -216,7 +226,8 @@ def _(
                 jurisdiction_id=jurisdiction_id,
                 rewrite=use_hyde,
                 client=instructor_client if use_hyde else None,
-                model=Config.DEFAULT_MODEL,
+                embedding_client=embedding_client,
+                embedding_model=embedding_model,
             )
 
             print(
@@ -327,34 +338,17 @@ def _(mo):
 
 
 @app.cell
-def _():
-    print("=== Query Processing Setup ===")
-    print("Query processing functions available from setup imports")
-    query_processing_available = True
-    return (query_processing_available,)
-
-
-@app.cell
-def _(
-    DEFAULT_POWERFUL_MODEL,
-    instructor_client,
-    query_processing_available,
-    results,
-):
+def _(instructor_client, query_processing_available, results):
     query_response = None
 
     print("=== Query Processing ===")
-    print(
-        f"Query processing available: {'Yes' if query_processing_available else 'No'}"
-    )
     print(
         f"Instructor client available: {'Yes' if instructor_client is not None else 'No'}"
     )
     print(f"Results available: {'Yes' if results is not None else 'No'}")
 
     if (
-        query_processing_available
-        and instructor_client is not None
+        instructor_client is not None
         and results is not None
         and results.get("sections")
     ):
@@ -368,7 +362,6 @@ def _(
                 client=instructor_client,
                 query=user_query,
                 retrieval_results=results,
-                model=Config.DEFAULT_POWERFUL_MODEL,  # Use more powerful model as requested
                 temperature=0.1,
                 max_retries=3,
             )
@@ -406,16 +399,33 @@ def _(mo):
     return
 
 
-@app.cell
-def _(query_response):
-    print("=== Query Response ===")
+@app.function
+def format_query_response_md(response):
+    md_output = f"## Query Response\n\n"
+    md_output += f"**Answer:** {response.short_answer}\n\n"
+    md_output += f"**Confidence:** {response.confidence:.1%}\n\n"
 
-    if query_response is None:
-        print("No query response to display")
-    else:
-        # Format and display the response
-        formatted_response = format_query_response(query_response)
-        print(formatted_response)
+    # Add citations if available
+    if response.citations:
+        md_output += "### Citations\n"
+        for i, citation in enumerate(response.citations, 1):
+            md_output += f"{i}. {citation}\n"
+        md_output += "\n"
+
+    # Add supporting passages if available
+    if response.supporting_passages:
+        md_output += "### Supporting Passages\n"
+        for i, passage in enumerate(response.supporting_passages, 1):
+            md_output += f"{i}. {passage}\n"
+        md_output += "\n"
+
+    return md_output
+
+
+@app.cell
+def _(mo, query_response):
+    formatted_response = format_query_response_md(query_response)
+    mo.md(formatted_response)
     return
 
 

@@ -24,6 +24,49 @@ make env
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
+### Model Configuration
+
+The project uses a simplified model configuration approach with instructor's provider abstraction. Three main client types are configured:
+
+- **Default Client** (`Config.get_default_client()`): Uses `gpt-4.1-mini` for general-purpose tasks
+- **Big Client** (`Config.get_big_client()`): Uses `gpt-4.1` for complex reasoning tasks  
+- **Embedding Client** (`get_embedding_client()`): Uses `ollama` with `embeddinggemma` model by default
+
+#### Switching Models
+
+To switch models, simply uncomment the desired alternative in `src/legiscope/llm_config.py`:
+
+```python
+# In get_default_client():
+# return instructor.from_provider("openai:gpt-4o")           # More powerful
+# return instructor.from_provider("openai:gpt-4o-mini")     # Faster
+# return instructor.from_provider("mistral:mistral-medium-latest")  # Mistral
+
+# In get_big_client():
+# return instructor.from_provider("openai:o1-preview")       # Advanced reasoning
+# return instructor.from_provider("openai:o1-mini")          # Lightweight reasoning
+# return instructor.from_provider("mistral:magistral-medium-latest")  # Mistral
+
+# For embeddings, use the new interface:
+# from legiscope.embeddings import get_embedding_client
+# client = get_embedding_client("ollama")  # or "mistral"
+```
+
+#### Environment Variables
+
+Set your API keys in the environment:
+
+```bash
+# For OpenAI models (default)
+export OPENAI_API_KEY=your_openai_key
+
+# For Mistral models
+export MISTRAL_API_KEY=your_mistral_key
+
+# Optional: Override default provider
+export LLM_PROVIDER=openai  # or "mistral"
+```
+
 ## Development
 
 ### Running Tests
@@ -66,6 +109,39 @@ The pipeline performs these steps automatically:
 4. Segments the code into searchable sections
 5. Generates embeddings for semantic search
 
+### Using Different Models
+
+```python
+from legiscope.llm_config import Config
+from legiscope.utils import ask
+from pydantic import BaseModel
+
+class LegalAnalysis(BaseModel):
+    summary: str
+    relevant_sections: list[str]
+
+# Use default client for general tasks
+default_client = Config.get_default_client()
+result = ask(
+    client=default_client,
+    prompt="Analyze this legal text...",
+    response_model=LegalAnalysis
+)
+
+# Use big client for complex reasoning
+big_client = Config.get_big_client()
+complex_result = ask(
+    client=big_client,
+    prompt="Perform deep legal analysis...",
+    response_model=LegalAnalysis
+)
+
+# Use embedding client for semantic search
+from legiscope.embeddings import get_embedding_client, create_embeddings_df
+embedding_client = get_embedding_client("ollama")  # or "mistral"
+embeddings_df = create_embeddings_df(segments_df, embedding_client)
+```
+
 ## Scripts and Modules
 
 ### Scripts
@@ -81,6 +157,7 @@ The pipeline performs these steps automatically:
 - `demo_query.py` - Interactive Marimo notebook demonstrating section-level retrieval with drug paraphernalia query
 
 ### Source Modules
+- `llm_config.py` - Centralized LLM configuration using instructor's provider abstraction
 - `convert.py` - Text conversion utilities and LLM response models
 - `utils.py` - Core utilities including LLM client and directory functions
 - `embeddings.py` - Embedding generation and ChromaDB management
@@ -107,6 +184,7 @@ data/
 .
 ├── src/
 │   └── legiscope/       # Main package source code
+│       ├── llm_config.py    # LLM configuration and client management
 │       ├── convert.py   # Conversion utilities and response models
 │       ├── utils.py     # Core utility functions (ask function, directory creation)
 │       ├── embeddings.py # Embedding generation and ChromaDB management

@@ -7,15 +7,15 @@ import argparse
 import sys
 from pathlib import Path
 
+import chromadb
+
+from legiscope.llm_config import Config
+from legiscope.query import run_queries
+
 # Add src to path to import legiscope modules
 src_path = Path(__file__).parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
-
-import chromadb
-import polars as pl
-from legiscope.config import Config
-from legiscope.query import run_queries
 
 
 def read_queries(file_path: str) -> list[str]:
@@ -46,8 +46,7 @@ def main():
 
     args = parser.parse_args()
 
-    client = Config.get_openai_client()
-    model = Config.get_default_model(powerful=True)
+    client = Config.get_big_client()
 
     queries = read_queries(args.queries_path)
     print(f"Loaded {len(queries)} queries from {args.queries_path}")
@@ -61,7 +60,6 @@ def main():
         jurisdiction_id=args.jurisdiction_id,
         sections_parquet_path=args.sections_parquet,
         collection=collection,
-        model=model,
     )
 
     results_df.write_parquet(args.output)

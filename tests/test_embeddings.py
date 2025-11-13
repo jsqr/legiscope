@@ -29,7 +29,7 @@ class TestGetEmbeddings:
 
     def test_get_embeddings_basic(self):
         """Test basic embedding generation."""
-        # Create mock client
+        # Create mock client that mimics ollama.Client (sequential processing)
         mock_client = Mock()
         mock_client.embeddings.side_effect = [
             {"embedding": [0.1, 0.2, 0.3]},
@@ -37,13 +37,13 @@ class TestGetEmbeddings:
         ]
 
         texts = ["text1", "text2"]
-        result = get_embeddings(mock_client, texts, "test-model")
+        result = get_embeddings(mock_client, texts, "test-model", "ollama")
 
         assert len(result) == 2
         assert result[0] == [0.1, 0.2, 0.3]
         assert result[1] == [0.4, 0.5, 0.6]
 
-        # Verify client was called correctly
+        # Verify client was called correctly (sequential calls for Ollama)
         assert mock_client.embeddings.call_count == 2
         mock_client.embeddings.assert_any_call(model="test-model", prompt="text1")
         mock_client.embeddings.assert_any_call(model="test-model", prompt="text2")
@@ -53,14 +53,14 @@ class TestGetEmbeddings:
         mock_client = Mock()
 
         with pytest.raises(ValueError, match="texts parameter cannot be empty"):
-            get_embeddings(mock_client, [], "test-model")
+            get_embeddings(mock_client, [], "test-model", "ollama")
 
     def test_get_embeddings_single_text(self):
         """Test embedding generation for single text."""
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        result = get_embeddings(mock_client, ["single text"], "test-model")
+        result = get_embeddings(mock_client, ["single text"], "test-model", "ollama")
 
         assert len(result) == 1
         assert result[0] == [0.1, 0.2, 0.3]
@@ -73,7 +73,7 @@ class TestGetEmbeddings:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        get_embeddings(mock_client, ["text"], "custom-model")
+        get_embeddings(mock_client, ["text"], "custom-model", "ollama")
 
         mock_client.embeddings.assert_called_once_with(
             model="custom-model", prompt="text"
@@ -85,7 +85,7 @@ class TestGetEmbeddings:
         mock_client.embeddings.side_effect = Exception("API error")
 
         with pytest.raises(Exception, match="API error"):
-            get_embeddings(mock_client, ["text"], "test-model")
+            get_embeddings(mock_client, ["text"], "test-model", "ollama")
 
     def test_get_embeddings_none_response(self):
         """Test handling of None response from client."""
@@ -93,29 +93,112 @@ class TestGetEmbeddings:
         mock_client.embeddings.return_value = None
 
         with pytest.raises(ValueError, match="Failed to get embedding"):
-            get_embeddings(mock_client, ["text"], "test-model")
+            get_embeddings(mock_client, ["text"], "test-model", "ollama")
 
     def test_get_embeddings_missing_embedding_key(self):
         """Test handling of response without embedding key."""
         mock_client = Mock()
         mock_client.embeddings.return_value = {"other_key": "value"}
 
-        with pytest.raises(KeyError):
-            get_embeddings(mock_client, ["text"], "test-model")
+        with pytest.raises(ValueError, match="Failed to get embedding"):
+            get_embeddings(mock_client, ["text"], "test-model", "ollama")
 
     @patch("legiscope.embeddings.logger")
     def test_get_embeddings_progress_logging(self, mock_logger):
         """Test progress logging for large batches."""
         mock_client = Mock()
-        # Create 15 responses to trigger progress logging
+        # Create sequential responses for 15 texts (Ollama processes sequentially)
         mock_client.embeddings.side_effect = [{"embedding": [0.1]} for _ in range(15)]
 
         texts = [f"text{i}" for i in range(15)]
-        get_embeddings(mock_client, texts, "test-model")
+        get_embeddings(mock_client, texts, "test-model", "ollama")
 
-        # Should log progress at 10
+        # Should log individual processing progress for Ollama
         debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
-        assert any("Processed 10/15 embeddings" in call for call in debug_calls)
+        assert any("Processed 15/15 texts" in call for call in debug_calls)
+
+    def test_get_embeddings_mistral_provider(self):
+        """Test embedding generation with Mistral provider."""
+        # Create mock client that mimics mistralai.Mistral
+        mock_client = Mock()
+
+        # Create mock response object with data attribute
+        mock_response = Mock()
+        mock_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        mock_client.embeddings.create.return_value = mock_response
+
+        texts = ["text1"]
+        result = get_embeddings(mock_client, texts, "mistral-embed", "mistral")
+
+        assert len(result) == 1
+        assert result[0] == [0.1, 0.2, 0.3]
+
+        # Verify client was called correctly for Mistral API
+        mock_client.embeddings.create.assert_called_once_with(
+            model="mistral-embed", inputs=["text1"]
+        )
+
+    def test_get_embeddings_auto_detect_ollama(self):
+        """Test auto-detection of ollama provider."""
+        # Create mock client with ollama in name
+        mock_client = Mock()
+        mock_client.__class__.__name__ = "OllamaClient"
+        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
+
+        texts = ["text"]
+        result = get_embeddings(mock_client, texts)  # No provider specified
+
+        assert len(result) == 1
+        assert result[0] == [0.1, 0.2, 0.3]
+
+    def test_get_embeddings_auto_detect_mistral(self):
+        """Test auto-detection of mistral provider."""
+        # Create mock client with mistral in name
+        mock_client = Mock()
+        mock_client.__class__.__name__ = "Mistral"
+
+        # Create mock response object
+        mock_response = Mock()
+        mock_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        mock_client.embeddings.create.return_value = mock_response
+
+        texts = ["text"]
+        result = get_embeddings(mock_client, texts)  # No provider specified
+
+        assert len(result) == 1
+        assert result[0] == [0.1, 0.2, 0.3]
+
+    def test_get_embeddings_auto_detect_fails(self):
+        """Test auto-detection failure with unknown client type."""
+        # Create a mock without any embedding-related attributes
+        mock_client = Mock(spec=[])  # Empty spec means no attributes
+        mock_client.__class__.__name__ = "UnknownClient"
+
+        with pytest.raises(ValueError, match="Unable to detect provider"):
+            get_embeddings(mock_client, ["text"])  # No provider specified
+
+    def test_get_embeddings_batching_100_texts(self):
+        """Test batching behavior with exactly 100 texts (Ollama sequential)."""
+        mock_client = Mock()
+        mock_client.embeddings.side_effect = [
+            {"embedding": [0.1 * i, 0.2 * i, 0.3 * i]} for i in range(100)
+        ]
+
+        texts = [f"text{i}" for i in range(100)]
+        result = get_embeddings(mock_client, texts, "test-model", "ollama")
+
+        assert len(result) == 100
+        assert mock_client.embeddings.call_count == 100
+
+    def test_get_embeddings_batch_error_handling(self):
+        """Test error handling in batched mode."""
+        mock_client = Mock()
+        mock_client.embeddings.side_effect = Exception("Batch failed")
+
+        texts = [f"text{i}" for i in range(10)]
+
+        with pytest.raises(Exception, match="Batch failed"):
+            get_embeddings(mock_client, texts, "test-model", "ollama")
 
 
 class TestCreateEmbeddingsDf:
@@ -131,14 +214,14 @@ class TestCreateEmbeddingsDf:
             }
         )
 
-        # Mock embedding client
+        # Mock embedding client with sequential responses (Ollama)
         mock_client = Mock()
         mock_client.embeddings.side_effect = [
             {"embedding": [0.1, 0.2, 0.3]},
             {"embedding": [0.4, 0.5, 0.6]},
         ]
 
-        result = create_embeddings_df(df, mock_client, "test-model")
+        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         # Check structure
         assert len(result) == 2
@@ -165,6 +248,8 @@ class TestCreateEmbeddingsDf:
         result = create_embeddings_df(
             df,
             mock_client,
+            "test-model",
+            "ollama",
             heading_col="custom_heading",
             text_col="custom_text",
             embedding_col="custom_embedding",
@@ -185,7 +270,7 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        create_embeddings_df(df, mock_client, "test-model")
+        create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         # Should call with concatenated text
         expected_prompt = "# Title\n\nContent"
@@ -205,7 +290,7 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        create_embeddings_df(df, mock_client, "test-model")
+        create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         # Should call with heading only
         mock_client.embeddings.assert_called_once_with(
@@ -224,7 +309,7 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        create_embeddings_df(df, mock_client, "test-model")
+        create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         # Should call with text only
         mock_client.embeddings.assert_called_once_with(
@@ -242,7 +327,7 @@ class TestCreateEmbeddingsDf:
 
         mock_client = Mock()
 
-        result = create_embeddings_df(df, mock_client, "test-model")
+        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         assert len(result) == 0
         assert "embedding" in result.columns
@@ -253,7 +338,7 @@ class TestCreateEmbeddingsDf:
         """Test error handling for invalid DataFrame type."""
         invalid_df = "not a dataframe"  # type: ignore
         with pytest.raises(TypeError, match="df must be a polars DataFrame"):
-            create_embeddings_df(invalid_df, Mock(), "test-model")  # type: ignore
+            create_embeddings_df(invalid_df, Mock(), "test-model", "ollama")  # type: ignore
 
     def test_create_embeddings_df_missing_columns(self):
         """Test error handling for missing required columns."""
@@ -267,7 +352,7 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
 
         with pytest.raises(ValueError, match="DataFrame missing required columns"):
-            create_embeddings_df(df, mock_client, "test-model")
+            create_embeddings_df(df, mock_client, "test-model", "ollama")
 
     def test_create_embeddings_df_embedding_error(self):
         """Test error handling when embedding generation fails."""
@@ -282,7 +367,7 @@ class TestCreateEmbeddingsDf:
         mock_client.embeddings.side_effect = Exception("Embedding failed")
 
         with pytest.raises(Exception, match="Embedding failed"):
-            create_embeddings_df(df, mock_client, "test-model")
+            create_embeddings_df(df, mock_client, "test-model", "ollama")
 
     @patch("legiscope.embeddings.logger")
     def test_create_embeddings_df_logging(self, mock_logger):
@@ -297,7 +382,7 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        create_embeddings_df(df, mock_client, "test-model")
+        create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         # Should log info messages
         info_calls = [call[0][0] for call in mock_logger.info.call_args_list]
@@ -325,7 +410,7 @@ class TestCreateEmbeddingsDf:
             {"embedding": [0.1 * i, 0.2 * i, 0.3 * i]} for i in range(5)
         ]
 
-        result = create_embeddings_df(df, mock_client, "test-model")
+        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         assert len(result) == 5
         assert len(result["embedding"].to_list()) == 5
@@ -343,7 +428,7 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        result = create_embeddings_df(df, mock_client, "test-model")
+        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         # Check that embedding column is List(Float64)
         schema = result.schema
@@ -362,7 +447,7 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        result = create_embeddings_df(df, mock_client, "test-model")
+        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
 
         # Should preserve all original columns plus embedding
         expected_columns = [

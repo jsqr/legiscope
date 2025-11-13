@@ -6,8 +6,9 @@ from instructor import Instructor
 from loguru import logger
 import polars as pl
 
-from legiscope.utils import ask, DEFAULT_MODEL
+from legiscope.utils import ask
 from legiscope.embeddings import get_embeddings
+from legiscope.llm_config import Config
 import ollama
 
 
@@ -43,7 +44,7 @@ class RelevanceAssessment(BaseModel):
 
 
 def hyde_rewriter(
-    query: str, client: Instructor, model: str = DEFAULT_MODEL
+    query: str, client: Instructor, model: str | None = None
 ) -> HydeRewrite:
     """Rewrite a natural language query into municipal code style text using HYDE approach.
 
@@ -53,7 +54,7 @@ def hyde_rewriter(
     Args:
         query: Natural language query from user
         client: Instructor client for LLM-powered rewriting
-        model: LLM model to use. Defaults to 'gpt-4.1-mini'
+        model: LLM model to use. Uses Config.get_fast_model() if not specified
 
     Returns:
         HydeRewrite: Structured response with rewritten query and metadata
@@ -62,14 +63,17 @@ def hyde_rewriter(
         ValueError: If query is empty or client is invalid
 
     Example:
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.llm_config import Config
+        client = Config.get_default_client()
         result = hyde_rewriter("where can I park my car", client)
         print(result.rewritten_query)
         print(result.confidence)
         print(result.query_type)
     """
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
     if not query or not query.strip():
         logger.error("Query cannot be empty for HYDE rewriting")
         raise ValueError("Query cannot be empty for HYDE rewriting")
@@ -132,7 +136,7 @@ Provide a rewritten query that would be effective for semantic search against mu
 
 
 def is_relevant(
-    query: str, text: str, client: Instructor, model: str = DEFAULT_MODEL
+    query: str, text: str, client: Instructor, model: str | None = None
 ) -> RelevanceAssessment:
     """Assess whether text is directly relevant to answering a query using LLM analysis.
 
@@ -143,7 +147,7 @@ def is_relevant(
         query: The query being answered
         text: The text to assess for relevance
         client: Instructor client for LLM-powered analysis
-        model: LLM model to use. Defaults to DEFAULT_MODEL
+        model: LLM model to use. Uses Config.get_fast_model() if not specified
 
     Returns:
         RelevanceAssessment: Structured assessment with relevance determination
@@ -152,9 +156,8 @@ def is_relevant(
         ValueError: If query or text is empty, or client is invalid
 
     Example:
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.llm_config import Config
+        client = Config.get_default_client()
         result = is_relevant(
             "parking regulations",
             "No vehicle shall be parked on any street between 2 AM and 6 AM",
@@ -164,6 +167,10 @@ def is_relevant(
         print(result.confidence)
         print(result.reasoning)
     """
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
     if not query or not query.strip():
         logger.error("Query cannot be empty for relevance assessment")
         raise ValueError("Query cannot be empty for relevance assessment")
@@ -236,7 +243,7 @@ def filter_results(
     query: str,
     client: Instructor,
     threshold: float = 0.5,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
 ) -> Dict[str, Any]:
     """Filter retrieval results by relevance using LLM-powered assessment.
 
@@ -248,7 +255,7 @@ def filter_results(
         query: Original query used for retrieval
         client: Instructor client for LLM-powered relevance assessment
         threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
-        model: LLM model to use for relevance assessment. Defaults to DEFAULT_MODEL
+        model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
 
     Returns:
         dict: Filtered results with same structure as input but only relevant documents:
@@ -282,6 +289,10 @@ def filter_results(
         print(f"Filtered from {filtered['filtering_metadata']['original_count']} "
               f"to {filtered['filtering_metadata']['filtered_count']} results")
     """
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
     if results is None:
         logger.error("Invalid results structure")
         raise ValueError("Invalid results structure")
@@ -381,7 +392,7 @@ def retrieve_embeddings(
     where_document: dict | None = None,
     rewrite: bool = False,
     client: Instructor | None = None,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
     embedding_client: ollama.Client | None = None,
     embedding_model: str = "embeddinggemma",
 ) -> dict:
@@ -398,7 +409,7 @@ def retrieve_embeddings(
         where_document: Document content filters
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
         client: Instructor client for LLM-powered HYDE rewriting
-        model: LLM model to use for HYDE rewriting. Defaults to 'gpt-4.1-mini'
+        model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
         embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
         embedding_model: Embedding model name. Defaults to 'embeddinggemma'
 
@@ -410,15 +421,13 @@ def retrieve_embeddings(
         results = retrieve_embeddings(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
 
         # Retrieve with LLM-powered HYDE rewriting
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.llm_config import Config
+        client = Config.get_default_client()
         results = retrieve_embeddings(
             collection,
             "where can I park my car",
             rewrite=True,
-            client=client,
-            model=DEFAULT_MODEL
+            client=client
         )
 
         # Retrieve from all Illinois municipalities
@@ -434,6 +443,10 @@ def retrieve_embeddings(
         # Cross-jurisdiction comparison (no jurisdiction filter)
         results = retrieve_embeddings(collection, "noise ordinances", n_results=50)
     """
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
     # Apply HYDE rewriting if requested
     if rewrite:
         if client is None:
@@ -642,7 +655,9 @@ def retrieve_sections(
     where_document: dict | None = None,
     rewrite: bool = False,
     client: Instructor | None = None,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
+    embedding_client=None,
+    embedding_model: str = "embeddinggemma",
 ) -> dict:
     """Retrieve sections by searching embeddings at segment level but returning full section context.
 
@@ -662,7 +677,9 @@ def retrieve_sections(
         where_document: Document content filters
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
         client: Instructor client for LLM-powered HYDE rewriting
-        model: LLM model to use for HYDE rewriting. Defaults to 'gpt-4.1-mini'
+        model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
+        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
+        embedding_model: Embedding model name. Defaults to 'embeddinggemma'
 
     Returns:
         dict: Section-level results with structure:
@@ -707,9 +724,8 @@ def retrieve_sections(
         )
 
         # Section retrieval with HYDE rewriting
-        import instructor
-        from openai import OpenAI
-        client = instructor.from_openai(OpenAI())
+        from legiscope.llm_config import Config
+        client = Config.get_default_client()
         results = retrieve_sections(
             collection,
             "where can I park my car",
@@ -726,6 +742,10 @@ def retrieve_sections(
             for segment in section["matching_segments"]:
                 print(f"  Segment: {segment['segment_text'][:50]}...")
     """
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
     logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
 
     sections_path = Path(sections_parquet_path)
@@ -747,6 +767,8 @@ def retrieve_sections(
         rewrite=rewrite,
         client=client,
         model=model,
+        embedding_client=embedding_client,
+        embedding_model=embedding_model,
     )
 
     original_query = query_text
