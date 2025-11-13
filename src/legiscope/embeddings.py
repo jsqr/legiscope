@@ -3,8 +3,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import chromadb
+import numpy as np
 import polars as pl
 from loguru import logger
+from numpy.typing import NDArray
+
+# Embeddings are returned as NumPy ndarrays (no wrapper)
+# Centralized embedding dtype configuration (use these constants everywhere)
+EMBEDDING_DTYPE = np.float32
+POLARS_EMBEDDING_DTYPE = pl.List(pl.Float32)
 
 EMBEDDING_PROVIDER = "mistral"  # Can be "ollama" or "mistral"
 OLLAMA_MODEL = "embeddinggemma"
@@ -138,8 +145,8 @@ class JurisdictionConfig:
 
 def get_embeddings(
     client, texts: list[str], model: str | None = None, provider: str | None = None
-) -> list[list[float]]:
-    """Generate embedding vectors for a list of text strings.
+) -> NDArray[np.float32]:
+    """Generate embedding vectors for a list of text strings and return as a NumPy ndarray.
 
     Args:
         client: Embedding client instance (use get_embedding_client() for configured client)
@@ -148,7 +155,7 @@ def get_embeddings(
         provider: The embedding provider ("ollama" or "mistral"). If None, auto-detects from client
 
     Returns:
-        List of embedding vectors, one for each input text
+        NDArray[np.float32]: NumPy ndarray of shape (len(texts), embedding_dim) with dtype float32
 
     Raises:
         ValueError: If texts is empty or embedding fails
@@ -193,8 +200,8 @@ def get_embeddings(
         f"Generating embeddings for {len(texts)} texts using {provider} with model: {model}"
     )
 
-    # Process embeddings - Mistral supports batching, Ollama processes individually
-    embeddings: list[list[float]] = []
+    # Collect embeddings as native Python lists, then convert to numpy array
+    embeddings_list: list[list[float]] = []
 
     try:
         if provider == "mistral":
@@ -222,7 +229,7 @@ def get_embeddings(
                         f"Failed to get embeddings for batch {batch_num + 1}"
                     )
                 batch_embeddings = [item.embedding for item in response.data]
-                embeddings.extend(batch_embeddings)
+                embeddings_list.extend(batch_embeddings)
 
                 # Log progress for larger datasets
                 logger.debug(
@@ -241,7 +248,7 @@ def get_embeddings(
                     raise ValueError(
                         f"Failed to get embedding for text: {text[:50]}..."
                     )
-                embeddings.append(response["embedding"])
+                embeddings_list.append(response["embedding"])
 
                 # Log progress for larger datasets
                 if (i + 1) % 100 == 0 or i == len(texts) - 1:
@@ -254,8 +261,17 @@ def get_embeddings(
         logger.error(f"Error generating embeddings: {str(e)}")
         raise
 
-    logger.info(f"Successfully generated {len(embeddings)} embeddings")
-    return embeddings
+    if not embeddings_list:
+        logger.error("No embeddings were generated")
+        raise ValueError("Failed to generate embeddings")
+
+    # Convert to NumPy array with the configured embedding dtype for consistent downstream consumption
+    embeddings_array = np.asarray(embeddings_list, dtype=EMBEDDING_DTYPE)
+
+    logger.info(
+        f"Successfully generated {embeddings_array.shape[0]} embeddings of dim {embeddings_array.shape[1]} and dtype {embeddings_array.dtype}"
+    )
+    return embeddings_array
 
 
 def create_embeddings_df(
@@ -313,7 +329,7 @@ def create_embeddings_df(
             "Empty DataFrame provided, returning with empty embeddings column"
         )
         return df.with_columns(
-            pl.lit([], dtype=pl.List(pl.Float64)).alias(embedding_col)
+            pl.lit([], dtype=POLARS_EMBEDDING_DTYPE).alias(embedding_col)
         )
 
     logger.debug(f"Processing {len(df)} rows for embedding generation")
@@ -347,8 +363,14 @@ def create_embeddings_df(
 
     embeddings = get_embeddings(client, concatenated_texts, model, provider)
 
+    # If embeddings is a NumPy ndarray, convert to list-of-lists for Polars List column
+    if hasattr(embeddings, "tolist"):
+        embeddings_list = embeddings.tolist()
+    else:
+        embeddings_list = embeddings
+
     result_df = df.with_columns(
-        pl.Series(embedding_col, embeddings, dtype=pl.List(pl.Float64))
+        pl.Series(embedding_col, embeddings_list, dtype=POLARS_EMBEDDING_DTYPE)
     )
 
     logger.info(f"Successfully created embeddings DataFrame with {len(result_df)} rows")
