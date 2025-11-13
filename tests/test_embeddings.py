@@ -1,12 +1,13 @@
 """Tests for legiscope.embeddings module."""
 
 from unittest.mock import Mock, patch
-import pytest
+
 import polars as pl
+import pytest
 
 from legiscope.embeddings import (
-    get_embeddings,
     create_embeddings_df,
+    get_embeddings,
 )
 
 
@@ -40,8 +41,8 @@ class TestGetEmbeddings:
         result = get_embeddings(mock_client, texts, "test-model", "ollama")
 
         assert len(result) == 2
-        assert result[0] == [0.1, 0.2, 0.3]
-        assert result[1] == [0.4, 0.5, 0.6]
+        assert result[0].tolist() == pytest.approx([0.1, 0.2, 0.3])
+        assert result[1].tolist() == pytest.approx([0.4, 0.5, 0.6])
 
         # Verify client was called correctly (sequential calls for Ollama)
         assert mock_client.embeddings.call_count == 2
@@ -63,7 +64,7 @@ class TestGetEmbeddings:
         result = get_embeddings(mock_client, ["single text"], "test-model", "ollama")
 
         assert len(result) == 1
-        assert result[0] == [0.1, 0.2, 0.3]
+        assert result[0].tolist() == pytest.approx([0.1, 0.2, 0.3])
         mock_client.embeddings.assert_called_once_with(
             model="test-model", prompt="single text"
         )
@@ -131,7 +132,7 @@ class TestGetEmbeddings:
         result = get_embeddings(mock_client, texts, "mistral-embed", "mistral")
 
         assert len(result) == 1
-        assert result[0] == [0.1, 0.2, 0.3]
+        assert result[0].tolist() == pytest.approx([0.1, 0.2, 0.3])
 
         # Verify client was called correctly for Mistral API
         mock_client.embeddings.create.assert_called_once_with(
@@ -149,7 +150,7 @@ class TestGetEmbeddings:
         result = get_embeddings(mock_client, texts)  # No provider specified
 
         assert len(result) == 1
-        assert result[0] == [0.1, 0.2, 0.3]
+        assert result[0].tolist() == pytest.approx([0.1, 0.2, 0.3])
 
     def test_get_embeddings_auto_detect_mistral(self):
         """Test auto-detection of mistral provider."""
@@ -166,7 +167,7 @@ class TestGetEmbeddings:
         result = get_embeddings(mock_client, texts)  # No provider specified
 
         assert len(result) == 1
-        assert result[0] == [0.1, 0.2, 0.3]
+        assert result[0].tolist() == pytest.approx([0.1, 0.2, 0.3])
 
     def test_get_embeddings_auto_detect_fails(self):
         """Test auto-detection failure with unknown client type."""
@@ -230,8 +231,8 @@ class TestCreateEmbeddingsDf:
 
         # Check embeddings
         embeddings = result["embedding"].to_list()
-        assert embeddings[0] == [0.1, 0.2, 0.3]
-        assert embeddings[1] == [0.4, 0.5, 0.6]
+        assert embeddings[0] == pytest.approx([0.1, 0.2, 0.3])
+        assert embeddings[1] == pytest.approx([0.4, 0.5, 0.6])
 
     def test_create_embeddings_df_custom_columns(self):
         """Test with custom column names."""
@@ -256,7 +257,7 @@ class TestCreateEmbeddingsDf:
         )
 
         assert "custom_embedding" in result.columns
-        assert result["custom_embedding"].to_list()[0] == [0.1, 0.2, 0.3]
+        assert result["custom_embedding"].to_list()[0] == pytest.approx([0.1, 0.2, 0.3])
 
     def test_create_embeddings_df_concatenation(self):
         """Test text concatenation logic."""
@@ -430,9 +431,9 @@ class TestCreateEmbeddingsDf:
 
         result = create_embeddings_df(df, mock_client, "test-model", "ollama")
 
-        # Check that embedding column is List(Float64)
+        # Check that embedding column is List(Float32)
         schema = result.schema
-        assert schema["embedding"] == pl.List(pl.Float64)
+        assert schema["embedding"] == pl.List(pl.Float32)
 
     def test_create_embeddings_df_preserves_original_columns(self):
         """Test that original columns are preserved."""

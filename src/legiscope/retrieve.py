@@ -1,15 +1,16 @@
-import chromadb
 from pathlib import Path
-from typing import Dict, List, Any
-from pydantic import BaseModel, Field
+from typing import Any, cast
+
+import chromadb
+import ollama
+import polars as pl
 from instructor import Instructor
 from loguru import logger
-import polars as pl
+from pydantic import BaseModel, Field
 
-from legiscope.utils import ask
 from legiscope.embeddings import get_embeddings
 from legiscope.llm_config import Config
-import ollama
+from legiscope.utils import ask
 
 
 class HydeRewrite(BaseModel):
@@ -239,12 +240,12 @@ Determine if this text directly helps answer the query and provide your assessme
 
 
 def filter_results(
-    results: Dict[str, Any],
+    results: dict[str, Any],
     query: str,
     client: Instructor,
     threshold: float = 0.5,
     model: str | None = None,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Filter retrieval results by relevance using LLM-powered assessment.
 
     Applies relevance assessment to each document in retrieval results and filters
@@ -395,7 +396,7 @@ def retrieve_embeddings(
     model: str | None = None,
     embedding_client: ollama.Client | None = None,
     embedding_model: str = "embeddinggemma",
-) -> dict:
+) -> dict[str, Any]:
     """Retrieve similar documents from the embedding index using semantic search.
 
     Args:
@@ -474,7 +475,7 @@ def retrieve_embeddings(
             logger.debug(f"Filtering by municipality: {municipality}")
 
     # Combine jurisdiction filters with additional where filters
-    combined_where: Dict[str, Any] | None = None
+    combined_where: dict[str, Any] | None = None
     if jurisdiction_filters and where:
         # Both types of filters - combine with AND
         combined_where = {"$and": [jurisdiction_filters, where]}
@@ -498,9 +499,11 @@ def retrieve_embeddings(
             raise ValueError("Embedding client is required for querying")
 
     query_embeddings = get_embeddings(embedding_client, [query_text], embedding_model)
+    # Cast to Any to satisfy ChromaDB typing expectations (avoids invariant list/ndarray mismatch)
+    query_embeddings_any = cast(Any, query_embeddings)
 
     results = collection.query(
-        query_embeddings=query_embeddings,
+        query_embeddings=query_embeddings_any,
         n_results=n_results,
         where=combined_where,
         where_document=where_document,
@@ -534,7 +537,7 @@ def retrieve_embeddings(
             if municipalities:
                 logger.debug(f"Results from municipalities: {sorted(municipalities)}")
 
-    return results
+    return cast(dict[str, Any], results)
 
 
 def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
@@ -798,7 +801,7 @@ def retrieve_sections(
     segment_metadatas = segment_results.get("metadatas", [None])[0]
 
     # Group segments by section_ref
-    sections_to_segments: Dict[int, List[Dict[str, Any]]] = {}
+    sections_to_segments: dict[int, list[dict[str, Any]]] = {}
 
     for i, seg_id in enumerate(segment_ids):
         metadata = (
