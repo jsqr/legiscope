@@ -228,7 +228,7 @@ def get_embeddings(
                     raise ValueError(
                         f"Failed to get embeddings for batch {batch_num + 1}"
                     )
-                batch_embeddings = [item.embedding for item in response.data]
+                batch_embeddings = [list(item.embedding) for item in response.data]
                 embeddings_list.extend(batch_embeddings)
 
                 # Log progress for larger datasets
@@ -248,7 +248,7 @@ def get_embeddings(
                     raise ValueError(
                         f"Failed to get embedding for text: {text[:50]}..."
                     )
-                embeddings_list.append(response["embedding"])
+                embeddings_list.append(list(response["embedding"]))
 
                 # Log progress for larger datasets
                 if (i + 1) % 100 == 0 or i == len(texts) - 1:
@@ -261,7 +261,7 @@ def get_embeddings(
         logger.error(f"Error generating embeddings: {str(e)}")
         raise
 
-    if not embeddings_list:
+    if len(embeddings_list) == 0:
         logger.error("No embeddings were generated")
         raise ValueError("Failed to generate embeddings")
 
