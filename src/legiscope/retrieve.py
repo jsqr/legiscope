@@ -137,7 +137,7 @@ Provide a rewritten query that would be effective for semantic search against mu
 
 
 def is_relevant(
-    query: str, text: str, client: Instructor, model: str | None = None
+    client: Instructor, query: str, text: str, model: str | None = None
 ) -> RelevanceAssessment:
     """Assess whether text is directly relevant to answering a query using LLM analysis.
 
@@ -240,9 +240,9 @@ Determine if this text directly helps answer the query and provide your assessme
 
 
 def filter_results(
+    client: Instructor,
     results: dict[str, Any],
     query: str,
-    client: Instructor,
     threshold: float = 0.5,
     model: str | None = None,
 ) -> dict[str, Any]:
@@ -286,7 +286,7 @@ def filter_results(
 
     Example:
         results = retrieve_embeddings(collection, "parking rules", n_results=10)
-        filtered = filter_results(results, "parking rules", client, threshold=0.7)
+        filtered = filter_results(client, results, "parking rules", threshold=0.7)
         print(f"Filtered from {filtered['filtering_metadata']['original_count']} "
               f"to {filtered['filtering_metadata']['filtered_count']} results")
     """
@@ -323,7 +323,7 @@ def filter_results(
     # Assess relevance for each document
     for i, (doc_id, document, distance) in enumerate(zip(ids, documents, distances)):
         try:
-            assessment = is_relevant(query, document, client, model)
+            assessment = is_relevant(client, query, document, model)
             assessments.append(
                 {
                     "index": i,
@@ -387,13 +387,11 @@ def retrieve_embeddings(
     query_text: str,
     n_results: int = 10,
     jurisdiction_id: str | None = None,
-    state: str | None = None,
-    municipality: str | None = None,
     where: dict | None = None,
     where_document: dict | None = None,
     rewrite: bool = False,
-    client: Instructor | None = None,
-    model: str | None = None,
+    rewrite_client: Instructor | None = None,
+    rewrite_model: str | None = None,
     embedding_client: ollama.Client | None = None,
     embedding_model: str = "embeddinggemma",
 ) -> dict[str, Any]:
@@ -404,13 +402,11 @@ def retrieve_embeddings(
         query_text: Text to search for
         n_results: Number of results to return. Defaults to 10
         jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-WindyCity')
-        state: Filter by state only (e.g., 'IL')
-        municipality: Filter by municipality only (e.g., 'WindyCity')
         where: Additional metadata filters (combined with jurisdiction filters)
         where_document: Document content filters
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
-        client: Instructor client for LLM-powered HYDE rewriting
-        model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
+        rewrite_client: Instructor client for LLM-powered HYDE rewriting
+        rewrite_model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
         embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
         embedding_model: Embedding model name. Defaults to 'embeddinggemma'
 
@@ -431,9 +427,6 @@ def retrieve_embeddings(
             client=client
         )
 
-        # Retrieve from all Illinois municipalities
-        results = retrieve_embeddings(collection, "business licenses", state="IL")
-
         # Retrieve from multiple jurisdictions
         results = retrieve_embeddings(
             collection,
@@ -445,44 +438,31 @@ def retrieve_embeddings(
         results = retrieve_embeddings(collection, "noise ordinances", n_results=50)
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    if rewrite_model is None:
+        rewrite_model = Config.get_fast_model()
 
     # Apply HYDE rewriting if requested
     if rewrite:
-        if client is None:
+        if rewrite_client is None:
             logger.error("Client is required for HYDE rewriting")
             raise ValueError("Client is required for HYDE rewriting")
 
         original_query = query_text
-        result = hyde_rewriter(query_text, client, model)
+        result = hyde_rewriter(query_text, rewrite_client, rewrite_model)
         query_text = result.rewritten_query
         logger.debug(f"Applied HYDE rewrite: '{original_query}' -> '{query_text}'")
 
     logger.info(f"Retrieving embeddings for: '{query_text[:50]}...'")
 
-    jurisdiction_filters = {}
-
-    if jurisdiction_id:
-        jurisdiction_filters["jurisdiction_id"] = jurisdiction_id
-        logger.debug(f"Filtering by jurisdiction_id: {jurisdiction_id}")
-    elif state or municipality:
-        if state:
-            jurisdiction_filters["state"] = state
-            logger.debug(f"Filtering by state: {state}")
-        if municipality:
-            jurisdiction_filters["municipality"] = municipality
-            logger.debug(f"Filtering by municipality: {municipality}")
-
-    # Combine jurisdiction filters with additional where filters
+    # Combine jurisdiction filter with additional where filters
     combined_where: dict[str, Any] | None = None
-    if jurisdiction_filters and where:
+    if jurisdiction_id and where:
         # Both types of filters - combine with AND
-        combined_where = {"$and": [jurisdiction_filters, where]}
+        combined_where = {"$and": [{"jurisdiction_id": jurisdiction_id}, where]}
         logger.debug(f"Combined filters: {combined_where}")
-    elif jurisdiction_filters:
-        combined_where = jurisdiction_filters
-        logger.debug(f"Using jurisdiction filters only: {jurisdiction_filters}")
+    elif jurisdiction_id:
+        combined_where = {"jurisdiction_id": jurisdiction_id}
+        logger.debug(f"Using jurisdiction filter only: {jurisdiction_id}")
     elif where:
         combined_where = where
         logger.debug(f"Using custom filters only: {where}")
@@ -652,13 +632,11 @@ def retrieve_sections(
     sections_parquet_path: str | Path,
     n_results: int = 10,
     jurisdiction_id: str | None = None,
-    state: str | None = None,
-    municipality: str | None = None,
     where: dict | None = None,
     where_document: dict | None = None,
     rewrite: bool = False,
-    client: Instructor | None = None,
-    model: str | None = None,
+    rewrite_client: Instructor | None = None,
+    rewrite_model: str | None = None,
     embedding_client=None,
     embedding_model: str = "embeddinggemma",
 ) -> dict:
@@ -674,13 +652,11 @@ def retrieve_sections(
         sections_parquet_path: Path to sections.parquet file containing section data
         n_results: Number of segment results to retrieve. Defaults to 10
         jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-WindyCity')
-        state: Filter by state only (e.g., 'IL')
-        municipality: Filter by municipality only (e.g., 'WindyCity')
         where: Additional metadata filters (combined with jurisdiction filters)
         where_document: Document content filters
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
-        client: Instructor client for LLM-powered HYDE rewriting
-        model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
+        rewrite_client: Instructor client for LLM-powered HYDE rewriting
+        rewrite_model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
         embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
         embedding_model: Embedding model name. Defaults to 'embeddinggemma'
 
@@ -746,8 +722,8 @@ def retrieve_sections(
                 print(f"  Segment: {segment['segment_text'][:50]}...")
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    if rewrite_model is None:
+        rewrite_model = Config.get_fast_model()
 
     logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
 
@@ -763,13 +739,11 @@ def retrieve_sections(
         query_text=query_text,
         n_results=n_results,
         jurisdiction_id=jurisdiction_id,
-        state=state,
-        municipality=municipality,
         where=where,
         where_document=where_document,
         rewrite=rewrite,
-        client=client,
-        model=model,
+        rewrite_client=rewrite_client,
+        rewrite_model=rewrite_model,
         embedding_client=embedding_client,
         embedding_model=embedding_model,
     )
