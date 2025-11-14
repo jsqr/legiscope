@@ -39,6 +39,7 @@ with app.setup:
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -138,7 +139,7 @@ def _():
             model=embedding_model,
             provider=embedding_provider,
         )
-        if test_response and len(test_response) > 0:
+        if test_response is not None and len(test_response) > 0:
             embedding_dim = len(test_response[0])
             print(f"=== Embedding Client Setup ===")
             print(f"Client: {embedding_provider}")
@@ -255,7 +256,7 @@ def _(
                 n_results=n_results,
                 jurisdiction_id=jurisdiction_id,
                 rewrite=use_hyde,
-                client=instructor_client if use_hyde else None,
+                rewrite_client=instructor_client if use_hyde else None,
                 embedding_client=embedding_client,
                 embedding_model=embedding_model,
             )
@@ -382,7 +383,7 @@ def _():
 
 
 @app.cell
-def _(instructor_client, query_processing_available, results):
+def _(instructor_client, results):
     query_response = None
 
     print("=== Query Processing ===")
@@ -424,8 +425,7 @@ def _(instructor_client, query_processing_available, results):
             query_response = None
     else:
         print("Cannot process query - missing requirements")
-        if not query_processing_available:
-            print("  - Query processing functions not available")
+        # Query processing functions are available
         if instructor_client is None:
             print("  - Instructor client not available")
         if results is None:

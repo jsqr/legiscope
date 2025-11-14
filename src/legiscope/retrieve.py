@@ -472,8 +472,15 @@ def retrieve_embeddings(
         embedding_client = get_embedding_client()
 
     query_embeddings = get_embeddings(embedding_client, [query_text], embedding_model)
+    # Convert to list of lists for ChromaDB compatibility
+    if hasattr(query_embeddings, "tolist"):
+        # NumPy array case
+        query_embeddings_list = query_embeddings.tolist()
+    else:
+        # Already a list case (e.g., mocked tests)
+        query_embeddings_list = query_embeddings
     # Cast to Any to satisfy ChromaDB typing expectations (avoids invariant list/ndarray mismatch)
-    query_embeddings_any = cast(Any, query_embeddings)
+    query_embeddings_any = cast(Any, query_embeddings_list)
 
     results = collection.query(
         query_embeddings=query_embeddings_any,
