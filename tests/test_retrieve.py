@@ -239,7 +239,7 @@ class TestRetrieveEmbeddings:
                     collection=mock_collection,
                     query_text="where can I park",
                     rewrite=True,
-                    client=mock_client,
+                    rewrite_client=mock_client,
                 )
 
                 # Verify embeddings were generated with rewritten text
@@ -329,8 +329,8 @@ class TestRetrieveEmbeddings:
                     collection=mock_collection,
                     query_text="test query",
                     rewrite=True,
-                    client=mock_client,
-                    model="gpt-4",
+                    rewrite_client=mock_client,
+                    rewrite_model="gpt-4",
                 )
 
                 # Verify custom model was passed to hyde_rewriter
@@ -472,8 +472,8 @@ class TestRetrieveSections:
                     query_text="where can I park",
                     sections_parquet_path=tmp_file.name,
                     rewrite=True,
-                    client=Mock(),
-                    model="gpt-4",
+                    rewrite_client=Mock(),
+                    rewrite_model="gpt-4",
                 )
 
                 # Verify retrieve_embeddings was called with correct parameters
@@ -482,7 +482,7 @@ class TestRetrieveSections:
                 assert call_args[1]["collection"] == mock_collection
                 assert call_args[1]["query_text"] == "where can I park"
                 assert call_args[1]["rewrite"]
-                assert call_args[1]["model"] == "gpt-4"
+                assert call_args[1]["rewrite_model"] == "gpt-4"
 
     def test_retrieve_sections_no_results(self):
         """Test section retrieval with no segment results."""
@@ -806,9 +806,9 @@ class TestIsRelevant:
             mock_client = Mock(spec=Instructor)
 
             result = is_relevant(
+                mock_client,
                 "parking regulations",
                 "No vehicle shall be parked on any street between 2 AM and 6 AM",
-                mock_client,
             )
 
             assert isinstance(result, RelevanceAssessment)
@@ -835,7 +835,7 @@ class TestIsRelevant:
         with patch("legiscope.retrieve.ask", return_value=mock_result) as mock_ask:
             mock_client = Mock(spec=Instructor)
 
-            is_relevant("test query", "test text", mock_client, model="gpt-4")
+            is_relevant(mock_client, "test query", "test text", model="gpt-4")
 
             # Verify custom model was used
             mock_ask.assert_called_once()
@@ -847,25 +847,25 @@ class TestIsRelevant:
         mock_client = Mock(spec=Instructor)
 
         with pytest.raises(ValueError, match="Query cannot be empty"):
-            is_relevant("", "some text", mock_client)
+            is_relevant(mock_client, "", "some text")
 
         with pytest.raises(ValueError, match="Query cannot be empty"):
-            is_relevant("   ", "some text", mock_client)
+            is_relevant(mock_client, "   ", "some text")
 
     def test_is_relevant_empty_text(self):
         """Test that empty text raises ValueError."""
         mock_client = Mock(spec=Instructor)
 
         with pytest.raises(ValueError, match="Text cannot be empty"):
-            is_relevant("some query", "", mock_client)
+            is_relevant(mock_client, "some query", "")
 
         with pytest.raises(ValueError, match="Text cannot be empty"):
-            is_relevant("some query", "   ", mock_client)
+            is_relevant(mock_client, "some query", "   ")
 
     def test_is_relevant_no_client(self):
         """Test that missing client raises ValueError."""
         with pytest.raises(ValueError, match="Client is required"):
-            is_relevant("query", "text", None)
+            is_relevant(None, "query", "text")
 
     def test_is_relevant_api_failure(self):
         """Test handling of LLM API failures."""
@@ -873,7 +873,7 @@ class TestIsRelevant:
             mock_client = Mock(spec=Instructor)
 
             with pytest.raises(Exception, match="API Error"):
-                is_relevant("test query", "test text", mock_client)
+                is_relevant(mock_client, "test query", "test text")
 
 
 class TestFilterResults:
@@ -902,9 +902,9 @@ class TestFilterResults:
             mock_client = Mock(spec=Instructor)
 
             result = filter_results(
+                mock_client,
                 input_results,
                 "test query",
-                mock_client,
                 threshold=0.5,
             )
 
@@ -955,10 +955,9 @@ class TestFilterResults:
             mock_client = Mock(spec=Instructor)
 
             result = filter_results(
+                mock_client,
                 input_results,
                 "test query",
-                mock_client,
-                threshold=0.6,
             )
 
             # Only documents 1 and 3 should pass threshold
@@ -974,7 +973,7 @@ class TestFilterResults:
         }
 
         with pytest.raises(ValueError, match="Client is required"):
-            filter_results(input_results, "query", None)
+            filter_results(None, input_results, "query")
 
     def test_filter_results_invalid_structure(self):
         """Test handling of invalid results structure."""
@@ -982,11 +981,11 @@ class TestFilterResults:
 
         # Empty results
         with pytest.raises(ValueError, match="Invalid results structure"):
-            filter_results(None, "query", mock_client)
+            filter_results(mock_client, None, "query")
 
         # Missing required keys
         with pytest.raises(ValueError, match="Results missing required keys"):
-            filter_results({"wrong": "structure"}, "query", mock_client)
+            filter_results(mock_client, {"wrong": "structure"}, "query")
 
     def test_filter_results_empty_results(self):
         """Test filtering with empty results."""
@@ -998,7 +997,7 @@ class TestFilterResults:
 
         mock_client = Mock(spec=Instructor)
 
-        result = filter_results(empty_results, "query", mock_client)
+        result = filter_results(mock_client, empty_results, "query")
 
         assert result["filtering_metadata"]["original_count"] == 0
         assert result["filtering_metadata"]["filtered_count"] == 0
@@ -1007,7 +1006,7 @@ class TestFilterResults:
     def test_filter_results_assessment_failure(self):
         """Test handling of assessment failures."""
 
-        def failing_assessment(query, text, client, model):
+        def failing_assessment(client, query, text, model):
             if text == "doc2":
                 raise Exception("Assessment failed")
             return RelevanceAssessment(
@@ -1024,7 +1023,7 @@ class TestFilterResults:
         with patch("legiscope.retrieve.is_relevant", side_effect=failing_assessment):
             mock_client = Mock(spec=Instructor)
 
-            result = filter_results(input_results, "query", mock_client)
+            result = filter_results(mock_client, input_results, "query")
 
             # Should still work, with failed assessment marked as not relevant
             assert len(result["ids"][0]) == 2  # doc1 and doc3
@@ -1057,7 +1056,7 @@ class TestFilterResults:
         with patch("legiscope.retrieve.is_relevant", return_value=mock_assessment):
             mock_client = Mock(spec=Instructor)
 
-            result = filter_results(input_results, "query", mock_client)
+            result = filter_results(mock_client, input_results, "query")
 
             # Extra keys should be preserved
             assert result["extra_key"] == "extra_value"
@@ -1082,7 +1081,7 @@ class TestFilterResults:
         with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
             mock_client = Mock(spec=Instructor)
 
-            result = filter_results(input_results, "query", mock_client)
+            result = filter_results(mock_client, input_results, "query")
 
             # Should work without metadatas
             assert len(result["ids"][0]) == 1
