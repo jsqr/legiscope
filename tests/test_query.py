@@ -496,8 +496,8 @@ class TestRunQueries:
         mock_retrieve.assert_called_once()
         call_args = mock_retrieve.call_args
         assert call_args[1]["rewrite"] is True
-        assert call_args[1]["client"] == client
-        assert call_args[1]["model"] == Config.get_powerful_model()
+        assert call_args[1]["rewrite_client"] == client
+        assert call_args[1]["rewrite_model"] == Config.get_powerful_model()
 
     @patch("legiscope.query.retrieve_sections")
     @patch("legiscope.query.query_legal_documents")

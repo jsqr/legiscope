@@ -2,13 +2,12 @@ from pathlib import Path
 from typing import Any, cast
 
 import chromadb
-import ollama
 import polars as pl
 from instructor import Instructor
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from legiscope.embeddings import get_embeddings
+from legiscope.embeddings import get_embeddings, get_embedding_client
 from legiscope.llm_config import Config
 from legiscope.utils import ask
 
@@ -392,8 +391,8 @@ def retrieve_embeddings(
     rewrite: bool = False,
     rewrite_client: Instructor | None = None,
     rewrite_model: str | None = None,
-    embedding_client: ollama.Client | None = None,
-    embedding_model: str = "embeddinggemma",
+    embedding_client: Any = None,
+    embedding_model: str | None = None,
 ) -> dict[str, Any]:
     """Retrieve similar documents from the embedding index using semantic search.
 
@@ -407,8 +406,8 @@ def retrieve_embeddings(
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
         rewrite_client: Instructor client for LLM-powered HYDE rewriting
         rewrite_model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
-        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
-        embedding_model: Embedding model name. Defaults to 'embeddinggemma'
+        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses configured provider)
+        embedding_model: Embedding model name. Uses provider default if not specified
 
     Returns:
         dict: Query results containing documents, metadata, distances, and IDs
@@ -469,14 +468,8 @@ def retrieve_embeddings(
 
     # Generate embeddings explicitly to avoid dimension mismatch
     if embedding_client is None:
-        # Try to import ollama as default embedding client
-        try:
-            import ollama
-
-            embedding_client = ollama.Client()  # type: ignore
-        except ImportError:
-            logger.error("No embedding client provided and ollama not available")
-            raise ValueError("Embedding client is required for querying")
+        # Use the proper embedding client factory function
+        embedding_client = get_embedding_client()
 
     query_embeddings = get_embeddings(embedding_client, [query_text], embedding_model)
     # Cast to Any to satisfy ChromaDB typing expectations (avoids invariant list/ndarray mismatch)
@@ -657,8 +650,8 @@ def retrieve_sections(
         rewrite: Whether to apply HYDE query rewriting. Defaults to False
         rewrite_client: Instructor client for LLM-powered HYDE rewriting
         rewrite_model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
-        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses ollama)
-        embedding_model: Embedding model name. Defaults to 'embeddinggemma'
+        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses configured provider)
+        embedding_model: Embedding model name. Uses provider default if not specified
 
     Returns:
         dict: Section-level results with structure:

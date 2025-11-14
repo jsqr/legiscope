@@ -372,8 +372,8 @@ def run_queries(
                 n_results=n_results,
                 jurisdiction_id=jurisdiction_id,
                 rewrite=use_hyde,
-                client=client if use_hyde else None,
-                model=model,
+                rewrite_client=client if use_hyde else None,
+                rewrite_model=model,
             )
 
             query_info = retrieval_results.get("query_info", {})
