@@ -7,7 +7,7 @@ from instructor import Instructor
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from legiscope.embeddings import get_embeddings, get_embedding_client
+from legiscope.embeddings import get_embedding_client, get_embeddings
 from legiscope.llm_config import Config
 from legiscope.utils import ask
 
@@ -44,7 +44,7 @@ class RelevanceAssessment(BaseModel):
 
 
 def hyde_rewriter(
-    query: str, client: Instructor, model: str | None = None
+    client: Instructor, query: str, model: str | None = None
 ) -> HydeRewrite:
     """Rewrite a natural language query into municipal code style text using HYDE approach.
 
@@ -65,7 +65,7 @@ def hyde_rewriter(
     Example:
         from legiscope.llm_config import Config
         client = Config.get_fast_client()
-        result = hyde_rewriter("where can I park my car", client)
+        result = hyde_rewriter(client, "where can I park my car")
         print(result.rewritten_query)
         print(result.confidence)
         print(result.query_type)
@@ -238,149 +238,6 @@ Determine if this text directly helps answer the query and provide your assessme
         raise
 
 
-def filter_results(
-    client: Instructor,
-    results: dict[str, Any],
-    query: str,
-    threshold: float = 0.5,
-    model: str | None = None,
-) -> dict[str, Any]:
-    """Filter retrieval results by relevance using LLM-powered assessment.
-
-    Applies relevance assessment to each document in retrieval results and filters
-    out documents that are not relevant or fall below the confidence threshold.
-
-    Args:
-        results: Retrieval results from retrieve_embeddings or similar functions
-        query: Original query used for retrieval
-        client: Instructor client for LLM-powered relevance assessment
-        threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
-        model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
-
-    Returns:
-        dict: Filtered results with same structure as input but only relevant documents:
-            {
-                "ids": [filtered_ids],
-                "documents": [filtered_documents],
-                "distances": [filtered_distances],
-                "metadatas": [filtered_metadatas],
-                "filtering_metadata": {
-                    "original_count": int,
-                    "filtered_count": int,
-                    "threshold": float,
-                    "assessments": [
-                        {
-                            "index": int,
-                            "is_relevant": bool,
-                            "confidence": float,
-                            "reasoning": str
-                        }
-                    ]
-                },
-                # Any additional keys from original results are preserved
-            }
-
-    Raises:
-        ValueError: If results structure is invalid or client is missing
-
-    Example:
-        results = retrieve_embeddings(collection, "parking rules", n_results=10)
-        filtered = filter_results(client, results, "parking rules", threshold=0.7)
-        print(f"Filtered from {filtered['filtering_metadata']['original_count']} "
-              f"to {filtered['filtering_metadata']['filtered_count']} results")
-    """
-    # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
-
-    if results is None:
-        logger.error("Invalid results structure")
-        raise ValueError("Invalid results structure")
-
-    if client is None:
-        logger.error("Client is required for result filtering")
-        raise ValueError("Client is required for result filtering")
-
-    required_keys = {"ids", "documents", "distances"}
-    missing_keys = required_keys - set(results.keys())
-    if missing_keys:
-        logger.error(f"Results missing required keys: {missing_keys}")
-        raise ValueError(f"Results missing required keys: {missing_keys}")
-
-    logger.info(
-        f"Filtering {len(results['ids'][0])} results for query: '{query[:30]}...'"
-    )
-
-    ids = results["ids"][0]
-    documents = results["documents"][0]
-    distances = results["distances"][0]
-    metadatas = results.get("metadatas", [None])[0]
-
-    original_count = len(ids)
-    assessments = []
-
-    # Assess relevance for each document
-    for i, (doc_id, document, distance) in enumerate(zip(ids, documents, distances)):
-        try:
-            assessment = is_relevant(client, query, document, model)
-            assessments.append(
-                {
-                    "index": i,
-                    "is_relevant": assessment.is_relevant,
-                    "confidence": assessment.confidence,
-                    "reasoning": assessment.reasoning,
-                }
-            )
-        except Exception as e:
-            logger.warning(f"Failed to assess document {i}: {str(e)}")
-            # Mark as not relevant on failure
-            assessments.append(
-                {
-                    "index": i,
-                    "is_relevant": False,
-                    "confidence": 0.0,
-                    "reasoning": f"Assessment failed: {str(e)}",
-                }
-            )
-
-    # Filter results based on relevance and threshold
-    filtered_indices = []
-    for i, assessment in enumerate(assessments):
-        if assessment["is_relevant"] and assessment["confidence"] >= threshold:
-            filtered_indices.append(i)
-
-    filtered_ids = [ids[i] for i in filtered_indices]
-    filtered_documents = [documents[i] for i in filtered_indices]
-    filtered_distances = [distances[i] for i in filtered_indices]
-    filtered_metadatas = [metadatas[i] if metadatas else None for i in filtered_indices]
-
-    filtered_results = {
-        "ids": [filtered_ids],
-        "documents": [filtered_documents],
-        "distances": [filtered_distances],
-        "metadatas": [filtered_metadatas],
-        "filtering_metadata": {
-            "original_count": original_count,
-            "filtered_count": len(filtered_indices),
-            "threshold": threshold,
-            "assessments": assessments,
-        },
-    }
-
-    # Preserve any additional keys from original results
-    for key, value in results.items():
-        if key not in {"ids", "documents", "distances", "metadatas"}:
-            filtered_results[key] = value
-
-    filtered_count = len(filtered_indices)
-    logger.info(
-        f"Filtered {original_count} results to {filtered_count} relevant results "
-        f"(threshold: {threshold})"
-    )
-
-    return filtered_results
-
-
 def retrieve_embeddings(
     collection: chromadb.Collection,
     query_text: str,
@@ -447,7 +304,7 @@ def retrieve_embeddings(
             raise ValueError("Client is required for HYDE rewriting")
 
         original_query = query_text
-        result = hyde_rewriter(query_text, rewrite_client, rewrite_model)
+        result = hyde_rewriter(rewrite_client, query_text, rewrite_model)
         query_text = result.rewritten_query
         logger.debug(f"Applied HYDE rewrite: '{original_query}' -> '{query_text}'")
 
@@ -585,47 +442,6 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
         return {}
 
 
-def compare_jurisdictions(
-    collection: chromadb.Collection,
-    query: str,
-    jurisdictions: list[str],
-    n_per_jurisdiction: int = 5,
-) -> dict:
-    """Compare how different jurisdictions handle the same legal topic.
-
-    Args:
-        collection: ChromaDB collection to query
-        query: Legal topic to compare across jurisdictions
-        jurisdictions: List of jurisdiction IDs to compare
-        n_per_jurisdiction: Number of results per jurisdiction
-
-    Returns:
-        dict: Results organized by jurisdiction
-    """
-    logger.info(f"Comparing jurisdictions for query: '{query}'")
-    logger.info(f"Jurisdictions: {jurisdictions}")
-
-    comparison_results = {}
-
-    for jurisdiction_id in jurisdictions:
-        logger.debug(f"Querying jurisdiction: {jurisdiction_id}")
-
-        results = retrieve_embeddings(
-            collection=collection,
-            query_text=query,
-            jurisdiction_id=jurisdiction_id,
-            n_results=n_per_jurisdiction,
-        )
-
-        comparison_results[jurisdiction_id] = results
-
-        result_count = len(results["ids"][0]) if results["ids"] else 0
-        logger.info(f"  {jurisdiction_id}: {result_count} results")
-
-    logger.info(f"Comparison completed for {len(jurisdictions)} jurisdictions")
-    return comparison_results
-
-
 def retrieve_sections(
     collection: chromadb.Collection,
     query_text: str,
@@ -638,7 +454,7 @@ def retrieve_sections(
     rewrite_client: Instructor | None = None,
     rewrite_model: str | None = None,
     embedding_client=None,
-    embedding_model: str = "embeddinggemma",
+    embedding_model: str | None = None,
 ) -> dict:
     """Retrieve sections by searching embeddings at segment level but returning full section context.
 
@@ -904,4 +720,258 @@ def retrieve_sections(
             "total_segments_found": total_segments_found,
             "unique_sections": len(section_results),
         },
+    }
+
+
+def filter_results(
+    client: Instructor,
+    results: dict[str, Any],
+    query: str,
+    threshold: float = 0.5,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Filter retrieval results by relevance using LLM-powered assessment.
+
+    Applies relevance assessment to each document in retrieval results and filters
+    out documents that are not relevant or fall below the confidence threshold.
+
+    Args:
+        results: Retrieval results from retrieve_embeddings or similar functions
+        query: Original query used for retrieval
+        client: Instructor client for LLM-powered relevance assessment
+        threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
+        model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
+
+    Returns:
+        dict: Filtered results with same structure as input but only relevant documents:
+            {
+                "ids": [filtered_ids],
+                "documents": [filtered_documents],
+                "distances": [filtered_distances],
+                "metadatas": [filtered_metadatas],
+                "filtering_metadata": {
+                    "original_count": int,
+                    "filtered_count": int,
+                    "threshold": float,
+                    "assessments": [
+                        {
+                            "index": int,
+                            "is_relevant": bool,
+                            "confidence": float,
+                            "reasoning": str
+                        }
+                    ]
+                },
+                # Any additional keys from original results are preserved
+            }
+
+    Raises:
+        ValueError: If results structure is invalid or client is missing
+
+    Example:
+        results = retrieve_embeddings(collection, "parking rules", n_results=10)
+        filtered = filter_results(client, results, "parking rules", threshold=0.7)
+        print(f"Filtered from {filtered['filtering_metadata']['original_count']} "
+              f"to {filtered['filtering_metadata']['filtered_count']} results")
+    """
+    if results is None:
+        logger.error("Invalid results structure")
+        raise ValueError("Invalid results structure")
+
+    if client is None:
+        logger.error("Client is required for result filtering")
+        raise ValueError("Client is required for result filtering")
+
+    required_keys = {"ids", "documents", "distances"}
+    missing_keys = required_keys - set(results.keys())
+    if missing_keys:
+        logger.error(f"Results missing required keys: {missing_keys}")
+        raise ValueError(f"Results missing required keys: {missing_keys}")
+
+    logger.info(
+        f"Filtering {len(results['ids'][0])} results for query: '{query[:30]}...'"
+    )
+
+    ids = results["ids"][0]
+    documents = results["documents"][0]
+    distances = results["distances"][0]
+    metadatas = results.get("metadatas", [None])[0]
+
+    original_count = len(ids)
+    assessments = []
+    filtered_indices = []
+
+    # Assess relevance for each document
+    for i, (doc_id, document, distance) in enumerate(zip(ids, documents, distances)):
+        try:
+            assessment = is_relevant(client, query, document, model)
+
+        except Exception as e:
+            logger.error(f"Error assessing document {i}: {str(e)}")
+            # Create a failed assessment for consistency
+            assessment = RelevanceAssessment(
+                is_relevant=False,
+                confidence=0.0,
+                reasoning=f"Assessment failed: {str(e)}",
+            )
+
+        # Always record the assessment
+        assessments.append(
+            {
+                "index": i,
+                "is_relevant": assessment.is_relevant,
+                "confidence": assessment.confidence,
+                "reasoning": assessment.reasoning,
+            }
+        )
+
+        # Filter based on relevance and threshold
+        if assessment.is_relevant and assessment.confidence >= threshold:
+            filtered_indices.append(i)
+            logger.debug(
+                f"Document {i} kept: relevant={assessment.is_relevant}, "
+                f"confidence={assessment.confidence:.2f}"
+            )
+        else:
+            logger.debug(
+                f"Document {i} filtered: relevant={assessment.is_relevant}, "
+                f"confidence={assessment.confidence:.2f}"
+            )
+
+    filtered_ids = [ids[i] for i in filtered_indices]
+    filtered_documents = [documents[i] for i in filtered_indices]
+    filtered_distances = [distances[i] for i in filtered_indices]
+    filtered_metadatas = [metadatas[i] if metadatas else None for i in filtered_indices]
+
+    filtered_results = {
+        "ids": [filtered_ids],
+        "documents": [filtered_documents],
+        "distances": [filtered_distances],
+        "metadatas": [filtered_metadatas],
+        "filtering_metadata": {
+            "original_count": original_count,
+            "filtered_count": len(filtered_indices),
+            "threshold": threshold,
+            "assessments": assessments,
+        },
+    }
+
+    # Preserve any additional keys from original results
+    for key, value in results.items():
+        if key not in {"ids", "documents", "distances", "metadatas"}:
+            filtered_results[key] = value
+
+    filtered_count = len(filtered_indices)
+    logger.info(
+        f"Filtered {original_count} results to {filtered_count} relevant results "
+        f"(threshold: {threshold})"
+    )
+
+    return filtered_results
+
+
+def filter_sections(
+    client: Instructor,
+    sections_results: dict[str, Any],
+    query: str,
+    confidence_threshold: float = 0.5,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Filter section results by relevance using LLM-powered assessment.
+
+    Applies relevance assessment to each section using LLM analysis and filters
+    out sections that are not relevant or fall below the confidence threshold.
+
+    Args:
+        client: Instructor client for LLM-powered relevance assessment
+        sections_results: Results from retrieve_sections function
+        query: Original query used for retrieval
+        confidence_threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
+        model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
+
+    Returns:
+        dict: Filtered results with simplified structure:
+            {
+                "sections": [filtered_sections],
+                "query_info": original_query_info,
+                "filtered_count": int,
+                "original_count": int
+            }
+
+    Raises:
+        ValueError: If sections_results structure is invalid or client is missing
+
+    Example:
+        results = retrieve_sections(collection, "parking rules", sections_parquet_path)
+        filtered = filter_sections(client, results, "parking rules", confidence_threshold=0.7)
+        print(f"Filtered from {filtered['original_count']} "
+              f"to {filtered['filtered_count']} sections")
+    """
+    if sections_results is None:
+        logger.error("Invalid sections results structure")
+        raise ValueError("Invalid sections results structure")
+
+    if client is None:
+        logger.error("Client is required for section filtering")
+        raise ValueError("Client is required for section filtering")
+
+    sections = sections_results.get("sections", [])
+    if not isinstance(sections, list):
+        logger.error("Sections must be a list")
+        raise ValueError("Sections must be a list")
+
+    original_count = len(sections)
+    logger.info(f"Filtering {original_count} sections for query: '{query[:30]}...'")
+
+    filtered_sections = []
+
+    # Assess relevance for each section
+    for i, section in enumerate(sections):
+        try:
+            # Prepare section text for LLM assessment
+            heading_text = section.get("heading_text", "")
+            body_text = section.get("body_text", "")
+            section_text = f"{heading_text}\n\n{body_text}".strip()
+
+            if not section_text:
+                logger.warning(f"Section {i} has no text content, skipping")
+                continue
+
+            # Assess relevance using LLM
+            assessment = is_relevant(client, query, section_text, model)
+
+            # Filter based on relevance and confidence threshold
+            if assessment.is_relevant and assessment.confidence >= confidence_threshold:
+                filtered_sections.append(section)
+                logger.debug(
+                    f"Section {i} kept: relevant={assessment.is_relevant}, "
+                    f"confidence={assessment.confidence:.2f}"
+                )
+            else:
+                logger.debug(
+                    f"Section {i} filtered: relevant={assessment.is_relevant}, "
+                    f"confidence={assessment.confidence:.2f}"
+                )
+
+        except Exception as e:
+            logger.error(f"Error assessing section {i}: {str(e)}")
+            continue
+
+    filtered_count = len(filtered_sections)
+    reduction_percentage = (
+        ((original_count - filtered_count) / original_count * 100)
+        if original_count > 0
+        else 0
+    )
+
+    logger.info(
+        f"Filtering complete: {original_count} -> {filtered_count} sections "
+        f"({reduction_percentage:.1f}% reduction)"
+    )
+
+    return {
+        "sections": filtered_sections,
+        "query_info": sections_results.get("query_info", {}),
+        "filtered_count": filtered_count,
+        "original_count": original_count,
     }

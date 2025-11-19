@@ -100,7 +100,7 @@ class TestHydeRewriter:
         with patch("legiscope.retrieve.ask", return_value=mock_result) as mock_ask:
             mock_client = Mock(spec=Instructor)
 
-            result = hyde_rewriter("where can I park my car", mock_client)
+            result = hyde_rewriter(mock_client, "where can I park my car")
 
             assert isinstance(result, HydeRewrite)
             assert (
@@ -130,7 +130,7 @@ class TestHydeRewriter:
         with patch("legiscope.retrieve.ask", return_value=mock_result) as mock_ask:
             mock_client = Mock(spec=Instructor)
 
-            hyde_rewriter("test query", mock_client, model="gpt-4")
+            hyde_rewriter(mock_client, "test query", model="gpt-4")
 
             # Verify custom model was used
             mock_ask.assert_called_once()
@@ -142,10 +142,10 @@ class TestHydeRewriter:
         mock_client = Mock(spec=Instructor)
 
         with pytest.raises(ValueError, match="Query cannot be empty"):
-            hyde_rewriter("", mock_client)
+            hyde_rewriter(mock_client, "")
 
         with pytest.raises(ValueError, match="Query cannot be empty"):
-            hyde_rewriter("   ", mock_client)
+            hyde_rewriter(mock_client, "   ")
 
     def test_hyde_rewriter_llm_api_failure(self):
         """Test handling of LLM API failures."""
@@ -153,7 +153,7 @@ class TestHydeRewriter:
             mock_client = Mock(spec=Instructor)
 
             with pytest.raises(Exception, match="API Error"):
-                hyde_rewriter("test query", mock_client)
+                hyde_rewriter(mock_client, "test query")
 
 
 class TestHydeRewriterIntegrated:
@@ -171,7 +171,7 @@ class TestHydeRewriterIntegrated:
         with patch("legiscope.retrieve.ask", return_value=mock_result):
             mock_client = Mock(spec=Instructor)
 
-            result = hyde_rewriter("where can I park", client=mock_client)
+            result = hyde_rewriter(mock_client, "where can I park")
 
             assert (
                 result.rewritten_query
@@ -190,7 +190,7 @@ class TestHydeRewriterIntegrated:
 
         with patch("legiscope.retrieve.ask", return_value=mock_result):
             # Should work with valid client
-            result = hyde_rewriter("where can I park", client=mock_client)
+            result = hyde_rewriter(mock_client, "where can I park")
             assert isinstance(result, HydeRewrite)
             assert (
                 result.rewritten_query
@@ -334,7 +334,7 @@ class TestRetrieveEmbeddings:
                 )
 
                 # Verify custom model was passed to hyde_rewriter
-                mock_hyde.assert_called_once_with("test query", mock_client, "gpt-4")
+                mock_hyde.assert_called_once_with(mock_client, "test query", "gpt-4")
 
 
 class TestRetrieveSections:

@@ -35,6 +35,8 @@ dependencies = [
     "nbformat>=5.10.4",
     "altair>=6.0.0",
     "python-dotenv>=1.2.1",
+    "mcp>=1",
+    "pydantic>=2",
 ]
 
 [project.optional-dependencies]

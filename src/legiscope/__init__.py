@@ -40,7 +40,6 @@ from legiscope.retrieve import (
     retrieve_sections,
     hyde_rewriter,
     get_jurisdiction_stats,
-    compare_jurisdictions,
 )
 
 
@@ -72,5 +71,4 @@ __all__ = [
     "retrieve_sections",
     "hyde_rewriter",
     "get_jurisdiction_stats",
-    "compare_jurisdictions",
 ]

@@ -141,9 +141,7 @@ Content: {section.get("body_text", "")}
 Matching Segments:
 """
         # Add matching segments for context
-        for j, segment in enumerate(
-            section.get("matching_segments", [])[:3]
-        ):  # Limit to top 3 segments
+        for j, segment in enumerate(section.get("matching_segments", [])):
             segment_text = segment.get("segment_text", "")
             if segment_text:
                 section_text += f"  - Segment {j + 1}: {segment_text}\n"
