@@ -246,6 +246,33 @@ def text2md(
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")
     """
+    # 1. Input validation
+    _validate_conversion_inputs(structure, input_path, output_path, state, municipality)
+
+    # 2. Setup patterns
+    compiled_patterns = _compile_heading_patterns(structure)
+
+    # 3. Read file
+    lines = _read_source_file(input_path)
+
+    # 4. Process lines
+    converted_lines = _process_markdown_lines(lines, compiled_patterns, structure)
+
+    # 5. Generate frontmatter
+    frontmatter = _generate_frontmatter(structure, state, municipality)
+
+    # 6. Write output
+    _write_markdown_file(output_path, frontmatter, converted_lines)
+
+
+def _validate_conversion_inputs(
+    structure: HeadingStructure,
+    input_path: str,
+    output_path: str,
+    state: str,
+    municipality: str,
+) -> None:
+    """Validate inputs for text2md function."""
     if not structure or not hasattr(structure, "levels"):
         raise ValueError("Invalid HeadingStructure provided")
 
@@ -258,31 +285,57 @@ def text2md(
     if not os.path.isfile(input_path):
         raise ValueError(f"Input path is not a file: {input_path}")
 
+    if not state or not state.strip():
+        raise ValueError("State cannot be empty")
+
+    if not municipality or not municipality.strip():
+        raise ValueError("Municipality cannot be empty")
+
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
 
+
+def _compile_heading_patterns(structure: HeadingStructure) -> list:
+    """Compile regex patterns for heading detection."""
+    from loguru import logger
+
     compiled_patterns = []
-    for level in sorted(structure.levels, key=lambda x: x.level):
+
+    for heading_level in structure.levels:
+        pattern = heading_level.regex_pattern
+        level = heading_level.level
         try:
-            compiled_pattern = re.compile(level.regex_pattern)
-            compiled_patterns.append((level, compiled_pattern))
+            compiled = re.compile(pattern)
+            compiled_patterns.append((level, compiled))
         except re.error as e:
             raise ValueError(
-                f"Invalid regex pattern in HeadingStructure: {level.regex_pattern}. Error: {str(e)}"
+                f"Invalid regex pattern in HeadingStructure: {pattern}. Error: {str(e)}"
             )
+
+    logger.debug(f"Compiled {len(compiled_patterns)} heading patterns")
+    return compiled_patterns
+
+
+def _read_source_file(input_path: str) -> list[str]:
+    """Read source file and return lines."""
+    from loguru import logger
 
     try:
         with open(input_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-    except UnicodeDecodeError:
-        raise ValueError(
-            f"Unable to read input file due to encoding issues: {input_path}"
-        )
+        logger.debug(f"Read {len(lines)} lines from {input_path}")
+        return lines
     except IOError as e:
         raise ValueError(f"Error reading input file {input_path}: {str(e)}")
 
-    # Process lines and convert headings with proper paragraph handling
+
+def _process_markdown_lines(
+    lines: list[str], compiled_patterns: list, structure: HeadingStructure
+) -> list[str]:
+    """Process lines and convert headings to Markdown format with proper paragraph handling."""
+    from loguru import logger
+
     converted_lines = []
     heading_lines_processed = set()
     i = 0
@@ -301,11 +354,22 @@ def text2md(
         for level, pattern in compiled_patterns:
             if pattern.match(line_stripped.strip()):
                 # Convert to Markdown format
-                markdown_heading = f"{level.markdown_prefix} {line_stripped.strip()}"
+                heading_level_obj = None
+                for hl in structure.levels:
+                    if hl.level == level:
+                        heading_level_obj = hl
+                        break
+                if heading_level_obj:
+                    markdown_heading = (
+                        f"{heading_level_obj.markdown_prefix} {line_stripped.strip()}"
+                    )
+                else:
+                    markdown_heading = f"{'#' * level} {line_stripped.strip()}"
                 converted_lines.append(markdown_heading + "\n")
                 heading_lines_processed.add(i)
                 heading_found = True
                 i += 1
+                logger.debug(f"Line {i + 1}: Converted to level {level} heading")
                 break
 
         if heading_found:
@@ -349,11 +413,19 @@ def text2md(
                     converted_lines.append("\n")
                     i += 1
 
-    frontmatter = _generate_frontmatter(structure, state, municipality)
+    return converted_lines
+
+
+def _write_markdown_file(
+    output_path: str, frontmatter: str, converted_lines: list[str]
+) -> None:
+    """Write frontmatter and converted lines to output file."""
+    from loguru import logger
 
     try:
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(frontmatter)
             f.writelines(converted_lines)
+        logger.debug(f"Wrote converted content to {output_path}")
     except IOError as e:
         raise ValueError(f"Error writing output file {output_path}: {str(e)}")
