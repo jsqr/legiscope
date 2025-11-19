@@ -238,7 +238,7 @@ Determine if this text directly helps answer the query and provide your assessme
         raise
 
 
-def retrieve_embeddings(
+def retrieve_segments(
     collection: chromadb.Collection,
     query_text: str,
     n_results: int = 10,
@@ -271,12 +271,12 @@ def retrieve_embeddings(
 
     Example:
         # Retrieve from specific jurisdiction
-        results = retrieve_embeddings(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
+        results = retrieve_segments(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
 
         # Retrieve with LLM-powered HYDE rewriting
         from legiscope.llm_config import Config
         client = Config.get_fast_client()
-        results = retrieve_embeddings(
+        results = retrieve_segments(
             collection,
             "where can I park my car",
             rewrite=True,
@@ -284,14 +284,14 @@ def retrieve_embeddings(
         )
 
         # Retrieve from multiple jurisdictions
-        results = retrieve_embeddings(
+        results = retrieve_segments(
             collection,
             "zoning laws",
             where={"jurisdiction_id": {"$in": ["IL-WindyCity", "CA-LosAngeles"]}}
         )
 
         # Cross-jurisdiction comparison (no jurisdiction filter)
-        results = retrieve_embeddings(collection, "noise ordinances", n_results=50)
+        results = retrieve_segments(collection, "noise ordinances", n_results=50)
     """
     # Use default model if not specified
     if rewrite_model is None:
@@ -543,14 +543,28 @@ def retrieve_sections(
 
     logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
 
+    _validate_retrieve_sections_inputs(
+        collection=collection,
+        query_text=query_text,
+        sections_parquet_path=sections_parquet_path,
+        n_results=n_results,
+        jurisdiction_id=jurisdiction_id,
+        where=where,
+        where_document=where_document,
+        rewrite=rewrite,
+        rewrite_client=rewrite_client,
+        rewrite_model=rewrite_model,
+        embedding_client=embedding_client,
+        embedding_model=embedding_model,
+    )
+
     sections_path = Path(sections_parquet_path)
 
     if not sections_path.exists():
         logger.error(f"Sections parquet file not found: {sections_path}")
         raise FileNotFoundError(f"Sections parquet file not found: {sections_path}")
 
-    logger.debug("Step 1: Retrieving segment-level results")
-    segment_results = retrieve_embeddings(
+    segment_results = _retrieve_segment_results(
         collection=collection,
         query_text=query_text,
         n_results=n_results,
@@ -567,61 +581,14 @@ def retrieve_sections(
     original_query = query_text
     rewritten_query = segment_results.get("rewritten_query") if rewrite else None
 
-    # Check if we have any results
-    if not segment_results.get("ids") or not segment_results["ids"][0]:
+    if _has_no_results(segment_results):
         logger.info("No segment results found")
-        return {
-            "sections": [],
-            "query_info": {
-                "original_query": original_query,
-                "rewritten_query": rewritten_query,
-                "total_segments_found": 0,
-                "unique_sections": 0,
-            },
-        }
+        return _create_empty_results(original_query, rewritten_query)
 
     total_segments_found = len(segment_results["ids"][0])
     logger.info(f"Found {total_segments_found} segment results")
 
-    logger.debug("Step 2: Processing segment results")
-
-    segment_ids = segment_results["ids"][0]
-    segment_documents = segment_results["documents"][0]
-    segment_distances = segment_results["distances"][0]
-    segment_metadatas = segment_results.get("metadatas", [None])[0]
-
-    # Group segments by section_ref
-    sections_to_segments: dict[int, list[dict[str, Any]]] = {}
-
-    for i, seg_id in enumerate(segment_ids):
-        metadata = (
-            segment_metadatas[i]
-            if segment_metadatas and i < len(segment_metadatas)
-            else {}
-        )
-
-        section_ref = metadata.get("section_ref")
-        if section_ref is None:
-            logger.warning(f"Segment {seg_id} missing section_ref in metadata")
-            continue
-
-        segment_data = {
-            "segment_idx": int(seg_id),
-            "segment_text": segment_documents[i],
-            "distance": segment_distances[i],
-            "segment_position": metadata.get("segment_position", 0),
-            "section_heading": metadata.get("section_heading", ""),
-            "section_level": metadata.get("section_level", 1),
-        }
-
-        # Group by section
-        if section_ref not in sections_to_segments:
-            sections_to_segments[section_ref] = []
-        sections_to_segments[section_ref].append(segment_data)
-
-    unique_sections = len(sections_to_segments)
-    logger.info(f"Grouped segments into {unique_sections} unique sections")
-
+    sections_to_segments = _group_segments_by_section(segment_results)
     if not sections_to_segments:
         logger.warning("No valid section references found in segment metadata")
         return {
@@ -634,83 +601,9 @@ def retrieve_sections(
             },
         }
 
-    logger.debug("Step 3: Loading sections data from parquet")
+    sections_dict = _load_section_data(sections_path, sections_to_segments)
 
-    try:
-        # Load sections DataFrame
-        sections_df = pl.read_parquet(sections_path)
-        logger.debug(f"Loaded {len(sections_df)} sections from parquet")
-
-        # Validate required columns exist
-        required_columns = {"section_idx", "heading_text", "body_text", "heading_level"}
-        missing_columns = required_columns - set(sections_df.columns)
-        if missing_columns:
-            logger.error(
-                f"Sections parquet missing required columns: {missing_columns}"
-            )
-            raise ValueError(
-                f"Sections parquet missing required columns: {missing_columns}"
-            )
-
-        # Filter to only sections we have results for
-        section_indices = list(sections_to_segments.keys())
-        filtered_sections_df = sections_df.filter(
-            pl.col("section_idx").is_in(section_indices)
-        )
-
-        logger.debug(f"Filtered to {len(filtered_sections_df)} matching sections")
-
-        # Convert to dictionary for easier lookup
-        sections_dict = {}
-        for row in filtered_sections_df.to_dicts():
-            sections_dict[row["section_idx"]] = row
-
-    except Exception as e:
-        logger.error(f"Failed to load sections parquet: {str(e)}")
-        raise ValueError(f"Failed to load sections parquet: {str(e)}") from e
-
-    logger.debug("Step 4: Building section-level results")
-
-    section_results = []
-
-    for section_idx, segments in sections_to_segments.items():
-        # Get section data
-        section_data = sections_dict.get(section_idx)
-        if not section_data:
-            logger.warning(f"Section {section_idx} not found in parquet data")
-            continue
-
-        # Calculate relevance score (best segment distance)
-        best_distance = min(seg["distance"] for seg in segments)
-
-        # Sort segments by distance (most relevant first)
-        segments_sorted = sorted(segments, key=lambda x: x["distance"])
-
-        section_result = {
-            "section_idx": section_idx,
-            "heading_text": section_data["heading_text"],
-            "body_text": section_data["body_text"],
-            "heading_level": section_data["heading_level"],
-            "parent": section_data.get("parent"),
-            "matching_segments": [
-                {
-                    "segment_idx": seg["segment_idx"],
-                    "segment_text": seg["segment_text"],
-                    "distance": seg["distance"],
-                    "segment_position": seg["segment_position"],
-                }
-                for seg in segments_sorted
-            ],
-            "relevance_score": best_distance,
-            "segment_count": len(segments),
-        }
-
-        section_results.append(section_result)
-
-    # Sort sections by relevance score (best first)
-    section_results.sort(key=lambda x: x["relevance_score"])
-
-    logger.info(f"Returning {len(section_results)} sections with context")
+    section_results = _build_section_results(sections_to_segments, sections_dict)
 
     return {
         "sections": section_results,
@@ -736,7 +629,7 @@ def filter_results(
     out documents that are not relevant or fall below the confidence threshold.
 
     Args:
-        results: Retrieval results from retrieve_embeddings or similar functions
+        results: Retrieval results from retrieve_segments or similar functions
         query: Original query used for retrieval
         client: Instructor client for LLM-powered relevance assessment
         threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
@@ -769,11 +662,27 @@ def filter_results(
         ValueError: If results structure is invalid or client is missing
 
     Example:
-        results = retrieve_embeddings(collection, "parking rules", n_results=10)
+        results = retrieve_segments(collection, "parking rules", n_results=10)
         filtered = filter_results(client, results, "parking rules", threshold=0.7)
         print(f"Filtered from {filtered['filtering_metadata']['original_count']} "
               f"to {filtered['filtering_metadata']['filtered_count']} results")
     """
+    _validate_filter_inputs(results, client, query, threshold, model)
+    assessments = _assess_document_relevance(results, query, client, model)
+    filtered_indices = _apply_relevance_filters(assessments, threshold)
+    return _reconstruct_filtered_results(
+        results, assessments, filtered_indices, threshold
+    )
+
+
+def _validate_filter_inputs(
+    results: dict[str, Any],
+    client: Instructor,
+    query: str,
+    threshold: float,
+    model: str | None = None,
+) -> None:
+    """Validate inputs for filter_results function."""
     if results is None:
         logger.error("Invalid results structure")
         raise ValueError("Invalid results structure")
@@ -788,18 +697,27 @@ def filter_results(
         logger.error(f"Results missing required keys: {missing_keys}")
         raise ValueError(f"Results missing required keys: {missing_keys}")
 
+    if threshold < 0 or threshold > 1:
+        logger.error("Threshold must be between 0 and 1")
+        raise ValueError("Threshold must be between 0 and 1")
+
     logger.info(
         f"Filtering {len(results['ids'][0])} results for query: '{query[:30]}...'"
     )
 
+
+def _assess_document_relevance(
+    results: dict[str, Any],
+    query: str,
+    client: Instructor,
+    model: str | None = None,
+) -> list[dict]:
+    """Assess relevance for each document in results."""
     ids = results["ids"][0]
     documents = results["documents"][0]
     distances = results["distances"][0]
-    metadatas = results.get("metadatas", [None])[0]
 
-    original_count = len(ids)
     assessments = []
-    filtered_indices = []
 
     # Assess relevance for each document
     for i, (doc_id, document, distance) in enumerate(zip(ids, documents, distances)):
@@ -825,19 +743,50 @@ def filter_results(
             }
         )
 
+        logger.debug(
+            f"Document {i} assessed: relevant={assessment.is_relevant}, "
+            f"confidence={assessment.confidence:.2f}"
+        )
+
+    return assessments
+
+
+def _apply_relevance_filters(assessments: list[dict], threshold: float) -> list[int]:
+    """Apply relevance and threshold filters to assessments."""
+    filtered_indices = []
+
+    for assessment in assessments:
         # Filter based on relevance and threshold
-        if assessment.is_relevant and assessment.confidence >= threshold:
-            filtered_indices.append(i)
+        if assessment["is_relevant"] and assessment["confidence"] >= threshold:
+            filtered_indices.append(assessment["index"])
             logger.debug(
-                f"Document {i} kept: relevant={assessment.is_relevant}, "
-                f"confidence={assessment.confidence:.2f}"
+                f"Document {assessment['index']} kept: relevant={assessment['is_relevant']}, "
+                f"confidence={assessment['confidence']:.2f}"
             )
         else:
             logger.debug(
-                f"Document {i} filtered: relevant={assessment.is_relevant}, "
-                f"confidence={assessment.confidence:.2f}"
+                f"Document {assessment['index']} filtered: relevant={assessment['is_relevant']}, "
+                f"confidence={assessment['confidence']:.2f}"
             )
 
+    return filtered_indices
+
+
+def _reconstruct_filtered_results(
+    results: dict[str, Any],
+    assessments: list[dict],
+    filtered_indices: list[int],
+    threshold: float,
+) -> dict[str, Any]:
+    """Reconstruct filtered results structure."""
+    ids = results["ids"][0]
+    documents = results["documents"][0]
+    distances = results["distances"][0]
+    metadatas = results.get("metadatas", [None])[0]
+
+    original_count = len(ids)
+
+    # Filter data based on indices
     filtered_ids = [ids[i] for i in filtered_indices]
     filtered_documents = [documents[i] for i in filtered_indices]
     filtered_distances = [distances[i] for i in filtered_indices]
@@ -975,3 +924,227 @@ def filter_sections(
         "filtered_count": filtered_count,
         "original_count": original_count,
     }
+
+
+def _validate_retrieve_sections_inputs(
+    collection: chromadb.Collection,
+    query_text: str,
+    sections_parquet_path: str | Path,
+    n_results: int = 10,
+    jurisdiction_id: str | None = None,
+    where: dict | None = None,
+    where_document: dict | None = None,
+    rewrite: bool = False,
+    rewrite_client: Instructor | None = None,
+    rewrite_model: str | None = None,
+    embedding_client=None,
+    embedding_model: str | None = None,
+) -> None:
+    """Validate inputs for retrieve_sections function."""
+    if not collection:
+        logger.error("Collection is required for section retrieval")
+        raise ValueError("Collection is required for section retrieval")
+
+    if not query_text or not query_text.strip():
+        logger.error("Query text cannot be empty for section retrieval")
+        raise ValueError("Query text cannot be empty for section retrieval")
+
+    if not sections_parquet_path:
+        logger.error("Sections parquet path is required for section retrieval")
+        raise ValueError("Sections parquet path is required for section retrieval")
+
+    if n_results <= 0:
+        logger.error("n_results must be positive for section retrieval")
+        raise ValueError("n_results must be positive for section retrieval")
+
+    if rewrite and not rewrite_client:
+        logger.error("Rewrite client is required when rewrite=True")
+        raise ValueError("Rewrite client is required when rewrite=True")
+
+
+def _retrieve_segment_results(
+    collection: chromadb.Collection,
+    query_text: str,
+    n_results: int = 10,
+    jurisdiction_id: str | None = None,
+    where: dict | None = None,
+    where_document: dict | None = None,
+    rewrite: bool = False,
+    rewrite_client: Instructor | None = None,
+    rewrite_model: str | None = None,
+    embedding_client=None,
+    embedding_model: str | None = None,
+) -> dict[str, Any]:
+    """Retrieve segment-level results from embeddings."""
+    logger.debug("Step 1: Retrieving segment-level results")
+    return retrieve_segments(
+        collection=collection,
+        query_text=query_text,
+        n_results=n_results,
+        jurisdiction_id=jurisdiction_id,
+        where=where,
+        where_document=where_document,
+        rewrite=rewrite,
+        rewrite_client=rewrite_client,
+        rewrite_model=rewrite_model,
+        embedding_client=embedding_client,
+        embedding_model=embedding_model,
+    )
+
+
+def _has_no_results(segment_results: dict[str, Any]) -> bool:
+    """Check if segment results contain any data."""
+    return not segment_results.get("ids") or not segment_results["ids"][0]
+
+
+def _create_empty_results(
+    original_query: str, rewritten_query: str | None = None
+) -> dict:
+    """Create empty results structure when no segments found."""
+    return {
+        "sections": [],
+        "query_info": {
+            "original_query": original_query,
+            "rewritten_query": rewritten_query,
+            "total_segments_found": 0,
+            "unique_sections": 0,
+        },
+    }
+
+
+def _group_segments_by_section(
+    segment_results: dict[str, Any],
+) -> dict[int, list[dict[str, Any]]]:
+    """Group segment results by their parent section references."""
+    logger.debug("Step 2: Processing segment results")
+
+    segment_ids = segment_results["ids"][0]
+    segment_documents = segment_results["documents"][0]
+    segment_distances = segment_results["distances"][0]
+    segment_metadatas = segment_results.get("metadatas", [None])[0]
+
+    # Group segments by section_ref
+    sections_to_segments: dict[int, list[dict[str, Any]]] = {}
+
+    for i, seg_id in enumerate(segment_ids):
+        metadata = (
+            segment_metadatas[i]
+            if segment_metadatas and i < len(segment_metadatas)
+            else {}
+        )
+
+        section_ref = metadata.get("section_ref")
+        if section_ref is None:
+            logger.warning(f"Segment {seg_id} missing section_ref in metadata")
+            continue
+
+        segment_data = {
+            "segment_idx": int(seg_id),
+            "segment_text": segment_documents[i],
+            "distance": segment_distances[i],
+            "segment_position": metadata.get("segment_position", 0),
+            "section_heading": metadata.get("section_heading", ""),
+            "section_level": metadata.get("section_level", 1),
+        }
+
+        # Group by section
+        if section_ref not in sections_to_segments:
+            sections_to_segments[section_ref] = []
+        sections_to_segments[section_ref].append(segment_data)
+
+    unique_sections = len(sections_to_segments)
+    logger.info(f"Grouped segments into {unique_sections} unique sections")
+
+    return sections_to_segments
+
+
+def _load_section_data(
+    sections_path: Path, sections_to_segments: dict[int, list[dict[str, Any]]]
+) -> dict[int, dict[str, Any]]:
+    """Load and validate section data from parquet file."""
+    logger.debug("Step 3: Loading sections data from parquet")
+
+    try:
+        # Load sections DataFrame
+        sections_df = pl.read_parquet(sections_path)
+        logger.debug(f"Loaded {len(sections_df)} sections from parquet")
+
+        # Validate required columns exist
+        required_columns = {"section_idx", "heading_text", "body_text", "heading_level"}
+        missing_columns = required_columns - set(sections_df.columns)
+        if missing_columns:
+            logger.error(
+                f"Sections parquet missing required columns: {missing_columns}"
+            )
+            raise ValueError(
+                f"Sections parquet missing required columns: {missing_columns}"
+            )
+
+        # Filter to only sections we have results for
+        section_indices = list(sections_to_segments.keys())
+        filtered_sections_df = sections_df.filter(
+            pl.col("section_idx").is_in(section_indices)
+        )
+
+        logger.debug(f"Filtered to {len(filtered_sections_df)} matching sections")
+
+        # Convert to dictionary for easier lookup
+        sections_dict = {}
+        for row in filtered_sections_df.to_dicts():
+            sections_dict[row["section_idx"]] = row
+
+        return sections_dict
+
+    except Exception as e:
+        logger.error(f"Failed to load sections parquet: {str(e)}")
+        raise ValueError(f"Failed to load sections parquet: {str(e)}") from e
+
+
+def _build_section_results(
+    sections_to_segments: dict[int, list[dict[str, Any]]],
+    sections_dict: dict[int, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build final section results with relevance scores and matching segments."""
+    logger.debug("Step 4: Building section-level results")
+
+    section_results = []
+
+    for section_idx, segments in sections_to_segments.items():
+        # Get section data
+        section_data = sections_dict.get(section_idx)
+        if not section_data:
+            logger.warning(f"Section {section_idx} not found in parquet data")
+            continue
+
+        # Calculate relevance score (best segment distance)
+        best_distance = min(seg["distance"] for seg in segments)
+
+        # Sort segments by distance (most relevant first)
+        segments_sorted = sorted(segments, key=lambda x: x["distance"])
+
+        section_result = {
+            "section_idx": section_idx,
+            "heading_text": section_data["heading_text"],
+            "body_text": section_data["body_text"],
+            "heading_level": section_data["heading_level"],
+            "parent": section_data.get("parent"),
+            "matching_segments": [
+                {
+                    "segment_idx": seg["segment_idx"],
+                    "segment_text": seg["segment_text"],
+                    "distance": seg["distance"],
+                    "segment_position": seg["segment_position"],
+                }
+                for seg in segments_sorted
+            ],
+            "relevance_score": best_distance,
+            "segment_count": len(segments),
+        }
+
+        section_results.append(section_result)
+
+    # Sort sections by relevance score (best first)
+    section_results.sort(key=lambda x: x["relevance_score"])
+
+    logger.info(f"Returning {len(section_results)} sections with context")
+    return section_results

@@ -10,7 +10,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.llm_config import Config
-from legiscope.retrieve import retrieve_sections
+from legiscope.retrieve import filter_sections, retrieve_sections
 from legiscope.utils import ask
 
 
@@ -46,6 +46,9 @@ def query_legal_documents(
     model: str | None = None,
     temperature: float = 0.1,
     max_retries: int = 3,
+    filter_relevance: bool = False,
+    relevance_threshold: float = 0.5,
+    filter_model: str | None = None,
 ) -> LegalQueryResponse:
     """
     Process a user query against retrieved legal documents using LLM analysis.
@@ -60,6 +63,9 @@ def query_legal_documents(
         model: LLM model to use. Uses Config.get_fast_model() if not specified
         temperature: Sampling temperature for the LLM. Defaults to 0.1
         max_retries: Maximum retry attempts for LLM calls. Defaults to 3
+        filter_relevance: Whether to filter sections by relevance before LLM processing. Defaults to False
+        relevance_threshold: Minimum confidence score for relevance filtering (0-1). Defaults to 0.5
+        filter_model: LLM model to use for relevance filtering. Uses Config.get_fast_model() if not specified
 
     Returns:
         LegalQueryResponse: Structured response with answer, reasoning, citations, and evidence
@@ -84,11 +90,13 @@ def query_legal_documents(
             jurisdiction_id="IL-WindyCity"
         )
 
-        # Process query
+        # Process query with relevance filtering
         response = query_legal_documents(
             client=client,
             query="Are there restrictions on drug paraphernalia sales?",
-            retrieval_results=results
+            retrieval_results=results,
+            filter_relevance=True,
+            relevance_threshold=0.7
         )
 
         print(f"Answer: {response.short_answer}")
@@ -99,108 +107,71 @@ def query_legal_documents(
     if model is None:
         model = Config.get_fast_model()
 
-    # Validate inputs
-    if not client:
-        logger.error("Client is required for query processing")
-        raise ValueError("Client is required for query processing")
-
-    if not query or not query.strip():
-        logger.error("Query cannot be empty for query processing")
-        raise ValueError("Query cannot be empty for query processing")
-
-    if not retrieval_results:
-        logger.error("Retrieval results are required for query processing")
-        raise ValueError("Retrieval results are required for query processing")
+    _validate_query_inputs(
+        client=client,
+        query=query,
+        retrieval_results=retrieval_results,
+        model=model,
+        temperature=temperature,
+        max_retries=max_retries,
+        filter_relevance=filter_relevance,
+        relevance_threshold=relevance_threshold,
+        filter_model=filter_model,
+    )
 
     logger.info(f"Processing query: '{query[:50]}...'")
     logger.debug(f"Using model: {model}, temperature: {temperature}")
 
-    # Extract sections from retrieval results
-    sections = retrieval_results.get("sections", [])
+    sections = _extract_and_validate_sections(retrieval_results)
     if not sections:
-        logger.warning("No sections found in retrieval results")
         return LegalQueryResponse(
             short_answer="I cannot answer your question as no relevant legal provisions were found.",
             reasoning="The search did not return any legal sections that address your query.",
             citations=[],
             supporting_passages=[],
             confidence=0.0,
-            limitations="No relevant legal information was available to answer the query.",
+            limitations="No relevant legal information was available to answer query.",
         )
 
-    logger.info(f"Found {len(sections)} relevant sections to analyze")
+    if filter_relevance:
+        model_for_filter = filter_model or Config.get_fast_model()
+        try:
+            filtered_results = filter_sections(
+                client=client,
+                sections_results=retrieval_results,
+                query=query,
+                confidence_threshold=relevance_threshold,
+                model=model_for_filter,
+            )
+            sections = filtered_results.get("sections", [])
+        except Exception:
+            sections = retrieval_results.get("sections", [])
+    else:
+        sections = retrieval_results.get("sections", [])
 
-    # Prepare context for the LLM
-    context_sections = []
-    for i, section in enumerate(sections):
-        section_text = f"""
-Section {i + 1}: {section.get("heading_text", "Untitled Section")}
-Relevance Score: {section.get("relevance_score", 0):.3f}
-Content: {section.get("body_text", "")}
-
-Matching Segments:
-"""
-        # Add matching segments for context
-        for j, segment in enumerate(section.get("matching_segments", [])):
-            segment_text = segment.get("segment_text", "")
-            if segment_text:
-                section_text += f"  - Segment {j + 1}: {segment_text}\n"
-
-        context_sections.append(section_text)
-
-    full_context = "\n".join(context_sections)
-
-    system_prompt = """You are a lawyer specializing in municipal law and regulations.
-Your task is to analyze the provided legal context and answer the user's question accurately.
-
-Guidelines for your analysis:
-1. Provide a direct, concise answer to the user's question
-2. Explain your legal reasoning clearly and thoroughly
-3. Cite specific sections or provisions that support your answer
-4. Include direct excerpts from the legal text that support your reasoning
-5. Assess your confidence based on the available evidence
-6. Note any limitations or gaps in the available information
-
-When citing sections, use the section headings provided in the context. When including
-supporting passages, use direct quotes from the legal text that most strongly support
-your reasoning.
-
-Be precise and objective in your analysis. If the provided context does not contain
-sufficient information to answer the question definitively, acknowledge this limitation
-and provide the best answer possible with the available information."""
-
-    user_prompt = f"""Please answer the following legal question based on the provided municipal code context:
-
-User Question: "{query}"
-
-Legal Context:
-{full_context}
-
-Please analyze this legal context and provide a comprehensive response following the guidelines."""
-
-    try:
-        logger.debug("Making LLM call for query processing")
-
-        response = ask(
-            client=client,
-            prompt=user_prompt,
-            response_model=LegalQueryResponse,
-            system=system_prompt,
-            model=model,
-            temperature=temperature,
-            max_retries=max_retries,
+    if not sections:
+        logger.warning("All sections filtered out as irrelevant")
+        return LegalQueryResponse(
+            short_answer="I cannot answer your question as no relevant legal provisions were found after filtering.",
+            reasoning="The search returned legal sections, but all were determined to be irrelevant to your specific query.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.0,
+            limitations="No relevant legal information was available after relevance filtering.",
         )
 
-        logger.info(
-            f"Query processing completed - confidence: {response.confidence:.2f}, "
-            f"citations: {len(response.citations)}, supporting passages: {len(response.supporting_passages)}"
-        )
+    full_context = _prepare_legal_context(sections)
 
-        return response
+    system_prompt, user_prompt = _build_legal_prompts(query, full_context)
 
-    except Exception as e:
-        logger.error(f"Query processing failed: {str(e)}")
-        raise
+    return _execute_query_llm_call(
+        client=client,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        model=model,
+        temperature=temperature,
+        max_retries=max_retries,
+    )
 
 
 def format_query_response(response: LegalQueryResponse) -> str:
@@ -255,6 +226,9 @@ def run_queries(
     max_retries: int = 3,
     n_results: int = 10,
     use_hyde: bool = False,
+    filter_relevance: bool = False,
+    relevance_threshold: float = 0.5,
+    filter_model: str | None = None,
 ) -> pl.DataFrame:
     """
     Run multiple queries against a jurisdiction and compile results in a structured DataFrame.
@@ -274,6 +248,9 @@ def run_queries(
         max_retries: Maximum retry attempts for LLM calls. Defaults to 3
         n_results: Number of results to retrieve per query. Defaults to 10
         use_hyde: Whether to apply HYDE query rewriting. Defaults to False
+        filter_relevance: Whether to filter sections by relevance before LLM processing. Defaults to False
+        relevance_threshold: Minimum confidence score for relevance filtering (0-1). Defaults to 0.5
+        filter_model: LLM model to use for relevance filtering. Uses Config.get_fast_model() if not specified
 
     Returns:
         pl.DataFrame: Structured results with columns:
@@ -302,7 +279,7 @@ def run_queries(
         chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
         collection = chroma_client.get_collection("legal_code_all")
 
-        # Run multiple queries
+        # Run multiple queries with relevance filtering
         queries = [
             "Are there restrictions on drug paraphernalia sales?",
             "What are the parking regulations?",
@@ -315,7 +292,9 @@ def run_queries(
             jurisdiction_id="IL-WindyCity",
             sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
             collection=collection,
-            model=Config.get_powerful_model()
+            model=Config.get_powerful_model(),
+            filter_relevance=True,
+            relevance_threshold=0.7
         )
 
         # View results
@@ -323,6 +302,224 @@ def run_queries(
     """
     import time
 
+    _validate_batch_query_inputs(
+        client=client,
+        queries=queries,
+        jurisdiction_id=jurisdiction_id,
+        sections_parquet_path=sections_parquet_path,
+        collection=collection,
+        model=model,
+        temperature=temperature,
+        max_retries=max_retries,
+        n_results=n_results,
+        use_hyde=use_hyde,
+        filter_relevance=filter_relevance,
+        relevance_threshold=relevance_threshold,
+        filter_model=filter_model,
+    )
+
+    # Use default model if not specified
+    if model is None:
+        model = Config.get_fast_model()
+
+    logger.info(
+        f"Processing {len(queries)} queries for jurisdiction: {jurisdiction_id}"
+    )
+    logger.debug(f"Using model: {model}, n_results: {n_results}, use_hyde: {use_hyde}")
+
+    # Process queries in loop
+    results = []
+    for i, query in enumerate(queries):
+        if query is None or not isinstance(query, str) or not query.strip():
+            logger.warning(f"Skipping empty query at index {i}")
+            continue
+
+        start_time = time.time()
+        logger.info(f"Processing query {i + 1}/{len(queries)}: '{query[:50]}...'")
+
+        result = _process_single_query_with_error_handling(
+            client=client,
+            query=query,
+            jurisdiction_id=jurisdiction_id,
+            sections_parquet_path=sections_parquet_path,
+            collection=collection,
+            model=model,
+            temperature=temperature,
+            max_retries=max_retries,
+            n_results=n_results,
+            use_hyde=use_hyde,
+            filter_relevance=filter_relevance,
+            relevance_threshold=relevance_threshold,
+            filter_model=filter_model,
+            start_time=start_time,
+        )
+
+        results.append(result)
+
+        if "Error:" not in result["short_answer"]:
+            logger.info(
+                f"Query {i + 1} completed - confidence: {result['confidence']:.2f}, "
+                f"sections: {result['sections_found']}, time: {result['processing_time']:.2f}s"
+            )
+
+    return _compile_query_results(results)
+
+
+def _validate_query_inputs(
+    client: Instructor,
+    query: str,
+    retrieval_results: dict[str, Any],
+    model: str | None = None,
+    temperature: float = 0.1,
+    max_retries: int = 3,
+    filter_relevance: bool = False,
+    relevance_threshold: float = 0.5,
+    filter_model: str | None = None,
+) -> None:
+    """Validate inputs for query_legal_documents function."""
+    if not client:
+        logger.error("Client is required for query processing")
+        raise ValueError("Client is required for query processing")
+
+    if not query or not query.strip():
+        logger.error("Query cannot be empty for query processing")
+        raise ValueError("Query cannot be empty for query processing")
+
+    if not retrieval_results:
+        logger.error("Retrieval results are required for query processing")
+        raise ValueError("Retrieval results are required for query processing")
+
+    if temperature < 0 or temperature > 2:
+        logger.error("Temperature must be between 0 and 2")
+        raise ValueError("Temperature must be between 0 and 2")
+
+    if max_retries < 0:
+        logger.error("Max retries must be non-negative")
+        raise ValueError("Max retries must be non-negative")
+
+    if relevance_threshold < 0 or relevance_threshold > 1:
+        logger.error("Relevance threshold must be between 0 and 1")
+        raise ValueError("Relevance threshold must be between 0 and 1")
+
+
+def _extract_and_validate_sections(
+    retrieval_results: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Extract and validate sections from retrieval results."""
+    sections = retrieval_results.get("sections", [])
+    if not sections:
+        logger.warning("No sections found in retrieval results")
+        return []
+
+    logger.info(f"Found {len(sections)} relevant sections to analyze")
+    return sections
+
+
+def _prepare_legal_context(sections: list[dict[str, Any]]) -> str:
+    """Prepare formatted context from sections for LLM processing."""
+    context_sections = []
+    for i, section in enumerate(sections):
+        section_text = f"""
+Section {i + 1}: {section.get("heading_text", "Untitled Section")}
+Relevance Score: {section.get("relevance_score", 0):.3f}
+Content: {section.get("body_text", "")}
+
+Matching Segments:
+"""
+        # Add matching segments for context
+        for j, segment in enumerate(section.get("matching_segments", [])):
+            segment_text = segment.get("segment_text", "")
+            if segment_text:
+                section_text += f"  - Segment {j + 1}: {segment_text}\n"
+
+        context_sections.append(section_text)
+
+    return "\n".join(context_sections)
+
+
+def _build_legal_prompts(query: str, full_context: str) -> tuple[str, str]:
+    """Build system and user prompts for legal query processing."""
+    system_prompt = """You are a lawyer specializing in municipal law and regulations.
+Your task is to analyze the provided legal context and answer the user's question accurately.
+
+Guidelines for your analysis:
+1. Provide a direct, concise answer to the user's question
+2. Explain your legal reasoning clearly and thoroughly
+3. Cite specific sections or provisions that support your answer
+4. Include direct excerpts from the legal text that support your reasoning
+5. Assess your confidence based on the available evidence
+6. Note any limitations or gaps in the available information
+
+When citing sections, use the section headings provided in the context. When including
+supporting passages, use direct quotes from the legal text that most strongly support
+your reasoning.
+
+Be precise and objective in your analysis. If the provided context does not contain
+sufficient information to answer the question definitively, acknowledge this limitation
+and provide the best answer possible with the available information."""
+
+    user_prompt = f"""Please answer the following legal question based on the provided municipal code context:
+
+User Question: "{query}"
+
+Legal Context:
+{full_context}
+
+Please analyze this legal context and provide a comprehensive response following the guidelines."""
+
+    return system_prompt, user_prompt
+
+
+def _execute_query_llm_call(
+    client: Instructor,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float = 0.1,
+    max_retries: int = 3,
+) -> LegalQueryResponse:
+    """Execute LLM call for query processing."""
+    try:
+        logger.debug("Making LLM call for query processing")
+
+        response = ask(
+            client=client,
+            prompt=user_prompt,
+            response_model=LegalQueryResponse,
+            system=system_prompt,
+            model=model,
+            temperature=temperature,
+            max_retries=max_retries,
+        )
+
+        logger.info(
+            f"Query processing completed - confidence: {response.confidence:.2f}, "
+            f"citations: {len(response.citations)}, supporting passages: {len(response.supporting_passages)}"
+        )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Query processing failed: {str(e)}")
+        raise
+
+
+def _validate_batch_query_inputs(
+    client: Instructor,
+    queries: list[str],
+    jurisdiction_id: str,
+    sections_parquet_path: str,
+    collection,
+    model: str | None = None,
+    temperature: float = 0.1,
+    max_retries: int = 3,
+    n_results: int = 10,
+    use_hyde: bool = False,
+    filter_relevance: bool = False,
+    relevance_threshold: float = 0.5,
+    filter_model: str | None = None,
+) -> None:
+    """Validate inputs for run_queries function."""
     if not client:
         logger.error("Client is required for query processing")
         raise ValueError("Client is required for query processing")
@@ -343,94 +540,96 @@ def run_queries(
         logger.error("ChromaDB collection is required")
         raise ValueError("ChromaDB collection is required")
 
-    # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    if n_results <= 0:
+        logger.error("n_results must be positive")
+        raise ValueError("n_results must be positive")
 
-    logger.info(
-        f"Processing {len(queries)} queries for jurisdiction: {jurisdiction_id}"
-    )
-    logger.debug(f"Using model: {model}, n_results: {n_results}, use_hyde: {use_hyde}")
 
-    results = []
+def _process_single_query_with_error_handling(
+    client: Instructor,
+    query: str,
+    jurisdiction_id: str,
+    sections_parquet_path: str,
+    collection,
+    model: str,
+    temperature: float,
+    max_retries: int,
+    n_results: int,
+    use_hyde: bool,
+    filter_relevance: bool,
+    relevance_threshold: float,
+    filter_model: str | None,
+    start_time: float,
+) -> dict:
+    """Process a single query with comprehensive error handling."""
+    import time
 
-    for i, query in enumerate(queries):
-        if query is None or not isinstance(query, str) or not query.strip():
-            logger.warning(f"Skipping empty query at index {i}")
-            continue
+    try:
+        retrieval_results = retrieve_sections(
+            collection=collection,
+            query_text=query,
+            sections_parquet_path=sections_parquet_path,
+            n_results=n_results,
+            jurisdiction_id=jurisdiction_id,
+            rewrite=use_hyde,
+            rewrite_client=client if use_hyde else None,
+            rewrite_model=model,
+        )
 
-        start_time = time.time()
-        logger.info(f"Processing query {i + 1}/{len(queries)}: '{query[:50]}...'")
+        query_info = retrieval_results.get("query_info", {})
+        sections_found = len(retrieval_results.get("sections", []))
+        segments_found = query_info.get("total_segments_found", 0)
 
-        try:
-            retrieval_results = retrieve_sections(
-                collection=collection,
-                query_text=query,
-                sections_parquet_path=sections_parquet_path,
-                n_results=n_results,
-                jurisdiction_id=jurisdiction_id,
-                rewrite=use_hyde,
-                rewrite_client=client if use_hyde else None,
-                rewrite_model=model,
-            )
+        query_response = query_legal_documents(
+            client=client,
+            query=query,
+            retrieval_results=retrieval_results,
+            model=model,
+            temperature=temperature,
+            max_retries=max_retries,
+            filter_relevance=filter_relevance,
+            relevance_threshold=relevance_threshold,
+            filter_model=filter_model,
+        )
 
-            query_info = retrieval_results.get("query_info", {})
-            sections_found = len(retrieval_results.get("sections", []))
-            segments_found = query_info.get("total_segments_found", 0)
+        processing_time = time.time() - start_time
 
-            query_response = query_legal_documents(
-                client=client,
-                query=query,
-                retrieval_results=retrieval_results,
-                model=model,
-                temperature=temperature,
-                max_retries=max_retries,
-            )
+        return {
+            "query": query,
+            "short_answer": query_response.short_answer,
+            "reasoning": query_response.reasoning,
+            "citations": str(
+                query_response.citations
+            ),  # Convert list to string for DataFrame
+            "supporting_passages": str(query_response.supporting_passages),
+            "confidence": query_response.confidence,
+            "limitations": query_response.limitations,
+            "sections_found": sections_found,
+            "segments_found": segments_found,
+            "processing_time": processing_time,
+        }
 
-            processing_time = time.time() - start_time
+    except Exception as e:
+        processing_time = time.time() - start_time
+        logger.error(f"Query processing failed: {str(e)}")
 
-            result = {
-                "query": query,
-                "short_answer": query_response.short_answer,
-                "reasoning": query_response.reasoning,
-                "citations": str(
-                    query_response.citations
-                ),  # Convert list to string for DataFrame
-                "supporting_passages": str(query_response.supporting_passages),
-                "confidence": query_response.confidence,
-                "limitations": query_response.limitations,
-                "sections_found": sections_found,
-                "segments_found": segments_found,
-                "processing_time": processing_time,
-            }
+        # Add failed result with error information
+        return {
+            "query": query,
+            "short_answer": f"Error: {str(e)}",
+            "reasoning": f"Query processing failed with error: {str(e)}",
+            "citations": "[]",
+            "supporting_passages": "[]",
+            "confidence": 0.0,
+            "limitations": f"Processing failed due to error: {str(e)}",
+            "sections_found": 0,
+            "segments_found": 0,
+            "processing_time": processing_time,
+        }
 
-            results.append(result)
 
-            logger.info(
-                f"Query {i + 1} completed - confidence: {query_response.confidence:.2f}, "
-                f"sections: {sections_found}, time: {processing_time:.2f}s"
-            )
-
-        except Exception as e:
-            processing_time = time.time() - start_time
-            logger.error(f"Query {i + 1} failed: {str(e)}")
-
-            # Add failed result with error information
-            result = {
-                "query": query,
-                "short_answer": f"Error: {str(e)}",
-                "reasoning": f"Query processing failed with error: {str(e)}",
-                "citations": "[]",
-                "supporting_passages": "[]",
-                "confidence": 0.0,
-                "limitations": f"Processing failed due to error: {str(e)}",
-                "sections_found": 0,
-                "segments_found": 0,
-                "processing_time": processing_time,
-            }
-
-            results.append(result)
-
+def _compile_query_results(results: list[dict]) -> pl.DataFrame:
+    """Compile query results into a structured DataFrame."""
     if not results:
         logger.warning("No queries were processed successfully")
         return pl.DataFrame(

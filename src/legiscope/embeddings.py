@@ -386,8 +386,6 @@ def create_embedding_index(
     embedding_col: str = "embedding",
     metadata_cols: list[str] | None = None,
     jurisdiction_id: str | None = None,
-    state: str | None = None,
-    municipality: str | None = None,
 ) -> chromadb.Collection:
     """Create a ChromaDB embedding index from a DataFrame with embeddings.
 
@@ -400,8 +398,6 @@ def create_embedding_index(
         embedding_col: Name of column containing embedding vectors. Defaults to 'embedding'
         metadata_cols: List of additional columns to include as metadata. If None, uses all non-ID/text/embedding columns
         jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
-        state: State code (e.g., 'IL')
-        municipality: Municipality name (e.g., 'WindyCity')
 
     Returns:
         chromadb.Collection: The created ChromaDB collection
@@ -416,8 +412,6 @@ def create_embedding_index(
             embedded_df,
             persist_directory="./chroma_db",
             jurisdiction_id="IL-WindyCity",
-            state="IL",
-            municipality="WindyCity"
         )
     """
     logger.info(f"Creating embedding index from DataFrame with {len(df)} rows")
@@ -468,6 +462,12 @@ def create_embedding_index(
     documents = df[text_col].to_list()
     embeddings = df[embedding_col].to_list()
 
+    # Derive state and municipality from jurisdiction_id, if available
+    parsed_state = None
+    parsed_municipality = None
+    if jurisdiction_id and "-" in jurisdiction_id:
+        parsed_state, parsed_municipality = jurisdiction_id.split("-", 1)
+
     # Prepare metadata with jurisdiction information
     metadata_list = []
     if metadata_cols:
@@ -476,30 +476,32 @@ def create_embedding_index(
 
         # Add jurisdiction information to each metadata dict
         for i, metadata in enumerate(base_metadata_list):
-            # Add jurisdiction fields if provided
             if jurisdiction_id:
                 metadata["jurisdiction_id"] = jurisdiction_id
-            if state:
-                metadata["state"] = state
-            if municipality:
-                metadata["municipality"] = municipality
+                if parsed_state:
+                    metadata["state"] = parsed_state
+                if parsed_municipality:
+                    metadata["municipality"] = parsed_municipality
 
             metadata_list.append(metadata)
 
+        added_fields = (
+            (1 if jurisdiction_id else 0)
+            + (1 if parsed_state else 0)
+            + (1 if parsed_municipality else 0)
+        )
         logger.debug(
-            f"Prepared metadata with {len(metadata_cols) + (3 if jurisdiction_id else 0)} fields per document"
+            f"Prepared metadata with {len(metadata_cols) + added_fields} fields per document"
         )
     else:
         # Still add jurisdiction metadata even if no other metadata columns
-        if jurisdiction_id or state or municipality:
+        if jurisdiction_id:
             for i in range(len(df)):
-                metadata = {}
-                if jurisdiction_id:
-                    metadata["jurisdiction_id"] = jurisdiction_id
-                if state:
-                    metadata["state"] = state
-                if municipality:
-                    metadata["municipality"] = municipality
+                metadata = {"jurisdiction_id": jurisdiction_id}
+                if parsed_state:
+                    metadata["state"] = parsed_state
+                if parsed_municipality:
+                    metadata["municipality"] = parsed_municipality
                 metadata_list.append(metadata)
             logger.debug(f"Prepared jurisdiction-only metadata for {len(df)} documents")
         else:
@@ -580,8 +582,6 @@ def add_jurisdiction_embeddings(
     collection: chromadb.Collection,
     embeddings_df: pl.DataFrame,
     jurisdiction_id: str,
-    state: str | None = None,
-    municipality: str | None = None,
     id_col: str = "segment_idx",
     text_col: str = "segment_text",
     embedding_col: str = "embedding",
@@ -593,8 +593,6 @@ def add_jurisdiction_embeddings(
         collection: Existing ChromaDB collection
         embeddings_df: DataFrame with embeddings data
         jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
-        state: State code (e.g., 'IL')
-        municipality: Municipality name (e.g., 'WindyCity')
         id_col: Name of column containing unique IDs. Defaults to 'segment_idx'
         text_col: Name of column containing text content. Defaults to 'segment_text'
         embedding_col: Name of column containing embedding vectors. Defaults to 'embedding'
@@ -607,17 +605,6 @@ def add_jurisdiction_embeddings(
         f"Adding {len(embeddings_df)} embeddings for jurisdiction: {jurisdiction_id}"
     )
 
-    # Parse state and municipality from jurisdiction_id if not provided
-    if not state or not municipality:
-        if "-" in jurisdiction_id:
-            parsed_state, parsed_municipality = jurisdiction_id.split("-", 1)
-            state = state or parsed_state
-            municipality = municipality or parsed_municipality
-        else:
-            logger.warning(
-                f"Cannot parse state/municipality from jurisdiction_id: {jurisdiction_id}"
-            )
-
     # Use the main create_embedding_index function but with existing collection
     create_embedding_index(
         df=embeddings_df,
@@ -628,8 +615,6 @@ def add_jurisdiction_embeddings(
         embedding_col=embedding_col,
         metadata_cols=metadata_cols,
         jurisdiction_id=jurisdiction_id,
-        state=state,
-        municipality=municipality,
     )
 
     logger.info(
@@ -666,9 +651,7 @@ def create_and_persist_embeddings(
             segments_df,
             client=get_embedding_client(),
             jurisdiction_config=JurisdictionConfig(
-                jurisdiction_id="IL-WindyCity",
-                state="IL",
-                municipality="WindyCity"
+                jurisdiction_id="IL-WindyCity"
             )
         )
     """
@@ -741,8 +724,6 @@ def create_and_persist_embeddings(
         embedding_col=emb_config.embedding_col,
         metadata_cols=pers_config.metadata_cols,
         jurisdiction_id=jur_config.jurisdiction_id,
-        state=jur_config.state,
-        municipality=jur_config.municipality,
     )
 
     logger.info("Successfully completed unified embeddings workflow")
