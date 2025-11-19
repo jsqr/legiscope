@@ -24,12 +24,13 @@ with app.setup:
 
     # Note: Load environment variables before running this notebook:
     #   export $(cat ../.env | grep -v '^#' | xargs)
-    #   marimo run notebooks/demo_nb.py
+    #   uv run marimo edit demo_nb.py
 
     from legiscope.retrieve import (
         retrieve_embeddings,
         retrieve_sections,
         get_jurisdiction_stats,
+        filter_sections,
     )
     from legiscope.utils import ask
     from legiscope.llm_config import Config
@@ -39,7 +40,6 @@ with app.setup:
 @app.cell
 def _():
     import marimo as mo
-
     return (mo,)
 
 
@@ -61,37 +61,22 @@ def _(mo):
 def _():
     # Use environment variable for collection name, default to mistral
     collection_name = os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_mistral")
-    # Alternative: collection_name = os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_ollama")
     chroma_path = "../data/chroma_db"
 
-    try:
-        chroma_client = chromadb.PersistentClient(path=chroma_path)
-        collection = chroma_client.get_or_create_collection(name=collection_name)
+    chroma_client = chromadb.PersistentClient(path=chroma_path)
+    collection = chroma_client.get_or_create_collection(name=collection_name)
 
-        print("=== ChromaDB Overview ===")
-        print(f"Collection: {collection_name}")
-        print(f"Path: {chroma_path}")
-        print(f"Collection object: {collection}")
+    print("=== ChromaDB Overview ===")
+    print(f"Collection: {collection_name}")
+    print(f"Path: {chroma_path}")
+    print(f"Collection object: {collection}")
 
-        stats = get_jurisdiction_stats(collection)
+    stats = get_jurisdiction_stats(collection)
+    assert stats is not None
 
-        print(f"Stats: {stats}")
-
-        if stats:
-            print(f"Total Documents: {stats.get('total_documents', 0)}")
-            print(f"Jurisdictions: {len(stats.get('jurisdictions', {}))}")
-            print(f"States: {len(stats.get('states', {}))}")
-            print("ChromaDB Connected Successfully")
-        else:
-            print("WARNING: Collection Connected but No Data Found")
-            print("The collection exists but contains no embedded documents.")
-
-    except Exception as e:
-        print(f"ERROR: ChromaDB connection failed")
-        print(f"Error: {str(e)}")
-        print("Check ChromaDB is set up with embedded documents.")
-        collection = None
-        chroma_client = None
+    print(f"Total Documents: {stats.get('total_documents', 0)}")
+    print(f"Jurisdictions: {len(stats.get('jurisdictions', {}))}")
+    print(f"States: {len(stats.get('states', {}))}")
     return (collection,)
 
 
@@ -130,33 +115,25 @@ def _():
     embedding_provider = os.getenv("LEGISCOPE_EMBEDDING_PROVIDER", "mistral")
     embedding_model = os.getenv("LEGISCOPE_EMBEDDING_MODEL", "mistral-embed")
 
-    try:
-        embedding_client = get_embedding_client(embedding_provider)
+    embedding_client = get_embedding_client(embedding_provider)
 
-        test_response = get_embeddings(
-            embedding_client,
-            ["test"],
-            model=embedding_model,
-            provider=embedding_provider,
-        )
-        if test_response is not None and len(test_response) > 0:
-            embedding_dim = len(test_response[0])
-            print(f"=== Embedding Client Setup ===")
-            print(f"Client: {embedding_provider}")
-            print(f"Model: {embedding_model}")
-            print(f"Dimension: {embedding_dim}")
-            print("Client setup successful")
-        else:
-            print("ERROR: Embedding client test failed")
-            embedding_client = None
+    test_response = get_embeddings(
+        embedding_client,
+        ["test"],
+        model=embedding_model,
+        provider=embedding_provider,
+    )
+    assert test_response is not None and len(test_response) > 0
 
-    except Exception as e:
-        print(f"ERROR: Embedding client setup failed: {str(e)}")
-        embedding_client = None
+    embedding_dim = len(test_response[0])
+    print(f"=== Embedding Client Setup ===")
+    print(f"Client: {embedding_provider}")
+    print(f"Model: {embedding_model}")
+    print(f"Dimension: {embedding_dim}")
     return embedding_client, embedding_model
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Retrieval
@@ -174,10 +151,7 @@ def _():
     n_results = int(os.getenv("LEGISCOPE_N_RESULTS", "10"))
     use_hyde = os.getenv("LEGISCOPE_USE_HYDE", "false").lower() == "true"
 
-    # Optional jurisdiction filters
     jurisdiction_id = "IL-WindyCity"
-    # state = "IL"  # All jurisdictions in a state
-    # municipality = "WindyCity"  # Specific municipality
 
     # Sections parquet path for full section context (constructed from jurisdiction)
     jurisdiction_path = "IL-WindyCity"
@@ -202,19 +176,14 @@ def _():
 
 @app.cell
 def _():
-    instructor_client = None
-
     print("=== LLM Client Setup ===")
     print(f"Using instructor with {Config.LLM_PROVIDER} provider")
     print(f"Fast model: {Config.get_fast_model()}")
     print(f"Powerful model: {Config.get_powerful_model()}")
 
-    try:
-        instructor_client = Config.get_fast_client()
-        print(f"Instructor client created successfully")
-    except Exception as e:
-        print(f"ERROR: Failed to create instructor client: {str(e)}")
-        instructor_client = None
+    instructor_client = None
+    instructor_client = Config.get_fast_client()
+    assert instructor_client is not None, "Failed to initialize instructor client"
     return (instructor_client,)
 
 
@@ -233,67 +202,76 @@ def _(
     results = None
     sections = []
 
-    print("=== Retrieval ===")
-    print(f"ChromaDB collection available: {'Yes' if collection is not None else 'No'}")
-    print(
-        f"Instructor client available: {'Yes' if instructor_client is not None else 'No'}"
+    # Use the existing embedding client from setup
+    results = retrieve_sections(
+        collection=collection,
+        query_text=query,
+        sections_parquet_path=sections_parquet_path,
+        n_results=n_results,
+        jurisdiction_id=jurisdiction_id,
+        rewrite=use_hyde,
+        rewrite_client=instructor_client if use_hyde else None,
+        embedding_client=embedding_client,
+        embedding_model=embedding_model,
     )
-    print(f"Query: {query}")
-    print(f"Using HYDE: {use_hyde}")
 
-    if collection is None:
-        print("ERROR: Cannot execute retrieval")
-        print("ChromaDB collection is not available.")
+    if results and results.get("sections"):
+        sections = results["sections"]
+        result_count = len(sections)
+        print(f"Number of sections found: {result_count}")
+
+        # Show query info
+        query_info = results.get("query_info", {})
+        print(f"Total segments found: {query_info.get('total_segments_found', 0)}")
+        print(f"Unique sections: {query_info.get('unique_sections', 0)}")
+
+        if use_hyde and instructor_client:
+            print("Query rewriting: HYDE applied")
     else:
-        try:
-            print("Executing retrieval...")
-
-            # Use the existing embedding client from setup
-            results = retrieve_sections(
-                collection=collection,
-                query_text=query,
-                sections_parquet_path=sections_parquet_path,
-                n_results=n_results,
-                jurisdiction_id=jurisdiction_id,
-                rewrite=use_hyde,
-                rewrite_client=instructor_client if use_hyde else None,
-                embedding_client=embedding_client,
-                embedding_model=embedding_model,
-            )
-
-            print(
-                f"Raw results structure: {list(results.keys()) if results else 'None'}"
-            )
-
-            if results and results.get("sections"):
-                sections = results["sections"]
-                result_count = len(sections)
-                print(f"Retrieval done")
-                print(f"Number of sections found: {result_count}")
-
-                # Show query info
-                query_info = results.get("query_info", {})
-                print(
-                    f"Total segments found: {query_info.get('total_segments_found', 0)}"
-                )
-                print(f"Unique sections: {query_info.get('unique_sections', 0)}")
-
-                if use_hyde and instructor_client:
-                    print("Query rewriting: HYDE applied")
-            else:
-                print("WARNING: No Results Found")
-                print("No matching sections were found for the query.")
-
-        except Exception as e:
-            print(f"ERROR: Retrieval failed")
-            print(f"Error: {str(e)}")
-            traceback.print_exc()
-            results = None
-            sections = []
+        print("WARNING: no results found or no matching sections")
     return results, sections
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Filter retrieved sections for relevance
+    """)
+    return
+
+
 @app.cell
+def _(instructor_client, query, results, section):
+    # Filter section results using LLM-powered relevance assessment
+    filtered_sections_result = filter_sections(
+        client=instructor_client,
+        sections_results=results,
+        query=query,
+        confidence_threshold=0.5,
+    )
+
+    # Show filtering statistics
+    print(f"=== LLM-Powered Relevance Filtering ===")
+
+    original_count = filtered_sections_result["original_count"]
+    filtered_count = filtered_sections_result["filtered_count"]
+    print(f"Original results: {original_count}")
+    print(f"Filtered results: {filtered_count}")
+
+    # Show relevance scores for filtered sections
+    filtered_sections = filtered_sections_result["sections"]
+    if filtered_sections:
+        print(f"\nRelevance scores of filtered sections:")
+        for _i, _section in enumerate(filtered_sections):
+            _score = section.get("relevance_score", 0)
+            _heading = section.get("heading_text", "No heading")[:50]
+            print(
+                f"  {_i + 1}. {_score:.3f} - {_heading}{'...' if len(_heading) >= 50 else ''}"
+            )
+    return (filtered_sections_result,)
+
+
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Show retrieval results
@@ -327,11 +305,9 @@ def _(results, sections):
                 f"\n--- Section {i + 1} (Relevance: {relevance_score:.3f}, {segment_count} matching segments) ---"
             )
 
-            # Display section heading
             heading = section.get("heading_text", "No heading")
             print(f"Heading: {heading}")
 
-            # Display section body (truncated)
             body_text = section.get("body_text", "")
             if body_text:
                 body_preview = (
@@ -341,7 +317,6 @@ def _(results, sections):
             else:
                 print("Content: [No body content]")
 
-            # Display matching segments info
             matching_segments = section.get("matching_segments", [])
             if matching_segments:
                 print(f"Matching segments: {len(matching_segments)}")
@@ -357,10 +332,10 @@ def _(results, sections):
                     print(f"Best match: {segment_preview}")
 
             print("---")
-    return
+    return (section,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Embedding client setup
@@ -383,59 +358,32 @@ def _():
 
 
 @app.cell
-def _(instructor_client, results):
+def _(filtered_sections_result, instructor_client, query):
     query_response = None
+    assert (
+        instructor_client is not None
+        and filtered_sections_result is not None
+        and filtered_sections_result.get("sections")
+    )
 
     print("=== Query Processing ===")
-    print(
-        f"Instructor client available: {'Yes' if instructor_client is not None else 'No'}"
+
+    query_response = query_legal_documents(
+        client=instructor_client,
+        query=query,
+        retrieval_results=filtered_sections_result,
+        temperature=0.1,
+        max_retries=3,
     )
-    print(f"Results available: {'Yes' if results is not None else 'No'}")
 
-    if (
-        instructor_client is not None
-        and results is not None
-        and results.get("sections")
-    ):
-        try:
-            print("Processing query with LLM analysis...")
-
-            # Use the same query from the retrieval step
-            user_query = "Does the jurisdiction have laws that restrict the sale of drug paraphernalia?"
-
-            query_response = query_legal_documents(
-                client=instructor_client,
-                query=user_query,
-                retrieval_results=results,
-                temperature=0.1,
-                max_retries=3,
-            )
-
-            print("Query processing completed successfully")
-            print(f"Answer confidence: {query_response.confidence:.1%}")
-            print(f"Number of citations: {len(query_response.citations)}")
-            print(
-                f"Number of supporting passages: {len(query_response.supporting_passages)}"
-            )
-
-        except Exception as e:
-            print(f"ERROR: Query processing failed")
-            print(f"Error: {str(e)}")
-            traceback.print_exc()
-            query_response = None
-    else:
-        print("Cannot process query - missing requirements")
-        # Query processing functions are available
-        if instructor_client is None:
-            print("  - Instructor client not available")
-        if results is None:
-            print("  - No retrieval results available")
-        elif not results.get("sections"):
-            print("  - No sections in retrieval results")
+    print("Query processing completed successfully")
+    print(f"Answer confidence: {query_response.confidence:.1%}")
+    print(f"Number of citations: {len(query_response.citations)}")
+    print(f"Number of supporting passages: {len(query_response.supporting_passages)}")
     return (query_response,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Query Response
@@ -443,55 +391,11 @@ def _(mo):
     return
 
 
-@app.function
-def format_query_response_md(response):
-    md_output = f"## Query Response\n\n"
-    md_output += f"**Answer:** {response.short_answer}\n\n"
-    md_output += f"**Confidence:** {response.confidence:.1%}\n\n"
-
-    # Add citations if available
-    if response.citations:
-        md_output += "### Citations\n"
-        for i, citation in enumerate(response.citations, 1):
-            md_output += f"{i}. {citation}\n"
-        md_output += "\n"
-
-    # Add supporting passages if available
-    if response.supporting_passages:
-        md_output += "### Supporting Passages\n"
-        for i, passage in enumerate(response.supporting_passages, 1):
-            md_output += f"{i}. {passage}\n"
-        md_output += "\n"
-
-    return md_output
-
-
 @app.cell
 def _(mo, query_response):
-    formatted_response = format_query_response_md(query_response)
+    # Use the imported format_query_response function
+    formatted_response = format_query_response(query_response)
     mo.md(formatted_response)
-    return
-
-
-@app.cell
-def _():
-    print("=== Current Configuration ===")
-    print(f"LLM Provider: {Config.LLM_PROVIDER}")
-    print(f"Fast Model: {Config.get_fast_model()}")
-    print(f"Powerful Model: {Config.get_powerful_model()}")
-    print(f"Embedding Provider: {os.getenv('LEGISCOPE_EMBEDDING_PROVIDER', 'mistral')}")
-    print(f"Embedding Model: {os.getenv('LEGISCOPE_EMBEDDING_MODEL', 'mistral-embed')}")
-    print(
-        f"Collection Name: {os.getenv('LEGISCOPE_COLLECTION_NAME', 'legal_code_mistral')}"
-    )
-    print(f"Number of Results: {os.getenv('LEGISCOPE_N_RESULTS', '10')}")
-    print(f"Use HYDE: {os.getenv('LEGISCOPE_USE_HYDE', 'false')}")
-    print(f"Jurisdiction ID: IL-WindyCity")
-    return
-
-
-@app.cell
-def _():
     return
 
 
