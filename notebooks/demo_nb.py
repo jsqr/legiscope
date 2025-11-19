@@ -32,6 +32,7 @@ with app.setup:
 @app.cell
 def _():
     import marimo as mo
+
     return (mo,)
 
 
@@ -169,7 +170,7 @@ def _():
 @app.cell
 def _():
     print("=== LLM Client Setup ===")
-    print(f"Using instructor with {Config.LLM_PROVIDER} provider")
+    print(f"Using instructor with {Config.get_llm_provider()} provider")
     print(f"Fast model: {Config.get_fast_model()}")
     print(f"Powerful model: {Config.get_powerful_model()}")
 
@@ -281,7 +282,9 @@ def _(filtered_results, filtered_sections, query_info):
         print("No matching sections found")
     else:
         print(f"Retrieval Results - Found {len(filtered_sections)} sections")
-        print(f"From {query_info.get('total_segments_found', 0)} total matching segments")
+        print(
+            f"From {query_info.get('total_segments_found', 0)} total matching segments"
+        )
 
         # Display each section result
         for i, result_section in enumerate(filtered_sections):
@@ -333,7 +336,7 @@ def _(mo):
 @app.cell
 def _():
     print("=== Current Configuration ===")
-    print(f"LLM Provider: {Config.LLM_PROVIDER}")
+    print(f"LLM Provider: {Config.get_llm_provider()}")
     print(f"Fast Model: {Config.get_fast_model()}")
     print(f"Powerful Model: {Config.get_powerful_model()}")
     print(f"Embedding Provider: {os.getenv('LEGISCOPE_EMBEDDING_PROVIDER', 'mistral')}")

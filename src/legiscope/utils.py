@@ -25,6 +25,25 @@ def get_fast_client() -> Instructor:
     return Config.get_fast_client()
 
 
+def resolve_model_default(model: str | None, use_fast: bool = True) -> str:
+    """
+    Resolve model parameter to default if None.
+
+    Args:
+        model: Model string or None
+        use_fast: If True, use fast model; otherwise use powerful model
+
+    Returns:
+        str: Model string (either provided or default)
+    """
+    if model is not None:
+        return model
+
+    from legiscope.llm_config import Config
+
+    return Config.get_fast_model() if use_fast else Config.get_powerful_model()
+
+
 def ask(
     client: Instructor,
     prompt: str,

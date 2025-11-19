@@ -8,8 +8,13 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.embeddings import get_embedding_client, get_embeddings
-from legiscope.llm_config import Config
-from legiscope.utils import ask
+from legiscope.utils import ask, resolve_model_default
+
+# Constants for retrieval and LLM operations
+DEFAULT_N_RESULTS = 10  # Default number of results to retrieve from embeddings
+DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal analysis
+DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
+DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
 
 
 class HydeRewrite(BaseModel):
@@ -71,8 +76,7 @@ def hyde_rewriter(
         print(result.query_type)
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    model = resolve_model_default(model, use_fast=True)
 
     if not query or not query.strip():
         logger.error("Query cannot be empty for HYDE rewriting")
@@ -118,8 +122,8 @@ Provide a rewritten query that would be effective for semantic search against mu
             response_model=HydeRewrite,
             system=system_prompt,
             model=model,
-            temperature=0.1,  # Low temperature for consistent legal style
-            max_retries=3,
+            temperature=DEFAULT_TEMPERATURE,
+            max_retries=DEFAULT_MAX_RETRIES,
         )
 
         logger.info(
@@ -168,8 +172,7 @@ def is_relevant(
         print(result.reasoning)
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    model = resolve_model_default(model, use_fast=True)
 
     if not query or not query.strip():
         logger.error("Query cannot be empty for relevance assessment")
@@ -221,8 +224,8 @@ Determine if this text directly helps answer the query and provide your assessme
             response_model=RelevanceAssessment,
             system=system_prompt,
             model=model,
-            temperature=0.1,  # Low temperature
-            max_retries=3,
+            temperature=DEFAULT_TEMPERATURE,
+            max_retries=DEFAULT_MAX_RETRIES,
         )
 
         logger.info(
@@ -241,7 +244,7 @@ Determine if this text directly helps answer the query and provide your assessme
 def retrieve_segments(
     collection: chromadb.Collection,
     query_text: str,
-    n_results: int = 10,
+    n_results: int = DEFAULT_N_RESULTS,
     jurisdiction_id: str | None = None,
     where: dict | None = None,
     where_document: dict | None = None,
@@ -294,8 +297,7 @@ def retrieve_segments(
         results = retrieve_segments(collection, "noise ordinances", n_results=50)
     """
     # Use default model if not specified
-    if rewrite_model is None:
-        rewrite_model = Config.get_fast_model()
+    rewrite_model = resolve_model_default(rewrite_model, use_fast=True)
 
     # Apply HYDE rewriting if requested
     if rewrite:
@@ -446,7 +448,7 @@ def retrieve_sections(
     collection: chromadb.Collection,
     query_text: str,
     sections_parquet_path: str | Path,
-    n_results: int = 10,
+    n_results: int = DEFAULT_N_RESULTS,
     jurisdiction_id: str | None = None,
     where: dict | None = None,
     where_document: dict | None = None,
@@ -538,8 +540,7 @@ def retrieve_sections(
                 print(f"  Segment: {segment['segment_text'][:50]}...")
     """
     # Use default model if not specified
-    if rewrite_model is None:
-        rewrite_model = Config.get_fast_model()
+    rewrite_model = resolve_model_default(rewrite_model, use_fast=True)
 
     logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
 
@@ -620,7 +621,7 @@ def filter_results(
     client: Instructor,
     results: dict[str, Any],
     query: str,
-    threshold: float = 0.5,
+    threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Filter retrieval results by relevance using LLM-powered assessment.
@@ -823,7 +824,7 @@ def filter_sections(
     client: Instructor,
     sections_results: dict[str, Any],
     query: str,
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Filter section results by relevance using LLM-powered assessment.
@@ -965,7 +966,7 @@ def _validate_retrieve_sections_inputs(
 def _retrieve_segment_results(
     collection: chromadb.Collection,
     query_text: str,
-    n_results: int = 10,
+    n_results: int = DEFAULT_N_RESULTS,
     jurisdiction_id: str | None = None,
     where: dict | None = None,
     where_document: dict | None = None,

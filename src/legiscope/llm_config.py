@@ -18,8 +18,7 @@ class Config:
 
     # LLM Provider configuration
     @classmethod
-    @property
-    def LLM_PROVIDER(cls) -> str:
+    def get_llm_provider(cls) -> str:
         """Get LLM provider from environment variable or use default."""
         return os.getenv(
             "LEGISCOPE_LLM_PROVIDER", "mistral"
@@ -36,17 +35,18 @@ class Config:
         Get fast client for most LLM tasks based on current provider.
         """
         fast_model = cls.get_fast_model()
+        provider = cls.get_llm_provider()
 
-        if cls.LLM_PROVIDER == "openai":
+        if provider == "openai":
             return instructor.from_provider(
                 f"openai/{fast_model}", mode=instructor.Mode.RESPONSES_TOOLS
             )
-        elif cls.LLM_PROVIDER == "mistral":
+        elif provider == "mistral":
             return instructor.from_provider(
                 f"mistral/{fast_model}", mode=instructor.Mode.MISTRAL_TOOLS
             )
         else:
-            raise ValueError(f"Unsupported LLM provider: {cls.LLM_PROVIDER}")
+            raise ValueError(f"Unsupported LLM provider: {provider}")
 
     @classmethod
     def get_powerful_client(cls) -> Instructor:
@@ -54,17 +54,18 @@ class Config:
         Get powerful client for complex reasoning tasks based on current provider.
         """
         powerful_model = cls.get_powerful_model()
+        provider = cls.get_llm_provider()
 
-        if cls.LLM_PROVIDER == "openai":
+        if provider == "openai":
             return instructor.from_provider(
                 f"openai/{powerful_model}", mode=instructor.Mode.RESPONSES_TOOLS
             )
-        elif cls.LLM_PROVIDER == "mistral":
+        elif provider == "mistral":
             return instructor.from_provider(
                 f"mistral/{powerful_model}", mode=instructor.Mode.MISTRAL_TOOLS
             )
         else:
-            raise ValueError(f"Unsupported LLM provider: {cls.LLM_PROVIDER}")
+            raise ValueError(f"Unsupported LLM provider: {provider}")
 
     @classmethod
     def get_fast_model(cls) -> str:
@@ -75,12 +76,13 @@ class Config:
             return env_model
 
         # Fall back to provider-specific defaults
-        if cls.LLM_PROVIDER == "openai":
+        provider = cls.get_llm_provider()
+        if provider == "openai":
             return cls.OPENAI_FAST_MODEL
-        elif cls.LLM_PROVIDER == "mistral":
+        elif provider == "mistral":
             return cls.MISTRAL_FAST_MODEL
         else:
-            raise ValueError(f"Unsupported LLM provider: {cls.LLM_PROVIDER}")
+            raise ValueError(f"Unsupported LLM provider: {provider}")
 
     @classmethod
     def get_powerful_model(cls) -> str:
@@ -91,12 +93,13 @@ class Config:
             return env_model
 
         # Fall back to provider-specific defaults
-        if cls.LLM_PROVIDER == "openai":
+        provider = cls.get_llm_provider()
+        if provider == "openai":
             return cls.OPENAI_POWERFUL_MODEL
-        elif cls.LLM_PROVIDER == "mistral":
+        elif provider == "mistral":
             return cls.MISTRAL_POWERFUL_MODEL
         else:
-            raise ValueError(f"Unsupported LLM provider: {cls.LLM_PROVIDER}")
+            raise ValueError(f"Unsupported LLM provider: {provider}")
 
     @classmethod
     def get_llm_params(cls, **kwargs) -> dict:

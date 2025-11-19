@@ -11,7 +11,13 @@ from pydantic import BaseModel, Field
 
 from legiscope.llm_config import Config
 from legiscope.retrieve import filter_sections, retrieve_sections
-from legiscope.utils import ask
+from legiscope.utils import ask, resolve_model_default
+
+# Constants for query processing
+DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal analysis
+DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
+DEFAULT_N_RESULTS = 10  # Default number of results to retrieve
+DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
 
 
 class LegalQueryResponse(BaseModel):
@@ -44,10 +50,10 @@ def query_legal_documents(
     query: str,
     retrieval_results: dict[str, Any],
     model: str | None = None,
-    temperature: float = 0.1,
-    max_retries: int = 3,
+    temperature: float = DEFAULT_TEMPERATURE,
+    max_retries: int = DEFAULT_MAX_RETRIES,
     filter_relevance: bool = False,
-    relevance_threshold: float = 0.5,
+    relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     filter_model: str | None = None,
 ) -> LegalQueryResponse:
     """
@@ -104,8 +110,7 @@ def query_legal_documents(
         print(f"Citations: {response.citations}")
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    model = resolve_model_default(model, use_fast=True)
 
     _validate_query_inputs(
         client=client,
@@ -222,12 +227,12 @@ def run_queries(
     sections_parquet_path: str,
     collection,
     model: str | None = None,
-    temperature: float = 0.1,
-    max_retries: int = 3,
-    n_results: int = 10,
+    temperature: float = DEFAULT_TEMPERATURE,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    n_results: int = DEFAULT_N_RESULTS,
     use_hyde: bool = False,
     filter_relevance: bool = False,
-    relevance_threshold: float = 0.5,
+    relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     filter_model: str | None = None,
 ) -> pl.DataFrame:
     """
@@ -319,8 +324,7 @@ def run_queries(
     )
 
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    model = resolve_model_default(model, use_fast=True)
 
     logger.info(
         f"Processing {len(queries)} queries for jurisdiction: {jurisdiction_id}"
@@ -419,20 +423,21 @@ def _prepare_legal_context(sections: list[dict[str, Any]]) -> str:
     """Prepare formatted context from sections for LLM processing."""
     context_sections = []
     for i, section in enumerate(sections):
-        section_text = f"""
-Section {i + 1}: {section.get("heading_text", "Untitled Section")}
-Relevance Score: {section.get("relevance_score", 0):.3f}
-Content: {section.get("body_text", "")}
+        # Build section parts as a list for efficient concatenation
+        section_parts = [
+            f"\nSection {i + 1}: {section.get('heading_text', 'Untitled Section')}",
+            f"Relevance Score: {section.get('relevance_score', 0):.3f}",
+            f"Content: {section.get('body_text', '')}",
+            "\nMatching Segments:",
+        ]
 
-Matching Segments:
-"""
         # Add matching segments for context
         for j, segment in enumerate(section.get("matching_segments", [])):
             segment_text = segment.get("segment_text", "")
             if segment_text:
-                section_text += f"  - Segment {j + 1}: {segment_text}\n"
+                section_parts.append(f"  - Segment {j + 1}: {segment_text}")
 
-        context_sections.append(section_text)
+        context_sections.append("\n".join(section_parts))
 
     return "\n".join(context_sections)
 

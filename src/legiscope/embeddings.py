@@ -17,6 +17,11 @@ EMBEDDING_PROVIDER = "mistral"  # Can be "ollama" or "mistral"
 OLLAMA_MODEL = "embeddinggemma"
 MISTRAL_MODEL = "mistral-embed"
 
+# Batch processing constants
+MISTRAL_BATCH_SIZE = 100  # Number of texts to process per batch for Mistral API
+CHROMA_BATCH_SIZE = 100  # Number of documents to add to ChromaDB per batch
+BATCH_LOG_INTERVAL = 100  # Log progress every N items for large datasets
+
 
 def get_ollama_client():
     """Get Ollama client for local embedding generation.
@@ -143,6 +148,120 @@ class JurisdictionConfig:
     municipality: str | None = None
 
 
+def _detect_embedding_provider(client) -> str:
+    """
+    Auto-detect embedding provider from client instance.
+
+    Args:
+        client: Embedding client instance
+
+    Returns:
+        str: Detected provider name ("ollama" or "mistral")
+
+    Raises:
+        ValueError: If provider cannot be detected
+    """
+    client_type = type(client).__name__
+    client_module = type(client).__module__
+
+    # Check both class name and module for better detection
+    if "ollama" in client_type.lower() or "ollama" in client_module.lower():
+        return "ollama"
+    elif "mistral" in client_type.lower() or "mistral" in client_module.lower():
+        return "mistral"
+    else:
+        # Try to detect by checking available methods/attributes
+        if hasattr(client, "embeddings") and hasattr(client, "chat"):
+            # Likely Mistral client
+            return "mistral"
+        elif hasattr(client, "embed"):
+            # Likely Ollama client
+            return "ollama"
+        else:
+            raise ValueError(
+                f"Unable to detect provider from client type: {client_type} (module: {client_module})"
+            )
+
+
+def _generate_embeddings_mistral(
+    client, texts: list[str], model: str
+) -> list[list[float]]:
+    """
+    Generate embeddings using Mistral API with batch processing.
+
+    Args:
+        client: Mistral client instance
+        texts: List of text strings to embed
+        model: Model name to use
+
+    Returns:
+        List of embeddings as lists of floats
+
+    Raises:
+        ValueError: If embedding generation fails
+    """
+    embeddings_list: list[list[float]] = []
+    total_batches = (len(texts) + MISTRAL_BATCH_SIZE - 1) // MISTRAL_BATCH_SIZE
+    logger.info(
+        f"Processing {len(texts)} texts in {total_batches} batches of {MISTRAL_BATCH_SIZE} (Mistral)"
+    )
+
+    # Mistral API format - batch processing
+    for batch_num in range(total_batches):
+        start_idx = batch_num * MISTRAL_BATCH_SIZE
+        end_idx = min(start_idx + MISTRAL_BATCH_SIZE, len(texts))
+        batch_texts = texts[start_idx:end_idx]
+
+        response = client.embeddings.create(model=model, inputs=batch_texts)
+        if response is None or not hasattr(response, "data") or len(response.data) == 0:
+            logger.error(f"Failed to get embeddings for batch {batch_num + 1}")
+            raise ValueError(f"Failed to get embeddings for batch {batch_num + 1}")
+        batch_embeddings = [list(item.embedding) for item in response.data]
+        embeddings_list.extend(batch_embeddings)
+
+        # Log progress for larger datasets
+        logger.debug(
+            f"Processed batch {batch_num + 1}/{total_batches} ({len(batch_texts)} texts)"
+        )
+
+    return embeddings_list
+
+
+def _generate_embeddings_ollama(
+    client, texts: list[str], model: str
+) -> list[list[float]]:
+    """
+    Generate embeddings using Ollama API with individual processing.
+
+    Args:
+        client: Ollama client instance
+        texts: List of text strings to embed
+        model: Model name to use
+
+    Returns:
+        List of embeddings as lists of floats
+
+    Raises:
+        ValueError: If embedding generation fails
+    """
+    embeddings_list: list[list[float]] = []
+    logger.info(f"Processing {len(texts)} texts individually (Ollama)")
+
+    # Ollama API format - individual processing (no batching support)
+    for i, text in enumerate(texts):
+        response = client.embeddings(model=model, prompt=text)
+        if response is None or "embedding" not in response:
+            logger.error(f"Failed to get embedding for text: {text[:50]}...")
+            raise ValueError(f"Failed to get embedding for text: {text[:50]}...")
+        embeddings_list.append(list(response["embedding"]))
+
+        # Log progress for larger datasets
+        if (i + 1) % BATCH_LOG_INTERVAL == 0 or i == len(texts) - 1:
+            logger.debug(f"Processed {i + 1}/{len(texts)} texts")
+
+    return embeddings_list
+
+
 def get_embeddings(
     client, texts: list[str], model: str | None = None, provider: str | None = None
 ) -> NDArray[np.float32]:
@@ -171,26 +290,7 @@ def get_embeddings(
 
     # Auto-detect provider if not specified
     if provider is None:
-        client_type = type(client).__name__
-        client_module = type(client).__module__
-
-        # Check both class name and module for better detection
-        if "ollama" in client_type.lower() or "ollama" in client_module.lower():
-            provider = "ollama"
-        elif "mistral" in client_type.lower() or "mistral" in client_module.lower():
-            provider = "mistral"
-        else:
-            # Try to detect by checking available methods/attributes
-            if hasattr(client, "embeddings") and hasattr(client, "chat"):
-                # Likely Mistral client
-                provider = "mistral"
-            elif hasattr(client, "embed"):
-                # Likely Ollama client
-                provider = "ollama"
-            else:
-                raise ValueError(
-                    f"Unable to detect provider from client type: {client_type} (module: {client_module})"
-                )
+        provider = _detect_embedding_provider(client)
 
     # Use default model if not specified
     if model is None:
@@ -200,60 +300,12 @@ def get_embeddings(
         f"Generating embeddings for {len(texts)} texts using {provider} with model: {model}"
     )
 
-    # Collect embeddings as native Python lists, then convert to numpy array
-    embeddings_list: list[list[float]] = []
-
+    # Generate embeddings using provider-specific function
     try:
         if provider == "mistral":
-            # Mistral supports batch processing
-            BATCH_SIZE = 100
-            total_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-            logger.info(
-                f"Processing {len(texts)} texts in {total_batches} batches of {BATCH_SIZE} (Mistral)"
-            )
-
-            # Mistral API format - batch processing
-            for batch_num in range(total_batches):
-                start_idx = batch_num * BATCH_SIZE
-                end_idx = min(start_idx + BATCH_SIZE, len(texts))
-                batch_texts = texts[start_idx:end_idx]
-
-                response = client.embeddings.create(model=model, inputs=batch_texts)
-                if (
-                    response is None
-                    or not hasattr(response, "data")
-                    or len(response.data) == 0
-                ):
-                    logger.error(f"Failed to get embeddings for batch {batch_num + 1}")
-                    raise ValueError(
-                        f"Failed to get embeddings for batch {batch_num + 1}"
-                    )
-                batch_embeddings = [list(item.embedding) for item in response.data]
-                embeddings_list.extend(batch_embeddings)
-
-                # Log progress for larger datasets
-                logger.debug(
-                    f"Processed batch {batch_num + 1}/{total_batches} ({len(batch_texts)} texts)"
-                )
-
+            embeddings_list = _generate_embeddings_mistral(client, texts, model)
         elif provider == "ollama":
-            # Ollama processes embeddings individually
-            logger.info(f"Processing {len(texts)} texts individually (Ollama)")
-
-            # Ollama API format - individual processing (no batching support)
-            for i, text in enumerate(texts):
-                response = client.embeddings(model=model, prompt=text)
-                if response is None or "embedding" not in response:
-                    logger.error(f"Failed to get embedding for text: {text[:50]}...")
-                    raise ValueError(
-                        f"Failed to get embedding for text: {text[:50]}..."
-                    )
-                embeddings_list.append(list(response["embedding"]))
-
-                # Log progress for larger datasets
-                if (i + 1) % 100 == 0 or i == len(texts) - 1:
-                    logger.debug(f"Processed {i + 1}/{len(texts)} texts")
-
+            embeddings_list = _generate_embeddings_ollama(client, texts, model)
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
@@ -509,20 +561,19 @@ def create_embedding_index(
             logger.debug("No metadata columns specified")
 
     # Add to collection in batches to avoid memory issues
-    batch_size = 100
-    total_batches = (len(df) + batch_size - 1) // batch_size
+    total_batches = (len(df) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
 
     logger.info(f"Adding {len(df)} documents to collection in {total_batches} batches")
 
-    for i in range(0, len(df), batch_size):
-        end_idx = min(i + batch_size, len(df))
+    for i in range(0, len(df), CHROMA_BATCH_SIZE):
+        end_idx = min(i + CHROMA_BATCH_SIZE, len(df))
         batch_ids = [str(id) for id in ids[i:end_idx]]
         batch_documents = documents[i:end_idx]
         batch_embeddings = embeddings[i:end_idx]
         batch_metadata = metadata_list[i:end_idx] if metadata_list else None
 
         logger.debug(
-            f"Adding batch {i // batch_size + 1}/{total_batches} ({len(batch_ids)} documents)"
+            f"Adding batch {i // CHROMA_BATCH_SIZE + 1}/{total_batches} ({len(batch_ids)} documents)"
         )
 
         collection.add(
