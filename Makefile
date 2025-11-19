@@ -78,13 +78,14 @@ install:
 # Pipeline
 pipeline:
 	@if [ -z "$(STATE)" ] || [ -z "$(MUNICIPALITY)" ]; then \
-		echo "Usage: make pipeline STATE=NY MUNICIPALITY=\"New York\""; \
+		echo "Usage: make pipeline STATE=NY MUNICIPALITY=\"New York\" [QUERIES=path/to/queries.txt]"; \
 		echo "Example: make pipeline STATE=CA MUNICIPALITY=LosAngeles"; \
+		echo "Example with queries: make pipeline STATE=CA MUNICIPALITY=LosAngeles QUERIES=data/queries/example_queries.txt"; \
 		exit 1; \
 	fi
 	@echo "Running complete pipeline for $(STATE)-$(MUNICIPALITY)..."
-	@if [ -n "$(ARGS)" ]; then \
-		./scripts/pipeline.sh "$(STATE)" $(MUNICIPALITY) $(ARGS); \
+	@if [ -n "$(QUERIES)" ]; then \
+		./scripts/pipeline.sh "$(STATE)" $(MUNICIPALITY) $(QUERIES); \
 	else \
 		./scripts/pipeline.sh "$(STATE)" $(MUNICIPALITY); \
 	fi

@@ -14,7 +14,7 @@ This project uses `uv` for dependency management.
 # Install uv if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Or on MacOS
+# Or on MacOS, with homebrew
 brew install uv
 
 # Set up the development environment
@@ -116,11 +116,15 @@ make fix
 To process a new municipal code from DOCX files to searchable embeddings:
 
 ```bash
-# Basic usage
+# Basic usage (without queries)
 ./scripts/pipeline.sh NY "New York"
 
-# Another example
-./scripts/pipeline.sh CA LosAngeles
+# With queries
+./scripts/pipeline.sh NY "New York" data/queries/example_queries.txt
+
+# Using Makefile
+make pipeline STATE=NY MUNICIPALITY="New York"
+make pipeline STATE=NY MUNICIPALITY="New York" QUERIES=data/queries/example_queries.txt
 ```
 
 The pipeline performs these steps automatically:
@@ -129,6 +133,37 @@ The pipeline performs these steps automatically:
 3. Converts text to structured Markdown with headings
 4. Segments the code into searchable sections
 5. Generates embeddings for semantic search
+6. Runs queries against the legal code (optional, if queries file provided)
+
+### Running Queries
+
+The pipeline can optionally run a batch of queries against the processed legal code:
+
+```bash
+# Run pipeline with queries
+./scripts/pipeline.sh CA LosAngeles data/queries/example_queries.txt
+```
+
+**Query File Format:**
+- One query per paragraph
+- Paragraphs separated by double newlines (`\n\n`)
+- See `data/queries/example_queries.txt` for examples
+
+**Example queries file:**
+```
+Are there restrictions on selling drug paraphernalia in this jurisdiction?
+
+What are the parking regulations for residential areas?
+
+Do I need a permit to operate a home-based business?
+```
+
+Query results are saved to `data/laws/{JURISDICTION}/query_results.parquet` and include:
+- Short answer to each query
+- Detailed legal reasoning
+- Citations and supporting passages
+- Confidence scores
+- Processing metrics
 
 ## Scripts and Modules
 
@@ -151,6 +186,7 @@ The pipeline performs these steps automatically:
 - `embeddings.py` - Embedding generation and ChromaDB management
 - `retrieve.py` - Information retrieval with HYDE query rewriting and section-level search
 - `segment.py` - Text segmentation and hierarchical section processing
+- `query.py` - Legal query processing with structured responses and batch query execution
 
 ## Data Directory Structure
 
@@ -162,8 +198,16 @@ data/
 │   └── {state}-{municipality}/     # Jurisdiction-specific directories
 │       ├── raw/                    # Original source files (DOCX, PDF, etc.)
 │       ├── processed/              # Processed text files and intermediate results
-│       └── tables/                 # Structured data tables and exports
-└── queries/                        # Database queries and search templates
+│       │   ├── code.txt            # Converted plain text
+│       │   └── code.md             # Structured markdown
+│       ├── tables/                 # Structured data tables and exports
+│       │   ├── sections.parquet    # Section-level data
+│       │   ├── segments.parquet    # Segment-level data
+│       │   └── embeddings.parquet  # Generated embeddings
+│       └── query_results.parquet   # Query results (if queries were run)
+├── queries/                        # Query templates and examples
+│   └── example_queries.txt         # Example legal queries
+└── chroma_db/                      # ChromaDB vector database
 ```
 
 ### Project Structure
@@ -177,7 +221,8 @@ data/
 │       ├── utils.py     # Core utility functions (ask function, directory creation)
 │       ├── embeddings.py # Embedding generation and ChromaDB management
 │       ├── retrieve.py   # Information retrieval with HYDE and section-level search
-│       └── segment.py   # Text segmentation utilities
+│       ├── segment.py   # Text segmentation utilities
+│       └── query.py     # Legal query processing with structured responses
 ├── tests/               # Test files (123 tests including HYDE functionality)
 ├── scripts/             # Utility scripts
 ├── data/                # Data directory (not tracked by git)

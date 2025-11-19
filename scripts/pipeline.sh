@@ -8,12 +8,14 @@ set -e  # Exit on error
 # Basic configuration
 STATE="$1"
 MUNICIPALITY="$2"
+QUERIES_FILE="$3"  # Optional queries file
 JURISDICTION_NAME="${STATE}-${MUNICIPALITY}"
 
 # Check basic arguments
 if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <STATE> <MUNICIPALITY>"
+    echo "Usage: $0 <STATE> <MUNICIPALITY> [QUERIES_FILE]"
     echo "Example: $0 NY \"New York\""
+    echo "Example with queries: $0 NY \"New York\" data/queries/ny_queries.txt"
     exit 1
 fi
 
@@ -44,5 +46,27 @@ source .venv/bin/activate && python scripts/segment_legal_code.py "data/laws/$JU
 echo "Step 5: Generating embeddings..."
 source .venv/bin/activate && python scripts/create_embeddings.py "data/laws/$JURISDICTION_NAME"
 
+# Step 6: Run queries (if queries file provided)
+if [[ -n "$QUERIES_FILE" ]] && [[ -f "$QUERIES_FILE" ]]; then
+    echo "Step 6: Running queries from $QUERIES_FILE..."
+    SECTIONS_PATH="data/laws/$JURISDICTION_NAME/tables/sections.parquet"
+    OUTPUT_PATH="data/laws/$JURISDICTION_NAME/query_results.parquet"
+    
+    source .venv/bin/activate && python scripts/run_queries.py \
+        --queries-path "$QUERIES_FILE" \
+        --jurisdiction-id "$JURISDICTION_NAME" \
+        --sections-parquet "$SECTIONS_PATH" \
+        --output "$OUTPUT_PATH"
+    
+    echo "Query results saved to: $OUTPUT_PATH"
+elif [[ -n "$QUERIES_FILE" ]]; then
+    echo "Step 6: Skipping queries (file not found: $QUERIES_FILE)"
+else
+    echo "Step 6: Skipping queries (no queries file provided)"
+fi
+
 echo "Pipeline completed successfully for $JURISDICTION_NAME!"
 echo "Files created in: data/laws/$JURISDICTION_NAME"
+if [[ -n "$QUERIES_FILE" ]] && [[ -f "$QUERIES_FILE" ]]; then
+    echo "Query results: data/laws/$JURISDICTION_NAME/query_results.parquet"
+fi
