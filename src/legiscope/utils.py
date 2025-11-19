@@ -3,6 +3,7 @@ Utility functions for the legiscope package.
 """
 
 import os
+from dataclasses import dataclass
 from typing import Type, TypeVar
 
 from instructor import Instructor
@@ -11,6 +12,64 @@ from pydantic import BaseModel
 
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)
+
+# Constants for LLM operations (imported from other modules when needed)
+DEFAULT_TEMPERATURE = 0.1
+DEFAULT_MAX_RETRIES = 3
+
+
+@dataclass
+class LLMConfig:
+    """Configuration for LLM operations.
+
+    This class encapsulates all LLM-related settings including the client,
+    model selection, temperature, and retry behavior. It's designed to be
+    reusable across all modules that interact with LLMs.
+
+    Attributes:
+        client: Instructor client instance for LLM interactions (required)
+        model: Model name to use. If None, resolves to default in __post_init__
+        temperature: Sampling temperature (0.0-1.0). Lower = more deterministic
+        max_retries: Maximum number of retry attempts for failed API calls
+
+    Example:
+        >>> from legiscope.llm_config import Config
+        >>> from legiscope.utils import LLMConfig
+        >>>
+        >>> # Basic usage with defaults
+        >>> config = LLMConfig(client=Config.get_fast_client())
+        >>>
+        >>> # Custom settings
+        >>> config = LLMConfig(
+        ...     client=Config.get_powerful_client(),
+        ...     model="gpt-4",
+        ...     temperature=0.2,
+        ...     max_retries=5
+        ... )
+    """
+
+    client: Instructor
+    model: str | None = None
+    temperature: float = DEFAULT_TEMPERATURE
+    max_retries: int = DEFAULT_MAX_RETRIES
+
+    def __post_init__(self):
+        """Validate and set defaults after initialization."""
+        if self.model is None:
+            from legiscope.llm_config import Config
+
+            self.model = Config.get_fast_model()
+            logger.debug(f"LLMConfig: Resolved model to default: {self.model}")
+
+        if not 0.0 <= self.temperature <= 2.0:
+            raise ValueError(
+                f"temperature must be between 0.0 and 2.0, got {self.temperature}"
+            )
+
+        if self.max_retries < 0:
+            raise ValueError(
+                f"max_retries must be non-negative, got {self.max_retries}"
+            )
 
 
 def get_fast_client() -> Instructor:

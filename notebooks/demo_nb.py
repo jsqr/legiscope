@@ -21,12 +21,18 @@ with app.setup:
     #   uv run marimo edit demo_nb.py
 
     from legiscope.retrieve import (
+        SectionRetrievalConfig,
         retrieve_sections,
         get_jurisdiction_stats,
         filter_sections,
     )
     from legiscope.llm_config import Config
-    from legiscope.query import query_legal_documents, format_query_response
+    from legiscope.utils import LLMConfig
+    from legiscope.query import (
+        QueryConfig,
+        query_legal_documents,
+        format_query_response,
+    )
 
 
 @app.cell
@@ -195,18 +201,20 @@ def _(
     results = None
     sections = []
 
-    # Use the existing embedding client from setup
-    results = retrieve_sections(
+    # Create config for section retrieval
+    config = SectionRetrievalConfig(
         collection=collection,
         query_text=query,
         sections_parquet_path=sections_parquet_path,
         n_results=n_results,
         jurisdiction_id=jurisdiction_id,
-        rewrite=use_hyde,
-        rewrite_client=instructor_client if use_hyde else None,
+        use_hyde=use_hyde,
+        hyde_client=instructor_client if use_hyde else None,
         embedding_client=embedding_client,
         embedding_model=embedding_model,
     )
+
+    results = retrieve_sections(config)
 
     if results and results.get("sections"):
         sections = results["sections"]
@@ -358,13 +366,13 @@ def _(filtered_results, instructor_client, query):
 
     print("=== Query Processing ===")
 
-    query_response = query_legal_documents(
-        client=instructor_client,
-        query=query,
-        retrieval_results=filtered_results,
-        temperature=0.1,
-        max_retries=3,
+    # Create query config
+    llm_config = LLMConfig(client=instructor_client, temperature=0.1, max_retries=3)
+    query_config = QueryConfig(
+        llm=llm_config, query=query, retrieval_results=filtered_results
     )
+
+    query_response = query_legal_documents(query_config)
 
     print("Query processing completed successfully")
     print(f"Answer confidence: {query_response.confidence:.1%}")

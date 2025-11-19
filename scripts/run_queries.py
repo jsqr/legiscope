@@ -19,7 +19,8 @@ except ImportError:
     pass  # python-dotenv not installed, continue without it
 
 from legiscope.llm_config import Config
-from legiscope.query import run_queries
+from legiscope.utils import LLMConfig
+from legiscope.query import BatchQueryConfig, run_queries
 
 # Add src to path to import legiscope modules
 src_path = Path(__file__).parent.parent / "src"
@@ -57,21 +58,25 @@ def main():
 
     args = parser.parse_args()
 
-    client = Config.get_powerful_client()
-
     queries = read_queries(args.queries_path)
     print(f"Loaded {len(queries)} queries from {args.queries_path}")
 
     chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
     collection = chroma_client.get_collection(args.collection_name)
 
-    results_df = run_queries(
-        client=client,
+    # Create LLM config
+    llm_config = LLMConfig(client=Config.get_powerful_client())
+
+    # Create batch query config
+    config = BatchQueryConfig(
         queries=queries,
         jurisdiction_id=args.jurisdiction_id,
         sections_parquet_path=args.sections_parquet,
         collection=collection,
+        llm=llm_config,
     )
+
+    results_df = run_queries(config)
 
     results_df.write_parquet(args.output)
     print(f"Results saved to {args.output}")
