@@ -110,8 +110,6 @@ def create_embeddings(jurisdiction_path: str) -> None:
             ),
             jurisdiction_config=JurisdictionConfig(
                 jurisdiction_id=f"{state}-{municipality}",
-                state=state,
-                municipality=municipality,
             ),
         )
 

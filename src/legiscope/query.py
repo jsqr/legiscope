@@ -10,7 +10,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.llm_config import Config
-from legiscope.retrieve import retrieve_sections, filter_sections
+from legiscope.retrieve import filter_sections, retrieve_sections
 from legiscope.utils import ask
 
 
@@ -107,7 +107,6 @@ def query_legal_documents(
     if model is None:
         model = Config.get_fast_model()
 
-    # 1. Input validation
     _validate_query_inputs(
         client=client,
         query=query,
@@ -123,7 +122,6 @@ def query_legal_documents(
     logger.info(f"Processing query: '{query[:50]}...'")
     logger.debug(f"Using model: {model}, temperature: {temperature}")
 
-    # 2. Extract and validate sections
     sections = _extract_and_validate_sections(retrieval_results)
     if not sections:
         return LegalQueryResponse(
@@ -135,15 +133,21 @@ def query_legal_documents(
             limitations="No relevant legal information was available to answer query.",
         )
 
-    # 3. Apply relevance filtering
-    sections = _apply_relevance_filtering(
-        retrieval_results=retrieval_results,
-        query=query,
-        client=client,
-        filter_relevance=filter_relevance,
-        relevance_threshold=relevance_threshold,
-        filter_model=filter_model,
-    )
+    if filter_relevance:
+        model_for_filter = filter_model or Config.get_fast_model()
+        try:
+            filtered_results = filter_sections(
+                client=client,
+                sections_results=retrieval_results,
+                query=query,
+                confidence_threshold=relevance_threshold,
+                model=model_for_filter,
+            )
+            sections = filtered_results.get("sections", [])
+        except Exception:
+            sections = retrieval_results.get("sections", [])
+    else:
+        sections = retrieval_results.get("sections", [])
 
     if not sections:
         logger.warning("All sections filtered out as irrelevant")
@@ -156,13 +160,10 @@ def query_legal_documents(
             limitations="No relevant legal information was available after relevance filtering.",
         )
 
-    # 4. Prepare context
     full_context = _prepare_legal_context(sections)
 
-    # 5. Build prompts
     system_prompt, user_prompt = _build_legal_prompts(query, full_context)
 
-    # 6. Execute LLM call
     return _execute_query_llm_call(
         client=client,
         system_prompt=system_prompt,
@@ -301,7 +302,6 @@ def run_queries(
     """
     import time
 
-    # 1. Input validation
     _validate_batch_query_inputs(
         client=client,
         queries=queries,
@@ -327,7 +327,7 @@ def run_queries(
     )
     logger.debug(f"Using model: {model}, n_results: {n_results}, use_hyde: {use_hyde}")
 
-    # 2. Process queries in loop
+    # Process queries in loop
     results = []
     for i, query in enumerate(queries):
         if query is None or not isinstance(query, str) or not query.strip():
@@ -362,7 +362,6 @@ def run_queries(
                 f"sections: {result['sections_found']}, time: {result['processing_time']:.2f}s"
             )
 
-    # 3. Compile and return results
     return _compile_query_results(results)
 
 
@@ -414,58 +413,6 @@ def _extract_and_validate_sections(
 
     logger.info(f"Found {len(sections)} relevant sections to analyze")
     return sections
-
-
-def _apply_relevance_filtering(
-    retrieval_results: dict[str, Any],
-    query: str,
-    client: Instructor,
-    filter_relevance: bool = False,
-    relevance_threshold: float = 0.5,
-    filter_model: str | None = None,
-) -> list[dict[str, Any]]:
-    """Apply relevance filtering to sections if requested."""
-    if not filter_relevance:
-        return retrieval_results.get("sections", [])
-
-    logger.info(f"Applying relevance filtering with threshold: {relevance_threshold}")
-
-    # Use default model for filtering if not specified
-    if filter_model is None:
-        filter_model = Config.get_fast_model()
-
-    try:
-        filtered_results = filter_sections(
-            client=client,
-            sections_results=retrieval_results,
-            query=query,
-            confidence_threshold=relevance_threshold,
-            model=filter_model,
-        )
-
-        sections = filtered_results.get("sections", [])
-        original_count = filtered_results.get("original_count", 0)
-        filtered_count = filtered_results.get("filtered_count", 0)
-
-        reduction_percentage = (
-            ((original_count - filtered_count) / original_count * 100)
-            if original_count > 0
-            else 0
-        )
-
-        logger.info(
-            f"Relevance filtering complete: {original_count} -> {filtered_count} sections "
-            f"({reduction_percentage:.1f}% reduction)"
-        )
-
-        return sections
-
-    except Exception as e:
-        logger.error(
-            f"Relevance filtering failed, proceeding with original sections: {str(e)}"
-        )
-        # Continue with original sections if filtering fails
-        return retrieval_results.get("sections", [])
 
 
 def _prepare_legal_context(sections: list[dict[str, Any]]) -> str:

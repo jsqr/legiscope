@@ -6,12 +6,13 @@ import os
 import re
 from datetime import datetime, timezone
 from typing import Any
-from pydantic import BaseModel
 
 import yaml
 from instructor import Instructor
-from legiscope.utils import ask
+from pydantic import BaseModel
+
 from legiscope.llm_config import Config
+from legiscope.utils import ask
 
 
 class BooleanResult(BaseModel):
@@ -246,22 +247,11 @@ def text2md(
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")
     """
-    # 1. Input validation
     _validate_conversion_inputs(structure, input_path, output_path, state, municipality)
-
-    # 2. Setup patterns
     compiled_patterns = _compile_heading_patterns(structure)
-
-    # 3. Read file
     lines = _read_source_file(input_path)
-
-    # 4. Process lines
     converted_lines = _process_markdown_lines(lines, compiled_patterns, structure)
-
-    # 5. Generate frontmatter
     frontmatter = _generate_frontmatter(structure, state, municipality)
-
-    # 6. Write output
     _write_markdown_file(output_path, frontmatter, converted_lines)
 
 

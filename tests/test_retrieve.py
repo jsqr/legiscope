@@ -2,19 +2,20 @@
 Tests for the retrieve module, including HYDE functionality.
 """
 
-import pytest
 from unittest.mock import Mock, patch
-from instructor import Instructor
+
+import pytest
 from chromadb import Collection
+from instructor import Instructor
 
 from legiscope.retrieve import (
-    hyde_rewriter,
-    retrieve_embeddings,
-    retrieve_sections,
-    is_relevant,
-    filter_results,
     HydeRewrite,
     RelevanceAssessment,
+    filter_results,
+    hyde_rewriter,
+    is_relevant,
+    retrieve_sections,
+    retrieve_segments,
 )
 
 
@@ -198,23 +199,23 @@ class TestHydeRewriterIntegrated:
             )
 
 
-class TestRetrieveEmbeddings:
-    """Test the retrieve_embeddings function with HYDE integration."""
+class TestRetrieveSegments:
+    """Test the retrieve_segments function with HYDE integration."""
 
-    def test_retrieve_embeddings_hyde_requires_client(self):
-        """Test retrieve_embeddings requires client for HYDE rewriting."""
+    def test_retrieve_segments_hyde_requires_client(self):
+        """Test retrieve_segments requires client for HYDE rewriting."""
         mock_collection = Mock(spec=Collection)
 
         with pytest.raises(ValueError, match="Client is required"):
-            retrieve_embeddings(
+            retrieve_segments(
                 collection=mock_collection, query_text="where can I park", rewrite=True
             )
 
         # Verify query was NOT called since validation happens first
         mock_collection.query.assert_not_called()
 
-    def test_retrieve_embeddings_with_hyde_llm(self):
-        """Test retrieve_embeddings with LLM-powered HYDE."""
+    def test_retrieve_segments_with_hyde_llm(self):
+        """Test retrieve_segments with LLM-powered HYDE."""
         mock_collection = Mock(spec=Collection)
         mock_collection.query.return_value = {
             "ids": [["1", "2"]],
@@ -235,7 +236,7 @@ class TestRetrieveEmbeddings:
                 mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
                 mock_client = Mock(spec=Instructor)
 
-                retrieve_embeddings(
+                retrieve_segments(
                     collection=mock_collection,
                     query_text="where can I park",
                     rewrite=True,
@@ -259,8 +260,8 @@ class TestRetrieveEmbeddings:
                 assert "query_embeddings" in call_args[1]
                 assert call_args[1]["query_embeddings"] == [[0.1, 0.2, 0.3]]
 
-    def test_retrieve_embeddings_without_hyde(self):
-        """Test retrieve_embeddings without HYDE rewriting."""
+    def test_retrieve_segments_without_hyde(self):
+        """Test retrieve_segments without HYDE rewriting."""
         mock_collection = Mock(spec=Collection)
         mock_collection.query.return_value = {
             "ids": [["1", "2"]],
@@ -272,7 +273,7 @@ class TestRetrieveEmbeddings:
         with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
             mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
 
-            retrieve_embeddings(
+            retrieve_segments(
                 collection=mock_collection, query_text="where can I park", rewrite=False
             )
 
@@ -288,8 +289,8 @@ class TestRetrieveEmbeddings:
             assert "query_embeddings" in call_args[1]
             assert call_args[1]["query_embeddings"] == [[0.1, 0.2, 0.3]]
 
-    def test_retrieve_embeddings_with_jurisdiction_filter(self):
-        """Test retrieve_embeddings with jurisdiction filtering."""
+    def test_retrieve_segments_with_jurisdiction_filter(self):
+        """Test retrieve_segments with jurisdiction filtering."""
         mock_collection = Mock(spec=Collection)
         mock_collection.query.return_value = {
             "ids": [["1"]],
@@ -298,7 +299,7 @@ class TestRetrieveEmbeddings:
             "distances": [[0.1]],
         }
 
-        retrieve_embeddings(
+        retrieve_segments(
             collection=mock_collection,
             query_text="parking regulations",
             jurisdiction_id="IL-WindyCity",
@@ -310,8 +311,8 @@ class TestRetrieveEmbeddings:
         where_filter = call_args[1]["where"]
         assert where_filter == {"jurisdiction_id": "IL-WindyCity"}
 
-    def test_retrieve_embeddings_with_custom_model(self):
-        """Test retrieve_embeddings passes custom model to HYDE."""
+    def test_retrieve_segments_with_custom_model(self):
+        """Test retrieve_segments passes custom model to HYDE."""
         mock_collection = Mock(spec=Collection)
         mock_collection.query.return_value = {
             "ids": [["1"]],
@@ -325,7 +326,7 @@ class TestRetrieveEmbeddings:
                 mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
                 mock_client = Mock(spec=Instructor)
 
-                retrieve_embeddings(
+                retrieve_segments(
                     collection=mock_collection,
                     query_text="test query",
                     rewrite=True,
@@ -342,8 +343,9 @@ class TestRetrieveSections:
 
     def test_retrieve_sections_basic(self):
         """Test basic section retrieval functionality."""
-        from unittest.mock import patch
         import tempfile
+        from unittest.mock import patch
+
         import polars as pl
 
         # Mock segment retrieval results
@@ -387,7 +389,7 @@ class TestRetrieveSections:
         )
 
         with patch(
-            "legiscope.retrieve.retrieve_embeddings", return_value=mock_segment_results
+            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
         ):
             with tempfile.NamedTemporaryFile(
                 suffix=".parquet", delete=False
@@ -435,8 +437,9 @@ class TestRetrieveSections:
 
     def test_retrieve_sections_with_hyde(self):
         """Test section retrieval with HYDE rewriting."""
-        from unittest.mock import patch
         import tempfile
+        from unittest.mock import patch
+
         import polars as pl
 
         # Mock segment retrieval results with HYDE
@@ -458,7 +461,7 @@ class TestRetrieveSections:
         )
 
         with patch(
-            "legiscope.retrieve.retrieve_embeddings", return_value=mock_segment_results
+            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
         ) as mock_retrieve:
             with tempfile.NamedTemporaryFile(
                 suffix=".parquet", delete=False
@@ -486,8 +489,9 @@ class TestRetrieveSections:
 
     def test_retrieve_sections_no_results(self):
         """Test section retrieval with no segment results."""
-        from unittest.mock import patch
         import tempfile
+        from unittest.mock import patch
+
         import polars as pl
 
         # Mock empty segment results
@@ -509,7 +513,7 @@ class TestRetrieveSections:
         )
 
         with patch(
-            "legiscope.retrieve.retrieve_embeddings", return_value=mock_segment_results
+            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
         ):
             with tempfile.NamedTemporaryFile(
                 suffix=".parquet", delete=False
@@ -541,8 +545,9 @@ class TestRetrieveSections:
 
     def test_retrieve_sections_missing_columns(self):
         """Test section retrieval with missing required columns in parquet."""
-        from unittest.mock import patch
         import tempfile
+        from unittest.mock import patch
+
         import polars as pl
 
         # Mock segment results
@@ -563,7 +568,7 @@ class TestRetrieveSections:
         )
 
         with patch(
-            "legiscope.retrieve.retrieve_embeddings", return_value=mock_segment_results
+            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
         ):
             with tempfile.NamedTemporaryFile(
                 suffix=".parquet", delete=False
@@ -583,8 +588,9 @@ class TestRetrieveSections:
 
     def test_retrieve_sections_missing_section_ref(self):
         """Test section retrieval with segments missing section_ref metadata."""
-        from unittest.mock import patch
         import tempfile
+        from unittest.mock import patch
+
         import polars as pl
 
         # Mock segment results with missing section_ref
@@ -606,7 +612,7 @@ class TestRetrieveSections:
         )
 
         with patch(
-            "legiscope.retrieve.retrieve_embeddings", return_value=mock_segment_results
+            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
         ):
             with tempfile.NamedTemporaryFile(
                 suffix=".parquet", delete=False
@@ -628,8 +634,9 @@ class TestRetrieveSections:
 
     def test_retrieve_sections_jurisdiction_filter(self):
         """Test section retrieval with jurisdiction filtering."""
-        from unittest.mock import patch
         import tempfile
+        from unittest.mock import patch
+
         import polars as pl
 
         mock_segment_results = {
@@ -650,7 +657,7 @@ class TestRetrieveSections:
         )
 
         with patch(
-            "legiscope.retrieve.retrieve_embeddings", return_value=mock_segment_results
+            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
         ) as mock_retrieve:
             with tempfile.NamedTemporaryFile(
                 suffix=".parquet", delete=False
@@ -673,8 +680,9 @@ class TestRetrieveSections:
 
     def test_retrieve_sections_segment_ordering(self):
         """Test that segments within sections are ordered by relevance."""
-        from unittest.mock import patch
         import tempfile
+        from unittest.mock import patch
+
         import polars as pl
 
         # Mock segment results with varying distances
@@ -702,7 +710,7 @@ class TestRetrieveSections:
         )
 
         with patch(
-            "legiscope.retrieve.retrieve_embeddings", return_value=mock_segment_results
+            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
         ):
             with tempfile.NamedTemporaryFile(
                 suffix=".parquet", delete=False

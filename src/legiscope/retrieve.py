@@ -238,7 +238,7 @@ Determine if this text directly helps answer the query and provide your assessme
         raise
 
 
-def retrieve_embeddings(
+def retrieve_segments(
     collection: chromadb.Collection,
     query_text: str,
     n_results: int = 10,
@@ -271,12 +271,12 @@ def retrieve_embeddings(
 
     Example:
         # Retrieve from specific jurisdiction
-        results = retrieve_embeddings(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
+        results = retrieve_segments(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
 
         # Retrieve with LLM-powered HYDE rewriting
         from legiscope.llm_config import Config
         client = Config.get_fast_client()
-        results = retrieve_embeddings(
+        results = retrieve_segments(
             collection,
             "where can I park my car",
             rewrite=True,
@@ -284,14 +284,14 @@ def retrieve_embeddings(
         )
 
         # Retrieve from multiple jurisdictions
-        results = retrieve_embeddings(
+        results = retrieve_segments(
             collection,
             "zoning laws",
             where={"jurisdiction_id": {"$in": ["IL-WindyCity", "CA-LosAngeles"]}}
         )
 
         # Cross-jurisdiction comparison (no jurisdiction filter)
-        results = retrieve_embeddings(collection, "noise ordinances", n_results=50)
+        results = retrieve_segments(collection, "noise ordinances", n_results=50)
     """
     # Use default model if not specified
     if rewrite_model is None:
@@ -543,7 +543,6 @@ def retrieve_sections(
 
     logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
 
-    # 1. Input validation
     _validate_retrieve_sections_inputs(
         collection=collection,
         query_text=query_text,
@@ -565,7 +564,6 @@ def retrieve_sections(
         logger.error(f"Sections parquet file not found: {sections_path}")
         raise FileNotFoundError(f"Sections parquet file not found: {sections_path}")
 
-    # 2. Get segment results
     segment_results = _retrieve_segment_results(
         collection=collection,
         query_text=query_text,
@@ -583,7 +581,6 @@ def retrieve_sections(
     original_query = query_text
     rewritten_query = segment_results.get("rewritten_query") if rewrite else None
 
-    # 3. Early return if no results
     if _has_no_results(segment_results):
         logger.info("No segment results found")
         return _create_empty_results(original_query, rewritten_query)
@@ -591,9 +588,7 @@ def retrieve_sections(
     total_segments_found = len(segment_results["ids"][0])
     logger.info(f"Found {total_segments_found} segment results")
 
-    # 4. Process and group segments
     sections_to_segments = _group_segments_by_section(segment_results)
-
     if not sections_to_segments:
         logger.warning("No valid section references found in segment metadata")
         return {
@@ -606,10 +601,8 @@ def retrieve_sections(
             },
         }
 
-    # 5. Load section data
     sections_dict = _load_section_data(sections_path, sections_to_segments)
 
-    # 6. Build final results
     section_results = _build_section_results(sections_to_segments, sections_dict)
 
     return {
@@ -636,7 +629,7 @@ def filter_results(
     out documents that are not relevant or fall below the confidence threshold.
 
     Args:
-        results: Retrieval results from retrieve_embeddings or similar functions
+        results: Retrieval results from retrieve_segments or similar functions
         query: Original query used for retrieval
         client: Instructor client for LLM-powered relevance assessment
         threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
@@ -669,21 +662,14 @@ def filter_results(
         ValueError: If results structure is invalid or client is missing
 
     Example:
-        results = retrieve_embeddings(collection, "parking rules", n_results=10)
+        results = retrieve_segments(collection, "parking rules", n_results=10)
         filtered = filter_results(client, results, "parking rules", threshold=0.7)
         print(f"Filtered from {filtered['filtering_metadata']['original_count']} "
               f"to {filtered['filtering_metadata']['filtered_count']} results")
     """
-    # 1. Input validation
     _validate_filter_inputs(results, client, query, threshold, model)
-
-    # 2. Assess relevance
     assessments = _assess_document_relevance(results, query, client, model)
-
-    # 3. Apply filters
     filtered_indices = _apply_relevance_filters(assessments, threshold)
-
-    # 4. Reconstruct results
     return _reconstruct_filtered_results(
         results, assessments, filtered_indices, threshold
     )
@@ -991,7 +977,7 @@ def _retrieve_segment_results(
 ) -> dict[str, Any]:
     """Retrieve segment-level results from embeddings."""
     logger.debug("Step 1: Retrieving segment-level results")
-    return retrieve_embeddings(
+    return retrieve_segments(
         collection=collection,
         query_text=query_text,
         n_results=n_results,
