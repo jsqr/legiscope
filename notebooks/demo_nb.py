@@ -6,16 +6,10 @@ app = marimo.App(width="medium")
 with app.setup:
     # Initialization code that runs before all other cells
 
-    from pydantic import BaseModel
     import os
     import chromadb
-    from pathlib import Path
 
-    import instructor
-    from openai import OpenAI
     import sys
-    import os
-    import traceback
 
     # Add src to path to import legiscope modules
     src_path = os.path.join(os.path.dirname(__file__), "..", "src")
@@ -27,12 +21,10 @@ with app.setup:
     #   uv run marimo edit demo_nb.py
 
     from legiscope.retrieve import (
-        retrieve_embeddings,
         retrieve_sections,
         get_jurisdiction_stats,
         filter_sections,
     )
-    from legiscope.utils import ask
     from legiscope.llm_config import Config
     from legiscope.query import query_legal_documents, format_query_response
 
@@ -126,7 +118,7 @@ def _():
     assert test_response is not None and len(test_response) > 0
 
     embedding_dim = len(test_response[0])
-    print(f"=== Embedding Client Setup ===")
+    print("=== Embedding Client Setup ===")
     print(f"Client: {embedding_provider}")
     print(f"Model: {embedding_model}")
     print(f"Dimension: {embedding_dim}")
@@ -229,7 +221,7 @@ def _(
             print("Query rewriting: HYDE applied")
     else:
         print("WARNING: no results found or no matching sections")
-    return results, sections
+    return query_info, results
 
 
 @app.cell(hide_code=True)
@@ -241,9 +233,9 @@ def _(mo):
 
 
 @app.cell
-def _(instructor_client, query, results, section):
+def _(instructor_client, query, results):
     # Filter section results using LLM-powered relevance assessment
-    filtered_sections_result = filter_sections(
+    filtered_results = filter_sections(
         client=instructor_client,
         sections_results=results,
         query=query,
@@ -251,24 +243,24 @@ def _(instructor_client, query, results, section):
     )
 
     # Show filtering statistics
-    print(f"=== LLM-Powered Relevance Filtering ===")
+    print("=== LLM-Powered Relevance Filtering ===")
 
-    original_count = filtered_sections_result["original_count"]
-    filtered_count = filtered_sections_result["filtered_count"]
+    original_count = filtered_results["original_count"]
+    filtered_count = filtered_results["filtered_count"]
     print(f"Original results: {original_count}")
     print(f"Filtered results: {filtered_count}")
 
     # Show relevance scores for filtered sections
-    filtered_sections = filtered_sections_result["sections"]
+    filtered_sections = filtered_results["sections"]
     if filtered_sections:
-        print(f"\nRelevance scores of filtered sections:")
+        print("\nRelevance scores of filtered sections:")
         for _i, _section in enumerate(filtered_sections):
-            _score = section.get("relevance_score", 0)
-            _heading = section.get("heading_text", "No heading")[:50]
+            _score = _section.get("relevance_score", 0)
+            _heading = _section.get("heading_text", "No heading")[:50]
             print(
                 f"  {_i + 1}. {_score:.3f} - {_heading}{'...' if len(_heading) >= 50 else ''}"
             )
-    return (filtered_sections_result,)
+    return filtered_results, filtered_sections
 
 
 @app.cell(hide_code=True)
@@ -280,35 +272,30 @@ def _(mo):
 
 
 @app.cell
-def _(results, sections):
+def _(filtered_results, filtered_sections, query_info):
     print("=== Results Display ===")
 
-    if results is None:
+    if filtered_results is None:
         print("No results to display")
-    elif not results.get("sections"):
+    elif not filtered_results.get("sections"):
         print("No matching sections found")
     else:
-        _sections = results["sections"]
-        _query_info = results.get("query_info", {})
-
-        print(f"Retrieval Results - Found {len(sections)} sections")
-        print(
-            f"From {_query_info.get('total_segments_found', 0)} total matching segments"
-        )
+        print(f"Retrieval Results - Found {len(filtered_sections)} sections")
+        print(f"From {query_info.get('total_segments_found', 0)} total matching segments")
 
         # Display each section result
-        for i, section in enumerate(_sections):
-            relevance_score = section.get("relevance_score", 0)
-            segment_count = section.get("segment_count", 0)
+        for i, result_section in enumerate(filtered_sections):
+            relevance_score = result_section.get("relevance_score", 0)
+            segment_count = result_section.get("segment_count", 0)
 
             print(
                 f"\n--- Section {i + 1} (Relevance: {relevance_score:.3f}, {segment_count} matching segments) ---"
             )
 
-            heading = section.get("heading_text", "No heading")
+            heading = result_section.get("heading_text", "No heading")
             print(f"Heading: {heading}")
 
-            body_text = section.get("body_text", "")
+            body_text = result_section.get("body_text", "")
             if body_text:
                 body_preview = (
                     body_text[:300] + "..." if len(body_text) > 300 else body_text
@@ -317,7 +304,7 @@ def _(results, sections):
             else:
                 print("Content: [No body content]")
 
-            matching_segments = section.get("matching_segments", [])
+            matching_segments = result_section.get("matching_segments", [])
             if matching_segments:
                 print(f"Matching segments: {len(matching_segments)}")
                 # Show first matching segment as preview
@@ -332,7 +319,7 @@ def _(results, sections):
                     print(f"Best match: {segment_preview}")
 
             print("---")
-    return (section,)
+    return
 
 
 @app.cell(hide_code=True)
@@ -358,12 +345,12 @@ def _():
 
 
 @app.cell
-def _(filtered_sections_result, instructor_client, query):
+def _(filtered_results, instructor_client, query):
     query_response = None
     assert (
         instructor_client is not None
-        and filtered_sections_result is not None
-        and filtered_sections_result.get("sections")
+        and filtered_results is not None
+        and filtered_results.get("sections")
     )
 
     print("=== Query Processing ===")
@@ -371,7 +358,7 @@ def _(filtered_sections_result, instructor_client, query):
     query_response = query_legal_documents(
         client=instructor_client,
         query=query,
-        retrieval_results=filtered_sections_result,
+        retrieval_results=filtered_results,
         temperature=0.1,
         max_retries=3,
     )
@@ -396,6 +383,11 @@ def _(mo, query_response):
     # Use the imported format_query_response function
     formatted_response = format_query_response(query_response)
     mo.md(formatted_response)
+    return
+
+
+@app.cell
+def _():
     return
 
 
