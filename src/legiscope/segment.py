@@ -14,6 +14,10 @@ import re
 
 import polars as pl
 
+# Text segmentation constants
+DEFAULT_TOKEN_LIMIT = 1024  # Maximum approximate tokens per segment
+DEFAULT_WORDS_PER_TOKEN = 0.78  # Approximate words per token ratio for embedding models
+
 
 def divide_into_sections(markdown_text: str) -> pl.DataFrame:
     """
@@ -240,8 +244,8 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
 
 def segment_text(
     text: str,
-    token_limit: int = 1024,
-    words_per_token: float = 0.78,
+    token_limit: int = DEFAULT_TOKEN_LIMIT,
+    words_per_token: float = DEFAULT_WORDS_PER_TOKEN,
 ) -> list[str]:
     """
     Segment text into chunks suitable for processing and analysis.
@@ -481,8 +485,8 @@ def _aggregate_segments(
 def add_segments_to_sections(
     df: pl.DataFrame,
     text_column: str = "body_text",
-    token_limit: int = 1024,
-    words_per_token: float = 0.78,
+    token_limit: int = DEFAULT_TOKEN_LIMIT,
+    words_per_token: float = DEFAULT_WORDS_PER_TOKEN,
 ) -> pl.DataFrame:
     """
     Add text segments to sections DataFrame for embedding preparation.
@@ -565,8 +569,8 @@ def add_segments_to_sections(
 def create_segments_df(
     df: pl.DataFrame,
     text_column: str = "body_text",
-    token_limit: int = 1024,
-    words_per_token: float = 0.78,
+    token_limit: int = DEFAULT_TOKEN_LIMIT,
+    words_per_token: float = DEFAULT_WORDS_PER_TOKEN,
 ) -> pl.DataFrame:
     """
     Create a flattened DataFrame with one row per text segment.

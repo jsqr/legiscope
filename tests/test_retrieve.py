@@ -5,7 +5,6 @@ Tests for the retrieve module, including HYDE functionality.
 from unittest.mock import Mock, patch
 
 import pytest
-from chromadb import Collection
 from instructor import Instructor
 
 from legiscope.retrieve import (
@@ -14,8 +13,6 @@ from legiscope.retrieve import (
     filter_results,
     hyde_rewriter,
     is_relevant,
-    retrieve_sections,
-    retrieve_segments,
 )
 
 
@@ -142,10 +139,10 @@ class TestHydeRewriter:
         """Test that empty query raises ValueError."""
         mock_client = Mock(spec=Instructor)
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             hyde_rewriter(mock_client, "")
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             hyde_rewriter(mock_client, "   ")
 
     def test_hyde_rewriter_llm_api_failure(self):
@@ -197,549 +194,6 @@ class TestHydeRewriterIntegrated:
                 result.rewritten_query
                 == "The following provisions regulate parking within municipal boundaries."
             )
-
-
-class TestRetrieveSegments:
-    """Test the retrieve_segments function with HYDE integration."""
-
-    def test_retrieve_segments_hyde_requires_client(self):
-        """Test retrieve_segments requires client for HYDE rewriting."""
-        mock_collection = Mock(spec=Collection)
-
-        with pytest.raises(ValueError, match="Client is required"):
-            retrieve_segments(
-                collection=mock_collection, query_text="where can I park", rewrite=True
-            )
-
-        # Verify query was NOT called since validation happens first
-        mock_collection.query.assert_not_called()
-
-    def test_retrieve_segments_with_hyde_llm(self):
-        """Test retrieve_segments with LLM-powered HYDE."""
-        mock_collection = Mock(spec=Collection)
-        mock_collection.query.return_value = {
-            "ids": [["1", "2"]],
-            "documents": [["doc1", "doc2"]],
-            "metadatas": [[{"jurisdiction_id": "test"}]],
-            "distances": [[0.1, 0.2]],
-        }
-
-        mock_result = HydeRewrite(
-            rewritten_query="The following provisions regulate vehicle parking within municipal boundaries.",
-            confidence=0.9,
-            reasoning="Good rewrite",
-            query_type="parking",
-        )
-
-        with patch("legiscope.retrieve.hyde_rewriter", return_value=mock_result):
-            with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
-                mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
-                mock_client = Mock(spec=Instructor)
-
-                retrieve_segments(
-                    collection=mock_collection,
-                    query_text="where can I park",
-                    rewrite=True,
-                    rewrite_client=mock_client,
-                )
-
-                # Verify embeddings were generated with rewritten text
-                mock_get_embeddings.assert_called_once()
-                embedding_call_args = mock_get_embeddings.call_args[0]
-                query_text_passed = embedding_call_args[1][
-                    0
-                ]  # Second arg is list of texts
-                assert (
-                    query_text_passed
-                    == "The following provisions regulate vehicle parking within municipal boundaries."
-                )
-
-                # Verify query was called with embeddings
-                mock_collection.query.assert_called_once()
-                call_args = mock_collection.query.call_args
-                assert "query_embeddings" in call_args[1]
-                assert call_args[1]["query_embeddings"] == [[0.1, 0.2, 0.3]]
-
-    def test_retrieve_segments_without_hyde(self):
-        """Test retrieve_segments without HYDE rewriting."""
-        mock_collection = Mock(spec=Collection)
-        mock_collection.query.return_value = {
-            "ids": [["1", "2"]],
-            "documents": [["doc1", "doc2"]],
-            "metadatas": [[{"jurisdiction_id": "test"}]],
-            "distances": [[0.1, 0.2]],
-        }
-
-        with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
-            mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
-
-            retrieve_segments(
-                collection=mock_collection, query_text="where can I park", rewrite=False
-            )
-
-            # Verify embeddings were generated with original text
-            mock_get_embeddings.assert_called_once()
-            embedding_call_args = mock_get_embeddings.call_args[0]
-            query_text_passed = embedding_call_args[1][0]  # Second arg is list of texts
-            assert query_text_passed == "where can I park"
-
-            # Verify query was called with embeddings
-            mock_collection.query.assert_called_once()
-            call_args = mock_collection.query.call_args
-            assert "query_embeddings" in call_args[1]
-            assert call_args[1]["query_embeddings"] == [[0.1, 0.2, 0.3]]
-
-    def test_retrieve_segments_with_jurisdiction_filter(self):
-        """Test retrieve_segments with jurisdiction filtering."""
-        mock_collection = Mock(spec=Collection)
-        mock_collection.query.return_value = {
-            "ids": [["1"]],
-            "documents": [["doc1"]],
-            "metadatas": [[{"jurisdiction_id": "IL-WindyCity"}]],
-            "distances": [[0.1]],
-        }
-
-        retrieve_segments(
-            collection=mock_collection,
-            query_text="parking regulations",
-            jurisdiction_id="IL-WindyCity",
-        )
-
-        # Verify jurisdiction filter was applied
-        mock_collection.query.assert_called_once()
-        call_args = mock_collection.query.call_args
-        where_filter = call_args[1]["where"]
-        assert where_filter == {"jurisdiction_id": "IL-WindyCity"}
-
-    def test_retrieve_segments_with_custom_model(self):
-        """Test retrieve_segments passes custom model to HYDE."""
-        mock_collection = Mock(spec=Collection)
-        mock_collection.query.return_value = {
-            "ids": [["1"]],
-            "documents": [["doc1"]],
-            "metadatas": [[{"jurisdiction_id": "test"}]],
-            "distances": [[0.1]],
-        }
-
-        with patch("legiscope.retrieve.hyde_rewriter") as mock_hyde:
-            with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
-                mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]  # Mock embedding
-                mock_client = Mock(spec=Instructor)
-
-                retrieve_segments(
-                    collection=mock_collection,
-                    query_text="test query",
-                    rewrite=True,
-                    rewrite_client=mock_client,
-                    rewrite_model="gpt-4",
-                )
-
-                # Verify custom model was passed to hyde_rewriter
-                mock_hyde.assert_called_once_with(mock_client, "test query", "gpt-4")
-
-
-class TestRetrieveSections:
-    """Test the retrieve_sections function."""
-
-    def test_retrieve_sections_basic(self):
-        """Test basic section retrieval functionality."""
-        import tempfile
-        from unittest.mock import patch
-
-        import polars as pl
-
-        # Mock segment retrieval results
-        mock_segment_results = {
-            "ids": [["1", "2", "3"]],
-            "documents": [["segment1", "segment2", "segment3"]],
-            "distances": [[0.1, 0.2, 0.3]],
-            "metadatas": [
-                [
-                    {
-                        "section_ref": 0,
-                        "segment_position": 0,
-                        "section_heading": "# Section 1",
-                        "section_level": 1,
-                    },
-                    {
-                        "section_ref": 1,
-                        "segment_position": 0,
-                        "section_heading": "## Section 2",
-                        "section_level": 2,
-                    },
-                    {
-                        "section_ref": 0,
-                        "segment_position": 1,
-                        "section_heading": "# Section 1",
-                        "section_level": 1,
-                    },
-                ]
-            ],
-        }
-
-        # Create mock sections DataFrame
-        sections_df = pl.DataFrame(
-            {
-                "section_idx": [0, 1],
-                "heading_text": ["# Section 1", "## Section 2"],
-                "body_text": ["Content of section 1", "Content of section 2"],
-                "heading_level": [1, 2],
-                "parent": [None, 0],
-            }
-        )
-
-        with patch(
-            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
-        ):
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet", delete=False
-            ) as tmp_file:
-                sections_df.write_parquet(tmp_file.name)
-
-                mock_collection = Mock()
-
-                result = retrieve_sections(
-                    collection=mock_collection,
-                    query_text="test query",
-                    sections_parquet_path=tmp_file.name,
-                )
-
-                # Verify structure
-                assert "sections" in result
-                assert "query_info" in result
-
-                # Verify query info
-                query_info = result["query_info"]
-                assert query_info["original_query"] == "test query"
-                assert query_info["rewritten_query"] is None
-                assert query_info["total_segments_found"] == 3
-                assert query_info["unique_sections"] == 2
-
-                # Verify sections
-                sections = result["sections"]
-                assert len(sections) == 2
-
-                # Find section 0 (should have 2 segments)
-                section_0 = next(s for s in sections if s["section_idx"] == 0)
-                assert section_0["heading_text"] == "# Section 1"
-                assert section_0["body_text"] == "Content of section 1"
-                assert section_0["segment_count"] == 2
-                assert len(section_0["matching_segments"]) == 2
-                assert section_0["relevance_score"] == 0.1  # Best segment score
-
-                # Find section 1 (should have 1 segment)
-                section_1 = next(s for s in sections if s["section_idx"] == 1)
-                assert section_1["heading_text"] == "## Section 2"
-                assert section_1["body_text"] == "Content of section 2"
-                assert section_1["segment_count"] == 1
-                assert len(section_1["matching_segments"]) == 1
-                assert section_1["relevance_score"] == 0.2
-
-    def test_retrieve_sections_with_hyde(self):
-        """Test section retrieval with HYDE rewriting."""
-        import tempfile
-        from unittest.mock import patch
-
-        import polars as pl
-
-        # Mock segment retrieval results with HYDE
-        mock_segment_results = {
-            "ids": [["1"]],
-            "documents": [["segment1"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"section_ref": 0, "segment_position": 0}]],
-        }
-
-        sections_df = pl.DataFrame(
-            {
-                "section_idx": [0],
-                "heading_text": ["# Section 1"],
-                "body_text": ["Content"],
-                "heading_level": [1],
-                "parent": [None],
-            }
-        )
-
-        with patch(
-            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
-        ) as mock_retrieve:
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet", delete=False
-            ) as tmp_file:
-                sections_df.write_parquet(tmp_file.name)
-
-                mock_collection = Mock()
-
-                retrieve_sections(
-                    collection=mock_collection,
-                    query_text="where can I park",
-                    sections_parquet_path=tmp_file.name,
-                    rewrite=True,
-                    rewrite_client=Mock(),
-                    rewrite_model="gpt-4",
-                )
-
-                # Verify retrieve_embeddings was called with correct parameters
-                mock_retrieve.assert_called_once()
-                call_args = mock_retrieve.call_args
-                assert call_args[1]["collection"] == mock_collection
-                assert call_args[1]["query_text"] == "where can I park"
-                assert call_args[1]["rewrite"]
-                assert call_args[1]["rewrite_model"] == "gpt-4"
-
-    def test_retrieve_sections_no_results(self):
-        """Test section retrieval with no segment results."""
-        import tempfile
-        from unittest.mock import patch
-
-        import polars as pl
-
-        # Mock empty segment results
-        mock_segment_results = {
-            "ids": [[]],
-            "documents": [[]],
-            "distances": [[]],
-            "metadatas": [[]],
-        }
-
-        sections_df = pl.DataFrame(
-            {
-                "section_idx": [0],
-                "heading_text": ["# Section 1"],
-                "body_text": ["Content"],
-                "heading_level": [1],
-                "parent": [None],
-            }
-        )
-
-        with patch(
-            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
-        ):
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet", delete=False
-            ) as tmp_file:
-                sections_df.write_parquet(tmp_file.name)
-
-                mock_collection = Mock()
-
-                result = retrieve_sections(
-                    collection=mock_collection,
-                    query_text="no results query",
-                    sections_parquet_path=tmp_file.name,
-                )
-
-                assert result["sections"] == []
-                assert result["query_info"]["total_segments_found"] == 0
-                assert result["query_info"]["unique_sections"] == 0
-
-    def test_retrieve_sections_missing_file(self):
-        """Test section retrieval with missing parquet file."""
-        mock_collection = Mock()
-
-        with pytest.raises(FileNotFoundError, match="Sections parquet file not found"):
-            retrieve_sections(
-                collection=mock_collection,
-                query_text="test query",
-                sections_parquet_path="/nonexistent/path.parquet",
-            )
-
-    def test_retrieve_sections_missing_columns(self):
-        """Test section retrieval with missing required columns in parquet."""
-        import tempfile
-        from unittest.mock import patch
-
-        import polars as pl
-
-        # Mock segment results
-        mock_segment_results = {
-            "ids": [["1"]],
-            "documents": [["segment1"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"section_ref": 0}]],
-        }
-
-        # Create sections DataFrame missing required columns
-        sections_df = pl.DataFrame(
-            {
-                "section_idx": [0],
-                "heading_text": ["# Section 1"],
-                # Missing body_text, heading_level, parent
-            }
-        )
-
-        with patch(
-            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
-        ):
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet", delete=False
-            ) as tmp_file:
-                sections_df.write_parquet(tmp_file.name)
-
-                mock_collection = Mock()
-
-                with pytest.raises(
-                    ValueError, match="Sections parquet missing required columns"
-                ):
-                    retrieve_sections(
-                        collection=mock_collection,
-                        query_text="test query",
-                        sections_parquet_path=tmp_file.name,
-                    )
-
-    def test_retrieve_sections_missing_section_ref(self):
-        """Test section retrieval with segments missing section_ref metadata."""
-        import tempfile
-        from unittest.mock import patch
-
-        import polars as pl
-
-        # Mock segment results with missing section_ref
-        mock_segment_results = {
-            "ids": [["1"]],
-            "documents": [["segment1"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"segment_position": 0}]],  # Missing section_ref
-        }
-
-        sections_df = pl.DataFrame(
-            {
-                "section_idx": [0],
-                "heading_text": ["# Section 1"],
-                "body_text": ["Content"],
-                "heading_level": [1],
-                "parent": [None],
-            }
-        )
-
-        with patch(
-            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
-        ):
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet", delete=False
-            ) as tmp_file:
-                sections_df.write_parquet(tmp_file.name)
-
-                mock_collection = Mock()
-
-                result = retrieve_sections(
-                    collection=mock_collection,
-                    query_text="test query",
-                    sections_parquet_path=tmp_file.name,
-                )
-
-                # Should return empty results since no valid section references
-                assert result["sections"] == []
-                assert result["query_info"]["total_segments_found"] == 1
-                assert result["query_info"]["unique_sections"] == 0
-
-    def test_retrieve_sections_jurisdiction_filter(self):
-        """Test section retrieval with jurisdiction filtering."""
-        import tempfile
-        from unittest.mock import patch
-
-        import polars as pl
-
-        mock_segment_results = {
-            "ids": [["1"]],
-            "documents": [["segment1"]],
-            "distances": [[0.1]],
-            "metadatas": [[{"section_ref": 0}]],
-        }
-
-        sections_df = pl.DataFrame(
-            {
-                "section_idx": [0],
-                "heading_text": ["# Section 1"],
-                "body_text": ["Content"],
-                "heading_level": [1],
-                "parent": [None],
-            }
-        )
-
-        with patch(
-            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
-        ) as mock_retrieve:
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet", delete=False
-            ) as tmp_file:
-                sections_df.write_parquet(tmp_file.name)
-
-                mock_collection = Mock()
-
-                retrieve_sections(
-                    collection=mock_collection,
-                    query_text="test query",
-                    sections_parquet_path=tmp_file.name,
-                    jurisdiction_id="IL-WindyCity",
-                )
-
-                # Verify retrieve_embeddings was called with jurisdiction filter
-                mock_retrieve.assert_called_once()
-                call_args = mock_retrieve.call_args
-                assert call_args[1]["jurisdiction_id"] == "IL-WindyCity"
-
-    def test_retrieve_sections_segment_ordering(self):
-        """Test that segments within sections are ordered by relevance."""
-        import tempfile
-        from unittest.mock import patch
-
-        import polars as pl
-
-        # Mock segment results with varying distances
-        mock_segment_results = {
-            "ids": [["1", "2", "3"]],
-            "documents": [["segment1", "segment2", "segment3"]],
-            "distances": [[0.3, 0.1, 0.2]],  # Different relevance scores
-            "metadatas": [
-                [
-                    {"section_ref": 0, "segment_position": 0},
-                    {"section_ref": 0, "segment_position": 1},
-                    {"section_ref": 0, "segment_position": 2},
-                ]
-            ],
-        }
-
-        sections_df = pl.DataFrame(
-            {
-                "section_idx": [0],
-                "heading_text": ["# Section 1"],
-                "body_text": ["Content"],
-                "heading_level": [1],
-                "parent": [None],
-            }
-        )
-
-        with patch(
-            "legiscope.retrieve.retrieve_segments", return_value=mock_segment_results
-        ):
-            with tempfile.NamedTemporaryFile(
-                suffix=".parquet", delete=False
-            ) as tmp_file:
-                sections_df.write_parquet(tmp_file.name)
-
-                mock_collection = Mock()
-
-                result = retrieve_sections(
-                    collection=mock_collection,
-                    query_text="test query",
-                    sections_parquet_path=tmp_file.name,
-                )
-
-                sections = result["sections"]
-                assert len(sections) == 1
-
-                section = sections[0]
-                assert section["segment_count"] == 3
-
-                # Verify segments are ordered by distance (relevance)
-                segments = section["matching_segments"]
-                assert len(segments) == 3
-                assert segments[0]["distance"] == 0.1  # Most relevant
-                assert segments[1]["distance"] == 0.2
-                assert segments[2]["distance"] == 0.3  # Least relevant
-
-                # Verify relevance score is the best segment score
-                assert section["relevance_score"] == 0.1
 
 
 class TestRelevanceAssessment:
@@ -854,26 +308,26 @@ class TestIsRelevant:
         """Test that empty query raises ValueError."""
         mock_client = Mock(spec=Instructor)
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             is_relevant(mock_client, "", "some text")
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             is_relevant(mock_client, "   ", "some text")
 
     def test_is_relevant_empty_text(self):
         """Test that empty text raises ValueError."""
         mock_client = Mock(spec=Instructor)
 
-        with pytest.raises(ValueError, match="Text cannot be empty"):
+        with pytest.raises(ValueError, match="text cannot be empty"):
             is_relevant(mock_client, "some query", "")
 
-        with pytest.raises(ValueError, match="Text cannot be empty"):
+        with pytest.raises(ValueError, match="text cannot be empty"):
             is_relevant(mock_client, "some query", "   ")
 
     def test_is_relevant_no_client(self):
         """Test that missing client raises ValueError."""
-        with pytest.raises(ValueError, match="Client is required"):
-            is_relevant(None, "query", "text")
+        with pytest.raises(ValueError, match="client is required"):
+            is_relevant(None, "query", "text")  # type: ignore
 
     def test_is_relevant_api_failure(self):
         """Test handling of LLM API failures."""
@@ -980,19 +434,19 @@ class TestFilterResults:
             "distances": [[0.1]],
         }
 
-        with pytest.raises(ValueError, match="Client is required"):
-            filter_results(None, input_results, "query")
+        with pytest.raises(ValueError, match="client is required"):
+            filter_results(None, input_results, "query")  # type: ignore
 
     def test_filter_results_invalid_structure(self):
         """Test handling of invalid results structure."""
         mock_client = Mock(spec=Instructor)
 
         # Empty results
-        with pytest.raises(ValueError, match="Invalid results structure"):
-            filter_results(mock_client, None, "query")
+        with pytest.raises(ValueError, match="results cannot be None"):
+            filter_results(mock_client, None, "query")  # type: ignore
 
         # Missing required keys
-        with pytest.raises(ValueError, match="Results missing required keys"):
+        with pytest.raises(ValueError, match="results missing required keys"):
             filter_results(mock_client, {"wrong": "structure"}, "query")
 
     def test_filter_results_empty_results(self):

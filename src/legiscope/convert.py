@@ -11,8 +11,13 @@ import yaml
 from instructor import Instructor
 from pydantic import BaseModel
 
-from legiscope.llm_config import Config
-from legiscope.utils import ask
+from legiscope.utils import ask, resolve_model_default
+
+# Constants for legal text scanning
+DEFAULT_SCAN_MAX_LINES = (
+    150  # Maximum lines to analyze when scanning legal text structure
+)
+DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal text analysis
 
 
 class BooleanResult(BaseModel):
@@ -42,7 +47,7 @@ class HeadingStructure(BaseModel):
 def scan_legal_text(
     client: Instructor,
     file_path: str,
-    max_lines: int = 150,
+    max_lines: int = DEFAULT_SCAN_MAX_LINES,
     model: str | None = None,
 ) -> HeadingStructure:
     """
@@ -75,8 +80,7 @@ def scan_legal_text(
         ...     print(f"Level {level.level}: {level.example_heading}")
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    model = resolve_model_default(model, use_fast=True)
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -262,7 +266,12 @@ def _validate_conversion_inputs(
     state: str,
     municipality: str,
 ) -> None:
-    """Validate inputs for text2md function."""
+    """Validate inputs for text2md function.
+
+    Complex validation function that checks file system requirements,
+    data structure validity, and creates output directories as needed.
+    Extracted as separate function for clarity and maintainability.
+    """
     if not structure or not hasattr(structure, "levels"):
         raise ValueError("Invalid HeadingStructure provided")
 
@@ -320,6 +329,86 @@ def _read_source_file(input_path: str) -> list[str]:
         raise ValueError(f"Error reading input file {input_path}: {str(e)}")
 
 
+def _is_heading_line(line: str, compiled_patterns: list) -> tuple[bool, int | None]:
+    """
+    Check if a line matches any heading pattern.
+
+    Args:
+        line: Line to check (stripped)
+        compiled_patterns: List of (level, compiled_regex) tuples
+
+    Returns:
+        Tuple of (is_heading, heading_level)
+    """
+    for level, pattern in compiled_patterns:
+        if pattern.match(line.strip()):
+            return True, level
+    return False, None
+
+
+def _convert_heading_to_markdown(
+    line: str, level: int, structure: HeadingStructure
+) -> str:
+    """
+    Convert a heading line to Markdown format.
+
+    Args:
+        line: The heading line (stripped)
+        level: Heading level
+        structure: HeadingStructure containing markdown prefix info
+
+    Returns:
+        Markdown-formatted heading string
+    """
+    # Find the heading level object with matching level
+    heading_level_obj = None
+    for hl in structure.levels:
+        if hl.level == level:
+            heading_level_obj = hl
+            break
+
+    if heading_level_obj:
+        return f"{heading_level_obj.markdown_prefix} {line.strip()}"
+    else:
+        return f"{'#' * level} {line.strip()}"
+
+
+def _collect_paragraph_lines(
+    lines: list[str], start_idx: int, compiled_patterns: list
+) -> tuple[list[str], int]:
+    """
+    Collect consecutive non-empty, non-heading lines as a paragraph.
+
+    Args:
+        lines: All lines in the document
+        start_idx: Starting index
+        compiled_patterns: List of heading patterns
+
+    Returns:
+        Tuple of (paragraph_lines, next_index)
+    """
+    paragraph_lines = []
+    i = start_idx
+
+    while i < len(lines):
+        current_line = lines[i]
+        current_stripped = current_line.rstrip("\n\r")
+
+        # Check if current line is a heading
+        is_heading, _ = _is_heading_line(current_stripped, compiled_patterns)
+
+        if is_heading:
+            break  # Hit a heading, stop collecting paragraph lines
+
+        if current_stripped.strip() == "":
+            break  # Empty line - end of paragraph
+
+        paragraph_lines.append(current_stripped.strip())
+        i += 1
+
+    return paragraph_lines, i
+
+
 def _process_markdown_lines(
     lines: list[str], compiled_patterns: list, structure: HeadingStructure
 ) -> list[str]:
@@ -340,29 +429,17 @@ def _process_markdown_lines(
         line_stripped = line.rstrip("\n\r")
 
         # Check if this line matches any heading pattern
-        heading_found = False
-        for level, pattern in compiled_patterns:
-            if pattern.match(line_stripped.strip()):
-                # Convert to Markdown format
-                heading_level_obj = None
-                for hl in structure.levels:
-                    if hl.level == level:
-                        heading_level_obj = hl
-                        break
-                if heading_level_obj:
-                    markdown_heading = (
-                        f"{heading_level_obj.markdown_prefix} {line_stripped.strip()}"
-                    )
-                else:
-                    markdown_heading = f"{'#' * level} {line_stripped.strip()}"
-                converted_lines.append(markdown_heading + "\n")
-                heading_lines_processed.add(i)
-                heading_found = True
-                i += 1
-                logger.debug(f"Line {i + 1}: Converted to level {level} heading")
-                break
+        is_heading, heading_level = _is_heading_line(line_stripped, compiled_patterns)
 
-        if heading_found:
+        if is_heading:
+            # Convert to Markdown format
+            markdown_heading = _convert_heading_to_markdown(
+                line_stripped, heading_level, structure
+            )
+            converted_lines.append(markdown_heading + "\n")
+            heading_lines_processed.add(i)
+            i += 1
+            logger.debug(f"Line {i}: Converted to level {heading_level} heading")
             continue
 
         # Not a heading - process as paragraph content
@@ -372,26 +449,9 @@ def _process_markdown_lines(
             i += 1
         else:
             # Start of a paragraph - collect consecutive non-empty lines
-            paragraph_lines = []
-            while i < len(lines):
-                current_line = lines[i]
-                current_stripped = current_line.rstrip("\n\r")
-
-                # Check if current line is a heading
-                is_heading = False
-                for level, pattern in compiled_patterns:
-                    if pattern.match(current_stripped.strip()):
-                        is_heading = True
-                        break
-
-                if is_heading:
-                    break  # Hit a heading, stop collecting paragraph lines
-
-                if current_stripped.strip() == "":
-                    break  # Empty line - end of paragraph
-
-                paragraph_lines.append(current_stripped.strip())
-                i += 1
+            paragraph_lines, next_i = _collect_paragraph_lines(
+                lines, i, compiled_patterns
+            )
 
             # Join paragraph lines with spaces and add as single paragraph
             if paragraph_lines:
@@ -399,9 +459,11 @@ def _process_markdown_lines(
                 converted_lines.append(paragraph_text + "\n")
 
                 # Check if we stopped at an empty line and add paragraph break if needed
-                if i < len(lines) and lines[i].rstrip("\n\r").strip() == "":
+                if next_i < len(lines) and lines[next_i].rstrip("\n\r").strip() == "":
                     converted_lines.append("\n")
-                    i += 1
+                    next_i += 1
+
+            i = next_i
 
     return converted_lines
 

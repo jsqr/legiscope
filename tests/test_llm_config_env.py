@@ -27,7 +27,7 @@ class TestEnvironmentVariables:
 
     def test_default_provider_and_models(self):
         """Test default behavior without environment variables."""
-        assert Config.LLM_PROVIDER == "mistral"
+        assert Config.get_llm_provider() == "mistral"
         assert Config.get_fast_model() == "mistral-medium-latest"
         assert Config.get_powerful_model() == "magistral-medium-latest"
 
@@ -35,7 +35,7 @@ class TestEnvironmentVariables:
         """Test provider override without model overrides."""
         os.environ["LEGISCOPE_LLM_PROVIDER"] = "openai"
 
-        assert Config.LLM_PROVIDER == "openai"
+        assert Config.get_llm_provider() == "openai"
         assert Config.get_fast_model() == "gpt-4.1-mini"
         assert Config.get_powerful_model() == "gpt-4.1"
 
@@ -43,7 +43,7 @@ class TestEnvironmentVariables:
         """Test fast model override without provider change."""
         os.environ["LEGISCOPE_FAST_MODEL"] = "custom-fast-model"
 
-        assert Config.LLM_PROVIDER == "mistral"  # Default provider
+        assert Config.get_llm_provider() == "mistral"  # Default provider
         assert Config.get_fast_model() == "custom-fast-model"
         assert (
             Config.get_powerful_model() == "magistral-medium-latest"
@@ -53,7 +53,7 @@ class TestEnvironmentVariables:
         """Test powerful model override without provider change."""
         os.environ["LEGISCOPE_POWERFUL_MODEL"] = "custom-powerful-model"
 
-        assert Config.LLM_PROVIDER == "mistral"  # Default provider
+        assert Config.get_llm_provider() == "mistral"  # Default provider
         assert Config.get_fast_model() == "mistral-medium-latest"  # Default fast
         assert Config.get_powerful_model() == "custom-powerful-model"
 
@@ -62,7 +62,7 @@ class TestEnvironmentVariables:
         os.environ["LEGISCOPE_FAST_MODEL"] = "custom-fast"
         os.environ["LEGISCOPE_POWERFUL_MODEL"] = "custom-powerful"
 
-        assert Config.LLM_PROVIDER == "mistral"  # Default provider
+        assert Config.get_llm_provider() == "mistral"  # Default provider
         assert Config.get_fast_model() == "custom-fast"
         assert Config.get_powerful_model() == "custom-powerful"
 
@@ -72,7 +72,7 @@ class TestEnvironmentVariables:
         os.environ["LEGISCOPE_FAST_MODEL"] = "override-fast"
         os.environ["LEGISCOPE_POWERFUL_MODEL"] = "override-powerful"
 
-        assert Config.LLM_PROVIDER == "openai"
+        assert Config.get_llm_provider() == "openai"
         assert Config.get_fast_model() == "override-fast"
         assert Config.get_powerful_model() == "override-powerful"
 
@@ -81,7 +81,7 @@ class TestEnvironmentVariables:
         os.environ["LEGISCOPE_LLM_PROVIDER"] = "openai"
         os.environ["LEGISCOPE_FAST_MODEL"] = "override-fast"
 
-        assert Config.LLM_PROVIDER == "openai"
+        assert Config.get_llm_provider() == "openai"
         assert Config.get_fast_model() == "override-fast"
         assert Config.get_powerful_model() == "gpt-4.1"  # Default OpenAI powerful
 
@@ -90,7 +90,7 @@ class TestEnvironmentVariables:
         os.environ["LEGISCOPE_LLM_PROVIDER"] = "openai"
         os.environ["LEGISCOPE_POWERFUL_MODEL"] = "override-powerful"
 
-        assert Config.LLM_PROVIDER == "openai"
+        assert Config.get_llm_provider() == "openai"
         assert Config.get_fast_model() == "gpt-4.1-mini"  # Default OpenAI fast
         assert Config.get_powerful_model() == "override-powerful"
 
@@ -100,7 +100,7 @@ class TestEnvironmentVariables:
         os.environ["LEGISCOPE_FAST_MODEL"] = "custom-mistral-fast"
         os.environ["LEGISCOPE_POWERFUL_MODEL"] = "custom-mistral-powerful"
 
-        assert Config.LLM_PROVIDER == "mistral"
+        assert Config.get_llm_provider() == "mistral"
         assert Config.get_fast_model() == "custom-mistral-fast"
         assert Config.get_powerful_model() == "custom-mistral-powerful"
 

@@ -35,24 +35,78 @@ The project supports both OpenAI and Mistral as LLM providers. The default provi
 
 #### Code-based Configuration
 
-You can also configure the LLM provider directly in code using the `Config` class:
+You can configure the LLM provider directly in code using the `Config` class:
 
 ```python
 from legiscope.llm_config import Config
+from legiscope.utils import LLMConfig
 
-# Switch to OpenAI
-Config.LLM_PROVIDER = "openai"
-fast_client = Config.get_fast_client()      # Uses gpt-4.1-mini
-powerful_client = Config.get_powerful_client()  # Uses gpt-4.1
-
-# Switch to Mistral
-Config.LLM_PROVIDER = "mistral"
-fast_client = Config.get_fast_client()      # Uses mistral-medium-latest
+# Get fast client for quick tasks
+fast_client = Config.get_fast_client()      # Uses mistral-medium-latest (default)
 powerful_client = Config.get_powerful_client()  # Uses magistral-medium-latest
+
+# Create reusable LLM configuration
+llm_config = LLMConfig(
+    client=Config.get_fast_client(),
+    temperature=0.1,
+    max_retries=3
+)
 
 # Get appropriate models for different tasks
 fast_model = Config.get_fast_model()        # For quick tasks
 powerful_model = Config.get_powerful_model() # For complex reasoning
+```
+
+#### Using Config Objects
+
+The library uses config objects for cleaner, more maintainable API:
+
+```python
+from legiscope.utils import LLMConfig
+from legiscope.retrieve import SectionRetrievalConfig, retrieve_sections
+from legiscope.query import QueryConfig, BatchQueryConfig
+from legiscope.query import query_legal_documents, run_queries
+from legiscope.llm_config import Config
+import chromadb
+
+# Setup
+chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
+collection = chroma_client.get_collection("legal_code_all")
+
+# Example 1: Retrieve sections with config
+retrieval_config = SectionRetrievalConfig(
+    collection=collection,
+    query_text="What are the parking regulations?",
+    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
+    jurisdiction_id="IL-WindyCity",
+    n_results=10,
+    use_hyde=True,
+    hyde_client=Config.get_fast_client()
+)
+results = retrieve_sections(retrieval_config)
+
+# Example 2: Query with LLM analysis
+llm_config = LLMConfig(client=Config.get_powerful_client(), temperature=0.1)
+query_config = QueryConfig(
+    llm=llm_config,
+    query="What are the parking regulations?",
+    retrieval_results=results,
+    filter_relevance=True,
+    relevance_threshold=0.7
+)
+response = query_legal_documents(query_config)
+
+# Example 3: Batch queries
+batch_config = BatchQueryConfig(
+    queries=["Query 1", "Query 2", "Query 3"],
+    jurisdiction_id="IL-WindyCity",
+    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
+    collection=collection,
+    llm=llm_config,
+    use_hyde=True,
+    filter_relevance=True
+)
+results_df = run_queries(batch_config)
 ```
 
 #### Available Models by Provider

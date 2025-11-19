@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -8,8 +9,117 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.embeddings import get_embedding_client, get_embeddings
-from legiscope.llm_config import Config
-from legiscope.utils import ask
+from legiscope.utils import ask, resolve_model_default
+
+# Constants for retrieval and LLM operations
+DEFAULT_N_RESULTS = 10  # Default number of results to retrieve from embeddings
+DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal analysis
+DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
+DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
+
+
+@dataclass
+class RetrievalConfig:
+    """Configuration for document retrieval operations.
+
+    This class encapsulates all parameters needed for semantic search and
+    document retrieval operations. It supports jurisdiction filtering,
+    HYDE query rewriting, and custom embedding configuration.
+
+    Attributes:
+        collection: ChromaDB collection to query (required)
+        query_text: Text to search for (required)
+        n_results: Number of results to return
+        jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-WindyCity')
+        where: Additional metadata filters (combined with jurisdiction filters)
+        where_document: Document content filters
+        use_hyde: Whether to apply HYDE query rewriting
+        hyde_client: Instructor client for LLM-powered HYDE rewriting
+        hyde_model: LLM model to use for HYDE rewriting
+        embedding_client: Embedding client for generating query embeddings
+        embedding_model: Embedding model name
+
+    Example:
+        >>> from legiscope.llm_config import Config
+        >>>
+        >>> # Basic retrieval
+        >>> config = RetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="parking regulations",
+        ...     jurisdiction_id="IL-WindyCity"
+        ... )
+        >>>
+        >>> # With HYDE rewriting
+        >>> config = RetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="where can I park my car",
+        ...     use_hyde=True,
+        ...     hyde_client=Config.get_fast_client(),
+        ...     n_results=20
+        ... )
+    """
+
+    # Required parameters
+    collection: Any  # chromadb.Collection
+    query_text: str
+
+    # Search parameters
+    n_results: int = DEFAULT_N_RESULTS
+    jurisdiction_id: str | None = None
+    where: dict | None = None
+    where_document: dict | None = None
+
+    # HYDE query rewriting
+    use_hyde: bool = False
+    hyde_client: Instructor | None = None
+    hyde_model: str | None = None
+
+    # Embedding generation
+    embedding_client: Any = None
+    embedding_model: str | None = None
+
+    def __post_init__(self):
+        """Validate configuration after initialization."""
+        if not self.query_text or not self.query_text.strip():
+            raise ValueError("query_text cannot be empty")
+
+        if self.n_results <= 0:
+            raise ValueError(f"n_results must be positive, got {self.n_results}")
+
+        if self.use_hyde and self.hyde_client is None:
+            raise ValueError("hyde_client required when use_hyde=True")
+
+
+@dataclass
+class SectionRetrievalConfig(RetrievalConfig):
+    """Configuration for section-level retrieval operations.
+
+    Extends RetrievalConfig to add section-specific requirements. This config
+    is used for retrieve_sections() which performs segment-level search but
+    returns full section context.
+
+    Attributes:
+        sections_parquet_path: Path to sections.parquet file (required)
+        All other attributes inherited from RetrievalConfig
+
+    Example:
+        >>> config = SectionRetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="parking regulations",
+        ...     sections_parquet_path="./data/sections.parquet",
+        ...     jurisdiction_id="IL-WindyCity",
+        ...     n_results=10
+        ... )
+    """
+
+    sections_parquet_path: str | Path | None = None
+
+    def __post_init__(self):
+        """Validate section-specific requirements."""
+        super().__post_init__()
+
+        if self.sections_parquet_path is None:
+            raise ValueError("sections_parquet_path is required for section retrieval")
 
 
 class HydeRewrite(BaseModel):
@@ -71,16 +181,14 @@ def hyde_rewriter(
         print(result.query_type)
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    model = resolve_model_default(model, use_fast=True)
 
+    # Validation (expected user errors - don't log)
     if not query or not query.strip():
-        logger.error("Query cannot be empty for HYDE rewriting")
-        raise ValueError("Query cannot be empty for HYDE rewriting")
+        raise ValueError("query cannot be empty")
 
     if client is None:
-        logger.error("Client is required for HYDE rewriting")
-        raise ValueError("Client is required for HYDE rewriting")
+        raise ValueError("client is required for HYDE rewriting")
 
     logger.info(f"Using LLM for HYDE rewrite: '{query[:50]}...'")
 
@@ -118,8 +226,8 @@ Provide a rewritten query that would be effective for semantic search against mu
             response_model=HydeRewrite,
             system=system_prompt,
             model=model,
-            temperature=0.1,  # Low temperature for consistent legal style
-            max_retries=3,
+            temperature=DEFAULT_TEMPERATURE,
+            max_retries=DEFAULT_MAX_RETRIES,
         )
 
         logger.info(
@@ -168,20 +276,17 @@ def is_relevant(
         print(result.reasoning)
     """
     # Use default model if not specified
-    if model is None:
-        model = Config.get_fast_model()
+    model = resolve_model_default(model, use_fast=True)
 
+    # Validation (expected user errors - don't log)
     if not query or not query.strip():
-        logger.error("Query cannot be empty for relevance assessment")
-        raise ValueError("Query cannot be empty for relevance assessment")
+        raise ValueError("query cannot be empty")
 
     if not text or not text.strip():
-        logger.error("Text cannot be empty for relevance assessment")
-        raise ValueError("Text cannot be empty for relevance assessment")
+        raise ValueError("text cannot be empty")
 
     if client is None:
-        logger.error("Client is required for relevance assessment")
-        raise ValueError("Client is required for relevance assessment")
+        raise ValueError("client is required for relevance assessment")
 
     logger.info(
         f"Using LLM for relevance assessment: query '{query[:30]}...', text '{text[:30]}...'"
@@ -221,8 +326,8 @@ Determine if this text directly helps answer the query and provide your assessme
             response_model=RelevanceAssessment,
             system=system_prompt,
             model=model,
-            temperature=0.1,  # Low temperature
-            max_retries=3,
+            temperature=DEFAULT_TEMPERATURE,
+            max_retries=DEFAULT_MAX_RETRIES,
         )
 
         logger.info(
@@ -238,73 +343,54 @@ Determine if this text directly helps answer the query and provide your assessme
         raise
 
 
-def retrieve_segments(
-    collection: chromadb.Collection,
-    query_text: str,
-    n_results: int = 10,
-    jurisdiction_id: str | None = None,
-    where: dict | None = None,
-    where_document: dict | None = None,
-    rewrite: bool = False,
-    rewrite_client: Instructor | None = None,
-    rewrite_model: str | None = None,
-    embedding_client: Any = None,
-    embedding_model: str | None = None,
-) -> dict[str, Any]:
+def retrieve_segments(config: RetrievalConfig) -> dict[str, Any]:
     """Retrieve similar documents from the embedding index using semantic search.
 
     Args:
-        collection: ChromaDB collection to query
-        query_text: Text to search for
-        n_results: Number of results to return. Defaults to 10
-        jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-WindyCity')
-        where: Additional metadata filters (combined with jurisdiction filters)
-        where_document: Document content filters
-        rewrite: Whether to apply HYDE query rewriting. Defaults to False
-        rewrite_client: Instructor client for LLM-powered HYDE rewriting
-        rewrite_model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
-        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses configured provider)
-        embedding_model: Embedding model name. Uses provider default if not specified
+        config: RetrievalConfig with all search parameters
 
     Returns:
         dict: Query results containing documents, metadata, distances, and IDs
 
     Example:
-        # Retrieve from specific jurisdiction
-        results = retrieve_segments(collection, "parking regulations", jurisdiction_id="IL-WindyCity")
-
-        # Retrieve with LLM-powered HYDE rewriting
-        from legiscope.llm_config import Config
-        client = Config.get_fast_client()
-        results = retrieve_segments(
-            collection,
-            "where can I park my car",
-            rewrite=True,
-            client=client
-        )
-
-        # Retrieve from multiple jurisdictions
-        results = retrieve_segments(
-            collection,
-            "zoning laws",
-            where={"jurisdiction_id": {"$in": ["IL-WindyCity", "CA-LosAngeles"]}}
-        )
-
-        # Cross-jurisdiction comparison (no jurisdiction filter)
-        results = retrieve_segments(collection, "noise ordinances", n_results=50)
+        >>> from legiscope.retrieve import RetrievalConfig
+        >>>
+        >>> # Basic retrieval
+        >>> config = RetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="parking regulations",
+        ...     jurisdiction_id="IL-WindyCity"
+        ... )
+        >>> results = retrieve_segments(config)
+        >>>
+        >>> # With HYDE rewriting
+        >>> from legiscope.llm_config import Config
+        >>> config = RetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="where can I park my car",
+        ...     use_hyde=True,
+        ...     hyde_client=Config.get_fast_client(),
+        ...     n_results=20
+        ... )
+        >>> results = retrieve_segments(config)
+        >>>
+        >>> # Multiple jurisdictions
+        >>> config = RetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="zoning laws",
+        ...     where={"jurisdiction_id": {"$in": ["IL-WindyCity", "CA-LosAngeles"]}}
+        ... )
+        >>> results = retrieve_segments(config)
     """
-    # Use default model if not specified
-    if rewrite_model is None:
-        rewrite_model = Config.get_fast_model()
+    query_text = config.query_text
 
     # Apply HYDE rewriting if requested
-    if rewrite:
-        if rewrite_client is None:
-            logger.error("Client is required for HYDE rewriting")
-            raise ValueError("Client is required for HYDE rewriting")
-
+    if config.use_hyde:
+        # hyde_client is guaranteed to be non-None by validation in __post_init__
+        assert config.hyde_client is not None
         original_query = query_text
-        result = hyde_rewriter(rewrite_client, query_text, rewrite_model)
+        hyde_model = resolve_model_default(config.hyde_model, use_fast=True)
+        result = hyde_rewriter(config.hyde_client, query_text, hyde_model)
         query_text = result.rewritten_query
         logger.debug(f"Applied HYDE rewrite: '{original_query}' -> '{query_text}'")
 
@@ -312,23 +398,28 @@ def retrieve_segments(
 
     # Combine jurisdiction filter with additional where filters
     combined_where: dict[str, Any] | None = None
-    if jurisdiction_id and where:
+    if config.jurisdiction_id and config.where:
         # Both types of filters - combine with AND
-        combined_where = {"$and": [{"jurisdiction_id": jurisdiction_id}, where]}
+        combined_where = {
+            "$and": [{"jurisdiction_id": config.jurisdiction_id}, config.where]
+        }
         logger.debug(f"Combined filters: {combined_where}")
-    elif jurisdiction_id:
-        combined_where = {"jurisdiction_id": jurisdiction_id}
-        logger.debug(f"Using jurisdiction filter only: {jurisdiction_id}")
-    elif where:
-        combined_where = where
-        logger.debug(f"Using custom filters only: {where}")
+    elif config.jurisdiction_id:
+        combined_where = {"jurisdiction_id": config.jurisdiction_id}
+        logger.debug(f"Using jurisdiction filter only: {config.jurisdiction_id}")
+    elif config.where:
+        combined_where = config.where
+        logger.debug(f"Using custom filters only: {config.where}")
 
     # Generate embeddings explicitly to avoid dimension mismatch
+    embedding_client = config.embedding_client
     if embedding_client is None:
         # Use the proper embedding client factory function
         embedding_client = get_embedding_client()
 
-    query_embeddings = get_embeddings(embedding_client, [query_text], embedding_model)
+    query_embeddings = get_embeddings(
+        embedding_client, [query_text], config.embedding_model
+    )
     # Convert to list of lists for ChromaDB compatibility
     if hasattr(query_embeddings, "tolist"):
         # NumPy array case
@@ -339,11 +430,11 @@ def retrieve_segments(
     # Cast to Any to satisfy ChromaDB typing expectations (avoids invariant list/ndarray mismatch)
     query_embeddings_any = cast(Any, query_embeddings_list)
 
-    results = collection.query(
+    results = config.collection.query(
         query_embeddings=query_embeddings_any,
-        n_results=n_results,
+        n_results=config.n_results,
         where=combined_where,
-        where_document=where_document,
+        where_document=config.where_document,
     )
 
     result_count = len(results["ids"][0]) if results["ids"] else 0
@@ -442,20 +533,7 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
         return {}
 
 
-def retrieve_sections(
-    collection: chromadb.Collection,
-    query_text: str,
-    sections_parquet_path: str | Path,
-    n_results: int = 10,
-    jurisdiction_id: str | None = None,
-    where: dict | None = None,
-    where_document: dict | None = None,
-    rewrite: bool = False,
-    rewrite_client: Instructor | None = None,
-    rewrite_model: str | None = None,
-    embedding_client=None,
-    embedding_model: str | None = None,
-) -> dict:
+def retrieve_sections(config: SectionRetrievalConfig) -> dict:
     """Retrieve sections by searching embeddings at segment level but returning full section context.
 
     This function performs semantic search at the segment level for precision, then aggregates
@@ -463,18 +541,7 @@ def retrieve_sections(
     the full section content along with the specific matching segments.
 
     Args:
-        collection: ChromaDB collection to query
-        query_text: Text to search for
-        sections_parquet_path: Path to sections.parquet file containing section data
-        n_results: Number of segment results to retrieve. Defaults to 10
-        jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-WindyCity')
-        where: Additional metadata filters (combined with jurisdiction filters)
-        where_document: Document content filters
-        rewrite: Whether to apply HYDE query rewriting. Defaults to False
-        rewrite_client: Instructor client for LLM-powered HYDE rewriting
-        rewrite_model: LLM model to use for HYDE rewriting. Uses Config.get_fast_model() if not specified
-        embedding_client: Embedding client for generating query embeddings. Defaults to None (uses configured provider)
-        embedding_model: Embedding model name. Uses provider default if not specified
+        config: SectionRetrievalConfig with all parameters
 
     Returns:
         dict: Section-level results with structure:
@@ -511,75 +578,63 @@ def retrieve_sections(
         FileNotFoundError: If sections parquet file cannot be found
 
     Example:
-        # Basic section retrieval
-        results = retrieve_sections(
-            collection,
-            "parking regulations",
-            sections_parquet_path="data/laws/IL-WindyCity/tables/sections.parquet"
-        )
-
-        # Section retrieval with HYDE rewriting
-        from legiscope.llm_config import Config
-        client = Config.get_fast_client()
-        results = retrieve_sections(
-            collection,
-            "where can I park my car",
-            sections_parquet_path="data/laws/IL-WindyCity/tables/sections.parquet",
-            rewrite=True,
-            client=client
-        )
-
-        # Access section content and matching segments
-        for section in results["sections"]:
-            print(f"Section: {section['heading_text']}")
-            print(f"Content: {section['body_text'][:100]}...")
-            print(f"Found {section['segment_count']} matching segments")
-            for segment in section["matching_segments"]:
-                print(f"  Segment: {segment['segment_text'][:50]}...")
+        >>> from legiscope.retrieve import SectionRetrievalConfig
+        >>>
+        >>> # Basic section retrieval
+        >>> config = SectionRetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="parking regulations",
+        ...     sections_parquet_path="./data/sections.parquet",
+        ...     jurisdiction_id="IL-WindyCity"
+        ... )
+        >>> results = retrieve_sections(config)
+        >>>
+        >>> # With HYDE rewriting
+        >>> from legiscope.llm_config import Config
+        >>> config = SectionRetrievalConfig(
+        ...     collection=chroma_collection,
+        ...     query_text="where can I park my car",
+        ...     sections_parquet_path="./data/sections.parquet",
+        ...     use_hyde=True,
+        ...     hyde_client=Config.get_fast_client()
+        ... )
+        >>> results = retrieve_sections(config)
+        >>>
+        >>> # Access section content
+        >>> for section in results["sections"]:
+        ...     print(f"Section: {section['heading_text']}")
+        ...     print(f"Found {section['segment_count']} matching segments")
     """
-    # Use default model if not specified
-    if rewrite_model is None:
-        rewrite_model = Config.get_fast_model()
+    # Validation happens in SectionRetrievalConfig.__post_init__
+    logger.info(f"Retrieving sections for query: '{config.query_text[:50]}...'")
 
-    logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
-
-    _validate_retrieve_sections_inputs(
-        collection=collection,
-        query_text=query_text,
-        sections_parquet_path=sections_parquet_path,
-        n_results=n_results,
-        jurisdiction_id=jurisdiction_id,
-        where=where,
-        where_document=where_document,
-        rewrite=rewrite,
-        rewrite_client=rewrite_client,
-        rewrite_model=rewrite_model,
-        embedding_client=embedding_client,
-        embedding_model=embedding_model,
-    )
-
-    sections_path = Path(sections_parquet_path)
+    # sections_parquet_path is guaranteed non-None by __post_init__ validation
+    sections_path = Path(cast(str | Path, config.sections_parquet_path))
 
     if not sections_path.exists():
-        logger.error(f"Sections parquet file not found: {sections_path}")
-        raise FileNotFoundError(f"Sections parquet file not found: {sections_path}")
+        raise FileNotFoundError(f"sections parquet file not found: {sections_path}")
 
-    segment_results = _retrieve_segment_results(
-        collection=collection,
-        query_text=query_text,
-        n_results=n_results,
-        jurisdiction_id=jurisdiction_id,
-        where=where,
-        where_document=where_document,
-        rewrite=rewrite,
-        rewrite_client=rewrite_client,
-        rewrite_model=rewrite_model,
-        embedding_client=embedding_client,
-        embedding_model=embedding_model,
+    # Create RetrievalConfig from SectionRetrievalConfig for segment retrieval
+    retrieval_config = RetrievalConfig(
+        collection=config.collection,
+        query_text=config.query_text,
+        n_results=config.n_results,
+        jurisdiction_id=config.jurisdiction_id,
+        where=config.where,
+        where_document=config.where_document,
+        use_hyde=config.use_hyde,
+        hyde_client=config.hyde_client,
+        hyde_model=config.hyde_model,
+        embedding_client=config.embedding_client,
+        embedding_model=config.embedding_model,
     )
 
-    original_query = query_text
-    rewritten_query = segment_results.get("rewritten_query") if rewrite else None
+    segment_results = _retrieve_segment_results(retrieval_config)
+
+    original_query = config.query_text
+    rewritten_query = (
+        segment_results.get("rewritten_query") if config.use_hyde else None
+    )
 
     if _has_no_results(segment_results):
         logger.info("No segment results found")
@@ -620,7 +675,7 @@ def filter_results(
     client: Instructor,
     results: dict[str, Any],
     query: str,
-    threshold: float = 0.5,
+    threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Filter retrieval results by relevance using LLM-powered assessment.
@@ -682,24 +737,25 @@ def _validate_filter_inputs(
     threshold: float,
     model: str | None = None,
 ) -> None:
-    """Validate inputs for filter_results function."""
+    """Validate inputs for filter_results function.
+
+    Complex validation function with multiple interdependent checks.
+    Extracted as separate function for clarity and maintainability.
+    """
+    # Validation (expected user errors - don't log)
     if results is None:
-        logger.error("Invalid results structure")
-        raise ValueError("Invalid results structure")
+        raise ValueError("results cannot be None")
 
     if client is None:
-        logger.error("Client is required for result filtering")
-        raise ValueError("Client is required for result filtering")
+        raise ValueError("client is required for result filtering")
 
     required_keys = {"ids", "documents", "distances"}
     missing_keys = required_keys - set(results.keys())
     if missing_keys:
-        logger.error(f"Results missing required keys: {missing_keys}")
-        raise ValueError(f"Results missing required keys: {missing_keys}")
+        raise ValueError(f"results missing required keys: {missing_keys}")
 
-    if threshold < 0 or threshold > 1:
-        logger.error("Threshold must be between 0 and 1")
-        raise ValueError("Threshold must be between 0 and 1")
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"threshold must be between 0 and 1, got {threshold}")
 
     logger.info(
         f"Filtering {len(results['ids'][0])} results for query: '{query[:30]}...'"
@@ -823,7 +879,7 @@ def filter_sections(
     client: Instructor,
     sections_results: dict[str, Any],
     query: str,
-    confidence_threshold: float = 0.5,
+    confidence_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
 ) -> dict[str, Any]:
     """Filter section results by relevance using LLM-powered assessment.
@@ -856,18 +912,16 @@ def filter_sections(
         print(f"Filtered from {filtered['original_count']} "
               f"to {filtered['filtered_count']} sections")
     """
+    # Validation (expected user errors - don't log)
     if sections_results is None:
-        logger.error("Invalid sections results structure")
-        raise ValueError("Invalid sections results structure")
+        raise ValueError("sections_results cannot be None")
 
     if client is None:
-        logger.error("Client is required for section filtering")
-        raise ValueError("Client is required for section filtering")
+        raise ValueError("client is required for section filtering")
 
     sections = sections_results.get("sections", [])
     if not isinstance(sections, list):
-        logger.error("Sections must be a list")
-        raise ValueError("Sections must be a list")
+        raise ValueError("sections must be a list")
 
     original_count = len(sections)
     logger.info(f"Filtering {original_count} sections for query: '{query[:30]}...'")
@@ -926,70 +980,10 @@ def filter_sections(
     }
 
 
-def _validate_retrieve_sections_inputs(
-    collection: chromadb.Collection,
-    query_text: str,
-    sections_parquet_path: str | Path,
-    n_results: int = 10,
-    jurisdiction_id: str | None = None,
-    where: dict | None = None,
-    where_document: dict | None = None,
-    rewrite: bool = False,
-    rewrite_client: Instructor | None = None,
-    rewrite_model: str | None = None,
-    embedding_client=None,
-    embedding_model: str | None = None,
-) -> None:
-    """Validate inputs for retrieve_sections function."""
-    if not collection:
-        logger.error("Collection is required for section retrieval")
-        raise ValueError("Collection is required for section retrieval")
-
-    if not query_text or not query_text.strip():
-        logger.error("Query text cannot be empty for section retrieval")
-        raise ValueError("Query text cannot be empty for section retrieval")
-
-    if not sections_parquet_path:
-        logger.error("Sections parquet path is required for section retrieval")
-        raise ValueError("Sections parquet path is required for section retrieval")
-
-    if n_results <= 0:
-        logger.error("n_results must be positive for section retrieval")
-        raise ValueError("n_results must be positive for section retrieval")
-
-    if rewrite and not rewrite_client:
-        logger.error("Rewrite client is required when rewrite=True")
-        raise ValueError("Rewrite client is required when rewrite=True")
-
-
-def _retrieve_segment_results(
-    collection: chromadb.Collection,
-    query_text: str,
-    n_results: int = 10,
-    jurisdiction_id: str | None = None,
-    where: dict | None = None,
-    where_document: dict | None = None,
-    rewrite: bool = False,
-    rewrite_client: Instructor | None = None,
-    rewrite_model: str | None = None,
-    embedding_client=None,
-    embedding_model: str | None = None,
-) -> dict[str, Any]:
+def _retrieve_segment_results(config: RetrievalConfig) -> dict[str, Any]:
     """Retrieve segment-level results from embeddings."""
     logger.debug("Step 1: Retrieving segment-level results")
-    return retrieve_segments(
-        collection=collection,
-        query_text=query_text,
-        n_results=n_results,
-        jurisdiction_id=jurisdiction_id,
-        where=where,
-        where_document=where_document,
-        rewrite=rewrite,
-        rewrite_client=rewrite_client,
-        rewrite_model=rewrite_model,
-        embedding_client=embedding_client,
-        embedding_model=embedding_model,
-    )
+    return retrieve_segments(config)
 
 
 def _has_no_results(segment_results: dict[str, Any]) -> bool:
