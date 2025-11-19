@@ -266,7 +266,12 @@ def _validate_conversion_inputs(
     state: str,
     municipality: str,
 ) -> None:
-    """Validate inputs for text2md function."""
+    """Validate inputs for text2md function.
+
+    Complex validation function that checks file system requirements,
+    data structure validity, and creates output directories as needed.
+    Extracted as separate function for clarity and maintainability.
+    """
     if not structure or not hasattr(structure, "levels"):
         raise ValueError("Invalid HeadingStructure provided")
 

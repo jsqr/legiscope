@@ -139,10 +139,10 @@ class TestHydeRewriter:
         """Test that empty query raises ValueError."""
         mock_client = Mock(spec=Instructor)
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             hyde_rewriter(mock_client, "")
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             hyde_rewriter(mock_client, "   ")
 
     def test_hyde_rewriter_llm_api_failure(self):
@@ -308,26 +308,26 @@ class TestIsRelevant:
         """Test that empty query raises ValueError."""
         mock_client = Mock(spec=Instructor)
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             is_relevant(mock_client, "", "some text")
 
-        with pytest.raises(ValueError, match="Query cannot be empty"):
+        with pytest.raises(ValueError, match="query cannot be empty"):
             is_relevant(mock_client, "   ", "some text")
 
     def test_is_relevant_empty_text(self):
         """Test that empty text raises ValueError."""
         mock_client = Mock(spec=Instructor)
 
-        with pytest.raises(ValueError, match="Text cannot be empty"):
+        with pytest.raises(ValueError, match="text cannot be empty"):
             is_relevant(mock_client, "some query", "")
 
-        with pytest.raises(ValueError, match="Text cannot be empty"):
+        with pytest.raises(ValueError, match="text cannot be empty"):
             is_relevant(mock_client, "some query", "   ")
 
     def test_is_relevant_no_client(self):
         """Test that missing client raises ValueError."""
-        with pytest.raises(ValueError, match="Client is required"):
-            is_relevant(None, "query", "text")
+        with pytest.raises(ValueError, match="client is required"):
+            is_relevant(None, "query", "text")  # type: ignore
 
     def test_is_relevant_api_failure(self):
         """Test handling of LLM API failures."""
@@ -434,19 +434,19 @@ class TestFilterResults:
             "distances": [[0.1]],
         }
 
-        with pytest.raises(ValueError, match="Client is required"):
-            filter_results(None, input_results, "query")
+        with pytest.raises(ValueError, match="client is required"):
+            filter_results(None, input_results, "query")  # type: ignore
 
     def test_filter_results_invalid_structure(self):
         """Test handling of invalid results structure."""
         mock_client = Mock(spec=Instructor)
 
         # Empty results
-        with pytest.raises(ValueError, match="Invalid results structure"):
-            filter_results(mock_client, None, "query")
+        with pytest.raises(ValueError, match="results cannot be None"):
+            filter_results(mock_client, None, "query")  # type: ignore
 
         # Missing required keys
-        with pytest.raises(ValueError, match="Results missing required keys"):
+        with pytest.raises(ValueError, match="results missing required keys"):
             filter_results(mock_client, {"wrong": "structure"}, "query")
 
     def test_filter_results_empty_results(self):

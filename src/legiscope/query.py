@@ -233,8 +233,7 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
         >>> print(f"Answer: {response.short_answer}")
         >>> print(f"Reasoning: {response.reasoning}")
     """
-    _validate_query_inputs(config)
-
+    # Validation happens in QueryConfig.__post_init__
     logger.info(f"Processing query: '{config.query[:50]}...'")
     logger.debug(
         f"Using model: {config.llm.model}, temperature: {config.llm.temperature}"
@@ -397,8 +396,7 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
     """
     import time
 
-    _validate_batch_query_inputs(config)
-
+    # Validation happens in BatchQueryConfig.__post_init__
     # llm is guaranteed to be set by __post_init__
     assert config.llm is not None
 
@@ -436,17 +434,6 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
             )
 
     return _compile_query_results(results)
-
-
-def _validate_query_inputs(config: QueryConfig) -> None:
-    """Validate inputs for query_legal_documents function.
-
-    Note: Most validation is done in QueryConfig.__post_init__, but this
-    function can perform additional checks if needed.
-    """
-    # Config validation happens in __post_init__, so this is mostly a no-op
-    # Keep it for potential future validation needs
-    pass
 
 
 def _extract_and_validate_sections(
@@ -550,17 +537,6 @@ def _execute_query_llm_call(
     except Exception as e:
         logger.error(f"Query processing failed: {str(e)}")
         raise
-
-
-def _validate_batch_query_inputs(config: BatchQueryConfig) -> None:
-    """Validate inputs for run_queries function.
-
-    Note: Most validation is done in BatchQueryConfig.__post_init__, but this
-    function can perform additional checks if needed.
-    """
-    # Config validation happens in __post_init__, so this is mostly a no-op
-    # Keep it for potential future validation needs
-    pass
 
 
 def _process_single_query_with_error_handling(

@@ -285,7 +285,6 @@ def get_embeddings(
         embeddings = get_embeddings(client, ["text1", "text2"])
     """
     if not texts:
-        logger.error("texts parameter cannot be empty")
         raise ValueError("texts parameter cannot be empty")
 
     # Auto-detect provider if not specified
@@ -314,8 +313,7 @@ def get_embeddings(
         raise
 
     if len(embeddings_list) == 0:
-        logger.error("No embeddings were generated")
-        raise ValueError("Failed to generate embeddings")
+        raise ValueError("no embeddings were generated")
 
     # Convert to NumPy array with the configured embedding dtype for consistent downstream consumption
     embeddings_array = np.asarray(embeddings_list, dtype=EMBEDDING_DTYPE)
@@ -366,13 +364,11 @@ def create_embeddings_df(
     logger.info(f"Creating embeddings DataFrame with model: {model or 'default'}")
 
     if not isinstance(df, pl.DataFrame):
-        logger.error(f"df must be a polars DataFrame, got {type(df)}")
         raise TypeError(f"df must be a polars DataFrame, got {type(df)}")
 
     required_columns = {heading_col, text_col}
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
-        logger.error(f"DataFrame missing required columns: {missing_columns}")
         raise ValueError(f"DataFrame missing required columns: {missing_columns}")
 
     # Handle empty DataFrame
@@ -472,7 +468,6 @@ def create_embedding_index(
     required_columns = {id_col, text_col, embedding_col}
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
-        logger.error(f"DataFrame missing required columns: {missing_columns}")
         raise ValueError(f"DataFrame missing required columns: {missing_columns}")
 
     # Determine metadata columns
@@ -486,8 +481,7 @@ def create_embedding_index(
     # Validate metadata columns exist
     missing_metadata = set(metadata_cols) - set(df.columns)
     if missing_metadata:
-        logger.error(f"Metadata columns not found: {missing_metadata}")
-        raise ValueError(f"Metadata columns not found: {missing_metadata}")
+        raise ValueError(f"metadata columns not found: {missing_metadata}")
 
     # Initialize ChromaDB client
     if persist_directory:

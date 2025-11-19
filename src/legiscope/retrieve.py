@@ -183,13 +183,12 @@ def hyde_rewriter(
     # Use default model if not specified
     model = resolve_model_default(model, use_fast=True)
 
+    # Validation (expected user errors - don't log)
     if not query or not query.strip():
-        logger.error("Query cannot be empty for HYDE rewriting")
-        raise ValueError("Query cannot be empty for HYDE rewriting")
+        raise ValueError("query cannot be empty")
 
     if client is None:
-        logger.error("Client is required for HYDE rewriting")
-        raise ValueError("Client is required for HYDE rewriting")
+        raise ValueError("client is required for HYDE rewriting")
 
     logger.info(f"Using LLM for HYDE rewrite: '{query[:50]}...'")
 
@@ -279,17 +278,15 @@ def is_relevant(
     # Use default model if not specified
     model = resolve_model_default(model, use_fast=True)
 
+    # Validation (expected user errors - don't log)
     if not query or not query.strip():
-        logger.error("Query cannot be empty for relevance assessment")
-        raise ValueError("Query cannot be empty for relevance assessment")
+        raise ValueError("query cannot be empty")
 
     if not text or not text.strip():
-        logger.error("Text cannot be empty for relevance assessment")
-        raise ValueError("Text cannot be empty for relevance assessment")
+        raise ValueError("text cannot be empty")
 
     if client is None:
-        logger.error("Client is required for relevance assessment")
-        raise ValueError("Client is required for relevance assessment")
+        raise ValueError("client is required for relevance assessment")
 
     logger.info(
         f"Using LLM for relevance assessment: query '{query[:30]}...', text '{text[:30]}...'"
@@ -608,15 +605,14 @@ def retrieve_sections(config: SectionRetrievalConfig) -> dict:
         ...     print(f"Section: {section['heading_text']}")
         ...     print(f"Found {section['segment_count']} matching segments")
     """
+    # Validation happens in SectionRetrievalConfig.__post_init__
     logger.info(f"Retrieving sections for query: '{config.query_text[:50]}...'")
 
-    _validate_retrieve_sections_inputs(config)
-
-    sections_path = Path(config.sections_parquet_path)
+    # sections_parquet_path is guaranteed non-None by __post_init__ validation
+    sections_path = Path(cast(str | Path, config.sections_parquet_path))
 
     if not sections_path.exists():
-        logger.error(f"Sections parquet file not found: {sections_path}")
-        raise FileNotFoundError(f"Sections parquet file not found: {sections_path}")
+        raise FileNotFoundError(f"sections parquet file not found: {sections_path}")
 
     # Create RetrievalConfig from SectionRetrievalConfig for segment retrieval
     retrieval_config = RetrievalConfig(
@@ -741,24 +737,25 @@ def _validate_filter_inputs(
     threshold: float,
     model: str | None = None,
 ) -> None:
-    """Validate inputs for filter_results function."""
+    """Validate inputs for filter_results function.
+
+    Complex validation function with multiple interdependent checks.
+    Extracted as separate function for clarity and maintainability.
+    """
+    # Validation (expected user errors - don't log)
     if results is None:
-        logger.error("Invalid results structure")
-        raise ValueError("Invalid results structure")
+        raise ValueError("results cannot be None")
 
     if client is None:
-        logger.error("Client is required for result filtering")
-        raise ValueError("Client is required for result filtering")
+        raise ValueError("client is required for result filtering")
 
     required_keys = {"ids", "documents", "distances"}
     missing_keys = required_keys - set(results.keys())
     if missing_keys:
-        logger.error(f"Results missing required keys: {missing_keys}")
-        raise ValueError(f"Results missing required keys: {missing_keys}")
+        raise ValueError(f"results missing required keys: {missing_keys}")
 
-    if threshold < 0 or threshold > 1:
-        logger.error("Threshold must be between 0 and 1")
-        raise ValueError("Threshold must be between 0 and 1")
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(f"threshold must be between 0 and 1, got {threshold}")
 
     logger.info(
         f"Filtering {len(results['ids'][0])} results for query: '{query[:30]}...'"
@@ -915,18 +912,16 @@ def filter_sections(
         print(f"Filtered from {filtered['original_count']} "
               f"to {filtered['filtered_count']} sections")
     """
+    # Validation (expected user errors - don't log)
     if sections_results is None:
-        logger.error("Invalid sections results structure")
-        raise ValueError("Invalid sections results structure")
+        raise ValueError("sections_results cannot be None")
 
     if client is None:
-        logger.error("Client is required for section filtering")
-        raise ValueError("Client is required for section filtering")
+        raise ValueError("client is required for section filtering")
 
     sections = sections_results.get("sections", [])
     if not isinstance(sections, list):
-        logger.error("Sections must be a list")
-        raise ValueError("Sections must be a list")
+        raise ValueError("sections must be a list")
 
     original_count = len(sections)
     logger.info(f"Filtering {original_count} sections for query: '{query[:30]}...'")
@@ -983,17 +978,6 @@ def filter_sections(
         "filtered_count": filtered_count,
         "original_count": original_count,
     }
-
-
-def _validate_retrieve_sections_inputs(config: SectionRetrievalConfig) -> None:
-    """Validate inputs for retrieve_sections function.
-
-    Note: Most validation is now done in SectionRetrievalConfig.__post_init__,
-    but this function can perform additional checks if needed.
-    """
-    # Config validation happens in __post_init__, so this is mostly a no-op
-    # Keep it for potential future validation needs
-    pass
 
 
 def _retrieve_segment_results(config: RetrievalConfig) -> dict[str, Any]:
