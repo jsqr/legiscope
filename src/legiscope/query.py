@@ -10,7 +10,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.llm_config import Config
-from legiscope.retrieve import retrieve_sections
+from legiscope.retrieve import retrieve_sections, filter_sections
 from legiscope.utils import ask
 
 
@@ -46,6 +46,9 @@ def query_legal_documents(
     model: str | None = None,
     temperature: float = 0.1,
     max_retries: int = 3,
+    filter_relevance: bool = False,
+    relevance_threshold: float = 0.5,
+    filter_model: str | None = None,
 ) -> LegalQueryResponse:
     """
     Process a user query against retrieved legal documents using LLM analysis.
@@ -60,6 +63,9 @@ def query_legal_documents(
         model: LLM model to use. Uses Config.get_fast_model() if not specified
         temperature: Sampling temperature for the LLM. Defaults to 0.1
         max_retries: Maximum retry attempts for LLM calls. Defaults to 3
+        filter_relevance: Whether to filter sections by relevance before LLM processing. Defaults to False
+        relevance_threshold: Minimum confidence score for relevance filtering (0-1). Defaults to 0.5
+        filter_model: LLM model to use for relevance filtering. Uses Config.get_fast_model() if not specified
 
     Returns:
         LegalQueryResponse: Structured response with answer, reasoning, citations, and evidence
@@ -84,11 +90,13 @@ def query_legal_documents(
             jurisdiction_id="IL-WindyCity"
         )
 
-        # Process query
+        # Process query with relevance filtering
         response = query_legal_documents(
             client=client,
             query="Are there restrictions on drug paraphernalia sales?",
-            retrieval_results=results
+            retrieval_results=results,
+            filter_relevance=True,
+            relevance_threshold=0.7
         )
 
         print(f"Answer: {response.short_answer}")
@@ -129,6 +137,57 @@ def query_legal_documents(
         )
 
     logger.info(f"Found {len(sections)} relevant sections to analyze")
+
+    # Apply relevance filtering if requested
+    if filter_relevance:
+        logger.info(
+            f"Applying relevance filtering with threshold: {relevance_threshold}"
+        )
+
+        # Use default model for filtering if not specified
+        if filter_model is None:
+            filter_model = Config.get_fast_model()
+
+        try:
+            filtered_results = filter_sections(
+                client=client,
+                sections_results=retrieval_results,
+                query=query,
+                confidence_threshold=relevance_threshold,
+                model=filter_model,
+            )
+
+            sections = filtered_results.get("sections", [])
+            original_count = filtered_results.get("original_count", 0)
+            filtered_count = filtered_results.get("filtered_count", 0)
+
+            reduction_percentage = (
+                ((original_count - filtered_count) / original_count * 100)
+                if original_count > 0
+                else 0
+            )
+
+            logger.info(
+                f"Relevance filtering complete: {original_count} -> {filtered_count} sections "
+                f"({reduction_percentage:.1f}% reduction)"
+            )
+
+            if not sections:
+                logger.warning("All sections filtered out as irrelevant")
+                return LegalQueryResponse(
+                    short_answer="I cannot answer your question as no relevant legal provisions were found after filtering.",
+                    reasoning="The search returned legal sections, but all were determined to be irrelevant to your specific query.",
+                    citations=[],
+                    supporting_passages=[],
+                    confidence=0.0,
+                    limitations="No relevant legal information was available after relevance filtering.",
+                )
+
+        except Exception as e:
+            logger.error(
+                f"Relevance filtering failed, proceeding with original sections: {str(e)}"
+            )
+            # Continue with original sections if filtering fails
 
     # Prepare context for the LLM
     context_sections = []
@@ -255,6 +314,9 @@ def run_queries(
     max_retries: int = 3,
     n_results: int = 10,
     use_hyde: bool = False,
+    filter_relevance: bool = False,
+    relevance_threshold: float = 0.5,
+    filter_model: str | None = None,
 ) -> pl.DataFrame:
     """
     Run multiple queries against a jurisdiction and compile results in a structured DataFrame.
@@ -274,6 +336,9 @@ def run_queries(
         max_retries: Maximum retry attempts for LLM calls. Defaults to 3
         n_results: Number of results to retrieve per query. Defaults to 10
         use_hyde: Whether to apply HYDE query rewriting. Defaults to False
+        filter_relevance: Whether to filter sections by relevance before LLM processing. Defaults to False
+        relevance_threshold: Minimum confidence score for relevance filtering (0-1). Defaults to 0.5
+        filter_model: LLM model to use for relevance filtering. Uses Config.get_fast_model() if not specified
 
     Returns:
         pl.DataFrame: Structured results with columns:
@@ -302,7 +367,7 @@ def run_queries(
         chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
         collection = chroma_client.get_collection("legal_code_all")
 
-        # Run multiple queries
+        # Run multiple queries with relevance filtering
         queries = [
             "Are there restrictions on drug paraphernalia sales?",
             "What are the parking regulations?",
@@ -315,7 +380,9 @@ def run_queries(
             jurisdiction_id="IL-WindyCity",
             sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
             collection=collection,
-            model=Config.get_powerful_model()
+            model=Config.get_powerful_model(),
+            filter_relevance=True,
+            relevance_threshold=0.7
         )
 
         # View results
@@ -385,6 +452,9 @@ def run_queries(
                 model=model,
                 temperature=temperature,
                 max_retries=max_retries,
+                filter_relevance=filter_relevance,
+                relevance_threshold=relevance_threshold,
+                filter_model=filter_model,
             )
 
             processing_time = time.time() - start_time
