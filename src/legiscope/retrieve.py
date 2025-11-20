@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
@@ -16,6 +16,111 @@ DEFAULT_N_RESULTS = 10  # Default number of results to retrieve from embeddings
 DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal analysis
 DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
 DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
+
+
+# ============================================================================
+# Result Dataclasses
+# ============================================================================
+
+
+@dataclass
+class SegmentMatch:
+    """A single matching segment from retrieval."""
+
+    segment_idx: int
+    segment_text: str
+    distance: float
+    segment_position: int
+    section_heading: str = ""
+    section_level: int = 1
+
+
+@dataclass
+class QueryInfo:
+    """Information about the query used for retrieval."""
+
+    original_query: str
+    rewritten_query: str | None = None
+    total_segments_found: int = 0
+    unique_sections: int = 0
+
+
+@dataclass
+class SectionResult:
+    """A section with matching segments from retrieval."""
+
+    section_idx: int
+    heading_text: str
+    body_text: str
+    heading_level: int
+    parent: int | None
+    matching_segments: list[SegmentMatch]
+    relevance_score: float
+    segment_count: int
+
+
+@dataclass
+class SegmentRetrievalResults:
+    """Results from retrieve_segments()."""
+
+    ids: list[list[str]]
+    documents: list[list[str]]
+    distances: list[list[float]]
+    metadatas: list[list[dict[str, Any]]] | None = None
+
+
+@dataclass
+class SectionRetrievalResults:
+    """Results from retrieve_sections()."""
+
+    sections: list[SectionResult]
+    query_info: QueryInfo
+
+
+@dataclass
+class FilteringMetadata:
+    """Metadata about relevance filtering."""
+
+    original_count: int
+    filtered_count: int
+    threshold: float
+    assessments: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
+class FilteredSegmentResults:
+    """Results from filter_results()."""
+
+    ids: list[list[str]]
+    documents: list[list[str]]
+    distances: list[list[float]]
+    metadatas: list[list[dict[str, Any]]] | None
+    filtering_metadata: FilteringMetadata
+
+
+@dataclass
+class FilteredSectionResults:
+    """Results from filter_sections()."""
+
+    sections: list[SectionResult]
+    query_info: QueryInfo
+    filtered_count: int
+    original_count: int
+
+
+@dataclass
+class JurisdictionStats:
+    """Statistics about embeddings per jurisdiction."""
+
+    total_documents: int
+    jurisdictions: dict[str, int] = field(default_factory=dict)
+    states: dict[str, int] = field(default_factory=dict)
+    municipalities: dict[str, int] = field(default_factory=dict)
+
+
+# ============================================================================
+# Configuration Dataclasses
+# ============================================================================
 
 
 @dataclass
@@ -343,14 +448,14 @@ Determine if this text directly helps answer the query and provide your assessme
         raise
 
 
-def retrieve_segments(config: RetrievalConfig) -> dict[str, Any]:
+def retrieve_segments(config: RetrievalConfig) -> SegmentRetrievalResults:
     """Retrieve similar documents from the embedding index using semantic search.
 
     Args:
         config: RetrievalConfig with all search parameters
 
     Returns:
-        dict: Query results containing documents, metadata, distances, and IDs
+        SegmentRetrievalResults: Query results containing documents, metadata, distances, and IDs
 
     Example:
         >>> from legiscope.retrieve import RetrievalConfig
@@ -465,17 +570,23 @@ def retrieve_segments(config: RetrievalConfig) -> dict[str, Any]:
             if municipalities:
                 logger.debug(f"Results from municipalities: {sorted(municipalities)}")
 
-    return cast(dict[str, Any], results)
+    # Convert ChromaDB results dict to dataclass
+    return SegmentRetrievalResults(
+        ids=results["ids"],
+        documents=results["documents"],
+        distances=results["distances"],
+        metadatas=results.get("metadatas"),
+    )
 
 
-def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
+def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats:
     """Get statistics about embeddings per jurisdiction.
 
     Args:
         collection: ChromaDB collection to analyze
 
     Returns:
-        dict: Statistics including counts per jurisdiction, state, and municipality
+        JurisdictionStats: Statistics including counts per jurisdiction, state, and municipality
     """
     logger.info("Getting jurisdiction statistics from collection")
 
@@ -485,11 +596,11 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
 
         if not all_results or not all_results.get("metadatas"):
             logger.warning("No metadata found in collection")
-            return {}
+            return JurisdictionStats(total_documents=0)
 
         metadata_list = all_results["metadatas"]  # ChromaDB API returns 'metadatas'
         if not metadata_list:
-            return {}
+            return JurisdictionStats(total_documents=0)
 
         # Analyze jurisdiction distribution
         jurisdiction_counts = {}
@@ -514,14 +625,14 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
                     municipality_counts.get(municipality, 0) + 1
                 )
 
-        stats = {
-            "total_documents": len(metadata_list),
-            "jurisdictions": jurisdiction_counts,
-            "states": state_counts,
-            "municipalities": municipality_counts,
-        }
+        stats = JurisdictionStats(
+            total_documents=len(metadata_list),
+            jurisdictions=jurisdiction_counts,
+            states=state_counts,
+            municipalities=municipality_counts,
+        )
 
-        logger.info(f"Collection stats: {stats['total_documents']} total documents")
+        logger.info(f"Collection stats: {stats.total_documents} total documents")
         logger.info(f"  Jurisdictions: {len(jurisdiction_counts)}")
         logger.info(f"  States: {len(state_counts)}")
         logger.info(f"  Municipalities: {len(municipality_counts)}")
@@ -530,10 +641,10 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> dict:
 
     except Exception as e:
         logger.error(f"Failed to get jurisdiction stats: {str(e)}")
-        return {}
+        return JurisdictionStats(total_documents=0)
 
 
-def retrieve_sections(config: SectionRetrievalConfig) -> dict:
+def retrieve_sections(config: SectionRetrievalConfig) -> SectionRetrievalResults:
     """Retrieve sections by searching embeddings at segment level but returning full section context.
 
     This function performs semantic search at the segment level for precision, then aggregates
@@ -544,34 +655,7 @@ def retrieve_sections(config: SectionRetrievalConfig) -> dict:
         config: SectionRetrievalConfig with all parameters
 
     Returns:
-        dict: Section-level results with structure:
-            {
-                "sections": [
-                    {
-                        "section_idx": int,
-                        "heading_text": str,
-                        "body_text": str,
-                        "heading_level": int,
-                        "parent": Optional[int],
-                        "matching_segments": [
-                            {
-                                "segment_idx": int,
-                                "segment_text": str,
-                                "distance": float,
-                                "segment_position": int
-                            }
-                        ],
-                        "relevance_score": float,  # Best segment score
-                        "segment_count": int
-                    }
-                ],
-                "query_info": {
-                    "original_query": str,
-                    "rewritten_query": Optional[str],
-                    "total_segments_found": int,
-                    "unique_sections": int
-                }
-            }
+        SectionRetrievalResults: Section-level results with sections list and query info
 
     Raises:
         ValueError: If sections_parquet_path doesn't exist or required columns are missing
@@ -632,86 +716,64 @@ def retrieve_sections(config: SectionRetrievalConfig) -> dict:
     segment_results = _retrieve_segment_results(retrieval_config)
 
     original_query = config.query_text
-    rewritten_query = (
-        segment_results.get("rewritten_query") if config.use_hyde else None
-    )
+    rewritten_query = None  # HYDE rewriting is handled in retrieve_segments, not exposed here
 
     if _has_no_results(segment_results):
         logger.info("No segment results found")
         return _create_empty_results(original_query, rewritten_query)
 
-    total_segments_found = len(segment_results["ids"][0])
+    total_segments_found = len(segment_results.ids[0])
     logger.info(f"Found {total_segments_found} segment results")
 
     sections_to_segments = _group_segments_by_section(segment_results)
     if not sections_to_segments:
         logger.warning("No valid section references found in segment metadata")
-        return {
-            "sections": [],
-            "query_info": {
-                "original_query": original_query,
-                "rewritten_query": rewritten_query,
-                "total_segments_found": total_segments_found,
-                "unique_sections": 0,
-            },
-        }
+        return SectionRetrievalResults(
+            sections=[],
+            query_info=QueryInfo(
+                original_query=original_query,
+                rewritten_query=rewritten_query,
+                total_segments_found=total_segments_found,
+                unique_sections=0,
+            ),
+        )
 
     sections_dict = _load_section_data(sections_path, sections_to_segments)
 
     section_results = _build_section_results(sections_to_segments, sections_dict)
 
-    return {
-        "sections": section_results,
-        "query_info": {
-            "original_query": original_query,
-            "rewritten_query": rewritten_query,
-            "total_segments_found": total_segments_found,
-            "unique_sections": len(section_results),
-        },
-    }
+    return SectionRetrievalResults(
+        sections=section_results,
+        query_info=QueryInfo(
+            original_query=original_query,
+            rewritten_query=rewritten_query,
+            total_segments_found=total_segments_found,
+            unique_sections=len(section_results),
+        ),
+    )
 
 
 def filter_results(
     client: Instructor,
-    results: dict[str, Any],
+    results: SegmentRetrievalResults,
     query: str,
     threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
-) -> dict[str, Any]:
+) -> FilteredSegmentResults:
     """Filter retrieval results by relevance using LLM-powered assessment.
 
     Applies relevance assessment to each document in retrieval results and filters
     out documents that are not relevant or fall below the confidence threshold.
 
     Args:
-        results: Retrieval results from retrieve_segments or similar functions
+        results: Retrieval results from retrieve_segments
         query: Original query used for retrieval
         client: Instructor client for LLM-powered relevance assessment
         threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
         model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
 
     Returns:
-        dict: Filtered results with same structure as input but only relevant documents:
-            {
-                "ids": [filtered_ids],
-                "documents": [filtered_documents],
-                "distances": [filtered_distances],
-                "metadatas": [filtered_metadatas],
-                "filtering_metadata": {
-                    "original_count": int,
-                    "filtered_count": int,
-                    "threshold": float,
-                    "assessments": [
-                        {
-                            "index": int,
-                            "is_relevant": bool,
-                            "confidence": float,
-                            "reasoning": str
-                        }
-                    ]
-                },
-                # Any additional keys from original results are preserved
-            }
+        FilteredSegmentResults: Filtered results with only relevant documents and filtering metadata
 
     Raises:
         ValueError: If results structure is invalid or client is missing
@@ -731,7 +793,7 @@ def filter_results(
 
 
 def _validate_filter_inputs(
-    results: dict[str, Any],
+    results: SegmentRetrievalResults,
     client: Instructor,
     query: str,
     threshold: float,
@@ -749,29 +811,24 @@ def _validate_filter_inputs(
     if client is None:
         raise ValueError("client is required for result filtering")
 
-    required_keys = {"ids", "documents", "distances"}
-    missing_keys = required_keys - set(results.keys())
-    if missing_keys:
-        raise ValueError(f"results missing required keys: {missing_keys}")
-
     if not 0.0 <= threshold <= 1.0:
         raise ValueError(f"threshold must be between 0 and 1, got {threshold}")
 
     logger.info(
-        f"Filtering {len(results['ids'][0])} results for query: '{query[:30]}...'"
+        f"Filtering {len(results.ids[0])} results for query: '{query[:30]}...'"
     )
 
 
 def _assess_document_relevance(
-    results: dict[str, Any],
+    results: SegmentRetrievalResults,
     query: str,
     client: Instructor,
     model: str | None = None,
 ) -> list[dict]:
     """Assess relevance for each document in results."""
-    ids = results["ids"][0]
-    documents = results["documents"][0]
-    distances = results["distances"][0]
+    ids = results.ids[0]
+    documents = results.documents[0]
+    distances = results.distances[0]
 
     assessments = []
 
@@ -829,16 +886,16 @@ def _apply_relevance_filters(assessments: list[dict], threshold: float) -> list[
 
 
 def _reconstruct_filtered_results(
-    results: dict[str, Any],
+    results: SegmentRetrievalResults,
     assessments: list[dict],
     filtered_indices: list[int],
     threshold: float,
-) -> dict[str, Any]:
+) -> FilteredSegmentResults:
     """Reconstruct filtered results structure."""
-    ids = results["ids"][0]
-    documents = results["documents"][0]
-    distances = results["distances"][0]
-    metadatas = results.get("metadatas", [None])[0]
+    ids = results.ids[0]
+    documents = results.documents[0]
+    distances = results.distances[0]
+    metadatas = results.metadatas[0] if results.metadatas else None
 
     original_count = len(ids)
 
@@ -848,40 +905,33 @@ def _reconstruct_filtered_results(
     filtered_distances = [distances[i] for i in filtered_indices]
     filtered_metadatas = [metadatas[i] if metadatas else None for i in filtered_indices]
 
-    filtered_results = {
-        "ids": [filtered_ids],
-        "documents": [filtered_documents],
-        "distances": [filtered_distances],
-        "metadatas": [filtered_metadatas],
-        "filtering_metadata": {
-            "original_count": original_count,
-            "filtered_count": len(filtered_indices),
-            "threshold": threshold,
-            "assessments": assessments,
-        },
-    }
-
-    # Preserve any additional keys from original results
-    for key, value in results.items():
-        if key not in {"ids", "documents", "distances", "metadatas"}:
-            filtered_results[key] = value
-
     filtered_count = len(filtered_indices)
     logger.info(
         f"Filtered {original_count} results to {filtered_count} relevant results "
         f"(threshold: {threshold})"
     )
 
-    return filtered_results
+    return FilteredSegmentResults(
+        ids=[filtered_ids],
+        documents=[filtered_documents],
+        distances=[filtered_distances],
+        metadatas=[filtered_metadatas] if any(m is not None for m in filtered_metadatas) else None,
+        filtering_metadata=FilteringMetadata(
+            original_count=original_count,
+            filtered_count=filtered_count,
+            threshold=threshold,
+            assessments=assessments,
+        ),
+    )
 
 
 def filter_sections(
     client: Instructor,
-    sections_results: dict[str, Any],
+    sections_results: SectionRetrievalResults,
     query: str,
     confidence_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
-) -> dict[str, Any]:
+) -> FilteredSectionResults:
     """Filter section results by relevance using LLM-powered assessment.
 
     Applies relevance assessment to each section using LLM analysis and filters
@@ -895,13 +945,7 @@ def filter_sections(
         model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
 
     Returns:
-        dict: Filtered results with simplified structure:
-            {
-                "sections": [filtered_sections],
-                "query_info": original_query_info,
-                "filtered_count": int,
-                "original_count": int
-            }
+        FilteredSectionResults: Filtered results with sections list, query info, and counts
 
     Raises:
         ValueError: If sections_results structure is invalid or client is missing
@@ -919,7 +963,7 @@ def filter_sections(
     if client is None:
         raise ValueError("client is required for section filtering")
 
-    sections = sections_results.get("sections", [])
+    sections = sections_results.sections
     if not isinstance(sections, list):
         raise ValueError("sections must be a list")
 
@@ -932,8 +976,8 @@ def filter_sections(
     for i, section in enumerate(sections):
         try:
             # Prepare section text for LLM assessment
-            heading_text = section.get("heading_text", "")
-            body_text = section.get("body_text", "")
+            heading_text = section.heading_text
+            body_text = section.body_text
             section_text = f"{heading_text}\n\n{body_text}".strip()
 
             if not section_text:
@@ -972,50 +1016,52 @@ def filter_sections(
         f"({reduction_percentage:.1f}% reduction)"
     )
 
-    return {
-        "sections": filtered_sections,
-        "query_info": sections_results.get("query_info", {}),
-        "filtered_count": filtered_count,
-        "original_count": original_count,
-    }
+    return FilteredSectionResults(
+        sections=filtered_sections,
+        query_info=sections_results.query_info,
+        filtered_count=filtered_count,
+        original_count=original_count,
+    )
 
 
-def _retrieve_segment_results(config: RetrievalConfig) -> dict[str, Any]:
+def _retrieve_segment_results(config: RetrievalConfig) -> SegmentRetrievalResults:
     """Retrieve segment-level results from embeddings."""
     logger.debug("Step 1: Retrieving segment-level results")
     return retrieve_segments(config)
 
 
-def _has_no_results(segment_results: dict[str, Any]) -> bool:
+def _has_no_results(segment_results: SegmentRetrievalResults) -> bool:
     """Check if segment results contain any data."""
-    return not segment_results.get("ids") or not segment_results["ids"][0]
+    return not segment_results.ids or not segment_results.ids[0]
 
 
 def _create_empty_results(
     original_query: str, rewritten_query: str | None = None
-) -> dict:
+) -> SectionRetrievalResults:
     """Create empty results structure when no segments found."""
-    return {
-        "sections": [],
-        "query_info": {
-            "original_query": original_query,
-            "rewritten_query": rewritten_query,
-            "total_segments_found": 0,
-            "unique_sections": 0,
-        },
-    }
+    return SectionRetrievalResults(
+        sections=[],
+        query_info=QueryInfo(
+            original_query=original_query,
+            rewritten_query=rewritten_query,
+            total_segments_found=0,
+            unique_sections=0,
+        ),
+    )
 
 
 def _group_segments_by_section(
-    segment_results: dict[str, Any],
+    segment_results: SegmentRetrievalResults,
 ) -> dict[int, list[dict[str, Any]]]:
     """Group segment results by their parent section references."""
     logger.debug("Step 2: Processing segment results")
 
-    segment_ids = segment_results["ids"][0]
-    segment_documents = segment_results["documents"][0]
-    segment_distances = segment_results["distances"][0]
-    segment_metadatas = segment_results.get("metadatas", [None])[0]
+    segment_ids = segment_results.ids[0]
+    segment_documents = segment_results.documents[0]
+    segment_distances = segment_results.distances[0]
+    segment_metadatas = (
+        segment_results.metadatas[0] if segment_results.metadatas else None
+    )
 
     # Group segments by section_ref
     sections_to_segments: dict[int, list[dict[str, Any]]] = {}
@@ -1097,7 +1143,7 @@ def _load_section_data(
 def _build_section_results(
     sections_to_segments: dict[int, list[dict[str, Any]]],
     sections_dict: dict[int, dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> list[SectionResult]:
     """Build final section results with relevance scores and matching segments."""
     logger.debug("Step 4: Building section-level results")
 
@@ -1116,29 +1162,34 @@ def _build_section_results(
         # Sort segments by distance (most relevant first)
         segments_sorted = sorted(segments, key=lambda x: x["distance"])
 
-        section_result = {
-            "section_idx": section_idx,
-            "heading_text": section_data["heading_text"],
-            "body_text": section_data["body_text"],
-            "heading_level": section_data["heading_level"],
-            "parent": section_data.get("parent"),
-            "matching_segments": [
-                {
-                    "segment_idx": seg["segment_idx"],
-                    "segment_text": seg["segment_text"],
-                    "distance": seg["distance"],
-                    "segment_position": seg["segment_position"],
-                }
-                for seg in segments_sorted
-            ],
-            "relevance_score": best_distance,
-            "segment_count": len(segments),
-        }
+        # Create SegmentMatch dataclasses
+        matching_segments = [
+            SegmentMatch(
+                segment_idx=seg["segment_idx"],
+                segment_text=seg["segment_text"],
+                distance=seg["distance"],
+                segment_position=seg["segment_position"],
+                section_heading=seg.get("section_heading", ""),
+                section_level=seg.get("section_level", 1),
+            )
+            for seg in segments_sorted
+        ]
+
+        section_result = SectionResult(
+            section_idx=section_idx,
+            heading_text=section_data["heading_text"],
+            body_text=section_data["body_text"],
+            heading_level=section_data["heading_level"],
+            parent=section_data.get("parent"),
+            matching_segments=matching_segments,
+            relevance_score=best_distance,
+            segment_count=len(segments),
+        )
 
         section_results.append(section_result)
 
     # Sort sections by relevance score (best first)
-    section_results.sort(key=lambda x: x["relevance_score"])
+    section_results.sort(key=lambda x: x.relevance_score)
 
     logger.info(f"Returning {len(section_results)} sections with context")
     return section_results

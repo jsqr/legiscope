@@ -12,7 +12,12 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.llm_config import Config
-from legiscope.retrieve import filter_sections, retrieve_sections
+from legiscope.retrieve import (
+    filter_sections,
+    retrieve_sections,
+    SectionRetrievalResults,
+    SectionResult,
+)
 from legiscope.utils import ask, LLMConfig
 
 # Constants for query processing
@@ -54,7 +59,7 @@ class QueryConfig:
     # Required parameters
     llm: LLMConfig
     query: str
-    retrieval_results: dict[str, Any]
+    retrieval_results: SectionRetrievalResults
 
     # Relevance filtering
     filter_relevance: bool = False
@@ -261,11 +266,11 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
                 confidence_threshold=config.relevance_threshold,
                 model=config.filter_llm.model,
             )
-            sections = filtered_results.get("sections", [])
+            sections = filtered_results.sections
         except Exception:
-            sections = config.retrieval_results.get("sections", [])
+            sections = config.retrieval_results.sections
     else:
-        sections = config.retrieval_results.get("sections", [])
+        sections = config.retrieval_results.sections
 
     if not sections:
         logger.warning("All sections filtered out as irrelevant")
@@ -437,10 +442,10 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
 
 
 def _extract_and_validate_sections(
-    retrieval_results: dict[str, Any],
-) -> list[dict[str, Any]]:
+    retrieval_results: SectionRetrievalResults,
+) -> list:
     """Extract and validate sections from retrieval results."""
-    sections = retrieval_results.get("sections", [])
+    sections = retrieval_results.sections
     if not sections:
         logger.warning("No sections found in retrieval results")
         return []
@@ -449,23 +454,22 @@ def _extract_and_validate_sections(
     return sections
 
 
-def _prepare_legal_context(sections: list[dict[str, Any]]) -> str:
+def _prepare_legal_context(sections: list[SectionResult]) -> str:
     """Prepare formatted context from sections for LLM processing."""
     context_sections = []
     for i, section in enumerate(sections):
         # Build section parts as a list for efficient concatenation
         section_parts = [
-            f"\nSection {i + 1}: {section.get('heading_text', 'Untitled Section')}",
-            f"Relevance Score: {section.get('relevance_score', 0):.3f}",
-            f"Content: {section.get('body_text', '')}",
+            f"\nSection {i + 1}: {section.heading_text}",
+            f"Relevance Score: {section.relevance_score:.3f}",
+            f"Content: {section.body_text}",
             "\nMatching Segments:",
         ]
 
         # Add matching segments for context
-        for j, segment in enumerate(section.get("matching_segments", [])):
-            segment_text = segment.get("segment_text", "")
-            if segment_text:
-                section_parts.append(f"  - Segment {j + 1}: {segment_text}")
+        for j, segment in enumerate(section.matching_segments):
+            if segment.segment_text:
+                section_parts.append(f"  - Segment {j + 1}: {segment.segment_text}")
 
         context_sections.append("\n".join(section_parts))
 
@@ -566,9 +570,9 @@ def _process_single_query_with_error_handling(
 
         retrieval_results = retrieve_sections(retrieval_config)
 
-        query_info = retrieval_results.get("query_info", {})
-        sections_found = len(retrieval_results.get("sections", []))
-        segments_found = query_info.get("total_segments_found", 0)
+        query_info = retrieval_results.query_info
+        sections_found = len(retrieval_results.sections)
+        segments_found = query_info.total_segments_found
 
         # Build QueryConfig for this query
         query_config = QueryConfig(
