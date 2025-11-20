@@ -10,6 +10,7 @@ from instructor import Instructor
 from legiscope.retrieve import (
     HydeRewrite,
     RelevanceAssessment,
+    SegmentRetrievalResults,
     filter_results,
     hyde_rewriter,
     is_relevant,
@@ -352,13 +353,13 @@ class TestFilterResults:
             RelevanceAssessment(is_relevant=True, confidence=0.7, reasoning="Relevant"),
         ]
 
-        # Mock input results
-        input_results = {
-            "ids": [["1", "2", "3"]],
-            "documents": [["doc1", "doc2", "doc3"]],
-            "distances": [[0.1, 0.2, 0.3]],
-            "metadatas": [[{"meta": "1"}, {"meta": "2"}, {"meta": "3"}]],
-        }
+        # Mock input results using dataclass
+        input_results = SegmentRetrievalResults(
+            ids=[["1", "2", "3"]],
+            documents=[["doc1", "doc2", "doc3"]],
+            distances=[[0.1, 0.2, 0.3]],
+            metadatas=[[{"meta": "1"}, {"meta": "2"}, {"meta": "3"}]],
+        )
 
         with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
             mock_client = Mock(spec=Instructor)
@@ -370,26 +371,26 @@ class TestFilterResults:
                 threshold=0.5,
             )
 
-            # Verify structure
-            assert "ids" in result
-            assert "documents" in result
-            assert "distances" in result
-            assert "metadatas" in result
-            assert "filtering_metadata" in result
+            # Verify structure using dataclass attributes
+            assert hasattr(result, "ids")
+            assert hasattr(result, "documents")
+            assert hasattr(result, "distances")
+            assert hasattr(result, "metadatas")
+            assert hasattr(result, "filtering_metadata")
 
             # Verify filtering results
-            assert len(result["ids"][0]) == 2  # Only relevant documents
-            assert result["ids"][0] == ["1", "3"]
-            assert result["documents"][0] == ["doc1", "doc3"]
-            assert result["distances"][0] == [0.1, 0.3]
-            assert result["metadatas"][0] == [{"meta": "1"}, {"meta": "3"}]
+            assert len(result.ids[0]) == 2  # Only relevant documents
+            assert result.ids[0] == ["1", "3"]
+            assert result.documents[0] == ["doc1", "doc3"]
+            assert result.distances[0] == [0.1, 0.3]
+            assert result.metadatas[0] == [{"meta": "1"}, {"meta": "3"}]
 
             # Verify metadata
-            metadata = result["filtering_metadata"]
-            assert metadata["original_count"] == 3
-            assert metadata["filtered_count"] == 2
-            assert metadata["threshold"] == 0.5
-            assert len(metadata["assessments"]) == 3
+            metadata = result.filtering_metadata
+            assert metadata.original_count == 3
+            assert metadata.filtered_count == 2
+            assert metadata.threshold == 0.5
+            assert len(metadata.assessments) == 3
 
     def test_filter_results_with_threshold(self):
         """Test filtering with confidence threshold."""
@@ -406,12 +407,12 @@ class TestFilterResults:
             ),
         ]
 
-        input_results = {
-            "ids": [["1", "2", "3"]],
-            "documents": [["doc1", "doc2", "doc3"]],
-            "distances": [[0.1, 0.2, 0.3]],
-            "metadatas": [[None, None, None]],
-        }
+        input_results = SegmentRetrievalResults(
+            ids=[["1", "2", "3"]],
+            documents=[["doc1", "doc2", "doc3"]],
+            distances=[[0.1, 0.2, 0.3]],
+            metadatas=[[None, None, None]],
+        )
 
         with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
             mock_client = Mock(spec=Instructor)
@@ -423,16 +424,16 @@ class TestFilterResults:
             )
 
             # Only documents 1 and 3 should pass threshold
-            assert len(result["ids"][0]) == 2
-            assert result["ids"][0] == ["1", "3"]
+            assert len(result.ids[0]) == 2
+            assert result.ids[0] == ["1", "3"]
 
     def test_filter_results_no_client(self):
         """Test that missing client raises ValueError."""
-        input_results = {
-            "ids": [["1"]],
-            "documents": [["doc1"]],
-            "distances": [[0.1]],
-        }
+        input_results = SegmentRetrievalResults(
+            ids=[["1"]],
+            documents=[["doc1"]],
+            distances=[[0.1]],
+        )
 
         with pytest.raises(ValueError, match="client is required"):
             filter_results(None, input_results, "query")  # type: ignore
@@ -445,25 +446,21 @@ class TestFilterResults:
         with pytest.raises(ValueError, match="results cannot be None"):
             filter_results(mock_client, None, "query")  # type: ignore
 
-        # Missing required keys
-        with pytest.raises(ValueError, match="results missing required keys"):
-            filter_results(mock_client, {"wrong": "structure"}, "query")
-
     def test_filter_results_empty_results(self):
         """Test filtering with empty results."""
-        empty_results = {
-            "ids": [[]],
-            "documents": [[]],
-            "distances": [[]],
-        }
+        empty_results = SegmentRetrievalResults(
+            ids=[[]],
+            documents=[[]],
+            distances=[[]],
+        )
 
         mock_client = Mock(spec=Instructor)
 
         result = filter_results(mock_client, empty_results, "query")
 
-        assert result["filtering_metadata"]["original_count"] == 0
-        assert result["filtering_metadata"]["filtered_count"] == 0
-        assert len(result["filtering_metadata"]["assessments"]) == 0
+        assert result.filtering_metadata.original_count == 0
+        assert result.filtering_metadata.filtered_count == 0
+        assert len(result.filtering_metadata.assessments) == 0
 
     def test_filter_results_assessment_failure(self):
         """Test handling of assessment failures."""
@@ -475,12 +472,12 @@ class TestFilterResults:
                 is_relevant=True, confidence=0.9, reasoning="Good"
             )
 
-        input_results = {
-            "ids": [["1", "2", "3"]],
-            "documents": [["doc1", "doc2", "doc3"]],
-            "distances": [[0.1, 0.2, 0.3]],
-            "metadatas": [[None, None, None]],
-        }
+        input_results = SegmentRetrievalResults(
+            ids=[["1", "2", "3"]],
+            documents=[["doc1", "doc2", "doc3"]],
+            distances=[[0.1, 0.2, 0.3]],
+            metadatas=[[None, None, None]],
+        )
 
         with patch("legiscope.retrieve.is_relevant", side_effect=failing_assessment):
             mock_client = Mock(spec=Instructor)
@@ -488,11 +485,11 @@ class TestFilterResults:
             result = filter_results(mock_client, input_results, "query")
 
             # Should still work, with failed assessment marked as not relevant
-            assert len(result["ids"][0]) == 2  # doc1 and doc3
-            assert result["ids"][0] == ["1", "3"]
+            assert len(result.ids[0]) == 2  # doc1 and doc3
+            assert result.ids[0] == ["1", "3"]
 
             # Check assessment metadata
-            assessments = result["filtering_metadata"]["assessments"]
+            assessments = result.filtering_metadata.assessments
             assert len(assessments) == 3
 
             # Find failed assessment
@@ -501,37 +498,14 @@ class TestFilterResults:
             assert failed_assessment["confidence"] == 0.0
             assert "Assessment failed" in failed_assessment["reasoning"]
 
-    def test_filter_results_preserves_extra_keys(self):
-        """Test that extra keys in results are preserved."""
-        input_results = {
-            "ids": [["1"]],
-            "documents": [["doc1"]],
-            "distances": [[0.1]],
-            "extra_key": "extra_value",
-            "another_key": {"nested": "data"},
-        }
-
-        mock_assessment = RelevanceAssessment(
-            is_relevant=True, confidence=0.9, reasoning="Relevant"
-        )
-
-        with patch("legiscope.retrieve.is_relevant", return_value=mock_assessment):
-            mock_client = Mock(spec=Instructor)
-
-            result = filter_results(mock_client, input_results, "query")
-
-            # Extra keys should be preserved
-            assert result["extra_key"] == "extra_value"
-            assert result["another_key"] == {"nested": "data"}
-
     def test_filter_results_no_metadatas(self):
         """Test filtering when metadatas are missing."""
-        input_results = {
-            "ids": [["1", "2"]],
-            "documents": [["doc1", "doc2"]],
-            "distances": [[0.1, 0.2]],
-            # No metadatas key
-        }
+        input_results = SegmentRetrievalResults(
+            ids=[["1", "2"]],
+            documents=[["doc1", "doc2"]],
+            distances=[[0.1, 0.2]],
+            metadatas=None,  # Explicitly None
+        )
 
         mock_assessments = [
             RelevanceAssessment(is_relevant=True, confidence=0.9, reasoning="Relevant"),
@@ -546,8 +520,6 @@ class TestFilterResults:
             result = filter_results(mock_client, input_results, "query")
 
             # Should work without metadatas
-            assert len(result["ids"][0]) == 1
-            assert result["ids"][0] == ["1"]
-            assert result["metadatas"] == [
-                [None]
-            ]  # Should be [[None]] when no original metadatas
+            assert len(result.ids[0]) == 1
+            assert result.ids[0] == ["1"]
+            assert result.metadatas is None or result.metadatas == [[None]]
