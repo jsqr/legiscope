@@ -40,9 +40,9 @@ class TestRetrievalConfigBasics:
             )
             
             results = retrieve_segments(config)
-            
-            assert len(results["ids"][0]) == 2
-            assert results["documents"][0] == ["doc1", "doc2"]
+
+            assert len(results.ids[0]) == 2
+            assert results.documents[0] == ["doc1", "doc2"]
             mock_collection.query.assert_called_once()
     
     def test_retrieve_segments_with_jurisdiction_filter(self):
@@ -115,8 +115,8 @@ class TestRetrievalConfigBasics:
                 )
                 
                 results = retrieve_segments(config)
-                
-                assert len(results["ids"][0]) == 2
+
+                assert len(results.ids[0]) == 2
 
 
 class TestSectionRetrievalConfigBasics:
@@ -170,7 +170,7 @@ class TestSectionRetrievalConfigBasics:
             )
             
             results = retrieve_sections(config)
-            
-            assert "sections" in results
-            assert "query_info" in results
-            assert len(results["sections"]) == 2
+
+            assert hasattr(results, "sections")
+            assert hasattr(results, "query_info")
+            assert len(results.sections) == 2

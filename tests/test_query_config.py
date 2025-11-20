@@ -17,6 +17,11 @@ from legiscope.query import (
     query_legal_documents,
     run_queries,
 )
+from legiscope.retrieve import (
+    SectionRetrievalResults,
+    SectionResult,
+    QueryInfo,
+)
 
 
 class TestQueryConfigBasics:
@@ -25,27 +30,27 @@ class TestQueryConfigBasics:
     def test_query_legal_documents_with_config(self):
         """Test basic query_legal_documents with config object."""
         mock_client = Mock(spec=Instructor)
-        
+
         # Mock retrieval results
-        retrieval_results = {
-            "sections": [
-                {
-                    "section_idx": 0,
-                    "heading_text": "# Parking Regulations",
-                    "body_text": "No parking between 2am and 6am",
-                    "heading_level": 1,
-                    "parent": None,
-                    "matching_segments": [],
-                    "relevance_score": 0.1,
-                    "segment_count": 1
-                }
+        retrieval_results = SectionRetrievalResults(
+            sections=[
+                SectionResult(
+                    section_idx=0,
+                    heading_text="# Parking Regulations",
+                    body_text="No parking between 2am and 6am",
+                    heading_level=1,
+                    parent=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1
+                )
             ],
-            "query_info": {
-                "original_query": "parking rules",
-                "total_segments_found": 1,
-                "unique_sections": 1
-            }
-        }
+            query_info=QueryInfo(
+                original_query="parking rules",
+                total_segments_found=1,
+                unique_sections=1
+            )
+        )
         
         # Mock LLM response
         mock_response = LegalQueryResponse(
@@ -74,23 +79,23 @@ class TestQueryConfigBasics:
     def test_query_with_relevance_filtering(self):
         """Test query with relevance filtering enabled."""
         mock_client = Mock(spec=Instructor)
-        
-        retrieval_results = {
-            "sections": [
-                {
-                    "section_idx": 0,
-                    "heading_text": "# Test Section",
-                    "body_text": "Test content",
-                    "heading_level": 1,
-                    "parent": None,
-                    "matching_segments": [],
-                    "relevance_score": 0.1,
-                    "segment_count": 1
-                }
-            ],
-            "query_info": {}
-        }
-        
+
+        section = SectionResult(
+            section_idx=0,
+            heading_text="# Test Section",
+            body_text="Test content",
+            heading_level=1,
+            parent=None,
+            matching_segments=[],
+            relevance_score=0.1,
+            segment_count=1
+        )
+
+        retrieval_results = SectionRetrievalResults(
+            sections=[section],
+            query_info=QueryInfo(original_query="test query")
+        )
+
         mock_response = LegalQueryResponse(
             short_answer="Test answer",
             reasoning="Test reasoning",
@@ -99,11 +104,11 @@ class TestQueryConfigBasics:
             confidence=0.8,
             limitations="None"
         )
-        
+
         with patch("legiscope.query.filter_sections") as mock_filter:
             with patch("legiscope.query.ask", return_value=mock_response):
-                mock_filter.return_value = {"sections": retrieval_results["sections"]}
-                
+                mock_filter.return_value = {"sections": [section]}
+
                 llm_config = LLMConfig(client=mock_client, model="test-model")
                 config = QueryConfig(
                     llm=llm_config,
@@ -112,9 +117,9 @@ class TestQueryConfigBasics:
                     filter_relevance=True,
                     relevance_threshold=0.7
                 )
-                
+
                 response = query_legal_documents(config)
-                
+
                 assert response.short_answer == "Test answer"
                 mock_filter.assert_called_once()
 
@@ -156,10 +161,14 @@ class TestBatchQueryConfigBasics:
         
         with patch("legiscope.query.retrieve_sections") as mock_retrieve:
             with patch("legiscope.query.query_legal_documents", return_value=mock_llm_response):
-                mock_retrieve.return_value = {
-                    "sections": [],
-                    "query_info": {"total_segments_found": 0, "unique_sections": 0}
-                }
+                mock_retrieve.return_value = SectionRetrievalResults(
+                    sections=[],
+                    query_info=QueryInfo(
+                        original_query="",
+                        total_segments_found=0,
+                        unique_sections=0
+                    )
+                )
                 
                 mock_client = Mock(spec=Instructor)
                 llm_config = LLMConfig(client=mock_client, model="test-model")
