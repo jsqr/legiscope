@@ -18,7 +18,7 @@ from legiscope.query import (
     run_queries,
 )
 from legiscope.retrieve import (
-    SectionRetrievalResults,
+    SectionCollection,
     SectionResult,
     QueryInfo,
 )
@@ -32,7 +32,7 @@ class TestQueryConfigBasics:
         mock_client = Mock(spec=Instructor)
 
         # Mock retrieval results
-        retrieval_results = SectionRetrievalResults(
+        retrieval_results = SectionCollection(
             sections=[
                 SectionResult(
                     section_idx=0,
@@ -91,7 +91,7 @@ class TestQueryConfigBasics:
             segment_count=1
         )
 
-        retrieval_results = SectionRetrievalResults(
+        retrieval_results = SectionCollection(
             sections=[section],
             query_info=QueryInfo(original_query="test query")
         )
@@ -161,7 +161,7 @@ class TestBatchQueryConfigBasics:
         
         with patch("legiscope.query.retrieve_sections") as mock_retrieve:
             with patch("legiscope.query.query_legal_documents", return_value=mock_llm_response):
-                mock_retrieve.return_value = SectionRetrievalResults(
+                mock_retrieve.return_value = SectionCollection(
                     sections=[],
                     query_info=QueryInfo(
                         original_query="",

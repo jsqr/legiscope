@@ -254,8 +254,8 @@ def _(instructor_client, query, results):
     # Show filtering statistics
     print("=== LLM-Powered Relevance Filtering ===")
 
-    print(f"Original results: {filtered_results.original_count}")
-    print(f"Filtered results: {filtered_results.filtered_count}")
+    print(f"Original results: {filtered_results.filtering_metadata.original_count}")
+    print(f"Filtered results: {filtered_results.filtering_metadata.filtered_count}")
 
     # Show relevance scores for filtered sections
     filtered_sections = filtered_results.sections

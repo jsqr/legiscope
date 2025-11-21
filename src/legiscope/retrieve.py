@@ -60,24 +60,6 @@ class SectionResult:
 
 
 @dataclass
-class SegmentRetrievalResults:
-    """Results from retrieve_segments()."""
-
-    ids: list[list[str]]
-    documents: list[list[str]]
-    distances: list[list[float]]
-    metadatas: list[list[dict[str, Any]]] | None = None
-
-
-@dataclass
-class SectionRetrievalResults:
-    """Results from retrieve_sections()."""
-
-    sections: list[SectionResult]
-    query_info: QueryInfo
-
-
-@dataclass
 class FilteringMetadata:
     """Metadata about relevance filtering."""
 
@@ -88,24 +70,29 @@ class FilteringMetadata:
 
 
 @dataclass
-class FilteredSegmentResults:
-    """Results from filter_results()."""
+class SegmentCollection:
+    """A collection of retrieved segments with optional filtering metadata.
+
+    Can represent results from retrieval, filtering, or both operations.
+    """
 
     ids: list[list[str]]
     documents: list[list[str]]
     distances: list[list[float]]
-    metadatas: list[list[dict[str, Any]]] | None
-    filtering_metadata: FilteringMetadata
+    metadatas: list[list[dict[str, Any]]] | None = None
+    filtering_metadata: FilteringMetadata | None = None
 
 
 @dataclass
-class FilteredSectionResults:
-    """Results from filter_sections()."""
+class SectionCollection:
+    """A collection of sections with optional filtering metadata.
+
+    Can represent results from retrieval, filtering, or both operations.
+    """
 
     sections: list[SectionResult]
     query_info: QueryInfo
-    filtered_count: int
-    original_count: int
+    filtering_metadata: FilteringMetadata | None = None
 
 
 @dataclass
@@ -448,14 +435,14 @@ Determine if this text directly helps answer the query and provide your assessme
         raise
 
 
-def retrieve_segments(config: RetrievalConfig) -> SegmentRetrievalResults:
+def retrieve_segments(config: RetrievalConfig) -> SegmentCollection:
     """Retrieve similar documents from the embedding index using semantic search.
 
     Args:
         config: RetrievalConfig with all search parameters
 
     Returns:
-        SegmentRetrievalResults: Query results containing documents, metadata, distances, and IDs
+        SegmentCollection: Query results containing documents, metadata, distances, and IDs
 
     Example:
         >>> from legiscope.retrieve import RetrievalConfig
@@ -571,7 +558,7 @@ def retrieve_segments(config: RetrievalConfig) -> SegmentRetrievalResults:
                 logger.debug(f"Results from municipalities: {sorted(municipalities)}")
 
     # Convert ChromaDB results dict to dataclass
-    return SegmentRetrievalResults(
+    return SegmentCollection(
         ids=results["ids"],
         documents=results["documents"],
         distances=results["distances"],
@@ -644,7 +631,7 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
         return JurisdictionStats(total_documents=0)
 
 
-def retrieve_sections(config: SectionRetrievalConfig) -> SectionRetrievalResults:
+def retrieve_sections(config: SectionRetrievalConfig) -> SectionCollection:
     """Retrieve sections by searching embeddings at segment level but returning full section context.
 
     This function performs semantic search at the segment level for precision, then aggregates
@@ -655,7 +642,7 @@ def retrieve_sections(config: SectionRetrievalConfig) -> SectionRetrievalResults
         config: SectionRetrievalConfig with all parameters
 
     Returns:
-        SectionRetrievalResults: Section-level results with sections list and query info
+        SectionCollection: Section-level results with sections list and query info
 
     Raises:
         ValueError: If sections_parquet_path doesn't exist or required columns are missing
@@ -728,7 +715,7 @@ def retrieve_sections(config: SectionRetrievalConfig) -> SectionRetrievalResults
     sections_to_segments = _group_segments_by_section(segment_results)
     if not sections_to_segments:
         logger.warning("No valid section references found in segment metadata")
-        return SectionRetrievalResults(
+        return SectionCollection(
             sections=[],
             query_info=QueryInfo(
                 original_query=original_query,
@@ -742,7 +729,7 @@ def retrieve_sections(config: SectionRetrievalConfig) -> SectionRetrievalResults
 
     section_results = _build_section_results(sections_to_segments, sections_dict)
 
-    return SectionRetrievalResults(
+    return SectionCollection(
         sections=section_results,
         query_info=QueryInfo(
             original_query=original_query,
@@ -755,25 +742,25 @@ def retrieve_sections(config: SectionRetrievalConfig) -> SectionRetrievalResults
 
 def filter_results(
     client: Instructor,
-    results: SegmentRetrievalResults,
+    results: SegmentCollection,
     query: str,
     threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
-) -> FilteredSegmentResults:
-    """Filter retrieval results by relevance using LLM-powered assessment.
+) -> SegmentCollection:
+    """Filter segment collection by relevance using LLM-powered assessment.
 
     Applies relevance assessment to each document in retrieval results and filters
     out documents that are not relevant or fall below the confidence threshold.
 
     Args:
-        results: Retrieval results from retrieve_segments
+        results: Segment collection from retrieve_segments or previous filter
         query: Original query used for retrieval
         client: Instructor client for LLM-powered relevance assessment
         threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
         model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
 
     Returns:
-        FilteredSegmentResults: Filtered results with only relevant documents and filtering metadata
+        SegmentCollection: Filtered collection with only relevant documents and filtering metadata
 
     Raises:
         ValueError: If results structure is invalid or client is missing
@@ -793,7 +780,7 @@ def filter_results(
 
 
 def _validate_filter_inputs(
-    results: SegmentRetrievalResults,
+    results: SegmentCollection,
     client: Instructor,
     query: str,
     threshold: float,
@@ -820,7 +807,7 @@ def _validate_filter_inputs(
 
 
 def _assess_document_relevance(
-    results: SegmentRetrievalResults,
+    results: SegmentCollection,
     query: str,
     client: Instructor,
     model: str | None = None,
@@ -886,11 +873,11 @@ def _apply_relevance_filters(assessments: list[dict], threshold: float) -> list[
 
 
 def _reconstruct_filtered_results(
-    results: SegmentRetrievalResults,
+    results: SegmentCollection,
     assessments: list[dict],
     filtered_indices: list[int],
     threshold: float,
-) -> FilteredSegmentResults:
+) -> SegmentCollection:
     """Reconstruct filtered results structure."""
     ids = results.ids[0]
     documents = results.documents[0]
@@ -911,7 +898,7 @@ def _reconstruct_filtered_results(
         f"(threshold: {threshold})"
     )
 
-    return FilteredSegmentResults(
+    return SegmentCollection(
         ids=[filtered_ids],
         documents=[filtered_documents],
         distances=[filtered_distances],
@@ -927,25 +914,25 @@ def _reconstruct_filtered_results(
 
 def filter_sections(
     client: Instructor,
-    sections_results: SectionRetrievalResults,
+    sections_results: SectionCollection,
     query: str,
     confidence_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
-) -> FilteredSectionResults:
-    """Filter section results by relevance using LLM-powered assessment.
+) -> SectionCollection:
+    """Filter section collection by relevance using LLM-powered assessment.
 
     Applies relevance assessment to each section using LLM analysis and filters
     out sections that are not relevant or fall below the confidence threshold.
 
     Args:
         client: Instructor client for LLM-powered relevance assessment
-        sections_results: Results from retrieve_sections function
+        sections_results: Section collection from retrieve_sections or previous filter
         query: Original query used for retrieval
         confidence_threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
         model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
 
     Returns:
-        FilteredSectionResults: Filtered results with sections list, query info, and counts
+        SectionCollection: Filtered collection with sections list, query info, and filtering metadata
 
     Raises:
         ValueError: If sections_results structure is invalid or client is missing
@@ -953,8 +940,8 @@ def filter_sections(
     Example:
         results = retrieve_sections(collection, "parking rules", sections_parquet_path)
         filtered = filter_sections(client, results, "parking rules", confidence_threshold=0.7)
-        print(f"Filtered from {filtered['original_count']} "
-              f"to {filtered['filtered_count']} sections")
+        print(f"Filtered from {filtered.filtering_metadata.original_count} "
+              f"to {filtered.filtering_metadata.filtered_count} sections")
     """
     # Validation (expected user errors - don't log)
     if sections_results is None:
@@ -1016,30 +1003,34 @@ def filter_sections(
         f"({reduction_percentage:.1f}% reduction)"
     )
 
-    return FilteredSectionResults(
+    return SectionCollection(
         sections=filtered_sections,
         query_info=sections_results.query_info,
-        filtered_count=filtered_count,
-        original_count=original_count,
+        filtering_metadata=FilteringMetadata(
+            original_count=original_count,
+            filtered_count=filtered_count,
+            threshold=confidence_threshold,
+            assessments=[],  # Could be enhanced to store section assessments if needed
+        ),
     )
 
 
-def _retrieve_segment_results(config: RetrievalConfig) -> SegmentRetrievalResults:
+def _retrieve_segment_results(config: RetrievalConfig) -> SegmentCollection:
     """Retrieve segment-level results from embeddings."""
     logger.debug("Step 1: Retrieving segment-level results")
     return retrieve_segments(config)
 
 
-def _has_no_results(segment_results: SegmentRetrievalResults) -> bool:
+def _has_no_results(segment_results: SegmentCollection) -> bool:
     """Check if segment results contain any data."""
     return not segment_results.ids or not segment_results.ids[0]
 
 
 def _create_empty_results(
     original_query: str, rewritten_query: str | None = None
-) -> SectionRetrievalResults:
+) -> SectionCollection:
     """Create empty results structure when no segments found."""
-    return SectionRetrievalResults(
+    return SectionCollection(
         sections=[],
         query_info=QueryInfo(
             original_query=original_query,
@@ -1051,7 +1042,7 @@ def _create_empty_results(
 
 
 def _group_segments_by_section(
-    segment_results: SegmentRetrievalResults,
+    segment_results: SegmentCollection,
 ) -> dict[int, list[dict[str, Any]]]:
     """Group segment results by their parent section references."""
     logger.debug("Step 2: Processing segment results")
