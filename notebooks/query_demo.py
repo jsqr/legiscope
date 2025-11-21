@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.17.7"
+__generated_with = "0.18.0"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -38,7 +38,6 @@ with app.setup:
 @app.cell
 def _():
     import marimo as mo
-
     return (mo,)
 
 
@@ -73,9 +72,9 @@ def _():
     stats = get_jurisdiction_stats(collection)
     assert stats is not None
 
-    print(f"Total Documents: {stats.get('total_documents', 0)}")
-    print(f"Jurisdictions: {len(stats.get('jurisdictions', {}))}")
-    print(f"States: {len(stats.get('states', {}))}")
+    print(f"Total Documents: {stats.total_documents}")
+    print(f"Jurisdictions: {len(stats.jurisdictions)}")
+    print(f"States: {len(stats.states)}")
     return (collection,)
 
 
@@ -216,15 +215,15 @@ def _(
 
     results = retrieve_sections(config)
 
-    if results and results.get("sections"):
-        sections = results["sections"]
+    if results and results.sections:
+        sections = results.sections
         result_count = len(sections)
         print(f"Number of sections found: {result_count}")
 
         # Show query info
-        query_info = results.get("query_info", {})
-        print(f"Total segments found: {query_info.get('total_segments_found', 0)}")
-        print(f"Unique sections: {query_info.get('unique_sections', 0)}")
+        query_info = results.query_info
+        print(f"Total segments found: {query_info.total_segments_found}")
+        print(f"Unique sections: {query_info.unique_sections}")
 
         if use_hyde and instructor_client:
             print("Query rewriting: HYDE applied")
@@ -244,6 +243,7 @@ def _(mo):
 @app.cell
 def _(instructor_client, query, results):
     # Filter section results using LLM-powered relevance assessment
+    assert instructor_client is not None and results is not None
     filtered_results = filter_sections(
         client=instructor_client,
         sections_results=results,
@@ -254,10 +254,8 @@ def _(instructor_client, query, results):
     # Show filtering statistics
     print("=== LLM-Powered Relevance Filtering ===")
 
-    original_count = filtered_results["original_count"]
-    filtered_count = filtered_results["filtered_count"]
-    print(f"Original results: {original_count}")
-    print(f"Filtered results: {filtered_count}")
+    print(f"Original results: {filtered_results.original_count}")
+    print(f"Filtered results: {filtered_results.filtered_count}")
 
     # Show relevance scores for filtered sections
     filtered_sections = filtered_results["sections"]
