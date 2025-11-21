@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.17.7"
+__generated_with = "0.18.0"
 app = marimo.App(width="medium")
 
 with app.setup:
@@ -38,7 +38,6 @@ with app.setup:
 @app.cell
 def _():
     import marimo as mo
-
     return (mo,)
 
 
@@ -73,9 +72,9 @@ def _():
     stats = get_jurisdiction_stats(collection)
     assert stats is not None
 
-    print(f"Total Documents: {stats.get('total_documents', 0)}")
-    print(f"Jurisdictions: {len(stats.get('jurisdictions', {}))}")
-    print(f"States: {len(stats.get('states', {}))}")
+    print(f"Total Documents: {stats.total_documents}")
+    print(f"Jurisdictions: {len(stats.jurisdictions)}")
+    print(f"States: {len(stats.states)}")
     return (collection,)
 
 
@@ -216,15 +215,15 @@ def _(
 
     results = retrieve_sections(config)
 
-    if results and results.get("sections"):
-        sections = results["sections"]
+    if results and results.sections:
+        sections = results.sections
         result_count = len(sections)
         print(f"Number of sections found: {result_count}")
 
         # Show query info
-        query_info = results.get("query_info", {})
-        print(f"Total segments found: {query_info.get('total_segments_found', 0)}")
-        print(f"Unique sections: {query_info.get('unique_sections', 0)}")
+        query_info = results.query_info
+        print(f"Total segments found: {query_info.total_segments_found}")
+        print(f"Unique sections: {query_info.unique_sections}")
 
         if use_hyde and instructor_client:
             print("Query rewriting: HYDE applied")
@@ -244,6 +243,7 @@ def _(mo):
 @app.cell
 def _(instructor_client, query, results):
     # Filter section results using LLM-powered relevance assessment
+    assert instructor_client is not None and results is not None
     filtered_results = filter_sections(
         client=instructor_client,
         sections_results=results,
@@ -254,18 +254,16 @@ def _(instructor_client, query, results):
     # Show filtering statistics
     print("=== LLM-Powered Relevance Filtering ===")
 
-    original_count = filtered_results["original_count"]
-    filtered_count = filtered_results["filtered_count"]
-    print(f"Original results: {original_count}")
-    print(f"Filtered results: {filtered_count}")
+    print(f"Original results: {filtered_results.original_count}")
+    print(f"Filtered results: {filtered_results.filtered_count}")
 
     # Show relevance scores for filtered sections
-    filtered_sections = filtered_results["sections"]
+    filtered_sections = filtered_results.sections
     if filtered_sections:
         print("\nRelevance scores of filtered sections:")
         for _i, _section in enumerate(filtered_sections):
-            _score = _section.get("relevance_score", 0)
-            _heading = _section.get("heading_text", "No heading")[:50]
+            _score = _section.relevance_score
+            _heading = _section.heading_text[:50]
             print(
                 f"  {_i + 1}. {_score:.3f} - {_heading}{'...' if len(_heading) >= 50 else ''}"
             )
@@ -286,27 +284,25 @@ def _(filtered_results, filtered_sections, query_info):
 
     if filtered_results is None:
         print("No results to display")
-    elif not filtered_results.get("sections"):
+    elif not filtered_results.sections:
         print("No matching sections found")
     else:
         print(f"Retrieval Results - Found {len(filtered_sections)} sections")
-        print(
-            f"From {query_info.get('total_segments_found', 0)} total matching segments"
-        )
+        print(f"From {query_info.total_segments_found} total matching segments")
 
         # Display each section result
         for i, result_section in enumerate(filtered_sections):
-            relevance_score = result_section.get("relevance_score", 0)
-            segment_count = result_section.get("segment_count", 0)
+            relevance_score = result_section.relevance_score
+            segment_count = result_section.segment_count
 
             print(
                 f"\n--- Section {i + 1} (Relevance: {relevance_score:.3f}, {segment_count} matching segments) ---"
             )
 
-            heading = result_section.get("heading_text", "No heading")
+            heading = result_section.heading_text
             print(f"Heading: {heading}")
 
-            body_text = result_section.get("body_text", "")
+            body_text = result_section.body_text
             if body_text:
                 body_preview = (
                     body_text[:300] + "..." if len(body_text) > 300 else body_text
@@ -315,13 +311,13 @@ def _(filtered_results, filtered_sections, query_info):
             else:
                 print("Content: [No body content]")
 
-            matching_segments = result_section.get("matching_segments", [])
+            matching_segments = result_section.matching_segments
             if matching_segments:
                 print(f"Matching segments: {len(matching_segments)}")
                 # Show first matching segment as preview
                 if matching_segments:
                     first_segment = matching_segments[0]
-                    segment_text = first_segment.get("segment_text", "")
+                    segment_text = first_segment.segment_text
                     segment_preview = (
                         segment_text[:150] + "..."
                         if len(segment_text) > 150
@@ -361,7 +357,7 @@ def _(filtered_results, instructor_client, query):
     assert (
         instructor_client is not None
         and filtered_results is not None
-        and filtered_results.get("sections")
+        and filtered_results.sections
     )
 
     print("=== Query Processing ===")

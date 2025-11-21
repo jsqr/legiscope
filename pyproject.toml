@@ -37,6 +37,7 @@ dependencies = [
     "python-dotenv>=1.2.1",
     "mcp>=1",
     "pydantic>=2",
+    "pyzmq>=27.1.0",
 ]
 
 [project.optional-dependencies]

@@ -2,7 +2,7 @@
 
 This directory contains Marimo notebooks demonstrating legiscope functions.
 
-## demo_query.py
+## query_demo.py
 
 Interactive notebook demonstrating a real-world legal query about drug paraphernalia laws.
 
@@ -10,11 +10,9 @@ Interactive notebook demonstrating a real-world legal query about drug paraphern
 
 ```bash
 # Run the notebook using uv (recommended)
-uv run marimo edit notebooks/demo_query.py
+uv run marimo edit notebooks/query_demo.py
 
-# Or install marimo and run directly
-pip install marimo
-marimo edit notebooks/demo_query.py
+# Or install marimo, activate the environment, and run directly
 ```
 
 ### Requirements
