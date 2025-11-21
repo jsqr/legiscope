@@ -15,7 +15,7 @@ from legiscope.llm_config import Config
 from legiscope.retrieve import (
     filter_sections,
     retrieve_sections,
-    SectionRetrievalResults,
+    SectionCollection,
     SectionResult,
 )
 from legiscope.utils import ask, LLMConfig
@@ -59,7 +59,7 @@ class QueryConfig:
     # Required parameters
     llm: LLMConfig
     query: str
-    retrieval_results: SectionRetrievalResults
+    retrieval_results: SectionCollection
 
     # Relevance filtering
     filter_relevance: bool = False
@@ -442,7 +442,7 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
 
 
 def _extract_and_validate_sections(
-    retrieval_results: SectionRetrievalResults,
+    retrieval_results: SectionCollection,
 ) -> list:
     """Extract and validate sections from retrieval results."""
     sections = retrieval_results.sections

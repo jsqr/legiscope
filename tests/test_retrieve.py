@@ -10,7 +10,7 @@ from instructor import Instructor
 from legiscope.retrieve import (
     HydeRewrite,
     RelevanceAssessment,
-    SegmentRetrievalResults,
+    SegmentCollection,
     filter_results,
     hyde_rewriter,
     is_relevant,
@@ -354,7 +354,7 @@ class TestFilterResults:
         ]
 
         # Mock input results using dataclass
-        input_results = SegmentRetrievalResults(
+        input_results = SegmentCollection(
             ids=[["1", "2", "3"]],
             documents=[["doc1", "doc2", "doc3"]],
             distances=[[0.1, 0.2, 0.3]],
@@ -407,7 +407,7 @@ class TestFilterResults:
             ),
         ]
 
-        input_results = SegmentRetrievalResults(
+        input_results = SegmentCollection(
             ids=[["1", "2", "3"]],
             documents=[["doc1", "doc2", "doc3"]],
             distances=[[0.1, 0.2, 0.3]],
@@ -429,7 +429,7 @@ class TestFilterResults:
 
     def test_filter_results_no_client(self):
         """Test that missing client raises ValueError."""
-        input_results = SegmentRetrievalResults(
+        input_results = SegmentCollection(
             ids=[["1"]],
             documents=[["doc1"]],
             distances=[[0.1]],
@@ -448,7 +448,7 @@ class TestFilterResults:
 
     def test_filter_results_empty_results(self):
         """Test filtering with empty results."""
-        empty_results = SegmentRetrievalResults(
+        empty_results = SegmentCollection(
             ids=[[]],
             documents=[[]],
             distances=[[]],
@@ -472,7 +472,7 @@ class TestFilterResults:
                 is_relevant=True, confidence=0.9, reasoning="Good"
             )
 
-        input_results = SegmentRetrievalResults(
+        input_results = SegmentCollection(
             ids=[["1", "2", "3"]],
             documents=[["doc1", "doc2", "doc3"]],
             distances=[[0.1, 0.2, 0.3]],
@@ -500,7 +500,7 @@ class TestFilterResults:
 
     def test_filter_results_no_metadatas(self):
         """Test filtering when metadatas are missing."""
-        input_results = SegmentRetrievalResults(
+        input_results = SegmentCollection(
             ids=[["1", "2"]],
             documents=[["doc1", "doc2"]],
             distances=[[0.1, 0.2]],
