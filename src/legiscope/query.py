@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, cast
 
 import polars as pl
-from instructor import Instructor
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -244,8 +243,10 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
         f"Using model: {config.llm.model}, temperature: {config.llm.temperature}"
     )
 
-    sections = _extract_and_validate_sections(config.retrieval_results)
+    # Extract and validate sections from retrieval results
+    sections = config.retrieval_results.sections
     if not sections:
+        logger.warning("No sections found in retrieval results")
         return LegalQueryResponse(
             short_answer="I cannot answer your question as no relevant legal provisions were found.",
             reasoning="The search did not return any legal sections that address your query.",
@@ -254,6 +255,8 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
             confidence=0.0,
             limitations="No relevant legal information was available to answer query.",
         )
+
+    logger.info(f"Found {len(sections)} relevant sections to analyze")
 
     if config.filter_relevance:
         # filter_llm is guaranteed to be set by __post_init__
@@ -269,8 +272,6 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
             sections = filtered_results.sections
         except Exception:
             sections = config.retrieval_results.sections
-    else:
-        sections = config.retrieval_results.sections
 
     if not sections:
         logger.warning("All sections filtered out as irrelevant")
@@ -287,17 +288,30 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
 
     system_prompt, user_prompt = _build_legal_prompts(config.query, full_context)
 
-    # model is guaranteed to be set by LLMConfig.__post_init__
-    model_str = cast(str, config.llm.model)
+    # Execute LLM call for query processing
+    logger.debug("Making LLM call for query processing")
 
-    return _execute_query_llm_call(
-        client=config.llm.client,
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
-        model=model_str,
-        temperature=config.llm.temperature,
-        max_retries=config.llm.max_retries,
-    )
+    try:
+        response = ask(
+            client=config.llm.client,
+            prompt=user_prompt,
+            response_model=LegalQueryResponse,
+            system=system_prompt,
+            model=cast(str, config.llm.model),
+            temperature=config.llm.temperature,
+            max_retries=config.llm.max_retries,
+        )
+
+        logger.info(
+            f"Query processing completed - confidence: {response.confidence:.2f}, "
+            f"citations: {len(response.citations)}, supporting passages: {len(response.supporting_passages)}"
+        )
+
+        return response
+
+    except Exception as e:
+        logger.error(f"Query processing failed: {str(e)}")
+        raise
 
 
 def format_query_response(response: LegalQueryResponse) -> str:
@@ -441,19 +455,6 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
     return _compile_query_results(results)
 
 
-def _extract_and_validate_sections(
-    retrieval_results: SectionCollection,
-) -> list:
-    """Extract and validate sections from retrieval results."""
-    sections = retrieval_results.sections
-    if not sections:
-        logger.warning("No sections found in retrieval results")
-        return []
-
-    logger.info(f"Found {len(sections)} relevant sections to analyze")
-    return sections
-
-
 def _prepare_legal_context(sections: list[SectionResult]) -> str:
     """Prepare formatted context from sections for LLM processing."""
     context_sections = []
@@ -507,40 +508,6 @@ Legal Context:
 Please analyze this legal context and provide a comprehensive response following the guidelines."""
 
     return system_prompt, user_prompt
-
-
-def _execute_query_llm_call(
-    client: Instructor,
-    system_prompt: str,
-    user_prompt: str,
-    model: str,
-    temperature: float = 0.1,
-    max_retries: int = 3,
-) -> LegalQueryResponse:
-    """Execute LLM call for query processing."""
-    try:
-        logger.debug("Making LLM call for query processing")
-
-        response = ask(
-            client=client,
-            prompt=user_prompt,
-            response_model=LegalQueryResponse,
-            system=system_prompt,
-            model=model,
-            temperature=temperature,
-            max_retries=max_retries,
-        )
-
-        logger.info(
-            f"Query processing completed - confidence: {response.confidence:.2f}, "
-            f"citations: {len(response.citations)}, supporting passages: {len(response.supporting_passages)}"
-        )
-
-        return response
-
-    except Exception as e:
-        logger.error(f"Query processing failed: {str(e)}")
-        raise
 
 
 def _process_single_query_with_error_handling(
