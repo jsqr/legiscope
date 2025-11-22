@@ -22,12 +22,14 @@ class Config:
         """Get LLM provider from environment variable or use default."""
         return os.getenv(
             "LEGISCOPE_LLM_PROVIDER", "mistral"
-        )  # Can be "openai" or "mistral"
+        )  # Can be "openai", "mistral", or "ollama"
 
     OPENAI_FAST_MODEL = "gpt-4.1-mini"  # For quick tasks
     OPENAI_POWERFUL_MODEL = "gpt-4.1"  # For complex reasoning tasks
     MISTRAL_FAST_MODEL = "mistral-medium-latest"  # For quick tasks
     MISTRAL_POWERFUL_MODEL = "magistral-medium-latest"  # For complex reasoning tasks
+    OLLAMA_FAST_MODEL = "gemma3:4b"  # For quick tasks
+    OLLAMA_POWERFUL_MODEL = "gpt-oss:20b"  # For complex reasoning tasks
 
     @classmethod
     def get_fast_client(cls) -> Instructor:
@@ -45,6 +47,8 @@ class Config:
             return instructor.from_provider(
                 f"mistral/{fast_model}", mode=instructor.Mode.MISTRAL_TOOLS
             )
+        elif provider == "ollama":
+            return instructor.from_provider(f"ollama/{fast_model}")
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
@@ -64,6 +68,8 @@ class Config:
             return instructor.from_provider(
                 f"mistral/{powerful_model}", mode=instructor.Mode.MISTRAL_TOOLS
             )
+        elif provider == "ollama":
+            return instructor.from_provider(f"ollama/{powerful_model}")
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
@@ -81,6 +87,8 @@ class Config:
             return cls.OPENAI_FAST_MODEL
         elif provider == "mistral":
             return cls.MISTRAL_FAST_MODEL
+        elif provider == "ollama":
+            return cls.OLLAMA_FAST_MODEL
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
@@ -98,6 +106,8 @@ class Config:
             return cls.OPENAI_POWERFUL_MODEL
         elif provider == "mistral":
             return cls.MISTRAL_POWERFUL_MODEL
+        elif provider == "ollama":
+            return cls.OLLAMA_POWERFUL_MODEL
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 

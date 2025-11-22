@@ -2,9 +2,22 @@
 
 Automated analysis of municipal codes for legal epidemiology.
 
+`legiscope` implements a retrieval and query pipeline for extracting information
+from municipal codes for research purposes. It aims to:
+
+1. preserve the structure of the source documents for precise segmentation
+   and accurate citations, despite differences in source formats;
+2. support enhancements such as query rewriting, incorporating cross-referenced
+   information from other sources, and output verification;
+3. make it easy to systematically apply queries over a large number of
+   jurisdictions, and collect results in a uniform format suitable for further
+   analysis; and
+4. enable tweaking and experimentation.
+
 ## Getting started
 
-Developed on MacOS and Linux. No idea what, if anything, works on Windows.
+Developed on MacOS and Linux. It's possible some changes would be needed to run
+on Windows.
 
 ### Environment Setup
 
@@ -20,11 +33,15 @@ brew install uv
 # Set up the development environment
 make env
 
-# Activate the environment
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+# run scripts with uv
+uv run python foo.py
 
-# Or just run with uv
-# uv run python foo.py
+# open notebooks
+cd notebooks
+uv run marimo edit
+
+# Alternatively, activate the environment
+#source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 ### Model Configuration
@@ -62,6 +79,19 @@ Models are automatically selected based on your `.env` configuration.
 
 ### Example Configurations
 
+**Local models** (hacking on the plane):
+```bash
+LEGISCOPE_LLM_PROVIDER=ollama
+LEGISCOPE_FAST_MODEL=gemma3
+LEGISCOPE_POWERFUL_MODEL=gemma3
+
+LEGISCOPE_EMBEDDING_PROVIDER=ollama
+LEGISCOPE_EMBEDDING_MODEL=embeddinggemma
+LEGISCOPE_COLLECTION_NAME=legal_code_ollama
+```
+
+
+
 **OpenAI for language models:**
 ```bash
 LEGISCOPE_LLM_PROVIDER=openai
@@ -86,7 +116,6 @@ LEGISCOPE_EMBEDDING_PROVIDER=mistral
 LEGISCOPE_EMBEDDING_MODEL=mistral-embed
 LEGISCOPE_COLLECTION_NAME=legal_code_mistral
 ```
-
 
 ## Development
 
@@ -128,6 +157,7 @@ make pipeline STATE=NY MUNICIPALITY="New York" QUERIES=data/queries/example_quer
 ```
 
 The pipeline performs these steps automatically:
+
 1. Creates directory structure for the jurisdiction
 2. Converts DOCX files to plain text (if present)
 3. Converts text to structured Markdown with headings
@@ -145,11 +175,13 @@ The pipeline can optionally run a batch of queries against the processed legal c
 ```
 
 **Query File Format:**
+
 - One query per paragraph
 - Paragraphs separated by double newlines (`\n\n`)
 - See `data/queries/example_queries.txt` for examples
 
 **Example queries file:**
+
 ```
 Are there restrictions on selling drug paraphernalia in this jurisdiction?
 
@@ -159,6 +191,7 @@ Do I need a permit to operate a home-based business?
 ```
 
 Query results are saved to `data/laws/{JURISDICTION}/query_results.parquet` and include:
+
 - Short answer to each query
 - Detailed legal reasoning
 - Citations and supporting passages
@@ -168,6 +201,7 @@ Query results are saved to `data/laws/{JURISDICTION}/query_results.parquet` and 
 ## Scripts and Modules
 
 ### Scripts
+
 - `scripts/pipeline.sh` - Simple jurisdiction processing workflow automation
 - `scripts/create_jurisdiction.py` - Create jurisdiction directory structure
 - `scripts/convert_docx.sh` - Convert DOCX files to plain text using pandoc
@@ -177,9 +211,11 @@ Query results are saved to `data/laws/{JURISDICTION}/query_results.parquet` and 
 - `scripts/run_queries.py` - Run batch queries against legal code database
 
 ### Notebooks
+
 - `demo_query.py` - Interactive Marimo notebook demonstrating section-level retrieval with drug paraphernalia query
 
 ### Source Modules
+
 - `llm_config.py` - Centralized LLM configuration using instructor's provider abstraction
 - `convert.py` - Text conversion utilities and LLM response models
 - `utils.py` - Core utilities including LLM client and directory functions
