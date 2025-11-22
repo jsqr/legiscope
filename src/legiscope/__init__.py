@@ -18,6 +18,7 @@ from legiscope.convert import (
     text2md,
 )
 from legiscope.embeddings import (
+    EmbeddingIndexConfig,
     add_jurisdiction_embeddings,
     create_and_persist_embeddings,
     create_embedding_index,
@@ -59,6 +60,7 @@ __all__ = [
     "get_embeddings",
     "create_embeddings_df",
     "create_embedding_index",
+    "EmbeddingIndexConfig",
     "get_or_create_legal_collection",
     "add_jurisdiction_embeddings",
     "create_and_persist_embeddings",

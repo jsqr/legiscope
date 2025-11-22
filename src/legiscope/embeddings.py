@@ -425,143 +425,28 @@ def create_embeddings_df(
     return result_df
 
 
-def create_embedding_index(
-    df: pl.DataFrame,
-    collection_name: str = "legal_code_all",
-    persist_directory: str | Path | None = None,
-    id_col: str = "segment_idx",
-    text_col: str = "segment_text",
-    embedding_col: str = "embedding",
-    metadata_cols: list[str] | None = None,
-    jurisdiction_id: str | None = None,
-) -> chromadb.Collection:
-    """Create a ChromaDB embedding index from a DataFrame with embeddings.
+def _add_documents_to_collection(
+    collection: chromadb.Collection,
+    ids: list[str],
+    documents: list[str],
+    embeddings: list,
+    metadata_list: list[dict] | None,
+) -> None:
+    """Add documents to ChromaDB collection in batches.
 
     Args:
-        df: DataFrame containing embeddings data (from create_embeddings_df)
-        collection_name: Name for the ChromaDB collection. Defaults to 'legal_code_all'
-        persist_directory: Directory to persist the ChromaDB index. If None, uses in-memory
-        id_col: Name of column containing unique IDs. Defaults to 'segment_idx'
-        text_col: Name of column containing text content. Defaults to 'segment_text'
-        embedding_col: Name of column containing embedding vectors. Defaults to 'embedding'
-        metadata_cols: List of additional columns to include as metadata. If None, uses all non-ID/text/embedding columns
-        jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
-
-    Returns:
-        chromadb.Collection: The created ChromaDB collection
-
-    Raises:
-        ValueError: If required columns are missing from DataFrame
-
-    Example:
-        from legiscope.embeddings import get_embedding_client
-        embedded_df = create_embeddings_df(segments_df, get_embedding_client())
-        collection = create_embedding_index(
-            embedded_df,
-            persist_directory="./chroma_db",
-            jurisdiction_id="IL-WindyCity",
-        )
+        collection: ChromaDB collection to add documents to
+        ids: List of document IDs
+        documents: List of document texts
+        embeddings: List of embedding vectors
+        metadata_list: List of metadata dictionaries (or None)
     """
-    logger.info(f"Creating embedding index from DataFrame with {len(df)} rows")
+    total_batches = (len(ids) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
+    logger.info(f"Adding {len(ids)} documents to collection in {total_batches} batches")
 
-    # Validate required columns
-    required_columns = {id_col, text_col, embedding_col}
-    missing_columns = required_columns - set(df.columns)
-    if missing_columns:
-        raise ValueError(f"DataFrame missing required columns: {missing_columns}")
-
-    # Determine metadata columns
-    if metadata_cols is None:
-        # Use all columns except the main ones as metadata
-        metadata_cols = [
-            col for col in df.columns if col not in {id_col, text_col, embedding_col}
-        ]
-        logger.debug(f"Auto-detected metadata columns: {metadata_cols}")
-
-    # Validate metadata columns exist
-    missing_metadata = set(metadata_cols) - set(df.columns)
-    if missing_metadata:
-        raise ValueError(f"metadata columns not found: {missing_metadata}")
-
-    # Initialize ChromaDB client
-    if persist_directory:
-        logger.debug(f"Creating persistent ChromaDB client at: {persist_directory}")
-        client = chromadb.PersistentClient(path=str(persist_directory))
-    else:
-        logger.debug("Creating in-memory ChromaDB client")
-        client = chromadb.Client()
-
-    # Create or get collection
-    logger.debug(f"Creating/getting collection: {collection_name}")
-    try:
-        collection = client.get_collection(name=collection_name)
-        logger.info(f"Using existing collection: {collection_name}")
-    except Exception:
-        collection = client.create_collection(name=collection_name)
-        logger.info(f"Created new collection: {collection_name}")
-
-    # Prepare data for ChromaDB
-    logger.debug("Preparing data for ChromaDB insertion")
-
-    # Extract IDs, documents, embeddings, and metadata
-    ids = [str(id) for id in df[id_col].to_list()]
-    documents = df[text_col].to_list()
-    embeddings = df[embedding_col].to_list()
-
-    # Derive state and municipality from jurisdiction_id, if available
-    parsed_state = None
-    parsed_municipality = None
-    if jurisdiction_id and "-" in jurisdiction_id:
-        parsed_state, parsed_municipality = jurisdiction_id.split("-", 1)
-
-    # Prepare metadata with jurisdiction information
-    metadata_list = []
-    if metadata_cols:
-        metadata_df = df.select(metadata_cols)
-        base_metadata_list = metadata_df.to_dicts()
-
-        # Add jurisdiction information to each metadata dict
-        for i, metadata in enumerate(base_metadata_list):
-            if jurisdiction_id:
-                metadata["jurisdiction_id"] = jurisdiction_id
-                if parsed_state:
-                    metadata["state"] = parsed_state
-                if parsed_municipality:
-                    metadata["municipality"] = parsed_municipality
-
-            metadata_list.append(metadata)
-
-        added_fields = (
-            (1 if jurisdiction_id else 0)
-            + (1 if parsed_state else 0)
-            + (1 if parsed_municipality else 0)
-        )
-        logger.debug(
-            f"Prepared metadata with {len(metadata_cols) + added_fields} fields per document"
-        )
-    else:
-        # Still add jurisdiction metadata even if no other metadata columns
-        if jurisdiction_id:
-            for i in range(len(df)):
-                metadata = {"jurisdiction_id": jurisdiction_id}
-                if parsed_state:
-                    metadata["state"] = parsed_state
-                if parsed_municipality:
-                    metadata["municipality"] = parsed_municipality
-                metadata_list.append(metadata)
-            logger.debug(f"Prepared jurisdiction-only metadata for {len(df)} documents")
-        else:
-            metadata_list = None
-            logger.debug("No metadata columns specified")
-
-    # Add to collection in batches to avoid memory issues
-    total_batches = (len(df) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
-
-    logger.info(f"Adding {len(df)} documents to collection in {total_batches} batches")
-
-    for i in range(0, len(df), CHROMA_BATCH_SIZE):
-        end_idx = min(i + CHROMA_BATCH_SIZE, len(df))
-        batch_ids = [str(id) for id in ids[i:end_idx]]
+    for i in range(0, len(ids), CHROMA_BATCH_SIZE):
+        end_idx = min(i + CHROMA_BATCH_SIZE, len(ids))
+        batch_ids = ids[i:end_idx]
         batch_documents = documents[i:end_idx]
         batch_embeddings = embeddings[i:end_idx]
         batch_metadata = metadata_list[i:end_idx] if metadata_list else None
@@ -574,8 +459,148 @@ def create_embedding_index(
             ids=batch_ids,
             documents=batch_documents,
             embeddings=batch_embeddings,
-            metadatas=batch_metadata,  # ChromaDB API uses 'metadatas' parameter (ugh)
+            metadatas=batch_metadata,
         )
+
+
+@dataclass
+class EmbeddingIndexConfig:
+    """Configuration for creating a ChromaDB embedding index.
+
+    Args:
+        df: DataFrame containing embeddings data (from create_embeddings_df)
+        collection_name: Name for the ChromaDB collection
+        persist_directory: Directory to persist the ChromaDB index. If None, uses in-memory
+        id_col: Name of column containing unique IDs
+        text_col: Name of column containing text content
+        embedding_col: Name of column containing embedding vectors
+        metadata_cols: List of additional columns to include as metadata. If None, uses all non-ID/text/embedding columns
+        jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
+    """
+    df: pl.DataFrame
+    collection_name: str = "legal_code_all"
+    persist_directory: str | Path | None = None
+    id_col: str = "segment_idx"
+    text_col: str = "segment_text"
+    embedding_col: str = "embedding"
+    metadata_cols: list[str] | None = None
+    jurisdiction_id: str | None = None
+
+
+def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
+    """Create a ChromaDB embedding index from a DataFrame with embeddings.
+
+    Args:
+        config: Configuration object with all parameters
+
+    Returns:
+        chromadb.Collection: The created ChromaDB collection
+
+    Raises:
+        ValueError: If required columns are missing from DataFrame
+
+    Example:
+        config = EmbeddingIndexConfig(
+            df=embedded_df,
+            persist_directory="./chroma_db",
+            jurisdiction_id="IL-WindyCity",
+        )
+        collection = create_embedding_index(config)
+    """
+    logger.info(f"Creating embedding index from DataFrame with {len(config.df)} rows")
+
+    # Validate required columns
+    required_columns = {config.id_col, config.text_col, config.embedding_col}
+    missing_columns = required_columns - set(config.df.columns)
+    if missing_columns:
+        raise ValueError(f"DataFrame missing required columns: {missing_columns}")
+
+    # Determine metadata columns
+    if config.metadata_cols is None:
+        # Use all columns except the main ones as metadata
+        config.metadata_cols = [
+            col for col in config.df.columns if col not in {config.id_col, config.text_col, config.embedding_col}
+        ]
+        logger.debug(f"Auto-detected metadata columns: {config.metadata_cols}")
+
+    # Validate metadata columns exist
+    missing_metadata = set(config.metadata_cols) - set(config.df.columns)
+    if missing_metadata:
+        raise ValueError(f"metadata columns not found: {missing_metadata}")
+
+    # Initialize ChromaDB client
+    if config.persist_directory:
+        logger.debug(f"Creating persistent ChromaDB client at: {config.persist_directory}")
+        client = chromadb.PersistentClient(path=str(config.persist_directory))
+    else:
+        logger.debug("Creating in-memory ChromaDB client")
+        client = chromadb.Client()
+
+    # Create or get collection
+    logger.debug(f"Creating/getting collection: {config.collection_name}")
+    try:
+        collection = client.get_collection(name=config.collection_name)
+        logger.info(f"Using existing collection: {config.collection_name}")
+    except Exception:
+        collection = client.create_collection(name=config.collection_name)
+        logger.info(f"Created new collection: {config.collection_name}")
+
+    # Prepare data for ChromaDB
+    logger.debug("Preparing data for ChromaDB insertion")
+
+    # Extract IDs, documents, embeddings, and metadata
+    ids = [str(id) for id in config.df[config.id_col].to_list()]
+    documents = config.df[config.text_col].to_list()
+    embeddings = config.df[config.embedding_col].to_list()
+
+    # Derive state and municipality from jurisdiction_id, if available
+    parsed_state = None
+    parsed_municipality = None
+    if config.jurisdiction_id and "-" in config.jurisdiction_id:
+        parsed_state, parsed_municipality = config.jurisdiction_id.split("-", 1)
+
+    # Prepare metadata with jurisdiction information
+    metadata_list = []
+    if config.metadata_cols:
+        metadata_df = config.df.select(config.metadata_cols)
+        base_metadata_list = metadata_df.to_dicts()
+
+        # Add jurisdiction information to each metadata dict
+        for i, metadata in enumerate(base_metadata_list):
+            if config.jurisdiction_id:
+                metadata["jurisdiction_id"] = config.jurisdiction_id
+                if parsed_state:
+                    metadata["state"] = parsed_state
+                if parsed_municipality:
+                    metadata["municipality"] = parsed_municipality
+
+            metadata_list.append(metadata)
+
+        added_fields = (
+            (1 if config.jurisdiction_id else 0)
+            + (1 if parsed_state else 0)
+            + (1 if parsed_municipality else 0)
+        )
+        logger.debug(
+            f"Prepared metadata with {len(config.metadata_cols) + added_fields} fields per document"
+        )
+    else:
+        # Still add jurisdiction metadata even if no other metadata columns
+        if config.jurisdiction_id:
+            for i in range(len(config.df)):
+                metadata = {"jurisdiction_id": config.jurisdiction_id}
+                if parsed_state:
+                    metadata["state"] = parsed_state
+                if parsed_municipality:
+                    metadata["municipality"] = parsed_municipality
+                metadata_list.append(metadata)
+            logger.debug(f"Prepared jurisdiction-only metadata for {len(config.df)} documents")
+        else:
+            metadata_list = None
+            logger.debug("No metadata columns specified")
+
+    # Add documents to collection in batches
+    _add_documents_to_collection(collection, ids, documents, embeddings, metadata_list)
 
     logger.info(
         f"Successfully created embedding index with {collection.count()} documents"
@@ -651,7 +676,7 @@ def add_jurisdiction_embeddings(
     )
 
     # Use the main create_embedding_index function but with existing collection
-    create_embedding_index(
+    config = EmbeddingIndexConfig(
         df=embeddings_df,
         collection_name=collection.name,
         persist_directory=None,  # Use existing collection
@@ -661,6 +686,7 @@ def add_jurisdiction_embeddings(
         metadata_cols=metadata_cols,
         jurisdiction_id=jurisdiction_id,
     )
+    create_embedding_index(config)
 
     logger.info(
         f"Successfully added embeddings for {jurisdiction_id} to shared collection"
@@ -760,7 +786,7 @@ def create_and_persist_embeddings(
         else:
             logger.warning("Incomplete jurisdiction information provided")
 
-    collection = create_embedding_index(
+    index_config = EmbeddingIndexConfig(
         df=embeddings_df,
         collection_name=collection_name,
         persist_directory=pers_config.persist_directory,
@@ -770,6 +796,7 @@ def create_and_persist_embeddings(
         metadata_cols=pers_config.metadata_cols,
         jurisdiction_id=jur_config.jurisdiction_id,
     )
+    collection = create_embedding_index(index_config)
 
     logger.info("Successfully completed unified embeddings workflow")
     logger.info(f"  - Embeddings DataFrame: {len(embeddings_df)} rows")
