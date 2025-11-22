@@ -65,24 +65,6 @@ def get_mistral_client():
     return Mistral(api_key=api_key)
 
 
-# Embedding provider configuration: maps provider names to their settings
-EMBEDDING_PROVIDER_CONFIG = {
-    "ollama": {
-        "model": "embeddinggemma",
-        "client_factory": get_ollama_client,
-        "batch_size": None,  # Ollama processes individually, no batching
-    },
-    "mistral": {
-        "model": "mistral-embed",
-        "client_factory": get_mistral_client,
-        "batch_size": 100,  # Mistral supports batch processing
-    },
-}
-
-# Default embedding provider
-EMBEDDING_PROVIDER = "mistral"
-
-
 def get_default_model(provider: str) -> str:
     """Get the default model name for a given provider.
 
@@ -104,11 +86,11 @@ def get_default_model(provider: str) -> str:
     return EMBEDDING_PROVIDER_CONFIG[provider]["model"]
 
 
-def get_embedding_client(provider: str = EMBEDDING_PROVIDER):
+def get_embedding_client(provider: str | None = None):
     """Get embedding client for the specified provider.
 
     Args:
-        provider: The embedding provider ("ollama" or "mistral"). Defaults to EMBEDDING_PROVIDER
+        provider: The embedding provider ("ollama" or "mistral"). If None, uses EMBEDDING_PROVIDER default
 
     Returns:
         Embedding client instance (either ollama.Client or mistralai.Mistral)
@@ -117,6 +99,10 @@ def get_embedding_client(provider: str = EMBEDDING_PROVIDER):
         ValueError: If provider is not supported
         ImportError: If required package is not installed
     """
+    # Use default provider if not specified
+    if provider is None:
+        provider = EMBEDDING_PROVIDER
+
     if provider not in EMBEDDING_PROVIDER_CONFIG:
         raise ValueError(
             f"Unsupported provider: {provider}. "
@@ -133,7 +119,7 @@ class EmbeddingConfig:
     """Configuration for embedding operations."""
 
     model: str | None = None  # Default model name (None means use provider default)
-    provider: str = EMBEDDING_PROVIDER  # Embedding provider ("ollama" or "mistral")
+    provider: str = "mistral"  # Embedding provider ("ollama" or "mistral")
     heading_col: str = "section_heading"
     text_col: str = "segment_text"
     embedding_col: str = "embedding"
@@ -242,7 +228,7 @@ def _generate_embeddings_mistral(
 
 
 def _generate_embeddings_ollama(
-    client, texts: list[str], model: str
+    client, texts: list[str], model: str, batch_size: int | None = None
 ) -> list[list[float]]:
     """
     Generate embeddings using Ollama API with individual processing.
@@ -251,6 +237,7 @@ def _generate_embeddings_ollama(
         client: Ollama client instance
         texts: List of text strings to embed
         model: Model name to use
+        batch_size: Ignored for Ollama (included for API consistency)
 
     Returns:
         List of embeddings as lists of floats
@@ -274,6 +261,27 @@ def _generate_embeddings_ollama(
             logger.debug(f"Processed {i + 1}/{len(texts)} texts")
 
     return embeddings_list
+
+
+# Embedding provider configuration: maps provider names to their settings
+# Note: Defined here after the embedding functions so we can reference them
+EMBEDDING_PROVIDER_CONFIG = {
+    "ollama": {
+        "model": "embeddinggemma",
+        "client_factory": get_ollama_client,
+        "batch_size": None,  # Ollama processes individually, no batching
+        "embedding_function": _generate_embeddings_ollama,
+    },
+    "mistral": {
+        "model": "mistral-embed",
+        "client_factory": get_mistral_client,
+        "batch_size": 100,  # Mistral supports batch processing
+        "embedding_function": _generate_embeddings_mistral,
+    },
+}
+
+# Default embedding provider
+EMBEDDING_PROVIDER = "mistral"
 
 
 def get_embeddings(
@@ -320,15 +328,13 @@ def get_embeddings(
             f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
         )
 
-    # Generate embeddings using provider-specific function
+    # Generate embeddings using provider-specific function from config
     try:
-        if provider == "mistral":
-            batch_size = EMBEDDING_PROVIDER_CONFIG[provider]["batch_size"]
-            embeddings_list = _generate_embeddings_mistral(client, texts, model, batch_size)
-        elif provider == "ollama":
-            embeddings_list = _generate_embeddings_ollama(client, texts, model)
-        else:
-            raise ValueError(f"Unsupported provider: {provider}")
+        config = EMBEDDING_PROVIDER_CONFIG[provider]
+        embedding_function = config["embedding_function"]
+        batch_size = config["batch_size"]
+
+        embeddings_list = embedding_function(client, texts, model, batch_size)
 
     except Exception as e:
         logger.error(f"Error generating embeddings: {str(e)}")
