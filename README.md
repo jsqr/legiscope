@@ -59,11 +59,13 @@ Models are automatically selected based on your `.env` configuration.
 #### Environment Variables
 
 1. Copy the example environment file:
+
    ```bash
    cp .env.example .env
    ```
 
 2. Edit `.env` with your settings:
+
    ```bash
    # Example: Use OpenAI
    LEGISCOPE_LLM_PROVIDER=openai
@@ -73,48 +75,52 @@ Models are automatically selected based on your `.env` configuration.
    ```
 
 3. Load environment variables:
+
    ```bash
    export $(cat .env | grep -v '^#' | xargs)
    ```
 
-### Example Configurations
+### Example .env Configurations
 
-**Local models** (hacking on the plane):
+**Local models only** (e.g., for hacking on the plane):
+
 ```bash
 LEGISCOPE_LLM_PROVIDER=ollama
-LEGISCOPE_FAST_MODEL=gemma3
-LEGISCOPE_POWERFUL_MODEL=gemma3
+LEGISCOPE_FAST_MODEL=gemma3:4b
+LEGISCOPE_POWERFUL_MODEL=gemma3:12b
 
 LEGISCOPE_EMBEDDING_PROVIDER=ollama
 LEGISCOPE_EMBEDDING_MODEL=embeddinggemma
 LEGISCOPE_COLLECTION_NAME=legal_code_ollama
 ```
 
+**Mistral LLMs and embedding models** (for development; only one API key needed):
 
-
-**OpenAI for language models:**
-```bash
-LEGISCOPE_LLM_PROVIDER=openai
-LEGISCOPE_FAST_MODEL=gpt-4.1-mini
-LEGISCOPE_POWERFUL_MODEL=gpt-4.1
-```
-
-**Ollama for local embeddings:**
-```bash
-LEGISCOPE_EMBEDDING_PROVIDER=ollama
-LEGISCOPE_EMBEDDING_MODEL=embeddinggemma
-LEGISCOPE_COLLECTION_NAME=legal_code_ollama
-```
-
-**Mistral for LLMs and embeddings:**
 ```bash
 LEGISCOPE_LLM_PROVIDER=mistral
-LEGISCOPE_FAST_MODEL=mistral-medium-latest
-LEGISCOPE_POWERFUL_MODEL=magistral-medium-latest
+LEGISCOPE_FAST_MODEL=mistral-small-2506
+LEGISCOPE_POWERFUL_MODEL=mistral-medium-2508
 
 LEGISCOPE_EMBEDDING_PROVIDER=mistral
 LEGISCOPE_EMBEDDING_MODEL=mistral-embed
 LEGISCOPE_COLLECTION_NAME=legal_code_mistral
+
+MISTRAL_API_KEY=XXXXXX
+```
+
+**OpenAI LLMs and Mistral embeddings** (two API keys needed):
+
+```bash
+LEGISCOPE_LLM_PROVIDER=openai
+LEGISCOPE_FAST_MODEL=gpt-4.1-mini
+LEGISCOPE_POWERFUL_MODEL=gpt-4.1
+
+LEGISCOPE_EMBEDDING_PROVIDER=mistral
+LEGISCOPE_EMBEDDING_MODEL=mistral-embed
+LEGISCOPE_COLLECTION_NAME=legal_code_mistral
+
+OPENAI_API_KEY=XXXXXX
+MISTRAL_API_KEY=XXXXXX
 ```
 
 ## Development
@@ -182,7 +188,7 @@ The pipeline can optionally run a batch of queries against the processed legal c
 
 **Example queries file:**
 
-```
+```{txt}
 Are there restrictions on selling drug paraphernalia in this jurisdiction?
 
 What are the parking regulations for residential areas?
@@ -216,19 +222,19 @@ Query results are saved to `data/laws/{JURISDICTION}/query_results.parquet` and 
 
 ### Source Modules
 
+- `utils.py` - Core utilities including LLM client and directory functions
 - `llm_config.py` - Centralized LLM configuration using instructor's provider abstraction
 - `convert.py` - Text conversion utilities and LLM response models
-- `utils.py` - Core utilities including LLM client and directory functions
+- `segment.py` - Text segmentation and hierarchical section processing
 - `embeddings.py` - Embedding generation and ChromaDB management
 - `retrieve.py` - Information retrieval with HYDE query rewriting and section-level search
-- `segment.py` - Text segmentation and hierarchical section processing
 - `query.py` - Legal query processing with structured responses and batch query execution
 
 ## Data Directory Structure
 
 The project organizes municipal code data in a structured hierarchy:
 
-```
+```{txt}
 data/
 ├── laws/                           # Municipal code data
 │   └── {state}-{municipality}/     # Jurisdiction-specific directories
@@ -248,7 +254,7 @@ data/
 
 ### Project Structure
 
-```
+```{txt}
 .
 ├── src/
 │   └── legiscope/       # Main package source code
