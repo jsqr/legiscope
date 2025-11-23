@@ -3,6 +3,7 @@ Query processing module for the legiscope package.
 """
 
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, cast
 
@@ -198,6 +199,128 @@ class LegalQueryResponse(BaseModel):
     )
 
 
+def _validate_supporting_passages(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    exact_match_threshold: float = 1.0,
+    fuzzy_match_threshold: float = 0.9,
+) -> None:
+    """
+    Validate that supporting passages exist in retrieved text with fuzzy matching.
+
+    This function guards against LLM hallucination or distortion by verifying that
+    each supporting passage in the response actually appears in the retrieved sections.
+    It uses both exact substring matching and fuzzy matching to detect near-misses.
+
+    Args:
+        response: The LegalQueryResponse containing supporting_passages to validate
+        sections: List of SectionResult objects from retrieval containing the source text
+        exact_match_threshold: Similarity threshold for exact matches (default 1.0)
+        fuzzy_match_threshold: Similarity threshold for warning about close matches (default 0.9)
+
+    Returns:
+        None. Logs warnings for passages that don't match the retrieved text.
+
+    Example warnings:
+        - Exact match not found: "Supporting passage 1 not found in retrieved text..."
+        - Close but not exact: "Supporting passage 2 has close match (similarity: 0.95)..."
+        - Hallucination summary: "HALLUCINATION WARNING: 2/5 supporting passages not found..."
+    """
+    if not response.supporting_passages:
+        return
+
+    # Collect all available text from sections and segments
+    all_texts = []
+    for section in sections:
+        all_texts.append(section.body_text)
+        for segment in section.matching_segments:
+            if segment.segment_text:
+                all_texts.append(segment.segment_text)
+
+    if not all_texts:
+        logger.warning("No text available to validate supporting passages against")
+        return
+
+    unmatched_count = 0
+    for i, passage in enumerate(response.supporting_passages):
+        passage_stripped = passage.strip()
+
+        # First try exact substring match (fast path)
+        exact_match = any(passage_stripped in text for text in all_texts)
+
+        if exact_match:
+            logger.debug(f"Supporting passage {i+1} validated (exact match)")
+            continue
+
+        # Try fuzzy matching to detect near-misses or distortions
+        best_similarity = 0.0
+        best_match_text = ""
+
+        for text in all_texts:
+            # Check all substrings of similar length in the text
+            passage_len = len(passage_stripped)
+            text_len = len(text)
+
+            # Optimization: skip if text is much shorter than passage
+            if text_len < passage_len * 0.5:
+                continue
+
+            # For efficiency, use a sliding window approach
+            # Check substrings around the passage length (±20%)
+            min_len = max(int(passage_len * 0.8), 1)
+            max_len = min(int(passage_len * 1.2), text_len)
+
+            for substr_len in range(min_len, max_len + 1):
+                for start in range(text_len - substr_len + 1):
+                    substring = text[start : start + substr_len]
+                    similarity = SequenceMatcher(
+                        None, passage_stripped, substring
+                    ).ratio()
+
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match_text = substring
+
+                    # Early exit if we find a good enough match
+                    if similarity >= exact_match_threshold:
+                        break
+
+                if best_similarity >= exact_match_threshold:
+                    break
+
+            if best_similarity >= exact_match_threshold:
+                break
+
+        # Log appropriate warning based on similarity score
+        if best_similarity >= exact_match_threshold:
+            logger.debug(
+                f"Supporting passage {i+1} validated (fuzzy match: {best_similarity:.2f})"
+            )
+        elif best_similarity >= fuzzy_match_threshold:
+            unmatched_count += 1
+            logger.warning(
+                f"Supporting passage {i+1} has close match (similarity: {best_similarity:.2f}) "
+                f"but not exact - possible LLM distortion:\n"
+                f"  LLM passage: {passage_stripped[:150]}...\n"
+                f"  Best match:  {best_match_text[:150]}..."
+            )
+        else:
+            unmatched_count += 1
+            logger.warning(
+                f"Supporting passage {i+1} NOT FOUND in retrieved text "
+                f"(best similarity: {best_similarity:.2f}):\n"
+                f"  Passage: {passage_stripped[:150]}..."
+            )
+
+    # Summary warning if hallucinations detected
+    if unmatched_count > 0:
+        logger.warning(
+            f"HALLUCINATION WARNING: {unmatched_count}/{len(response.supporting_passages)} "
+            f"supporting passages not found in retrieved documents. "
+            f"The LLM may have distorted or fabricated some supporting text."
+        )
+
+
 def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
     """
     Process a user query against retrieved legal documents using LLM analysis.
@@ -301,6 +424,9 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
             temperature=config.llm.temperature,
             max_retries=config.llm.max_retries,
         )
+
+        # Validate supporting passages against retrieved text
+        _validate_supporting_passages(response, sections)
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
