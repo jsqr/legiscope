@@ -47,7 +47,13 @@ class QueryInfo:
 
 @dataclass
 class SectionResult:
-    """A section with matching segments from retrieval."""
+    """A section with matching segments from retrieval.
+
+    The relevance_score can come from:
+    - Embedding distance (lower is better) from retrieve_sections()
+    - LLM-assessed relevance score (higher is better, 0-1) from filter_sections()
+    Check llm_assessed flag to determine which scoring method was used.
+    """
 
     section_idx: int
     heading_text: str
@@ -57,6 +63,7 @@ class SectionResult:
     matching_segments: list[SegmentMatch]
     relevance_score: float
     segment_count: int
+    llm_assessed: bool = False  # True if relevance_score is from LLM, False if from embedding distance
 
 
 @dataclass
@@ -232,10 +239,25 @@ class HydeRewrite(BaseModel):
 
 
 class RelevanceAssessment(BaseModel):
-    """Structured response for relevance assessment of text to a query."""
+    """Structured response for relevance assessment of text to a query.
+
+    Uses a hybrid approach:
+    - is_relevant: Binary decision for filtering (quality gate)
+    - relevance_score: Graded 0-1 score for ranking among relevant documents
+    - confidence: Assessment reliability/certainty
+    """
 
     is_relevant: bool = Field(
         description="Whether the text is directly relevant to answering the query"
+    )
+    relevance_score: float = Field(
+        description=(
+            "Graded relevance score 0-1 for ranking. Only meaningful if is_relevant=True. "
+            "0.0-0.3=tangentially related, 0.3-0.6=moderately relevant, "
+            "0.6-0.8=relevant, 0.8-1.0=highly relevant"
+        ),
+        ge=0.0,
+        le=1.0,
     )
     confidence: float = Field(
         description="Confidence score 0-1 for the relevance assessment", ge=0.0, le=1.0
@@ -399,7 +421,14 @@ The text is NOT relevant if it:
 3. Mentions the topic but provides no actionable information
 4. Is administrative or procedural content unrelated to the query substance
 
-Provide a confidence score (0-1) indicating how certain you are of the assessment."""
+Provide THREE scores:
+1. is_relevant: Binary decision (true/false) - acts as a quality gate
+2. relevance_score: Graded score 0-1 for ranking (only meaningful if relevant=true)
+   - 0.0-0.3: Tangentially related, provides background context
+   - 0.3-0.6: Moderately relevant, some useful information
+   - 0.6-0.8: Relevant, directly addresses query aspects
+   - 0.8-1.0: Highly relevant, comprehensive answer to query
+3. confidence: How certain you are of this assessment (0-1)"""
 
     user_prompt = f"""Assess whether the following text is directly relevant to answering the query:
 
@@ -409,7 +438,11 @@ Text to assess:
 
 "{text}"
 
-Determine if this text directly helps answer the query and provide your assessment with confidence."""
+Provide:
+1. Binary relevance decision (is_relevant)
+2. Graded relevance score for ranking (relevance_score)
+3. Confidence in your assessment (confidence)
+4. Reasoning for your decision"""
 
     try:
         result = ask(
@@ -424,8 +457,8 @@ Determine if this text directly helps answer the query and provide your assessme
 
         logger.info(
             f"LLM relevance assessment completed - relevant: {result.is_relevant}, "
-            f"confidence: {result.confidence:.2f}, query: '{query[:20]}...', "
-            f"text: '{text[:20]}...'"
+            f"score: {result.relevance_score:.2f}, confidence: {result.confidence:.2f}, "
+            f"query: '{query[:20]}...', text: '{text[:20]}...'"
         )
 
         return result
@@ -829,6 +862,7 @@ def _assess_document_relevance(
             # Create a failed assessment for consistency
             assessment = RelevanceAssessment(
                 is_relevant=False,
+                relevance_score=0.0,
                 confidence=0.0,
                 reasoning=f"Assessment failed: {str(e)}",
             )
@@ -838,6 +872,7 @@ def _assess_document_relevance(
             {
                 "index": i,
                 "is_relevant": assessment.is_relevant,
+                "relevance_score": assessment.relevance_score,
                 "confidence": assessment.confidence,
                 "reasoning": assessment.reasoning,
             }
@@ -845,7 +880,7 @@ def _assess_document_relevance(
 
         logger.debug(
             f"Document {i} assessed: relevant={assessment.is_relevant}, "
-            f"confidence={assessment.confidence:.2f}"
+            f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
         )
 
     return assessments
@@ -861,12 +896,12 @@ def _apply_relevance_filters(assessments: list[dict], threshold: float) -> list[
             filtered_indices.append(assessment["index"])
             logger.debug(
                 f"Document {assessment['index']} kept: relevant={assessment['is_relevant']}, "
-                f"confidence={assessment['confidence']:.2f}"
+                f"score={assessment['relevance_score']:.2f}, confidence={assessment['confidence']:.2f}"
             )
         else:
             logger.debug(
                 f"Document {assessment['index']} filtered: relevant={assessment['is_relevant']}, "
-                f"confidence={assessment['confidence']:.2f}"
+                f"score={assessment['relevance_score']:.2f}, confidence={assessment['confidence']:.2f}"
             )
 
     return filtered_indices
@@ -958,6 +993,7 @@ def filter_sections(
     logger.info(f"Filtering {original_count} sections for query: '{query[:30]}...'")
 
     filtered_sections = []
+    assessments = []
 
     # Assess relevance for each section
     for i, section in enumerate(sections):
@@ -974,17 +1010,41 @@ def filter_sections(
             # Assess relevance using LLM
             assessment = is_relevant(client, query, section_text, model)
 
+            # Store assessment for metadata
+            assessments.append(
+                {
+                    "index": i,
+                    "section_idx": section.section_idx,
+                    "is_relevant": assessment.is_relevant,
+                    "relevance_score": assessment.relevance_score,
+                    "confidence": assessment.confidence,
+                    "reasoning": assessment.reasoning,
+                }
+            )
+
             # Filter based on relevance and confidence threshold
             if assessment.is_relevant and assessment.confidence >= confidence_threshold:
-                filtered_sections.append(section)
+                # Update section with LLM relevance score for ranking
+                updated_section = SectionResult(
+                    section_idx=section.section_idx,
+                    heading_text=section.heading_text,
+                    body_text=section.body_text,
+                    heading_level=section.heading_level,
+                    parent=section.parent,
+                    matching_segments=section.matching_segments,
+                    relevance_score=assessment.relevance_score,  # Use LLM score instead of distance
+                    segment_count=section.segment_count,
+                    llm_assessed=True,
+                )
+                filtered_sections.append(updated_section)
                 logger.debug(
                     f"Section {i} kept: relevant={assessment.is_relevant}, "
-                    f"confidence={assessment.confidence:.2f}"
+                    f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
                 )
             else:
                 logger.debug(
                     f"Section {i} filtered: relevant={assessment.is_relevant}, "
-                    f"confidence={assessment.confidence:.2f}"
+                    f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
                 )
 
         except Exception as e:
@@ -998,9 +1058,13 @@ def filter_sections(
         else 0
     )
 
+    # Sort sections by LLM relevance score (higher is better)
+    # This is different from embedding distance (lower is better)
+    filtered_sections.sort(key=lambda x: x.relevance_score, reverse=True)
+
     logger.info(
         f"Filtering complete: {original_count} -> {filtered_count} sections "
-        f"({reduction_percentage:.1f}% reduction)"
+        f"({reduction_percentage:.1f}% reduction), ranked by LLM relevance score"
     )
 
     return SectionCollection(
@@ -1010,7 +1074,7 @@ def filter_sections(
             original_count=original_count,
             filtered_count=filtered_count,
             threshold=confidence_threshold,
-            assessments=[],  # Could be enhanced to store section assessments if needed
+            assessments=assessments,
         ),
     )
 
