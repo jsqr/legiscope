@@ -204,11 +204,13 @@ class TestRelevanceAssessment:
         """Test creating a valid RelevanceAssessment instance."""
         assessment = RelevanceAssessment(
             is_relevant=True,
+            relevance_score=0.75,
             confidence=0.85,
             reasoning="The text directly addresses parking regulations with specific rules",
         )
 
         assert assessment.is_relevant is True
+        assert assessment.relevance_score == 0.75
         assert assessment.confidence == 0.85
         assert (
             assessment.reasoning
@@ -220,6 +222,7 @@ class TestRelevanceAssessment:
         # Valid confidence scores
         assessment1 = RelevanceAssessment(
             is_relevant=True,
+            relevance_score=0.5,
             confidence=0.0,
             reasoning="Test",
         )
@@ -227,6 +230,7 @@ class TestRelevanceAssessment:
 
         assessment2 = RelevanceAssessment(
             is_relevant=False,
+            relevance_score=0.1,
             confidence=1.0,
             reasoning="Test",
         )
@@ -237,6 +241,7 @@ class TestRelevanceAssessment:
         with pytest.raises(ValueError):
             RelevanceAssessment(
                 is_relevant=True,
+                relevance_score=0.5,
                 confidence=-0.1,
                 reasoning="Test",
             )
@@ -244,6 +249,7 @@ class TestRelevanceAssessment:
         with pytest.raises(ValueError):
             RelevanceAssessment(
                 is_relevant=False,
+                relevance_score=0.1,
                 confidence=1.1,
                 reasoning="Test",
             )
@@ -261,6 +267,7 @@ class TestIsRelevant:
 
         mock_result = RelevanceAssessment(
             is_relevant=True,
+            relevance_score=0.85,
             confidence=0.9,
             reasoning="The text contains specific parking regulations that directly answer the query",
         )
@@ -291,6 +298,7 @@ class TestIsRelevant:
         """Test relevance assessment with custom model."""
         mock_result = RelevanceAssessment(
             is_relevant=False,
+            relevance_score=0.2,
             confidence=0.8,
             reasoning="The text discusses unrelated topics",
         )
@@ -346,11 +354,18 @@ class TestFilterResults:
         """Test basic result filtering."""
         # Mock relevance assessments
         mock_assessments = [
-            RelevanceAssessment(is_relevant=True, confidence=0.9, reasoning="Relevant"),
             RelevanceAssessment(
-                is_relevant=False, confidence=0.8, reasoning="Not relevant"
+                is_relevant=True, relevance_score=0.85, confidence=0.9, reasoning="Relevant"
             ),
-            RelevanceAssessment(is_relevant=True, confidence=0.7, reasoning="Relevant"),
+            RelevanceAssessment(
+                is_relevant=False,
+                relevance_score=0.2,
+                confidence=0.8,
+                reasoning="Not relevant",
+            ),
+            RelevanceAssessment(
+                is_relevant=True, relevance_score=0.7, confidence=0.7, reasoning="Relevant"
+            ),
         ]
 
         # Mock input results using dataclass
@@ -397,13 +412,22 @@ class TestFilterResults:
         # Mock relevance assessments with varying confidence
         mock_assessments = [
             RelevanceAssessment(
-                is_relevant=True, confidence=0.9, reasoning="High confidence"
+                is_relevant=True,
+                relevance_score=0.9,
+                confidence=0.9,
+                reasoning="High confidence",
             ),
             RelevanceAssessment(
-                is_relevant=True, confidence=0.3, reasoning="Low confidence"
+                is_relevant=True,
+                relevance_score=0.8,
+                confidence=0.3,
+                reasoning="Low confidence",
             ),
             RelevanceAssessment(
-                is_relevant=True, confidence=0.7, reasoning="Medium confidence"
+                is_relevant=True,
+                relevance_score=0.75,
+                confidence=0.7,
+                reasoning="Medium confidence",
             ),
         ]
 
@@ -469,7 +493,7 @@ class TestFilterResults:
             if text == "doc2":
                 raise Exception("Assessment failed")
             return RelevanceAssessment(
-                is_relevant=True, confidence=0.9, reasoning="Good"
+                is_relevant=True, relevance_score=0.85, confidence=0.9, reasoning="Good"
             )
 
         input_results = SegmentCollection(
@@ -508,9 +532,14 @@ class TestFilterResults:
         )
 
         mock_assessments = [
-            RelevanceAssessment(is_relevant=True, confidence=0.9, reasoning="Relevant"),
             RelevanceAssessment(
-                is_relevant=False, confidence=0.8, reasoning="Not relevant"
+                is_relevant=True, relevance_score=0.85, confidence=0.9, reasoning="Relevant"
+            ),
+            RelevanceAssessment(
+                is_relevant=False,
+                relevance_score=0.2,
+                confidence=0.8,
+                reasoning="Not relevant",
             ),
         ]
 
