@@ -17,11 +17,8 @@ help:
 
 # Environment management
 env:
-	@if [ ! -d ".venv" ]; then \
-		uv venv; \
-	fi
-	@echo "Activating virtual environment and installing dependencies..."
-	@source .venv/bin/activate && uv pip install -e ".[dev]"
+	@echo "Syncing dependencies with uv..."
+	@uv sync
 	@echo "Environment setup complete!"
 
 clean-env:
@@ -32,31 +29,31 @@ clean-env:
 # Testing
 test:
 	@echo "Running tests..."
-	@source .venv/bin/activate && pytest
+	@uv run pytest
 
 test-cov:
 	@echo "Running tests with coverage..."
-	@source .venv/bin/activate && pytest --cov=src/legiscope --cov-report=html --cov-report=term
+	@uv run pytest --cov=src/legiscope --cov-report=html --cov-report=term
 
 # Code quality
 lint:
 	@echo "Running linting checks..."
-	@source .venv/bin/activate && ruff check src/ tests/
+	@uv run ruff check src/ tests/
 	@echo "Checking formatting..."
-	@source .venv/bin/activate && ruff format --check src/ tests/
+	@uv run ruff format --check src/ tests/
 
 format:
 	@echo "Formatting code..."
-	@source .venv/bin/activate && ruff format src/ tests/
+	@uv run ruff format src/ tests/
 
 fix:
 	@echo "Fixing linting issues..."
-	@source .venv/bin/activate && ruff check --fix src/ tests/
+	@uv run ruff check --fix src/ tests/
 
 # Utilities
 list:
 	@echo "Installed packages:"
-	@source .venv/bin/activate && uv pip list
+	@uv pip list
 
 clean:
 	@echo "Cleaning build artifacts..."
@@ -72,7 +69,7 @@ clean:
 
 install:
 	@echo "Installing package in development mode..."
-	@source .venv/bin/activate && uv pip install -e ".[dev]"
+	@uv sync
 	@echo "Installation complete."
 
 # Pipeline
