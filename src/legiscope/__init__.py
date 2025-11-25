@@ -26,7 +26,16 @@ from legiscope.embeddings import (
     get_embeddings,
     get_or_create_legal_collection,
 )
+from legiscope.query import (
+    BatchQuerySettings,
+    LegalQueryResponse,
+    QuerySettings,
+    query_legal_documents,
+    run_queries,
+)
 from legiscope.retrieve import (
+    RetrievalSettings,
+    SectionRetrievalSettings,
     get_jurisdiction_stats,
     hyde_rewriter,
     retrieve_sections,
@@ -67,6 +76,14 @@ __all__ = [
     # Retrieve module
     "retrieve_segments",
     "retrieve_sections",
+    "RetrievalSettings",
+    "SectionRetrievalSettings",
     "hyde_rewriter",
     "get_jurisdiction_stats",
+    # Query module
+    "query_legal_documents",
+    "run_queries",
+    "QuerySettings",
+    "BatchQuerySettings",
+    "LegalQueryResponse",
 ]
