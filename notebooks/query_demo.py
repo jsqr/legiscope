@@ -21,7 +21,7 @@ with app.setup:
     #   uv run marimo edit demo_nb.py
 
     from legiscope.retrieve import (
-        SectionRetrievalConfig,
+        SectionRetrievalSettings,
         retrieve_sections,
         get_jurisdiction_stats,
         filter_sections,
@@ -29,7 +29,7 @@ with app.setup:
     from legiscope.llm_config import Config
     from legiscope.utils import LLMConfig
     from legiscope.query import (
-        QueryConfig,
+        QuerySettings,
         query_legal_documents,
         format_query_response,
     )
@@ -200,11 +200,8 @@ def _(
     results = None
     sections = []
 
-    # Create config for section retrieval
-    config = SectionRetrievalConfig(
-        collection=collection,
-        query_text=query,
-        sections_parquet_path=sections_parquet_path,
+    # Create settings for section retrieval
+    settings = SectionRetrievalSettings(
         n_results=n_results,
         jurisdiction_id=jurisdiction_id,
         use_hyde=use_hyde,
@@ -213,7 +210,12 @@ def _(
         embedding_model=embedding_model,
     )
 
-    results = retrieve_sections(config)
+    results = retrieve_sections(
+        collection=collection,
+        sections_parquet_path=sections_parquet_path,
+        query_text=query,
+        settings=settings,
+    )
 
     if results and results.sections:
         sections = results.sections
@@ -362,13 +364,15 @@ def _(filtered_results, instructor_client, query):
 
     print("=== Query Processing ===")
 
-    # Create query config
+    # Create query settings
     llm_config = LLMConfig(client=instructor_client, temperature=0.1, max_retries=3)
-    query_config = QueryConfig(
-        llm=llm_config, query=query, retrieval_results=filtered_results
-    )
+    query_settings = QuerySettings(llm=llm_config)
 
-    query_response = query_legal_documents(query_config)
+    query_response = query_legal_documents(
+        retrieval_results=filtered_results,
+        query=query,
+        settings=query_settings,
+    )
 
     print("Query processing completed successfully")
     print(f"Answer confidence: {query_response.confidence:.1%}")

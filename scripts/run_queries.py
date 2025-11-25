@@ -20,7 +20,7 @@ except ImportError:
 
 from legiscope.llm_config import Config
 from legiscope.utils import LLMConfig
-from legiscope.query import BatchQueryConfig, run_queries
+from legiscope.query import BatchQuerySettings, run_queries
 
 # Add src to path to import legiscope modules
 src_path = Path(__file__).parent.parent / "src"
@@ -64,19 +64,18 @@ def main():
     chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
     collection = chroma_client.get_collection(args.collection_name)
 
-    # Create LLM config
+    # Create LLM config and settings
     llm_config = LLMConfig(client=Config.get_powerful_client())
+    settings = BatchQuerySettings(llm=llm_config)
 
-    # Create batch query config
-    config = BatchQueryConfig(
+    # Run queries with new API
+    results_df = run_queries(
+        collection=collection,
+        sections_parquet_path=args.sections_parquet,
         queries=queries,
         jurisdiction_id=args.jurisdiction_id,
-        sections_parquet_path=args.sections_parquet,
-        collection=collection,
-        llm=llm_config,
+        settings=settings,
     )
-
-    results_df = run_queries(config)
 
     results_df.write_parquet(args.output)
     print(f"Results saved to {args.output}")
