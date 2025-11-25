@@ -28,16 +28,14 @@ DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering 
 
 
 @dataclass
-class QueryConfig:
-    """Configuration for legal query processing.
+class QuerySettings:
+    """Settings for legal query processing.
 
-    This class encapsulates all parameters needed for processing a legal query
-    against retrieved documents using LLM analysis.
+    This class encapsulates LLM and filtering settings for query processing,
+    separate from the query text and retrieval results (which are inputs).
 
     Attributes:
         llm: LLM configuration for query processing (required)
-        query: The user's legal question (required)
-        retrieval_results: Results from retrieve_sections or similar (required)
         filter_relevance: Whether to filter sections by relevance before LLM
         relevance_threshold: Minimum confidence score for relevance filtering
         filter_llm: Separate LLM config for filtering (uses llm if None)
@@ -47,19 +45,19 @@ class QueryConfig:
         >>> from legiscope.llm_config import Config
         >>>
         >>> llm_config = LLMConfig(client=Config.get_fast_client())
-        >>> config = QueryConfig(
+        >>> settings = QuerySettings(
         ...     llm=llm_config,
-        ...     query="Are there parking restrictions?",
-        ...     retrieval_results=results,
         ...     filter_relevance=True,
         ...     relevance_threshold=0.7
         ... )
+        >>>
+        >>> # Reuse settings for multiple queries
+        >>> response1 = query_legal_documents(results1, "query 1", settings)
+        >>> response2 = query_legal_documents(results2, "query 2", settings)
     """
 
     # Required parameters
     llm: LLMConfig
-    query: str
-    retrieval_results: SectionCollection
 
     # Relevance filtering
     filter_relevance: bool = False
@@ -68,12 +66,6 @@ class QueryConfig:
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
-        if not self.query or not self.query.strip():
-            raise ValueError("query cannot be empty")
-
-        if not self.retrieval_results:
-            raise ValueError("retrieval_results cannot be empty")
-
         if not 0.0 <= self.relevance_threshold <= 1.0:
             raise ValueError(
                 f"relevance_threshold must be between 0 and 1, got {self.relevance_threshold}"
@@ -85,17 +77,13 @@ class QueryConfig:
 
 
 @dataclass
-class BatchQueryConfig:
-    """Configuration for batch query processing.
+class BatchQuerySettings:
+    """Settings for batch query processing.
 
-    This class encapsulates all parameters needed for running multiple queries
-    in batch against a jurisdiction's legal code.
+    This class encapsulates LLM and processing settings for batch queries,
+    separate from the data sources (collection, parquet files) and query inputs.
 
     Attributes:
-        queries: List of legal questions to process (required)
-        jurisdiction_id: Jurisdiction identifier (required)
-        sections_parquet_path: Path to sections.parquet file (required)
-        collection: ChromaDB collection to query (required)
         llm: LLM configuration (defaults to fast client if None)
         n_results: Number of results to retrieve per query
         use_hyde: Whether to apply HYDE query rewriting
@@ -103,13 +91,8 @@ class BatchQueryConfig:
         relevance_threshold: Minimum confidence for relevance filtering
 
     Example:
-        >>> # Minimal config (uses defaults)
-        >>> config = BatchQueryConfig(
-        ...     queries=["Query 1", "Query 2"],
-        ...     jurisdiction_id="IL-WindyCity",
-        ...     sections_parquet_path="./data/sections.parquet",
-        ...     collection=chroma_collection
-        ... )
+        >>> # Minimal settings (uses defaults)
+        >>> settings = BatchQuerySettings()
         >>>
         >>> # Full customization
         >>> from legiscope.utils import LLMConfig
@@ -119,24 +102,23 @@ class BatchQueryConfig:
         ...     client=Config.get_powerful_client(),
         ...     temperature=0.1
         ... )
-        >>> config = BatchQueryConfig(
-        ...     queries=queries,
-        ...     jurisdiction_id="IL-WindyCity",
-        ...     sections_parquet_path="./data/sections.parquet",
-        ...     collection=chroma_collection,
+        >>> settings = BatchQuerySettings(
         ...     llm=llm_config,
         ...     n_results=20,
         ...     use_hyde=True,
         ...     filter_relevance=True,
         ...     relevance_threshold=0.8
         ... )
+        >>>
+        >>> # Use with run_queries
+        >>> results = run_queries(
+        ...     collection=chroma_collection,
+        ...     sections_parquet_path="./data/sections.parquet",
+        ...     queries=["Query 1", "Query 2"],
+        ...     jurisdiction_id="IL-WindyCity",
+        ...     settings=settings
+        ... )
     """
-
-    # Required data sources
-    queries: list[str]
-    jurisdiction_id: str
-    sections_parquet_path: str | Path
-    collection: Any  # chromadb.Collection
 
     # LLM configuration
     llm: LLMConfig | None = None
@@ -151,15 +133,6 @@ class BatchQueryConfig:
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
-        if not self.queries:
-            raise ValueError("queries list cannot be empty")
-
-        if not self.jurisdiction_id or not self.jurisdiction_id.strip():
-            raise ValueError("jurisdiction_id cannot be empty")
-
-        if not self.sections_parquet_path:
-            raise ValueError("sections_parquet_path cannot be empty")
-
         if self.n_results <= 0:
             raise ValueError(f"n_results must be positive, got {self.n_results}")
 
@@ -171,7 +144,7 @@ class BatchQueryConfig:
         # Set default LLM if not provided
         if self.llm is None:
             self.llm = LLMConfig(client=Config.get_fast_client())
-            logger.debug("BatchQueryConfig: Using default fast client")
+            logger.debug("BatchQuerySettings: Using default fast client")
 
 
 class LegalQueryResponse(BaseModel):
@@ -321,7 +294,11 @@ def _validate_supporting_passages(
         )
 
 
-def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
+def query_legal_documents(
+    retrieval_results: SectionCollection,
+    query: str,
+    settings: QuerySettings,
+) -> LegalQueryResponse:
     """
     Process a user query against retrieved legal documents using LLM analysis.
 
@@ -329,7 +306,9 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
     response with legal reasoning, citations, and supporting evidence.
 
     Args:
-        config: QueryConfig with query and LLM settings
+        retrieval_results: Results from retrieve_sections() (required infrastructure)
+        query: The user's legal question (required input)
+        settings: Query processing settings (required configuration)
 
     Returns:
         LegalQueryResponse: Structured response with answer, reasoning, citations, and evidence
@@ -340,34 +319,40 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
 
     Example:
         >>> from legiscope.utils import LLMConfig
-        >>> from legiscope.query import QueryConfig, query_legal_documents
+        >>> from legiscope.query import QuerySettings, query_legal_documents
         >>> from legiscope.llm_config import Config
         >>>
-        >>> # Create LLM config
+        >>> # Create settings
         >>> llm_config = LLMConfig(client=Config.get_fast_client())
-        >>>
-        >>> # Create query config
-        >>> config = QueryConfig(
+        >>> settings = QuerySettings(
         ...     llm=llm_config,
-        ...     query="Are there restrictions on drug paraphernalia sales?",
-        ...     retrieval_results=results,
         ...     filter_relevance=True,
         ...     relevance_threshold=0.7
         ... )
         >>>
         >>> # Process query
-        >>> response = query_legal_documents(config)
+        >>> response = query_legal_documents(
+        ...     retrieval_results,
+        ...     "Are there restrictions on drug paraphernalia sales?",
+        ...     settings
+        ... )
         >>> print(f"Answer: {response.short_answer}")
         >>> print(f"Reasoning: {response.reasoning}")
     """
-    # Validation happens in QueryConfig.__post_init__
-    logger.info(f"Processing query: '{config.query[:50]}...'")
+    # Validation
+    if not query or not query.strip():
+        raise ValueError("query cannot be empty")
+
+    if not retrieval_results:
+        raise ValueError("retrieval_results cannot be empty")
+
+    logger.info(f"Processing query: '{query[:50]}...'")
     logger.debug(
-        f"Using model: {config.llm.model}, temperature: {config.llm.temperature}"
+        f"Using model: {settings.llm.model}, temperature: {settings.llm.temperature}"
     )
 
     # Extract and validate sections from retrieval results
-    sections = config.retrieval_results.sections
+    sections = retrieval_results.sections
     if not sections:
         logger.warning("No sections found in retrieval results")
         return LegalQueryResponse(
@@ -381,20 +366,20 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
 
     logger.info(f"Found {len(sections)} relevant sections to analyze")
 
-    if config.filter_relevance:
+    if settings.filter_relevance:
         # filter_llm is guaranteed to be set by __post_init__
-        assert config.filter_llm is not None
+        assert settings.filter_llm is not None
         try:
             filtered_results = filter_sections(
-                client=config.filter_llm.client,
-                sections_results=config.retrieval_results,
-                query=config.query,
-                confidence_threshold=config.relevance_threshold,
-                model=config.filter_llm.model,
+                client=settings.filter_llm.client,
+                sections_results=retrieval_results,
+                query=query,
+                confidence_threshold=settings.relevance_threshold,
+                model=settings.filter_llm.model,
             )
             sections = filtered_results.sections
         except Exception:
-            sections = config.retrieval_results.sections
+            sections = retrieval_results.sections
 
     if not sections:
         logger.warning("All sections filtered out as irrelevant")
@@ -409,20 +394,20 @@ def query_legal_documents(config: QueryConfig) -> LegalQueryResponse:
 
     full_context = _prepare_legal_context(sections)
 
-    system_prompt, user_prompt = _build_legal_prompts(config.query, full_context)
+    system_prompt, user_prompt = _build_legal_prompts(query, full_context)
 
     # Execute LLM call for query processing
     logger.debug("Making LLM call for query processing")
 
     try:
         response = ask(
-            client=config.llm.client,
+            client=settings.llm.client,
             prompt=user_prompt,
             response_model=LegalQueryResponse,
             system=system_prompt,
-            model=cast(str, config.llm.model),
-            temperature=config.llm.temperature,
-            max_retries=config.llm.max_retries,
+            model=cast(str, settings.llm.model),
+            temperature=settings.llm.temperature,
+            max_retries=settings.llm.max_retries,
         )
 
         # Validate supporting passages against retrieved text
@@ -481,7 +466,13 @@ def format_query_response(response: LegalQueryResponse) -> str:
     return formatted.strip()
 
 
-def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
+def run_queries(
+    collection: Any,  # chromadb.Collection
+    sections_parquet_path: str | Path,
+    queries: list[str],
+    jurisdiction_id: str,
+    settings: BatchQuerySettings | None = None,
+) -> pl.DataFrame:
     """
     Run multiple queries against a jurisdiction and compile results in a structured DataFrame.
 
@@ -490,7 +481,11 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
     easy analysis and comparison.
 
     Args:
-        config: BatchQueryConfig with all batch processing settings
+        collection: ChromaDB collection to query (required infrastructure)
+        sections_parquet_path: Path to sections.parquet file (required infrastructure)
+        queries: List of legal questions to process (required input)
+        jurisdiction_id: Jurisdiction identifier (required input)
+        settings: Optional batch processing settings (uses defaults if None)
 
     Returns:
         pl.DataFrame: Structured results with columns:
@@ -511,7 +506,7 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
 
     Example:
         >>> from legiscope.utils import LLMConfig
-        >>> from legiscope.query import BatchQueryConfig, run_queries
+        >>> from legiscope.query import BatchQuerySettings, run_queries
         >>> from legiscope.llm_config import Config
         >>> import chromadb
         >>>
@@ -519,54 +514,72 @@ def run_queries(config: BatchQueryConfig) -> pl.DataFrame:
         >>> chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
         >>> collection = chroma_client.get_collection("legal_code_all")
         >>>
-        >>> # Create config
+        >>> # Prepare queries and settings
         >>> queries = [
         ...     "Are there restrictions on drug paraphernalia sales?",
         ...     "What are the parking regulations?",
         ...     "Do I need a permit for home business?"
         ... ]
         >>>
-        >>> config = BatchQueryConfig(
-        ...     queries=queries,
-        ...     jurisdiction_id="IL-WindyCity",
-        ...     sections_parquet_path="./data/sections.parquet",
-        ...     collection=collection,
+        >>> settings = BatchQuerySettings(
         ...     llm=LLMConfig(client=Config.get_powerful_client()),
         ...     filter_relevance=True,
         ...     relevance_threshold=0.7
         ... )
         >>>
-        >>> results_df = run_queries(config)
+        >>> results_df = run_queries(
+        ...     collection=collection,
+        ...     sections_parquet_path="./data/sections.parquet",
+        ...     queries=queries,
+        ...     jurisdiction_id="IL-WindyCity",
+        ...     settings=settings
+        ... )
         >>> print(results_df.select(["query", "short_answer", "confidence"]))
     """
     import time
 
-    # Validation happens in BatchQueryConfig.__post_init__
-    # llm is guaranteed to be set by __post_init__
-    assert config.llm is not None
+    # Validation
+    if not queries:
+        raise ValueError("queries list cannot be empty")
+
+    if not jurisdiction_id or not jurisdiction_id.strip():
+        raise ValueError("jurisdiction_id cannot be empty")
+
+    if not sections_parquet_path:
+        raise ValueError("sections_parquet_path cannot be empty")
+
+    # Use default settings if none provided
+    if settings is None:
+        settings = BatchQuerySettings()
+
+    # llm is guaranteed to be set by BatchQuerySettings.__post_init__
+    assert settings.llm is not None
 
     logger.info(
-        f"Processing {len(config.queries)} queries for jurisdiction: {config.jurisdiction_id}"
+        f"Processing {len(queries)} queries for jurisdiction: {jurisdiction_id}"
     )
     logger.debug(
-        f"Using model: {config.llm.model}, n_results: {config.n_results}, use_hyde: {config.use_hyde}"
+        f"Using model: {settings.llm.model}, n_results: {settings.n_results}, use_hyde: {settings.use_hyde}"
     )
 
     # Process queries in loop
     results = []
-    for i, query in enumerate(config.queries):
+    for i, query in enumerate(queries):
         if query is None or not isinstance(query, str) or not query.strip():
             logger.warning(f"Skipping empty query at index {i}")
             continue
 
         start_time = time.time()
         logger.info(
-            f"Processing query {i + 1}/{len(config.queries)}: '{query[:50]}...'"
+            f"Processing query {i + 1}/{len(queries)}: '{query[:50]}...'"
         )
 
         result = _process_single_query_with_error_handling(
-            config=config,
             query=query,
+            collection=collection,
+            sections_parquet_path=sections_parquet_path,
+            jurisdiction_id=jurisdiction_id,
+            settings=settings,
             start_time=start_time,
         )
 
@@ -637,46 +650,49 @@ Please analyze this legal context and provide a comprehensive response following
 
 
 def _process_single_query_with_error_handling(
-    config: BatchQueryConfig,
     query: str,
+    collection: Any,
+    sections_parquet_path: str | Path,
+    jurisdiction_id: str,
+    settings: BatchQuerySettings,
     start_time: float,
 ) -> dict:
     """Process a single query with comprehensive error handling."""
     import time
-    from legiscope.retrieve import SectionRetrievalConfig
+    from legiscope.retrieve import SectionRetrievalSettings
 
     try:
-        # llm is guaranteed to be set by BatchQueryConfig.__post_init__
-        llm = cast(LLMConfig, config.llm)
+        # llm is guaranteed to be set by BatchQuerySettings.__post_init__
+        llm = cast(LLMConfig, settings.llm)
 
-        # Build SectionRetrievalConfig for this query
-        retrieval_config = SectionRetrievalConfig(
-            collection=config.collection,
-            query_text=query,
-            sections_parquet_path=config.sections_parquet_path,
-            n_results=config.n_results,
-            jurisdiction_id=config.jurisdiction_id,
-            use_hyde=config.use_hyde,
-            hyde_client=llm.client if config.use_hyde else None,
+        # Build SectionRetrievalSettings for this query
+        retrieval_settings = SectionRetrievalSettings(
+            n_results=settings.n_results,
+            jurisdiction_id=jurisdiction_id,
+            use_hyde=settings.use_hyde,
+            hyde_client=llm.client if settings.use_hyde else None,
             hyde_model=llm.model,
         )
 
-        retrieval_results = retrieve_sections(retrieval_config)
+        retrieval_results = retrieve_sections(
+            collection=collection,
+            sections_parquet_path=sections_parquet_path,
+            query_text=query,
+            settings=retrieval_settings,
+        )
 
         query_info = retrieval_results.query_info
         sections_found = len(retrieval_results.sections)
         segments_found = query_info.total_segments_found
 
-        # Build QueryConfig for this query
-        query_config = QueryConfig(
+        # Build QuerySettings for this query
+        query_settings = QuerySettings(
             llm=llm,
-            query=query,
-            retrieval_results=retrieval_results,
-            filter_relevance=config.filter_relevance,
-            relevance_threshold=config.relevance_threshold,
+            filter_relevance=settings.filter_relevance,
+            relevance_threshold=settings.relevance_threshold,
         )
 
-        query_response = query_legal_documents(query_config)
+        query_response = query_legal_documents(retrieval_results, query, query_settings)
 
         processing_time = time.time() - start_time
 

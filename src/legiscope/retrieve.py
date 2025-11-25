@@ -118,16 +118,14 @@ class JurisdictionStats:
 
 
 @dataclass
-class RetrievalConfig:
-    """Configuration for document retrieval operations.
+class RetrievalSettings:
+    """Settings for document retrieval operations.
 
-    This class encapsulates all parameters needed for semantic search and
-    document retrieval operations. It supports jurisdiction filtering,
+    This class encapsulates retrieval behavior settings, separate from the
+    data source (collection) and query input. It supports jurisdiction filtering,
     HYDE query rewriting, and custom embedding configuration.
 
     Attributes:
-        collection: ChromaDB collection to query (required)
-        query_text: Text to search for (required)
         n_results: Number of results to return
         jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-WindyCity')
         where: Additional metadata filters (combined with jurisdiction filters)
@@ -141,26 +139,23 @@ class RetrievalConfig:
     Example:
         >>> from legiscope.llm_config import Config
         >>>
-        >>> # Basic retrieval
-        >>> config = RetrievalConfig(
-        ...     collection=chroma_collection,
-        ...     query_text="parking regulations",
+        >>> # Basic retrieval settings
+        >>> settings = RetrievalSettings(
+        ...     n_results=10,
         ...     jurisdiction_id="IL-WindyCity"
         ... )
         >>>
         >>> # With HYDE rewriting
-        >>> config = RetrievalConfig(
-        ...     collection=chroma_collection,
-        ...     query_text="where can I park my car",
+        >>> settings = RetrievalSettings(
         ...     use_hyde=True,
         ...     hyde_client=Config.get_fast_client(),
         ...     n_results=20
         ... )
+        >>>
+        >>> # Use with different queries
+        >>> results1 = retrieve_segments(collection, "parking regulations", settings)
+        >>> results2 = retrieve_segments(collection, "zoning laws", settings)
     """
-
-    # Required parameters
-    collection: Any  # chromadb.Collection
-    query_text: str
 
     # Search parameters
     n_results: int = DEFAULT_N_RESULTS
@@ -179,9 +174,6 @@ class RetrievalConfig:
 
     def __post_init__(self):
         """Validate configuration after initialization."""
-        if not self.query_text or not self.query_text.strip():
-            raise ValueError("query_text cannot be empty")
-
         if self.n_results <= 0:
             raise ValueError(f"n_results must be positive, got {self.n_results}")
 
@@ -190,35 +182,32 @@ class RetrievalConfig:
 
 
 @dataclass
-class SectionRetrievalConfig(RetrievalConfig):
-    """Configuration for section-level retrieval operations.
+class SectionRetrievalSettings(RetrievalSettings):
+    """Settings for section-level retrieval operations.
 
-    Extends RetrievalConfig to add section-specific requirements. This config
-    is used for retrieve_sections() which performs segment-level search but
-    returns full section context.
+    Extends RetrievalSettings with section-specific behavior. This is used
+    for retrieve_sections() which performs segment-level search but returns
+    full section context.
 
-    Attributes:
-        sections_parquet_path: Path to sections.parquet file (required)
-        All other attributes inherited from RetrievalConfig
+    Note: sections_parquet_path is now a parameter to retrieve_sections(),
+    not part of settings, as it's infrastructure (data source path).
 
     Example:
-        >>> config = SectionRetrievalConfig(
+        >>> settings = SectionRetrievalSettings(
+        ...     jurisdiction_id="IL-WindyCity",
+        ...     n_results=10,
+        ...     use_hyde=True
+        ... )
+        >>> results = retrieve_sections(
         ...     collection=chroma_collection,
         ...     query_text="parking regulations",
         ...     sections_parquet_path="./data/sections.parquet",
-        ...     jurisdiction_id="IL-WindyCity",
-        ...     n_results=10
+        ...     settings=settings
         ... )
     """
 
-    sections_parquet_path: str | Path | None = None
-
-    def __post_init__(self):
-        """Validate section-specific requirements."""
-        super().__post_init__()
-
-        if self.sections_parquet_path is None:
-            raise ValueError("sections_parquet_path is required for section retrieval")
+    # All attributes inherited from RetrievalSettings
+    pass
 
 
 class HydeRewrite(BaseModel):
@@ -468,54 +457,65 @@ Provide:
         raise
 
 
-def retrieve_segments(config: RetrievalConfig) -> SegmentCollection:
+def retrieve_segments(
+    collection: Any,  # chromadb.Collection
+    query_text: str,
+    settings: RetrievalSettings | None = None,
+) -> SegmentCollection:
     """Retrieve similar documents from the embedding index using semantic search.
 
     Args:
-        config: RetrievalConfig with all search parameters
+        collection: ChromaDB collection to query (required infrastructure)
+        query_text: Text to search for (required input)
+        settings: Optional retrieval settings (uses defaults if None)
 
     Returns:
         SegmentCollection: Query results containing documents, metadata, distances, and IDs
 
     Example:
-        >>> from legiscope.retrieve import RetrievalConfig
+        >>> from legiscope.retrieve import RetrievalSettings
         >>>
-        >>> # Basic retrieval
-        >>> config = RetrievalConfig(
+        >>> # Basic retrieval with defaults
+        >>> results = retrieve_segments(
         ...     collection=chroma_collection,
-        ...     query_text="parking regulations",
-        ...     jurisdiction_id="IL-WindyCity"
+        ...     query_text="parking regulations"
         ... )
-        >>> results = retrieve_segments(config)
+        >>>
+        >>> # With custom settings
+        >>> settings = RetrievalSettings(
+        ...     jurisdiction_id="IL-WindyCity",
+        ...     n_results=20
+        ... )
+        >>> results = retrieve_segments(chroma_collection, "parking regulations", settings)
         >>>
         >>> # With HYDE rewriting
         >>> from legiscope.llm_config import Config
-        >>> config = RetrievalConfig(
-        ...     collection=chroma_collection,
-        ...     query_text="where can I park my car",
+        >>> settings = RetrievalSettings(
         ...     use_hyde=True,
         ...     hyde_client=Config.get_fast_client(),
         ...     n_results=20
         ... )
-        >>> results = retrieve_segments(config)
+        >>> results = retrieve_segments(chroma_collection, "where can I park my car", settings)
         >>>
-        >>> # Multiple jurisdictions
-        >>> config = RetrievalConfig(
-        ...     collection=chroma_collection,
-        ...     query_text="zoning laws",
-        ...     where={"jurisdiction_id": {"$in": ["IL-WindyCity", "CA-LosAngeles"]}}
-        ... )
-        >>> results = retrieve_segments(config)
+        >>> # Reuse settings for multiple queries
+        >>> results1 = retrieve_segments(chroma_collection, "parking rules", settings)
+        >>> results2 = retrieve_segments(chroma_collection, "zoning laws", settings)
     """
-    query_text = config.query_text
+    # Validation
+    if not query_text or not query_text.strip():
+        raise ValueError("query_text cannot be empty")
+
+    # Use default settings if none provided
+    if settings is None:
+        settings = RetrievalSettings()
 
     # Apply HYDE rewriting if requested
-    if config.use_hyde:
+    if settings.use_hyde:
         # hyde_client is guaranteed to be non-None by validation in __post_init__
-        assert config.hyde_client is not None
+        assert settings.hyde_client is not None
         original_query = query_text
-        hyde_model = resolve_model_default(config.hyde_model, use_fast=True)
-        result = hyde_rewriter(config.hyde_client, query_text, hyde_model)
+        hyde_model = resolve_model_default(settings.hyde_model, use_fast=True)
+        result = hyde_rewriter(settings.hyde_client, query_text, hyde_model)
         query_text = result.rewritten_query
         logger.debug(f"Applied HYDE rewrite: '{original_query}' -> '{query_text}'")
 
@@ -523,27 +523,27 @@ def retrieve_segments(config: RetrievalConfig) -> SegmentCollection:
 
     # Combine jurisdiction filter with additional where filters
     combined_where: dict[str, Any] | None = None
-    if config.jurisdiction_id and config.where:
+    if settings.jurisdiction_id and settings.where:
         # Both types of filters - combine with AND
         combined_where = {
-            "$and": [{"jurisdiction_id": config.jurisdiction_id}, config.where]
+            "$and": [{"jurisdiction_id": settings.jurisdiction_id}, settings.where]
         }
         logger.debug(f"Combined filters: {combined_where}")
-    elif config.jurisdiction_id:
-        combined_where = {"jurisdiction_id": config.jurisdiction_id}
-        logger.debug(f"Using jurisdiction filter only: {config.jurisdiction_id}")
-    elif config.where:
-        combined_where = config.where
-        logger.debug(f"Using custom filters only: {config.where}")
+    elif settings.jurisdiction_id:
+        combined_where = {"jurisdiction_id": settings.jurisdiction_id}
+        logger.debug(f"Using jurisdiction filter only: {settings.jurisdiction_id}")
+    elif settings.where:
+        combined_where = settings.where
+        logger.debug(f"Using custom filters only: {settings.where}")
 
     # Generate embeddings explicitly to avoid dimension mismatch
-    embedding_client = config.embedding_client
+    embedding_client = settings.embedding_client
     if embedding_client is None:
         # Use the proper embedding client factory function
         embedding_client = get_embedding_client()
 
     query_embeddings = get_embeddings(
-        embedding_client, [query_text], config.embedding_model
+        embedding_client, [query_text], settings.embedding_model
     )
     # Convert to list of lists for ChromaDB compatibility
     if hasattr(query_embeddings, "tolist"):
@@ -555,11 +555,11 @@ def retrieve_segments(config: RetrievalConfig) -> SegmentCollection:
     # Cast to Any to satisfy ChromaDB typing expectations (avoids invariant list/ndarray mismatch)
     query_embeddings_any = cast(Any, query_embeddings_list)
 
-    results = config.collection.query(
+    results = collection.query(
         query_embeddings=query_embeddings_any,
-        n_results=config.n_results,
+        n_results=settings.n_results,
         where=combined_where,
-        where_document=config.where_document,
+        where_document=settings.where_document,
     )
 
     result_count = len(results["ids"][0]) if results["ids"] else 0
@@ -664,7 +664,12 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
         return JurisdictionStats(total_documents=0)
 
 
-def retrieve_sections(config: SectionRetrievalConfig) -> SectionCollection:
+def retrieve_sections(
+    collection: Any,  # chromadb.Collection
+    sections_parquet_path: str | Path,
+    query_text: str,
+    settings: SectionRetrievalSettings | None = None,
+) -> SectionCollection:
     """Retrieve sections by searching embeddings at segment level but returning full section context.
 
     This function performs semantic search at the segment level for precision, then aggregates
@@ -672,7 +677,10 @@ def retrieve_sections(config: SectionRetrievalConfig) -> SectionCollection:
     the full section content along with the specific matching segments.
 
     Args:
-        config: SectionRetrievalConfig with all parameters
+        collection: ChromaDB collection to query (required infrastructure)
+        sections_parquet_path: Path to sections.parquet file (required infrastructure)
+        query_text: Text to search for (required input)
+        settings: Optional section retrieval settings (uses defaults if None)
 
     Returns:
         SectionCollection: Section-level results with sections list and query info
@@ -682,60 +690,59 @@ def retrieve_sections(config: SectionRetrievalConfig) -> SectionCollection:
         FileNotFoundError: If sections parquet file cannot be found
 
     Example:
-        >>> from legiscope.retrieve import SectionRetrievalConfig
+        >>> from legiscope.retrieve import SectionRetrievalSettings
         >>>
-        >>> # Basic section retrieval
-        >>> config = SectionRetrievalConfig(
+        >>> # Basic section retrieval with defaults
+        >>> results = retrieve_sections(
         ...     collection=chroma_collection,
-        ...     query_text="parking regulations",
         ...     sections_parquet_path="./data/sections.parquet",
-        ...     jurisdiction_id="IL-WindyCity"
+        ...     query_text="parking regulations"
         ... )
-        >>> results = retrieve_sections(config)
+        >>>
+        >>> # With custom settings
+        >>> settings = SectionRetrievalSettings(
+        ...     jurisdiction_id="IL-WindyCity",
+        ...     n_results=10
+        ... )
+        >>> results = retrieve_sections(
+        ...     chroma_collection,
+        ...     "./data/sections.parquet",
+        ...     "parking regulations",
+        ...     settings
+        ... )
         >>>
         >>> # With HYDE rewriting
         >>> from legiscope.llm_config import Config
-        >>> config = SectionRetrievalConfig(
-        ...     collection=chroma_collection,
-        ...     query_text="where can I park my car",
-        ...     sections_parquet_path="./data/sections.parquet",
+        >>> settings = SectionRetrievalSettings(
         ...     use_hyde=True,
         ...     hyde_client=Config.get_fast_client()
         ... )
-        >>> results = retrieve_sections(config)
-        >>>
-        >>> # Access section content
-        >>> for section in results["sections"]:
-        ...     print(f"Section: {section['heading_text']}")
-        ...     print(f"Found {section['segment_count']} matching segments")
+        >>> results = retrieve_sections(
+        ...     chroma_collection,
+        ...     "./data/sections.parquet",
+        ...     "where can I park my car",
+        ...     settings
+        ... )
     """
-    # Validation happens in SectionRetrievalConfig.__post_init__
-    logger.info(f"Retrieving sections for query: '{config.query_text[:50]}...'")
+    # Validation
+    if not query_text or not query_text.strip():
+        raise ValueError("query_text cannot be empty")
 
-    # sections_parquet_path is guaranteed non-None by __post_init__ validation
-    sections_path = Path(cast(str | Path, config.sections_parquet_path))
+    # Use default settings if none provided
+    if settings is None:
+        settings = SectionRetrievalSettings()
+
+    logger.info(f"Retrieving sections for query: '{query_text[:50]}...'")
+
+    sections_path = Path(sections_parquet_path)
 
     if not sections_path.exists():
         raise FileNotFoundError(f"sections parquet file not found: {sections_path}")
 
-    # Create RetrievalConfig from SectionRetrievalConfig for segment retrieval
-    retrieval_config = RetrievalConfig(
-        collection=config.collection,
-        query_text=config.query_text,
-        n_results=config.n_results,
-        jurisdiction_id=config.jurisdiction_id,
-        where=config.where,
-        where_document=config.where_document,
-        use_hyde=config.use_hyde,
-        hyde_client=config.hyde_client,
-        hyde_model=config.hyde_model,
-        embedding_client=config.embedding_client,
-        embedding_model=config.embedding_model,
-    )
+    # Retrieve segments using the settings
+    segment_results = retrieve_segments(collection, query_text, settings)
 
-    segment_results = _retrieve_segment_results(retrieval_config)
-
-    original_query = config.query_text
+    original_query = query_text
     rewritten_query = None  # HYDE rewriting is handled in retrieve_segments, not exposed here
 
     if _has_no_results(segment_results):
@@ -1079,10 +1086,6 @@ def filter_sections(
     )
 
 
-def _retrieve_segment_results(config: RetrievalConfig) -> SegmentCollection:
-    """Retrieve segment-level results from embeddings."""
-    logger.debug("Step 1: Retrieving segment-level results")
-    return retrieve_segments(config)
 
 
 def _has_no_results(segment_results: SegmentCollection) -> bool:
