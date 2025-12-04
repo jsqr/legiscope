@@ -18,13 +18,13 @@ PROVIDER_CONFIG = {
         "mode": instructor.Mode.RESPONSES_TOOLS,
     },
     "mistral": {
-        "fast_model": "mistral-medium-latest",
-        "powerful_model": "magistral-medium-latest",
+        "fast_model": "mistral-small-2506",
+        "powerful_model": "mistral-medium-2508",
         "mode": instructor.Mode.MISTRAL_TOOLS,
     },
     "ollama": {
-        "fast_model": "gemma3:4b",
-        "powerful_model": "gpt-oss:20b",
+        "fast_model": "ministral-3",
+        "powerful_model": "ministral-3:14b",
         "mode": None,  # Ollama auto-configures the best mode
     },
 }

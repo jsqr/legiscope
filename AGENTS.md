@@ -122,12 +122,12 @@ results_df = run_queries(
 - Powerful model: `gpt-4.1` (for complex legal analysis)
 
 **Mistral Provider:**
-- Fast model: `mistral-medium-latest` (for quick tasks)
-- Powerful model: `magistral-medium-latest` (for complex reasoning)
+- Fast model: `mistral-small-2506` (for quick tasks)
+- Powerful model: `mistral-medium-2508` (for complex reasoning)
 
 **Ollama Provider:**
-- Fast model: `gemma3:4b` (for quick local tasks)
-- Powerful model: `gpt-oss:20b` (for complex local reasoning)
+- Fast model: `ministral-3` (for quick local tasks)
+- Powerful model: `ministral-3:14b` (for complex local reasoning)
 - Requires Ollama server running locally
 
 #### Example Setup
