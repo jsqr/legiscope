@@ -63,8 +63,8 @@ The library uses config objects for cleaner, more maintainable API:
 
 ```python
 from legiscope.utils import LLMConfig
-from legiscope.retrieve import SectionRetrievalConfig, retrieve_sections
-from legiscope.query import QueryConfig, BatchQueryConfig
+from legiscope.retrieve import SectionRetrievalSettings, retrieve_sections
+from legiscope.query import QuerySettings, BatchQuerySettings
 from legiscope.query import query_legal_documents, run_queries
 from legiscope.llm_config import Config
 import chromadb
@@ -73,40 +73,46 @@ import chromadb
 chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
 collection = chroma_client.get_collection("legal_code_all")
 
-# Example 1: Retrieve sections with config
-retrieval_config = SectionRetrievalConfig(
-    collection=collection,
-    query_text="What are the parking regulations?",
-    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
+# Example 1: Retrieve sections with settings
+retrieval_settings = SectionRetrievalSettings(
     jurisdiction_id="IL-WindyCity",
     n_results=10,
     use_hyde=True,
     hyde_client=Config.get_fast_client()
 )
-results = retrieve_sections(retrieval_config)
+results = retrieve_sections(
+    collection=collection,
+    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
+    query_text="What are the parking regulations?",
+    settings=retrieval_settings
+)
 
 # Example 2: Query with LLM analysis
 llm_config = LLMConfig(client=Config.get_powerful_client(), temperature=0.1)
-query_config = QueryConfig(
+query_settings = QuerySettings(
     llm=llm_config,
-    query="What are the parking regulations?",
-    retrieval_results=results,
     filter_relevance=True,
     relevance_threshold=0.7
 )
-response = query_legal_documents(query_config)
+response = query_legal_documents(
+    retrieval_results=results,
+    query="What are the parking regulations?",
+    settings=query_settings
+)
 
 # Example 3: Batch queries
-batch_config = BatchQueryConfig(
-    queries=["Query 1", "Query 2", "Query 3"],
-    jurisdiction_id="IL-WindyCity",
-    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
-    collection=collection,
+batch_settings = BatchQuerySettings(
     llm=llm_config,
     use_hyde=True,
     filter_relevance=True
 )
-results_df = run_queries(batch_config)
+results_df = run_queries(
+    collection=collection,
+    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
+    queries=["Query 1", "Query 2", "Query 3"],
+    jurisdiction_id="IL-WindyCity",
+    settings=batch_settings
+)
 ```
 
 #### Available Models by Provider
@@ -119,6 +125,11 @@ results_df = run_queries(batch_config)
 - Fast model: `mistral-medium-latest` (for quick tasks)
 - Powerful model: `magistral-medium-latest` (for complex reasoning)
 
+**Ollama Provider:**
+- Fast model: `gemma3:4b` (for quick local tasks)
+- Powerful model: `gpt-oss:20b` (for complex local reasoning)
+- Requires Ollama server running locally
+
 #### Example Setup
 
 ```bash
@@ -129,6 +140,10 @@ export OPENAI_API_KEY=your_openai_key
 # For Mistral (default)
 export LEGISCOPE_LLM_PROVIDER=mistral
 export MISTRAL_API_KEY=your_mistral_key
+
+# For Ollama (local)
+export LEGISCOPE_LLM_PROVIDER=ollama
+# Requires Ollama server running: ollama serve
 ```
 
 ### Embedding Model Configuration
@@ -328,6 +343,8 @@ uv pip list
 ## Key Dependencies
 
 - `openai`: OpenAI API client for embeddings and language models
+- `mistralai`: Mistral API client for embeddings and language models
+- `ollama`: Ollama client for local LLM inference
 - `instructor`: AI-powered function calls and structured outputs
 - `pytest`: Testing framework
 - `ruff`: Fast Python linter and formatter
