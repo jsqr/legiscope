@@ -7,6 +7,7 @@ import pytest
 
 from legiscope.embeddings import (
     create_embeddings_df,
+    EmbeddingConfig,
     get_embeddings,
 )
 
@@ -222,7 +223,8 @@ class TestCreateEmbeddingsDf:
             {"embedding": [0.4, 0.5, 0.6]},
         ]
 
-        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+        result = create_embeddings_df(df, mock_client, config)
 
         # Check structure
         assert len(result) == 2
@@ -246,15 +248,14 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        result = create_embeddings_df(
-            df,
-            mock_client,
-            "test-model",
-            "ollama",
+        config = EmbeddingConfig(
+            model="test-model",
+            provider="ollama",
             heading_col="custom_heading",
             text_col="custom_text",
             embedding_col="custom_embedding",
         )
+        result = create_embeddings_df(df, mock_client, config)
 
         assert "custom_embedding" in result.columns
         assert result["custom_embedding"].to_list()[0] == pytest.approx([0.1, 0.2, 0.3])
@@ -271,7 +272,8 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        create_embeddings_df(df, mock_client, "test-model", "ollama")
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+        create_embeddings_df(df, mock_client, config)
 
         # Should call with concatenated text
         expected_prompt = "# Title\n\nContent"
@@ -291,7 +293,8 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        create_embeddings_df(df, mock_client, "test-model", "ollama")
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+        create_embeddings_df(df, mock_client, config)
 
         # Should call with heading only
         mock_client.embeddings.assert_called_once_with(
@@ -310,7 +313,8 @@ class TestCreateEmbeddingsDf:
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
 
-        create_embeddings_df(df, mock_client, "test-model", "ollama")
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+        create_embeddings_df(df, mock_client, config)
 
         # Should call with text only
         mock_client.embeddings.assert_called_once_with(
@@ -328,7 +332,8 @@ class TestCreateEmbeddingsDf:
 
         mock_client = Mock()
 
-        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+        result = create_embeddings_df(df, mock_client, config)
 
         assert len(result) == 0
         assert "embedding" in result.columns
@@ -338,8 +343,9 @@ class TestCreateEmbeddingsDf:
     def test_create_embeddings_df_invalid_dataframe_type(self):
         """Test error handling for invalid DataFrame type."""
         invalid_df = "not a dataframe"  # type: ignore
+        config = EmbeddingConfig(model="test-model", provider="ollama")
         with pytest.raises(TypeError, match="df must be a polars DataFrame"):
-            create_embeddings_df(invalid_df, Mock(), "test-model", "ollama")  # type: ignore
+            create_embeddings_df(invalid_df, Mock(), config)  # type: ignore
 
     def test_create_embeddings_df_missing_columns(self):
         """Test error handling for missing required columns."""
@@ -351,9 +357,10 @@ class TestCreateEmbeddingsDf:
         )
 
         mock_client = Mock()
+        config = EmbeddingConfig(model="test-model", provider="ollama")
 
         with pytest.raises(ValueError, match="DataFrame missing required columns"):
-            create_embeddings_df(df, mock_client, "test-model", "ollama")
+            create_embeddings_df(df, mock_client, config)
 
     def test_create_embeddings_df_embedding_error(self):
         """Test error handling when embedding generation fails."""
@@ -366,9 +373,10 @@ class TestCreateEmbeddingsDf:
 
         mock_client = Mock()
         mock_client.embeddings.side_effect = Exception("Embedding failed")
+        config = EmbeddingConfig(model="test-model", provider="ollama")
 
         with pytest.raises(Exception, match="Embedding failed"):
-            create_embeddings_df(df, mock_client, "test-model", "ollama")
+            create_embeddings_df(df, mock_client, config)
 
     @patch("legiscope.embeddings.logger")
     def test_create_embeddings_df_logging(self, mock_logger):
@@ -382,8 +390,9 @@ class TestCreateEmbeddingsDf:
 
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
+        config = EmbeddingConfig(model="test-model", provider="ollama")
 
-        create_embeddings_df(df, mock_client, "test-model", "ollama")
+        create_embeddings_df(df, mock_client, config)
 
         # Should log info messages
         info_calls = [call[0][0] for call in mock_logger.info.call_args_list]
@@ -410,8 +419,9 @@ class TestCreateEmbeddingsDf:
         mock_client.embeddings.side_effect = [
             {"embedding": [0.1 * i, 0.2 * i, 0.3 * i]} for i in range(5)
         ]
+        config = EmbeddingConfig(model="test-model", provider="ollama")
 
-        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
+        result = create_embeddings_df(df, mock_client, config)
 
         assert len(result) == 5
         assert len(result["embedding"].to_list()) == 5
@@ -428,8 +438,9 @@ class TestCreateEmbeddingsDf:
 
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
+        config = EmbeddingConfig(model="test-model", provider="ollama")
 
-        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
+        result = create_embeddings_df(df, mock_client, config)
 
         # Check that embedding column is List(Float32)
         schema = result.schema
@@ -447,8 +458,9 @@ class TestCreateEmbeddingsDf:
 
         mock_client = Mock()
         mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
+        config = EmbeddingConfig(model="test-model", provider="ollama")
 
-        result = create_embeddings_df(df, mock_client, "test-model", "ollama")
+        result = create_embeddings_df(df, mock_client, config)
 
         # Should preserve all original columns plus embedding
         expected_columns = [
