@@ -281,4 +281,8 @@ Additional documentation is available in the `docs/` directory:
 
 - [Supporting Passages Validation](docs/VALIDATION_EXAMPLE.md) - Guide to automatic validation of LLM-generated supporting passages
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development setup, code style, commit conventions, and pull requests.
+
 Instructions for the bots: [AGENTS.md](AGENTS.md).
