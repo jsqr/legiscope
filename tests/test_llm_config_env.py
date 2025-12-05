@@ -28,8 +28,8 @@ class TestEnvironmentVariables:
     def test_default_provider_and_models(self):
         """Test default behavior without environment variables."""
         assert Config.get_llm_provider() == "mistral"
-        assert Config.get_fast_model() == "mistral-medium-latest"
-        assert Config.get_powerful_model() == "magistral-medium-latest"
+        assert Config.get_fast_model() == "mistral-small-2506"
+        assert Config.get_powerful_model() == "mistral-medium-2508"
 
     def test_provider_override_only(self):
         """Test provider override without model overrides."""
@@ -46,7 +46,7 @@ class TestEnvironmentVariables:
         assert Config.get_llm_provider() == "mistral"  # Default provider
         assert Config.get_fast_model() == "custom-fast-model"
         assert (
-            Config.get_powerful_model() == "magistral-medium-latest"
+            Config.get_powerful_model() == "mistral-medium-2508"
         )  # Default powerful
 
     def test_powerful_model_override_only(self):
@@ -54,7 +54,7 @@ class TestEnvironmentVariables:
         os.environ["LEGISCOPE_POWERFUL_MODEL"] = "custom-powerful-model"
 
         assert Config.get_llm_provider() == "mistral"  # Default provider
-        assert Config.get_fast_model() == "mistral-medium-latest"  # Default fast
+        assert Config.get_fast_model() == "mistral-small-2506"  # Default fast
         assert Config.get_powerful_model() == "custom-powerful-model"
 
     def test_both_model_overrides(self):
@@ -110,8 +110,8 @@ class TestEnvironmentVariables:
         os.environ["LEGISCOPE_POWERFUL_MODEL"] = ""
 
         # Empty strings should be treated as "not set" and fall back to defaults
-        assert Config.get_fast_model() == "mistral-medium-latest"
-        assert Config.get_powerful_model() == "magistral-medium-latest"
+        assert Config.get_fast_model() == "mistral-small-2506"
+        assert Config.get_powerful_model() == "mistral-medium-2508"
 
     def test_environment_variable_priority(self):
         """Test that environment variables take priority over provider defaults."""

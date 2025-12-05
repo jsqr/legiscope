@@ -125,6 +125,22 @@ class EmbeddingConfig:
     embedding_col: str = "embedding"
     id_col: str = "segment_idx"
 
+    def __post_init__(self):
+        """Validate configuration."""
+        if self.provider not in EMBEDDING_PROVIDER_CONFIG:
+            raise ValueError(
+                f"Unsupported provider: {self.provider}. "
+                f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
+            )
+        if not self.heading_col:
+            raise ValueError("heading_col cannot be empty")
+        if not self.text_col:
+            raise ValueError("text_col cannot be empty")
+        if not self.embedding_col:
+            raise ValueError("embedding_col cannot be empty")
+        if not self.id_col:
+            raise ValueError("id_col cannot be empty")
+
 
 @dataclass
 class PersistenceConfig:
@@ -137,6 +153,24 @@ class PersistenceConfig:
     metadata_cols: list[str] | None = None
     provider: str | None = None  # Embedding provider for collection naming
 
+    def __post_init__(self):
+        """Validate and normalize configuration."""
+        if not self.collection_name:
+            raise ValueError("collection_name cannot be empty")
+
+        # Convert string paths to Path objects
+        if isinstance(self.persist_directory, str):
+            self.persist_directory = Path(self.persist_directory)
+        if isinstance(self.parquet_path, str):
+            self.parquet_path = Path(self.parquet_path)
+
+        # Validate provider if specified
+        if self.provider and self.provider not in EMBEDDING_PROVIDER_CONFIG:
+            raise ValueError(
+                f"Unsupported provider: {self.provider}. "
+                f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
+            )
+
 
 @dataclass
 class JurisdictionConfig:
@@ -145,6 +179,72 @@ class JurisdictionConfig:
     jurisdiction_id: str | None = None
     state: str | None = None
     municipality: str | None = None
+
+    def __post_init__(self):
+        """Validate and derive jurisdiction information."""
+        # Auto-derive jurisdiction_id from state and municipality if needed
+        if not self.jurisdiction_id and self.state and self.municipality:
+            self.jurisdiction_id = f"{self.state}-{self.municipality}"
+
+        # Parse state and municipality from jurisdiction_id if not provided
+        if self.jurisdiction_id and "-" in self.jurisdiction_id:
+            if not self.state or not self.municipality:
+                parsed_state, parsed_municipality = self.jurisdiction_id.split("-", 1)
+                if not self.state:
+                    self.state = parsed_state
+                if not self.municipality:
+                    self.municipality = parsed_municipality
+
+
+@dataclass
+class CollectionConfig:
+    """Configuration for ChromaDB collection operations.
+
+    Handles collection naming, persistence, and provider-specific naming conventions.
+
+    Attributes:
+        persist_directory: Directory for ChromaDB persistence
+        collection_name: Base name of the collection (will be modified based on provider)
+        provider: Embedding provider for collection naming (appends provider suffix)
+
+    Example:
+        >>> config = CollectionConfig(provider="mistral")
+        >>> config.collection_name
+        'legal_code_mistral'
+
+        >>> config = CollectionConfig(collection_name="custom", provider="ollama")
+        >>> config.collection_name
+        'custom_ollama'
+    """
+
+    persist_directory: str | Path = "data/chroma_db"
+    collection_name: str = "legal_code_all"
+    provider: str | None = None
+
+    def __post_init__(self):
+        """Validate and normalize collection configuration."""
+        if not self.collection_name:
+            raise ValueError("collection_name cannot be empty")
+
+        # Convert string path to Path object
+        if isinstance(self.persist_directory, str):
+            self.persist_directory = Path(self.persist_directory)
+
+        # Validate provider if specified
+        if self.provider and self.provider not in EMBEDDING_PROVIDER_CONFIG:
+            raise ValueError(
+                f"Unsupported provider: {self.provider}. "
+                f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
+            )
+
+        # Auto-append provider suffix to collection name
+        if self.provider:
+            if self.collection_name == "legal_code_all":
+                # Default collection name - make provider-specific
+                self.collection_name = f"legal_code_{self.provider}"
+            elif not self.collection_name.endswith(f"_{self.provider}"):
+                # Custom collection name - append provider if not already present
+                self.collection_name = f"{self.collection_name}_{self.provider}"
 
 
 def _detect_embedding_provider(client) -> str:
@@ -355,11 +455,7 @@ def get_embeddings(
 def create_embeddings_df(
     df: pl.DataFrame,
     client,
-    model: str | None = None,
-    provider: str | None = None,
-    heading_col: str = "section_heading",
-    text_col: str = "segment_text",
-    embedding_col: str = "embedding",
+    config: EmbeddingConfig | None = None,
 ) -> pl.DataFrame:
     """Create embeddings DataFrame by augmenting segments with embedding vectors.
 
@@ -367,13 +463,9 @@ def create_embeddings_df(
     then adds them as a new column to the original DataFrame.
 
     Args:
-        df: DataFrame from create_segments_df() with segment information
-        client: Embedding client instance (use get_embedding_client() for configured client)
-        model: Name of the embedding model to use. If None, uses default for provider
-        provider: The embedding provider ("ollama" or "mistral"). If None, auto-detects from client
-        heading_col: Name of column containing section headings. Defaults to 'section_heading'
-        text_col: Name of column containing segment text. Defaults to 'segment_text'
-        embedding_col: Name of column to create for embeddings. Defaults to 'embedding'
+        df: DataFrame from create_segments_df() with segment information (required input)
+        client: Embedding client instance (required infrastructure)
+        config: Configuration for embedding operations (optional, uses defaults if None)
 
     Returns:
         pl.DataFrame: Original DataFrame with additional embedding column
@@ -384,17 +476,30 @@ def create_embeddings_df(
 
     Example:
         from legiscope.segment import create_segments_df
-        from legiscope.embeddings import get_embedding_client
-        client = get_embedding_client("ollama")
+        from legiscope.embeddings import get_embedding_client, EmbeddingConfig
+
+        # Using defaults
+        client = get_embedding_client("mistral")
         segments_df = create_segments_df(sections)
         embedded_df = create_embeddings_df(segments_df, client)
+
+        # Using custom config
+        config = EmbeddingConfig(
+            provider="ollama",
+            model="embeddinggemma",
+            text_col="custom_text"
+        )
+        embedded_df = create_embeddings_df(segments_df, client, config)
     """
-    logger.info(f"Creating embeddings DataFrame with model: {model or 'default'}")
+    # Use default config if not provided
+    config = config or EmbeddingConfig()
+
+    logger.info(f"Creating embeddings DataFrame with model: {config.model or 'default'}")
 
     if not isinstance(df, pl.DataFrame):
         raise TypeError(f"df must be a polars DataFrame, got {type(df)}")
 
-    required_columns = {heading_col, text_col}
+    required_columns = {config.heading_col, config.text_col}
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
         raise ValueError(f"DataFrame missing required columns: {missing_columns}")
@@ -405,19 +510,19 @@ def create_embeddings_df(
             "Empty DataFrame provided, returning with empty embeddings column"
         )
         return df.with_columns(
-            pl.lit([], dtype=POLARS_EMBEDDING_DTYPE).alias(embedding_col)
+            pl.lit([], dtype=POLARS_EMBEDDING_DTYPE).alias(config.embedding_col)
         )
 
     logger.debug(f"Processing {len(df)} rows for embedding generation")
     logger.debug(
-        f"Using columns: heading='{heading_col}', text='{text_col}', embedding='{embedding_col}'"
+        f"Using columns: heading='{config.heading_col}', text='{config.text_col}', embedding='{config.embedding_col}'"
     )
 
     # Concatenate heading and text for each segment
     concatenated_texts = []
     for i, row in enumerate(df.to_dicts()):
-        heading = row[heading_col] or ""
-        text = row[text_col] or ""
+        heading = row[config.heading_col] or ""
+        text = row[config.text_col] or ""
 
         # Combine heading and text with separator
         if heading and text:
@@ -437,7 +542,7 @@ def create_embeddings_df(
         f"Concatenated {len(concatenated_texts)} texts for embedding generation"
     )
 
-    embeddings = get_embeddings(client, concatenated_texts, model, provider)
+    embeddings = get_embeddings(client, concatenated_texts, config.model, config.provider)
 
     # If embeddings is a NumPy ndarray, convert to list-of-lists for Polars List column
     if hasattr(embeddings, "tolist"):
@@ -446,7 +551,7 @@ def create_embeddings_df(
         embeddings_list = embeddings
 
     result_df = df.with_columns(
-        pl.Series(embedding_col, embeddings_list, dtype=POLARS_EMBEDDING_DTYPE)
+        pl.Series(config.embedding_col, embeddings_list, dtype=POLARS_EMBEDDING_DTYPE)
     )
 
     logger.info(f"Successfully created embeddings DataFrame with {len(result_df)} rows")
@@ -637,41 +742,41 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
 
 
 def get_or_create_legal_collection(
-    persist_directory: str | Path = "data/chroma_db",
-    collection_name: str = "legal_code_all",
-    provider: str | None = None,
+    config: CollectionConfig | None = None,
 ) -> chromadb.Collection:
     """Get or create the centralized legal code collection.
 
     Args:
-        persist_directory: Directory for ChromaDB persistence. Defaults to 'data/chroma_db'
-        collection_name: Name of the collection. Defaults to 'legal_code_all'
-        provider: Embedding provider for collection naming. If provided, will create provider-specific collection
+        config: Configuration for collection operations (optional, uses defaults if None)
 
     Returns:
         chromadb.Collection: The legal code collection
+
+    Example:
+        # Using defaults
+        collection = get_or_create_legal_collection()
+
+        # Using custom config
+        config = CollectionConfig(
+            provider="mistral",
+            persist_directory="./custom_db"
+        )
+        collection = get_or_create_legal_collection(config)
     """
-    # Generate provider-specific collection name if provider is specified
-    final_collection_name = collection_name
-    if provider:
-        if collection_name == "legal_code_all":
-            # Default collection name - make provider-specific
-            final_collection_name = f"legal_code_{provider}"
-        elif not collection_name.endswith(f"_{provider}"):
-            # Custom collection name - append provider if not already present
-            final_collection_name = f"{collection_name}_{provider}"
+    # Use default config if not provided
+    config = config or CollectionConfig()
 
-    logger.info(f"Getting or creating legal collection: {final_collection_name}")
+    logger.info(f"Getting or creating legal collection: {config.collection_name}")
 
-    client = chromadb.PersistentClient(path=str(persist_directory))
+    client = chromadb.PersistentClient(path=str(config.persist_directory))
 
     # Create or get collection
     try:
-        collection = client.get_collection(name=final_collection_name)
-        logger.info(f"Using existing collection: {final_collection_name}")
+        collection = client.get_collection(name=config.collection_name)
+        logger.info(f"Using existing collection: {config.collection_name}")
     except Exception:
-        collection = client.create_collection(name=final_collection_name)
-        logger.info(f"Created new collection: {final_collection_name}")
+        collection = client.create_collection(name=config.collection_name)
+        logger.info(f"Created new collection: {config.collection_name}")
 
     return collection
 
@@ -680,40 +785,47 @@ def add_jurisdiction_embeddings(
     collection: chromadb.Collection,
     embeddings_df: pl.DataFrame,
     jurisdiction_id: str,
-    id_col: str = "segment_idx",
-    text_col: str = "segment_text",
-    embedding_col: str = "embedding",
-    metadata_cols: list[str] | None = None,
+    config: EmbeddingIndexConfig | None = None,
 ) -> None:
     """Add embeddings for a specific jurisdiction to the shared collection.
 
     Args:
-        collection: Existing ChromaDB collection
-        embeddings_df: DataFrame with embeddings data
-        jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
-        id_col: Name of column containing unique IDs. Defaults to 'segment_idx'
-        text_col: Name of column containing text content. Defaults to 'segment_text'
-        embedding_col: Name of column containing embedding vectors. Defaults to 'embedding'
-        metadata_cols: List of additional columns to include as metadata
+        collection: Existing ChromaDB collection (required infrastructure)
+        embeddings_df: DataFrame with embeddings data (required input)
+        jurisdiction_id: Unique identifier for jurisdiction (required input, e.g., 'IL-WindyCity')
+        config: Configuration for embedding index (optional, uses defaults if None)
 
     Raises:
         ValueError: If required columns are missing from DataFrame
+
+    Example:
+        # Using defaults
+        add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity")
+
+        # Using custom config
+        config = EmbeddingIndexConfig(
+            df=embeddings_df,
+            collection_name=collection.name,
+            jurisdiction_id="IL-WindyCity",
+            id_col="custom_id",
+            metadata_cols=["state", "municipality"]
+        )
+        add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity", config)
     """
     logger.info(
         f"Adding {len(embeddings_df)} embeddings for jurisdiction: {jurisdiction_id}"
     )
 
-    # Use the main create_embedding_index function but with existing collection
-    config = EmbeddingIndexConfig(
-        df=embeddings_df,
-        collection_name=collection.name,
-        persist_directory=None,  # Use existing collection
-        id_col=id_col,
-        text_col=text_col,
-        embedding_col=embedding_col,
-        metadata_cols=metadata_cols,
-        jurisdiction_id=jurisdiction_id,
-    )
+    # Build default config if not provided
+    if config is None:
+        config = EmbeddingIndexConfig(
+            df=embeddings_df,
+            collection_name=collection.name,
+            persist_directory=None,  # Use existing collection
+            jurisdiction_id=jurisdiction_id,
+        )
+
+    # Use the main create_embedding_index function
     create_embedding_index(config)
 
     logger.info(
@@ -780,11 +892,7 @@ def create_and_persist_embeddings(
     embeddings_df = create_embeddings_df(
         df=df,
         client=client,
-        model=emb_config.model,
-        provider=emb_config.provider,
-        heading_col=emb_config.heading_col,
-        text_col=emb_config.text_col,
-        embedding_col=emb_config.embedding_col,
+        config=emb_config,
     )
 
     # Step 2: Save parquet file if requested
