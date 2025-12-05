@@ -267,10 +267,18 @@ data/
 │       └── query.py     # Legal query processing with structured responses
 ├── tests/               # Test files (123 tests including HYDE functionality)
 ├── scripts/             # Utility scripts
+├── docs/                # Documentation
+│   └── VALIDATION_EXAMPLE.md  # Supporting passages validation guide
 ├── data/                # Data directory (not tracked by git)
 ├── pyproject.toml       # Project configuration and dependencies
 ├── Makefile            # Development commands
 └── AGENTS.md           # Detailed development documentation
 ```
+
+## Documentation
+
+Additional documentation is available in the `docs/` directory:
+
+- [Supporting Passages Validation](docs/VALIDATION_EXAMPLE.md) - Guide to automatic validation of LLM-generated supporting passages
 
 Instructions for the bots: [AGENTS.md](AGENTS.md).
