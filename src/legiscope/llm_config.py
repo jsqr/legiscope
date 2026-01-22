@@ -33,7 +33,7 @@ PROVIDER_CONFIG = {
 class Config:
     """Global configuration for legiscope."""
 
-    DEFAULT_TEMPERATURE = 0.1
+    DEFAULT_TEMPERATURE = 0.0
     DEFAULT_MAX_RETRIES = 3
 
     @classmethod
@@ -125,11 +125,26 @@ class Config:
 
     @classmethod
     def get_llm_params(cls, **kwargs) -> dict:
-        """Get default LLM parameters with optional overrides."""
+        """Get default LLM parameters with optional overrides.
+
+        For Ollama provider, automatically adds extra_body with num_ctx
+        if LEGISCOPE_OLLAMA_NUM_CTX is set in environment.
+        """
         params = {
             "temperature": cls.DEFAULT_TEMPERATURE,
             "max_retries": cls.DEFAULT_MAX_RETRIES,
         }
+
+        # Add Ollama-specific context limit if using Ollama provider
+        if cls.get_llm_provider() == "ollama":
+            num_ctx = os.getenv("LEGISCOPE_OLLAMA_NUM_CTX")
+            if num_ctx:
+                try:
+                    params["extra_body"] = {"num_ctx": int(num_ctx)}
+                    logger.debug(f"Ollama num_ctx set to {num_ctx}")
+                except ValueError:
+                    logger.warning(f"Invalid LEGISCOPE_OLLAMA_NUM_CTX value: {num_ctx}")
+
         params.update(kwargs)
         return params
 

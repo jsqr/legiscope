@@ -18,7 +18,7 @@ with app.setup:
 
     # Note: Load environment variables before running this notebook:
     #   export $(cat ../.env | grep -v '^#' | xargs)
-    #   uv run marimo edit demo_nb.py
+    #   uv run marimo edit notebooks/query_demo.py
 
     from legiscope.retrieve import (
         SectionRetrievalSettings,
@@ -57,9 +57,10 @@ def _(mo):
 
 @app.cell
 def _():
-    # Use environment variable for collection name, default to mistral
-    collection_name = os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_mistral")
-    chroma_path = "../data/chroma_db"
+    # Use environment variable for collection name, default to legal_code_all
+    collection_name = os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_all")
+    # Dynamically resolve path relative to this file
+    chroma_path = os.path.join(os.path.dirname(__file__), "..", "data", "chroma_db")
 
     chroma_client = chromadb.PersistentClient(path=chroma_path)
     collection = chroma_client.get_or_create_collection(name=collection_name)
@@ -149,10 +150,10 @@ def _():
     n_results = int(os.getenv("LEGISCOPE_N_RESULTS", "10"))
     use_hyde = os.getenv("LEGISCOPE_USE_HYDE", "false").lower() == "true"
 
-    jurisdiction_id = "IL-WindyCity"
+    jurisdiction_id = "CA-LosAngeles"
 
     # Sections parquet path for full section context (constructed from jurisdiction)
-    jurisdiction_path = "IL-WindyCity"
+    jurisdiction_path = "CA-LosAngeles"
     sections_parquet_path = os.path.join(
         os.path.dirname(__file__),
         "..",
@@ -365,7 +366,7 @@ def _(filtered_results, instructor_client, query):
     print("=== Query Processing ===")
 
     # Create query settings
-    llm_config = LLMConfig(client=instructor_client, temperature=0.1, max_retries=3)
+    llm_config = LLMConfig(client=instructor_client, temperature=0.0, max_retries=3)
     query_settings = QuerySettings(llm=llm_config)
 
     query_response = query_legal_documents(
