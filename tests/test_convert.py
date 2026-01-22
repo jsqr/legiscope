@@ -2,7 +2,7 @@
 
 import os
 import tempfile
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from pydantic import BaseModel
 import yaml
 
@@ -43,13 +43,14 @@ class TestConvertModule:
         mock_client.chat.completions.create.return_value = mock_response
 
         # Call function imported from convert module
-        result = ask(
-            client=mock_client,
-            prompt="Extract name and value from this text",
-            response_model=MockResponseModel,
-            model="gpt-4",
-            temperature=0.5,
-        )
+        with patch.dict(os.environ, {"LEGISCOPE_LLM_PROVIDER": "mistral"}):
+            result = ask(
+                client=mock_client,
+                prompt="Extract name and value from this text",
+                response_model=MockResponseModel,
+                model="gpt-4",
+                temperature=0.5,
+            )
 
         # Verify call was made correctly
         mock_client.chat.completions.create.assert_called_once_with(

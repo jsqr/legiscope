@@ -616,7 +616,7 @@ class TestSegmentText:
 
         assert len(segments) > 1
         # Each segment should be under the word limit
-        word_limit = int(50 * 0.78)  # Default words_per_token
+        word_limit = int(50 * 0.75)  # Default words_per_token
         for segment in segments:
             assert len(segment.split()) <= word_limit
 
@@ -654,7 +654,7 @@ class TestSegmentText:
         # Should split the long sentence
         assert len(segments) >= 1
         for segment in segments:
-            assert len(segment.split()) <= int(20 * 0.78)
+            assert len(segment.split()) <= int(20 * 0.75)
 
     def test_invalid_inputs(self):
         """Test error handling for invalid inputs."""
@@ -716,11 +716,13 @@ class TestSegmentText:
     def test_exact_token_limit_boundary(self):
         """Test text that exactly matches token limit."""
         # Create text that should exactly fit
-        target_words = int(50 * 0.78)  # word_limit for token_limit=50
+        target_words = int(
+            50 * 0.75
+        )  # word_limit for token_limit=50, words_per_token=0.75
         words = ["word"] * target_words
         text = " ".join(words)
 
-        segments = segment_text(text, token_limit=50)
+        segments = segment_text(text, token_limit=50, words_per_token=0.75)
 
         # Should create exactly one segment
         assert len(segments) == 1
@@ -811,7 +813,7 @@ Short conclusion paragraph."""
         assert len(segments) > 1
 
         # All segments should be under word limit
-        word_limit = int(40 * 0.78)
+        word_limit = int(40 * 0.75)
         for segment in segments:
             assert len(segment.split()) <= word_limit
 
@@ -1197,7 +1199,7 @@ class TestCreateSegmentsDf:
         assert len(result) >= 3
 
         # Check that all segments are under word limit
-        word_limit = int(50 * 0.78)
+        word_limit = int(50 * 0.75)
         for word_count in result["word_count"].to_list():
             assert word_count <= word_limit
 
