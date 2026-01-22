@@ -348,13 +348,15 @@ def _generate_embeddings_ollama(
     embeddings_list: list[list[float]] = []
     logger.info(f"Processing {len(texts)} texts individually (Ollama)")
 
-    # Ollama API format - individual processing (no batching support)
     for i, text in enumerate(texts):
-        response = client.embeddings(model=model, prompt=text)
-        if response is None or "embedding" not in response:
-            logger.error(f"Failed to get embedding for text: {text[:50]}...")
-            raise ValueError(f"Failed to get embedding for text: {text[:50]}...")
-        embeddings_list.append(list(response["embedding"]))
+        try:
+            response = client.embeddings(model=model, prompt=text)
+            if response is None or "embedding" not in response:
+                raise ValueError(f"Failed to get embedding for text: {text[:50]}...")
+            embeddings_list.append(list(response["embedding"]))
+        except Exception as e:
+            logger.error(f"Embedding error for segment {i}: {e}\n[Segment {i}] {text}")
+            raise ValueError(f"Embedding error for segment {i}: {e}") from e
 
         # Log progress for larger datasets
         if (i + 1) % BATCH_LOG_INTERVAL == 0 or i == len(texts) - 1:
@@ -381,7 +383,7 @@ EMBEDDING_PROVIDER_CONFIG = {
 }
 
 # Default embedding provider
-EMBEDDING_PROVIDER = "mistral"
+EMBEDDING_PROVIDER = "ollama"
 
 
 def get_embeddings(
@@ -494,7 +496,9 @@ def create_embeddings_df(
     # Use default config if not provided
     config = config or EmbeddingConfig()
 
-    logger.info(f"Creating embeddings DataFrame with model: {config.model or 'default'}")
+    logger.info(
+        f"Creating embeddings DataFrame with model: {config.model or 'default'}"
+    )
 
     if not isinstance(df, pl.DataFrame):
         raise TypeError(f"df must be a polars DataFrame, got {type(df)}")
@@ -539,10 +543,18 @@ def create_embeddings_df(
             logger.debug(f"Sample concatenated text: {combined[:100]}...")
 
     logger.debug(
-        f"Concatenated {len(concatenated_texts)} texts for embedding generation"
+        f"Concatenated {len(concatenated_texts)} texts for embedding generation."
     )
 
-    embeddings = get_embeddings(client, concatenated_texts, config.model, config.provider)
+    # Estimate max length in tokens (rough estimate using 0.75 words/token)
+    logger.debug(
+        f"Max length: {max(len(text.split()) / 0.75 for text in concatenated_texts)} tokens."
+    )
+
+    # Generate embeddings
+    embeddings = get_embeddings(
+        client, concatenated_texts, config.model, config.provider
+    )
 
     # If embeddings is a NumPy ndarray, convert to list-of-lists for Polars List column
     if hasattr(embeddings, "tolist"):
@@ -556,6 +568,46 @@ def create_embeddings_df(
 
     logger.info(f"Successfully created embeddings DataFrame with {len(result_df)} rows")
     return result_df
+
+
+def _get_or_create_legal_collection(
+    config: CollectionConfig | None = None,
+) -> chromadb.Collection:
+    """Get or create the centralized legal code collection.
+
+    Args:
+        config: Configuration for collection operations (optional, uses defaults if None)
+
+    Returns:
+        chromadb.Collection: The legal code collection
+
+    Example:
+        # Using defaults
+        collection = get_or_create_legal_collection()
+
+        # Using custom config
+        config = CollectionConfig(
+            provider="mistral",
+            persist_directory="./custom_db"
+        )
+        collection = get_or_create_legal_collection(config)
+    """
+    # Use default config if not provided
+    config = config or CollectionConfig()
+
+    logger.info(f"Getting or creating legal collection: {config.collection_name}")
+
+    client = chromadb.PersistentClient(path=str(config.persist_directory))
+
+    # Create or get collection
+    try:
+        collection = client.get_collection(name=config.collection_name)
+        logger.info(f"Using existing collection: {config.collection_name}")
+    except Exception:
+        collection = client.create_collection(name=config.collection_name)
+        logger.info(f"Created new collection: {config.collection_name}")
+
+    return collection
 
 
 def _add_documents_to_collection(
@@ -610,6 +662,7 @@ class EmbeddingIndexConfig:
         metadata_cols: List of additional columns to include as metadata. If None, uses all non-ID/text/embedding columns
         jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
     """
+
     df: pl.DataFrame
     collection_name: str = "legal_code_all"
     persist_directory: str | Path | None = None
@@ -652,7 +705,9 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     if config.metadata_cols is None:
         # Use all columns except the main ones as metadata
         config.metadata_cols = [
-            col for col in config.df.columns if col not in {config.id_col, config.text_col, config.embedding_col}
+            col
+            for col in config.df.columns
+            if col not in {config.id_col, config.text_col, config.embedding_col}
         ]
         logger.debug(f"Auto-detected metadata columns: {config.metadata_cols}")
 
@@ -661,22 +716,15 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     if missing_metadata:
         raise ValueError(f"metadata columns not found: {missing_metadata}")
 
-    # Initialize ChromaDB client
-    if config.persist_directory:
-        logger.debug(f"Creating persistent ChromaDB client at: {config.persist_directory}")
-        client = chromadb.PersistentClient(path=str(config.persist_directory))
-    else:
-        logger.debug("Creating in-memory ChromaDB client")
-        client = chromadb.Client()
+    # Prepare CollectionConfig
+    collection_config = CollectionConfig(
+        persist_directory=config.persist_directory or "data/chroma_db",
+        collection_name=config.collection_name,
+    )
 
-    # Create or get collection
-    logger.debug(f"Creating/getting collection: {config.collection_name}")
-    try:
-        collection = client.get_collection(name=config.collection_name)
-        logger.info(f"Using existing collection: {config.collection_name}")
-    except Exception:
-        collection = client.create_collection(name=config.collection_name)
-        logger.info(f"Created new collection: {config.collection_name}")
+    # Get or create collection
+    collection = _get_or_create_legal_collection(collection_config)
+    logger.info(f"Using collection: {collection.name}")
 
     # Prepare data for ChromaDB
     logger.debug("Preparing data for ChromaDB insertion")
@@ -727,7 +775,9 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
                 if parsed_municipality:
                     metadata["municipality"] = parsed_municipality
                 metadata_list.append(metadata)
-            logger.debug(f"Prepared jurisdiction-only metadata for {len(config.df)} documents")
+            logger.debug(
+                f"Prepared jurisdiction-only metadata for {len(config.df)} documents"
+            )
         else:
             metadata_list = None
             logger.debug("No metadata columns specified")
@@ -738,46 +788,6 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     logger.info(
         f"Successfully created embedding index with {collection.count()} documents"
     )
-    return collection
-
-
-def get_or_create_legal_collection(
-    config: CollectionConfig | None = None,
-) -> chromadb.Collection:
-    """Get or create the centralized legal code collection.
-
-    Args:
-        config: Configuration for collection operations (optional, uses defaults if None)
-
-    Returns:
-        chromadb.Collection: The legal code collection
-
-    Example:
-        # Using defaults
-        collection = get_or_create_legal_collection()
-
-        # Using custom config
-        config = CollectionConfig(
-            provider="mistral",
-            persist_directory="./custom_db"
-        )
-        collection = get_or_create_legal_collection(config)
-    """
-    # Use default config if not provided
-    config = config or CollectionConfig()
-
-    logger.info(f"Getting or creating legal collection: {config.collection_name}")
-
-    client = chromadb.PersistentClient(path=str(config.persist_directory))
-
-    # Create or get collection
-    try:
-        collection = client.get_collection(name=config.collection_name)
-        logger.info(f"Using existing collection: {config.collection_name}")
-    except Exception:
-        collection = client.create_collection(name=config.collection_name)
-        logger.info(f"Created new collection: {config.collection_name}")
-
     return collection
 
 
