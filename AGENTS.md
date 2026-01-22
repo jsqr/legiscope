@@ -48,7 +48,7 @@ powerful_client = Config.get_powerful_client()  # Uses magistral-medium-latest
 # Create reusable LLM configuration
 llm_config = LLMConfig(
     client=Config.get_fast_client(),
-    temperature=0.1,
+    temperature=0.0,
     max_retries=3
 )
 
@@ -88,7 +88,7 @@ results = retrieve_sections(
 )
 
 # Example 2: Query with LLM analysis
-llm_config = LLMConfig(client=Config.get_powerful_client(), temperature=0.1)
+llm_config = LLMConfig(client=Config.get_powerful_client(), temperature=0.0)
 query_settings = QuerySettings(
     llm=llm_config,
     filter_relevance=True,
