@@ -19,6 +19,7 @@ from pathlib import Path
 import polars as pl
 import chromadb
 from loguru import logger
+import csv
 
 # Add src to path
 src_path = Path(__file__).parent.parent / "src"
@@ -80,6 +81,12 @@ def main():
         default="DPL_2025_Consolidated",
         help="MonQcle series title to use for ground truth"
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        default=False,
+        help="Enable debug mode to save intermediate results"
+    )
     
     args = parser.parse_args()
 
@@ -88,6 +95,15 @@ def main():
     # =========================================================================
     # Uses shared query loading logic (returns list[QueryInput])
     query_inputs = load_queries(args.queries_path)
+
+    if args.debug:
+        debug_dir = Path(f"data/output/{args.jurisdiction_id}/debug")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        queries_path = debug_dir / "loaded_queries.csv"
+        with open(queries_path, 'w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(query_inputs)
+        logger.info(f"Debug: Saved loaded queries to {queries_path}")
     
     if args.test_limit:
         query_inputs = query_inputs[:args.test_limit]
@@ -139,6 +155,13 @@ def main():
 
     # Melt to long format (now handles everything including combined vars)
     ground_truth_df = melt_monqcle_to_long(monqcle_row, variable_names)
+
+    if args.debug:
+        debug_dir = Path(f"data/output/{args.jurisdiction_id}/debug")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        melted_path = debug_dir / "melted_monqcle.csv"
+        ground_truth_df.write_csv(melted_path)
+        logger.info(f"Debug: Saved melted MonQcle data to {melted_path}")
 
     # =========================================================================
     # Step 3: Initialize Resources
@@ -197,6 +220,13 @@ def main():
         on="variable_name",
         how="left"
     )
+
+    if args.debug:
+        debug_dir = Path(f"data/output/{args.jurisdiction_id}/debug")
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_path = debug_dir / "queries_and_ground_truth.csv"
+        joined_df.write_csv(debug_path)
+        logger.info(f"Debug: Saved queries and ground truth to {debug_path}")
     
     # Check for missing ground truth
     missing_truth = joined_df.filter(pl.col("ground_truth").is_null())
