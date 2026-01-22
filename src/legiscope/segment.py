@@ -15,8 +15,8 @@ import re
 import polars as pl
 
 # Text segmentation constants
-DEFAULT_TOKEN_LIMIT = 1024  # Maximum approximate tokens per segment
-DEFAULT_WORDS_PER_TOKEN = 0.78  # Approximate words per token ratio for embedding models
+DEFAULT_TOKEN_LIMIT = 256  # Maximum approximate tokens per segment
+DEFAULT_WORDS_PER_TOKEN = 0.75  # Approximate words per token ratio for embedding models
 
 
 def divide_into_sections(markdown_text: str) -> pl.DataFrame:
@@ -250,15 +250,16 @@ def segment_text(
     """
     Segment text into chunks suitable for processing and analysis.
 
-    Split text into segments that are approximately under the token limit using
-    word-based approximation. Prioritizes paragraph boundaries over sentence
+
+    Split text into segments that are approximately under the token limit (default: 256)
+    using word-based approximation. Prioritizes paragraph boundaries over sentence
     boundaries to maintain semantic coherence, with fallback to sentence and
     word-based splitting when needed.
 
     Args:
         text: Input text to be segmented
-        token_limit: Maximum approximate tokens per segment (default: 1024)
-        words_per_token: Approximate words per token ratio (default: 0.78)
+        token_limit: Maximum approximate tokens per segment (default: 256)
+        words_per_token: Approximate words per token ratio (default: 0.75)
                       This can be adjusted based on the specific model.
                       Note: Using word-based approximation for local embedding models
                       where exact tokenization may not be readily available.
@@ -499,8 +500,8 @@ def add_segments_to_sections(
     Args:
         df: DataFrame from divide_into_sections() with section information
         text_column: Name of column containing text to segment (default: "body_text")
-        token_limit: Maximum approximate tokens per segment (default: 1024)
-        words_per_token: Approximate words per token ratio (default: 0.78)
+        token_limit: Maximum approximate tokens per segment (default: 256)
+        words_per_token: Approximate words per token ratio (default: 0.75)
 
     Returns:
         DataFrame with additional columns:
@@ -582,8 +583,8 @@ def create_segments_df(
     Args:
         df: DataFrame from divide_into_sections() with section information
         text_column: Name of column containing text to segment (default: "body_text")
-        token_limit: Maximum approximate tokens per segment (default: 1024)
-        words_per_token: Approximate words per token ratio (default: 0.78)
+        token_limit: Maximum approximate tokens per segment (default: 256)
+        words_per_token: Approximate words per token ratio (default: 0.75)
 
     Returns:
         pl.DataFrame: Flattened DataFrame with one row per segment and columns:
@@ -638,8 +639,25 @@ def create_segments_df(
         if text is None or not text.strip():
             continue
 
+        # Adjust token limit based on the heading length to ensure combined size (heading + text)
+        # does not exceed embedding model context limit
+        heading_words = len(heading_text.split())
+        heading_tokens = int(heading_words / words_per_token)
+
+        # Ensure we always have a positive token limit for segmentation
+        # If heading is long, we still need to segment body text into reasonable chunks
+        # We allow exceeding the strict token_limit in this edge case to prevent crashing
+        min_tokens = 20
+        adjusted_token_limit = max(min_tokens, token_limit - heading_tokens)
+
         # Create segments for non-empty text
-        segments = segment_text(text, token_limit, words_per_token)
+        segments = segment_text(text, adjusted_token_limit, words_per_token)
+
+        # Validate that no segment exceeds the adjusted token limit
+        for segment in segments:
+            assert len(segment.split()) <= adjusted_token_limit * words_per_token, (
+                f"Segment exceeds token limit: {segment}"
+            )
 
         # Create a row for each segment
         for segment_position, segment_content in enumerate(segments):
