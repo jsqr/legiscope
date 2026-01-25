@@ -8,6 +8,7 @@ Usage:
 
 import sys
 from pathlib import Path
+import polars as pl
 
 # Load environment variables from .env file
 try:
@@ -87,13 +88,21 @@ def segment_legal_code(jurisdiction_path: str) -> None:
         sections_df = divide_into_sections(content)
         sections_df = add_parent_relationships(sections_df)
 
+        # Add total word count for heading_text + body_text
+        sections_df = sections_df.with_columns(
+            (pl.col("heading_text") + " " + pl.col("body_text"))
+            .str.split(" ")
+            .list.len()
+            .alias("section_word_count")
+        )
+
         print("Creating segments...")
         # Create segments
         segments_df = create_segments_df(
             sections_df,
             text_column="body_text",
-            token_limit=1024,
-            words_per_token=0.78,
+            token_limit=256,
+            words_per_token=0.75,
         )
 
         # Save DataFrames
