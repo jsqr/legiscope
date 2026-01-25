@@ -9,7 +9,6 @@ Usage:
 import os
 import sys
 from pathlib import Path
-
 import polars as pl
 
 # Load environment variables from .env file
@@ -20,6 +19,9 @@ try:
 except ImportError:
     pass  # python-dotenv not installed, continue without it
 
+# Add src to path for imports - must come before legiscope imports
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+
 from legiscope.embeddings import (
     EmbeddingConfig,
     JurisdictionConfig,
@@ -28,9 +30,6 @@ from legiscope.embeddings import (
     get_default_model,
     get_embedding_client,
 )
-
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 # Embedding provider configuration from environment
 EMBEDDING_PROVIDER = os.getenv(

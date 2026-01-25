@@ -13,7 +13,7 @@ from legiscope.utils import ask, resolve_model_default
 
 # Constants for retrieval and LLM operations
 DEFAULT_N_RESULTS = 10  # Default number of results to retrieve from embeddings
-DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal analysis
+DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal analysis
 DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
 DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
 
@@ -63,7 +63,9 @@ class SectionResult:
     matching_segments: list[SegmentMatch]
     relevance_score: float
     segment_count: int
-    llm_assessed: bool = False  # True if relevance_score is from LLM, False if from embedding distance
+    llm_assessed: bool = (
+        False  # True if relevance_score is from LLM, False if from embedding distance
+    )
 
 
 @dataclass
@@ -743,7 +745,9 @@ def retrieve_sections(
     segment_results = retrieve_segments(collection, query_text, settings)
 
     original_query = query_text
-    rewritten_query = None  # HYDE rewriting is handled in retrieve_segments, not exposed here
+    rewritten_query = (
+        None  # HYDE rewriting is handled in retrieve_segments, not exposed here
+    )
 
     if _has_no_results(segment_results):
         logger.info("No segment results found")
@@ -841,9 +845,7 @@ def _validate_filter_inputs(
     if not 0.0 <= threshold <= 1.0:
         raise ValueError(f"threshold must be between 0 and 1, got {threshold}")
 
-    logger.info(
-        f"Filtering {len(results.ids[0])} results for query: '{query[:30]}...'"
-    )
+    logger.info(f"Filtering {len(results.ids[0])} results for query: '{query[:30]}...'")
 
 
 def _assess_document_relevance(
@@ -944,7 +946,9 @@ def _reconstruct_filtered_results(
         ids=[filtered_ids],
         documents=[filtered_documents],
         distances=[filtered_distances],
-        metadatas=[filtered_metadatas] if any(m is not None for m in filtered_metadatas) else None,
+        metadatas=[filtered_metadatas]
+        if any(m is not None for m in filtered_metadatas)
+        else None,
         filtering_metadata=FilteringMetadata(
             original_count=original_count,
             filtered_count=filtered_count,
@@ -1084,8 +1088,6 @@ def filter_sections(
             assessments=assessments,
         ),
     )
-
-
 
 
 def _has_no_results(segment_results: SegmentCollection) -> bool:
