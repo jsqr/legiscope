@@ -177,26 +177,24 @@ The pipeline can optionally run a batch of queries against the processed legal c
 
 ```bash
 # Run pipeline with queries
-./scripts/pipeline.sh CA LosAngeles data/queries/example_queries.txt
+./scripts/pipeline.sh CA LosAngeles data/queries/test_queries.csv
 ```
 
 **Query File Format:**
 
-- One query per paragraph
-- Paragraphs separated by double newlines (`\n\n`)
-- See `data/queries/example_queries.txt` for examples
+- CSV format with a "question" column
+- One query per row
 
-**Example queries file:**
+**Example queries file (queries.csv):**
 
-```{txt}
-Are there restrictions on selling drug paraphernalia in this jurisdiction?
-
-What are the parking regulations for residential areas?
-
-Do I need a permit to operate a home-based business?
+```csv
+question
+"Are there restrictions on selling drug paraphernalia in this jurisdiction?"
+"What are the parking regulations for residential areas?"
+"Do I need a permit to operate a home-based business?"
 ```
 
-Query results are saved to `data/laws/{JURISDICTION}/query_results.parquet` and include:
+Query results are saved to `data/output/{JURISDICTION}/query_results.csv` and include:
 
 - Short answer to each query
 - Detailed legal reasoning
@@ -242,14 +240,18 @@ data/
 │       ├── processed/              # Processed text files and intermediate results
 │       │   ├── code.txt            # Converted plain text
 │       │   └── code.md             # Structured markdown
-│       ├── tables/                 # Structured data tables and exports
-│       │   ├── sections.parquet    # Section-level data
-│       │   ├── segments.parquet    # Segment-level data
-│       │   └── embeddings.parquet  # Generated embeddings
-│       └── query_results.parquet   # Query results (if queries were run)
+│       └── tables/                 # Structured data tables and exports
+│           ├── sections.parquet    # Section-level data
+│           ├── segments.parquet    # Segment-level data
+│           └── embeddings.parquet  # Generated embeddings
+├── chroma_db/                      # ChromaDB vector database
 ├── queries/                        # Query templates and examples
 │   └── example_queries.txt         # Example legal queries
-└── chroma_db/                      # ChromaDB vector database
+├── output/                         # LLM query output
+│   └── {state}-{municipality}/     # Jurisdiction-specific directories
+│       └── query_results.parquet   # Query results (if queries were run)
+└── monqcle_data/                   # Human-annotated MonQcle data
+        └── monqcle_data.csv        # Data file of human-answered legal questions
 ```
 
 ### Project Structure

@@ -50,7 +50,7 @@ source .venv/bin/activate && python scripts/create_embeddings.py "data/laws/$JUR
 if [[ -n "$QUERIES_FILE" ]] && [[ -f "$QUERIES_FILE" ]]; then
     echo "Step 6: Running queries from $QUERIES_FILE..."
     SECTIONS_PATH="data/laws/$JURISDICTION_NAME/tables/sections.parquet"
-    OUTPUT_PATH="data/laws/$JURISDICTION_NAME/query_results.parquet"
+    OUTPUT_PATH="data/output/$JURISDICTION_NAME/query_results.parquet"
     
     source .venv/bin/activate && python scripts/run_queries.py \
         --queries-path "$QUERIES_FILE" \
@@ -68,5 +68,5 @@ fi
 echo "Pipeline completed successfully for $JURISDICTION_NAME!"
 echo "Files created in: data/laws/$JURISDICTION_NAME"
 if [[ -n "$QUERIES_FILE" ]] && [[ -f "$QUERIES_FILE" ]]; then
-    echo "Query results: data/laws/$JURISDICTION_NAME/query_results.parquet"
+    echo "Query results: data/output/$JURISDICTION_NAME/query_results.parquet"
 fi

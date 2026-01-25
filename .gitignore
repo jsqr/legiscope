@@ -173,3 +173,12 @@ cython_debug/
 
 .vscode/
 .claude/
+
+# Local debug utilities
+scripts/debug_prompt_size.py
+
+# Ollama Model File
+Modelfile
+
+# Local macOS system files
+.DS_Store
