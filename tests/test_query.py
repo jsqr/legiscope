@@ -354,5 +354,3 @@ class TestValidateSupportingPassages:
 
         # Should complete without errors (warnings logged to stderr via loguru)
         _validate_supporting_passages(response, [])
-
-

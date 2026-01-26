@@ -355,7 +355,10 @@ class TestFilterResults:
         # Mock relevance assessments
         mock_assessments = [
             RelevanceAssessment(
-                is_relevant=True, relevance_score=0.85, confidence=0.9, reasoning="Relevant"
+                is_relevant=True,
+                relevance_score=0.85,
+                confidence=0.9,
+                reasoning="Relevant",
             ),
             RelevanceAssessment(
                 is_relevant=False,
@@ -364,7 +367,10 @@ class TestFilterResults:
                 reasoning="Not relevant",
             ),
             RelevanceAssessment(
-                is_relevant=True, relevance_score=0.7, confidence=0.7, reasoning="Relevant"
+                is_relevant=True,
+                relevance_score=0.7,
+                confidence=0.7,
+                reasoning="Relevant",
             ),
         ]
 
@@ -533,7 +539,10 @@ class TestFilterResults:
 
         mock_assessments = [
             RelevanceAssessment(
-                is_relevant=True, relevance_score=0.85, confidence=0.9, reasoning="Relevant"
+                is_relevant=True,
+                relevance_score=0.85,
+                confidence=0.9,
+                reasoning="Relevant",
             ),
             RelevanceAssessment(
                 is_relevant=False,

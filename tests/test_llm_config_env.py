@@ -45,9 +45,7 @@ class TestEnvironmentVariables:
 
         assert Config.get_llm_provider() == "mistral"  # Default provider
         assert Config.get_fast_model() == "custom-fast-model"
-        assert (
-            Config.get_powerful_model() == "mistral-medium-2508"
-        )  # Default powerful
+        assert Config.get_powerful_model() == "mistral-medium-2508"  # Default powerful
 
     def test_powerful_model_override_only(self):
         """Test powerful model override without provider change."""

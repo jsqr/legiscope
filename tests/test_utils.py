@@ -81,7 +81,7 @@ class TestAskFunction:
             ],
             response_model=MockResponseModel,
             model="gpt-4",
-            temperature=0.1,  # Default parameter
+            temperature=0.0,  # Default parameter
             max_retries=3,  # Default parameter
         )
 
@@ -118,6 +118,6 @@ class TestAskFunction:
         mock_client.chat.completions.create.assert_called_once_with(
             messages=[{"role": "user", "content": "test prompt"}],
             response_model=MockResponseModel,
-            temperature=0.1,
+            temperature=0.0,
             max_retries=3,
         )
