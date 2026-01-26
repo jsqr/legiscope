@@ -2,10 +2,14 @@
 Query processing module for the legiscope package.
 """
 
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, cast
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+from pydantic import ValidationError
 
 import polars as pl
 from loguru import logger
@@ -21,10 +25,20 @@ from legiscope.retrieve import (
 from legiscope.utils import ask, LLMConfig
 
 # Constants for query processing
-DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal analysis
+DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal analysis
 DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
 DEFAULT_N_RESULTS = 10  # Default number of results to retrieve
 DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
+DEFAULT_LLM_TIMEOUT_SECONDS = float(os.getenv("LEGISCOPE_LLM_TIMEOUT", "300"))
+
+
+@dataclass
+class QueryInput:
+    """Structure for a single query input with metadata."""
+
+    question: str
+    variable_name: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -100,7 +114,7 @@ class BatchQuerySettings:
         >>>
         >>> llm_config = LLMConfig(
         ...     client=Config.get_powerful_client(),
-        ...     temperature=0.1
+        ...     temperature=0.0
         ... )
         >>> settings = BatchQuerySettings(
         ...     llm=llm_config,
@@ -147,6 +161,69 @@ class BatchQuerySettings:
             logger.debug("BatchQuerySettings: Using default fast client")
 
 
+def load_queries(
+    file_path: str | Path, adjust_for_dataset: bool = True
+) -> list[QueryInput]:
+    """Read queries from CSV file and return as list of QueryInput objects.
+
+    This handles reading the 'question' and 'variable_name' columns, and optionally
+    applying dataset-specific adjustments (like prepending context regarding drug paraphernalia
+    laws based on content detection).
+
+    Args:
+        file_path: Path to the CSV file containing queries
+        adjust_for_dataset: Whether to apply dataset-specific cleaning/context logic (default True)
+
+    Returns:
+        List of structured QueryInput objects
+    """
+    path = Path(file_path)
+    try:
+        df = pl.read_csv(path)
+    except Exception as e:
+        raise ValueError(f"Error reading queries file: {e}")
+
+    if "question" not in df.columns:
+        raise ValueError(
+            f"CSV file must contain a 'question' column. Columns found: {df.columns}"
+        )
+
+    # Filter out empty questions
+    df = df.filter(
+        pl.col("question").is_not_null() & (pl.col("question").str.strip_chars() != "")
+    )
+
+    # Dataset-specific logic (ported from scripts/run_queries.py)
+    if adjust_for_dataset and not df.is_empty():
+        first_query = str(df["question"][0]).lower()
+        if "drug paraphernalia" in first_query:
+            context = "This query is about ordinance that prohibits drug paraphernalia-related activities."
+            df = df.with_columns(
+                (pl.lit(context) + " " + pl.col("question").cast(pl.String)).alias(
+                    "question"
+                )
+            )
+
+            # Exclude irrelevant queries if variable_name exists
+            if "variable_name" in df.columns:
+                rows_to_exclude = ["dp_database", "dp_url", "dp_note"]
+                df = df.filter(~pl.col("variable_name").is_in(rows_to_exclude))
+
+    # helper to convert row to QueryInput
+    def _row_to_input(row):
+        return QueryInput(
+            question=str(row["question"]).strip(),
+            variable_name=str(row["variable_name"])
+            if "variable_name" in row and row["variable_name"] is not None
+            else None,
+            metadata={
+                k: v for k, v in row.items() if k not in ["question", "variable_name"]
+            },
+        )
+
+    return [_row_to_input(row) for row in df.to_dicts()]
+
+
 class LegalQueryResponse(BaseModel):
     """Structured response for legal queries with citations and reasoning."""
 
@@ -177,7 +254,7 @@ def _validate_supporting_passages(
     sections: list[SectionResult],
     exact_match_threshold: float = 1.0,
     fuzzy_match_threshold: float = 0.9,
-) -> None:
+) -> list[float]:
     """
     Validate that supporting passages exist in retrieved text with fuzzy matching.
 
@@ -192,7 +269,7 @@ def _validate_supporting_passages(
         fuzzy_match_threshold: Similarity threshold for warning about close matches (default 0.9)
 
     Returns:
-        None. Logs warnings for passages that don't match the retrieved text.
+        list of float similarity scores for each supporting passage compared to retrieved text.
 
     Example warnings:
         - Exact match not found: "Supporting passage 1 not found in retrieved text..."
@@ -200,20 +277,34 @@ def _validate_supporting_passages(
         - Hallucination summary: "HALLUCINATION WARNING: 2/5 supporting passages not found..."
     """
     if not response.supporting_passages:
-        return
+        return []
 
-    # Collect all available text from sections and segments
+    logger.info(
+        f"Validating {len(response.supporting_passages)} supporting passages against retrieved text"
+    )
+
+    # Collect text from matching sections and segments only
+    # Uses only first 1000 words of section body to avoid excessive length (same as logic used in _prepare_legal_context)
     all_texts = []
     for section in sections:
-        all_texts.append(section.body_text)
+        if section.body_text:
+            words = section.body_text.split()
+            trunc_text = " ".join(words[:1000])
+            if len(words) > 1000:
+                trunc_text += "... [content truncated]"
+            all_texts.append(trunc_text)
+        else:
+            all_texts.append("[No body text]")
+
         for segment in section.matching_segments:
             if segment.segment_text:
                 all_texts.append(segment.segment_text)
 
     if not all_texts:
         logger.warning("No text available to validate supporting passages against")
-        return
+        return []
 
+    similarity_scores = []
     unmatched_count = 0
     for i, passage in enumerate(response.supporting_passages):
         passage_stripped = passage.strip()
@@ -222,7 +313,8 @@ def _validate_supporting_passages(
         exact_match = any(passage_stripped in text for text in all_texts)
 
         if exact_match:
-            logger.debug(f"Supporting passage {i+1} validated (exact match)")
+            logger.debug(f"Supporting passage {i + 1} validated (exact match)")
+            similarity_scores.append(1.0)
             continue
 
         # Try fuzzy matching to detect near-misses or distortions
@@ -267,12 +359,12 @@ def _validate_supporting_passages(
         # Log appropriate warning based on similarity score
         if best_similarity >= exact_match_threshold:
             logger.debug(
-                f"Supporting passage {i+1} validated (fuzzy match: {best_similarity:.2f})"
+                f"Supporting passage {i + 1} validated (fuzzy match: {best_similarity:.2f})"
             )
         elif best_similarity >= fuzzy_match_threshold:
             unmatched_count += 1
             logger.warning(
-                f"Supporting passage {i+1} has close match (similarity: {best_similarity:.2f}) "
+                f"Supporting passage {i + 1} has close match (similarity: {best_similarity:.2f}) "
                 f"but not exact - possible LLM distortion:\n"
                 f"  LLM passage: {passage_stripped[:150]}...\n"
                 f"  Best match:  {best_match_text[:150]}..."
@@ -280,11 +372,11 @@ def _validate_supporting_passages(
         else:
             unmatched_count += 1
             logger.warning(
-                f"Supporting passage {i+1} NOT FOUND in retrieved text "
+                f"Supporting passage {i + 1} NOT FOUND in retrieved text "
                 f"(best similarity: {best_similarity:.2f}):\n"
                 f"  Passage: {passage_stripped[:150]}..."
             )
-
+        similarity_scores.append(best_similarity)
     # Summary warning if hallucinations detected
     if unmatched_count > 0:
         logger.warning(
@@ -292,13 +384,14 @@ def _validate_supporting_passages(
             f"supporting passages not found in retrieved documents. "
             f"The LLM may have distorted or fabricated some supporting text."
         )
+    return similarity_scores
 
 
 def query_legal_documents(
     retrieval_results: SectionCollection,
     query: str,
     settings: QuerySettings,
-) -> LegalQueryResponse:
+) -> tuple[LegalQueryResponse, list[float]]:
     """
     Process a user query against retrieved legal documents using LLM analysis.
 
@@ -312,6 +405,7 @@ def query_legal_documents(
 
     Returns:
         LegalQueryResponse: Structured response with answer, reasoning, citations, and evidence
+        list of float similarity scores for each supporting passage compared to retrieved text
 
     Raises:
         ValueError: If query is empty or results structure is invalid
@@ -347,9 +441,6 @@ def query_legal_documents(
         raise ValueError("retrieval_results cannot be empty")
 
     logger.info(f"Processing query: '{query[:50]}...'")
-    logger.debug(
-        f"Using model: {settings.llm.model}, temperature: {settings.llm.temperature}"
-    )
 
     # Extract and validate sections from retrieval results
     sections = retrieval_results.sections
@@ -362,7 +453,7 @@ def query_legal_documents(
             supporting_passages=[],
             confidence=0.0,
             limitations="No relevant legal information was available to answer query.",
-        )
+        ), []
 
     logger.info(f"Found {len(sections)} relevant sections to analyze")
 
@@ -370,6 +461,10 @@ def query_legal_documents(
         # filter_llm is guaranteed to be set by __post_init__
         assert settings.filter_llm is not None
         try:
+            logger.debug(
+                f"Filtering for relevant sections using model: {settings.filter_llm.model}",
+                f" temperature: {settings.filter_llm.temperature}",
+            )
             filtered_results = filter_sections(
                 client=settings.filter_llm.client,
                 sections_results=retrieval_results,
@@ -380,6 +475,7 @@ def query_legal_documents(
             sections = filtered_results.sections
         except Exception:
             sections = retrieval_results.sections
+            logger.warning("Retrieved section relevance filtering failed.")
 
     if not sections:
         logger.warning("All sections filtered out as irrelevant")
@@ -390,17 +486,19 @@ def query_legal_documents(
             supporting_passages=[],
             confidence=0.0,
             limitations="No relevant legal information was available after relevance filtering.",
-        )
+        ), []
 
     full_context = _prepare_legal_context(sections)
 
     system_prompt, user_prompt = _build_legal_prompts(query, full_context)
 
     # Execute LLM call for query processing
-    logger.debug("Making LLM call for query processing")
+    logger.debug(
+        f"Making LLM call for query processing using model: {settings.llm.model}, temperature: {settings.llm.temperature}"
+    )
 
-    try:
-        response = ask(
+    def _invoke_llm():
+        return ask(
             client=settings.llm.client,
             prompt=user_prompt,
             response_model=LegalQueryResponse,
@@ -410,16 +508,44 @@ def query_legal_documents(
             max_retries=settings.llm.max_retries,
         )
 
-        # Validate supporting passages against retrieved text
-        _validate_supporting_passages(response, sections)
+    timeout_seconds = DEFAULT_LLM_TIMEOUT_SECONDS
+
+    try:
+        response = _run_with_timeout(_invoke_llm, timeout_seconds)
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
             f"citations: {len(response.citations)}, supporting passages: {len(response.supporting_passages)}"
         )
+        logger.debug("LLM call completed successfully")
 
-        return response
+        # Validate supporting passages against retrieved text
+        similarity_scores = _validate_supporting_passages(response, sections)
 
+        return response, similarity_scores
+
+    except FutureTimeoutError:
+        logger.error(
+            f"LLM call timed out after {timeout_seconds:.0f}s; returning fallback response"
+        )
+        return LegalQueryResponse(
+            short_answer="Error: LLM call timed out.",
+            reasoning="The LLM did not return a response within the allotted timeout.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.0,
+            limitations="Timeout while waiting for LLM response.",
+        ), []
+    except ValidationError as ve:
+        logger.error("LLM returned invalid response payload", exc_info=ve)
+        return LegalQueryResponse(
+            short_answer="Error: LLM returned an invalid response format.",
+            reasoning=str(ve),
+            citations=[],
+            supporting_passages=[],
+            confidence=0.0,
+            limitations="The LLM response could not be parsed into the expected schema.",
+        ), []
     except Exception as e:
         logger.error(f"Query processing failed: {str(e)}")
         raise
@@ -469,7 +595,7 @@ def format_query_response(response: LegalQueryResponse) -> str:
 def run_queries(
     collection: Any,  # chromadb.Collection
     sections_parquet_path: str | Path,
-    queries: list[str],
+    queries: list[str] | list[QueryInput],
     jurisdiction_id: str,
     settings: BatchQuerySettings | None = None,
 ) -> pl.DataFrame:
@@ -483,13 +609,14 @@ def run_queries(
     Args:
         collection: ChromaDB collection to query (required infrastructure)
         sections_parquet_path: Path to sections.parquet file (required infrastructure)
-        queries: List of legal questions to process (required input)
+        queries: List of legal questions to process (strings or structured QueryInput)
         jurisdiction_id: Jurisdiction identifier (required input)
         settings: Optional batch processing settings (uses defaults if None)
 
     Returns:
         pl.DataFrame: Structured results with columns:
             - query: Original query string
+            - variable_name: Identifier from MonQcle (if available)
             - short_answer: Concise answer to the query
             - reasoning: Detailed legal reasoning
             - citations: List of legal citations (as string)
@@ -499,42 +626,11 @@ def run_queries(
             - sections_found: Number of relevant sections found
             - segments_found: Number of matching segments found
             - processing_time: Time taken to process query (in seconds)
+            - ... plus any metadata fields present in input
 
     Raises:
         ValueError: If required parameters are missing or invalid
         instructor.exceptions.InstructorError: If LLM calls fail
-
-    Example:
-        >>> from legiscope.utils import LLMConfig
-        >>> from legiscope.query import BatchQuerySettings, run_queries
-        >>> from legiscope.llm_config import Config
-        >>> import chromadb
-        >>>
-        >>> # Setup
-        >>> chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
-        >>> collection = chroma_client.get_collection("legal_code_all")
-        >>>
-        >>> # Prepare queries and settings
-        >>> queries = [
-        ...     "Are there restrictions on drug paraphernalia sales?",
-        ...     "What are the parking regulations?",
-        ...     "Do I need a permit for home business?"
-        ... ]
-        >>>
-        >>> settings = BatchQuerySettings(
-        ...     llm=LLMConfig(client=Config.get_powerful_client()),
-        ...     filter_relevance=True,
-        ...     relevance_threshold=0.7
-        ... )
-        >>>
-        >>> results_df = run_queries(
-        ...     collection=collection,
-        ...     sections_parquet_path="./data/sections.parquet",
-        ...     queries=queries,
-        ...     jurisdiction_id="IL-WindyCity",
-        ...     settings=settings
-        ... )
-        >>> print(results_df.select(["query", "short_answer", "confidence"]))
     """
     import time
 
@@ -562,26 +658,44 @@ def run_queries(
         f"Using model: {settings.llm.model}, n_results: {settings.n_results}, use_hyde: {settings.use_hyde}"
     )
 
+    # Normalize inputs to QueryInput list
+    query_inputs: list[QueryInput] = []
+    for q in queries:
+        if isinstance(q, str):
+            query_inputs.append(QueryInput(question=q))
+        elif isinstance(q, QueryInput):
+            query_inputs.append(q)
+        else:
+            logger.warning(f"Skipping invalid query type: {type(q)}")
+
     # Process queries in loop
     results = []
-    for i, query in enumerate(queries):
-        if query is None or not isinstance(query, str) or not query.strip():
+    for i, query_input in enumerate(query_inputs):
+        query_text = query_input.question.strip()
+        if not query_text:
             logger.warning(f"Skipping empty query at index {i}")
             continue
 
         start_time = time.time()
         logger.info(
-            f"Processing query {i + 1}/{len(queries)}: '{query[:50]}...'"
+            f"Processing query {i + 1}/{len(query_inputs)}: '{query_text[:50]}...'"
         )
 
         result = _process_single_query_with_error_handling(
-            query=query,
+            query=query_text,
             collection=collection,
             sections_parquet_path=sections_parquet_path,
             jurisdiction_id=jurisdiction_id,
             settings=settings,
             start_time=start_time,
         )
+
+        # Inject metadata from QueryInput
+        if query_input.variable_name:
+            result["variable_name"] = query_input.variable_name
+
+        if query_input.metadata:
+            result.update(query_input.metadata)
 
         results.append(result)
 
@@ -599,17 +713,36 @@ def _prepare_legal_context(sections: list[SectionResult]) -> str:
     context_sections = []
     for i, section in enumerate(sections):
         # Build section parts as a list for efficient concatenation
+        # Start with metadata
         section_parts = [
             f"\nSection {i + 1}: {section.heading_text}",
             f"Relevance Score: {section.relevance_score:.3f}",
-            f"Content: {section.body_text}",
-            "\nMatching Segments:",
         ]
+
+        # Add truncated body content (first 1000 words ~ 1300 tokens)
+        # We truncate to ensure we fit within LLM context limits while providing
+        # enough context for analysis
+        if section.body_text:
+            words = section.body_text.split()
+            trunc_text = " ".join(words[:1000])
+            if len(words) > 1000:
+                trunc_text += "... [content truncated]"
+            section_parts.append(f"Content: {trunc_text}")
+        else:
+            section_parts.append("Content: [No body text]")
+
+        # Add number matching segments if any
+        if section.matching_segments:
+            section_parts.append(
+                f"Matching Passages ({len(section.matching_segments)}):"
+            )
 
         # Add matching segments for context
         for j, segment in enumerate(section.matching_segments):
             if segment.segment_text:
-                section_parts.append(f"  - Segment {j + 1}: {segment.segment_text}")
+                section_parts.append(
+                    f"  [{j + 1}] (score: {segment.distance:.3f}) {segment.segment_text}"
+                )
 
         context_sections.append("\n".join(section_parts))
 
@@ -635,7 +768,19 @@ your reasoning.
 
 Be precise and objective in your analysis. If the provided context does not contain
 sufficient information to answer the question definitively, acknowledge this limitation
-and provide the best answer possible with the available information."""
+and provide the best answer possible with the available information.
+
+Return your answer **as JSON only** with this exact structure:
+{
+    "short_answer": "...",
+    "reasoning": "...",
+    "citations": ["..."],
+    "supporting_passages": ["..."],
+    "confidence": 0.0-1.0,
+    "limitations": "..."
+}
+
+Do not include any additional text outside the JSON object."""
 
     user_prompt = f"""Please answer the following legal question based on the provided municipal code context:
 
@@ -647,6 +792,13 @@ Legal Context:
 Please analyze this legal context and provide a comprehensive response following the guidelines."""
 
     return system_prompt, user_prompt
+
+
+def _run_with_timeout(func, timeout_seconds: float, *args, **kwargs):
+    """Run a callable with a hard timeout using a thread executor."""
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        return future.result(timeout=timeout_seconds)
 
 
 def _process_single_query_with_error_handling(
@@ -692,7 +844,9 @@ def _process_single_query_with_error_handling(
             relevance_threshold=settings.relevance_threshold,
         )
 
-        query_response = query_legal_documents(retrieval_results, query, query_settings)
+        query_response, similarity_scores = query_legal_documents(
+            retrieval_results, query, query_settings
+        )
 
         processing_time = time.time() - start_time
 
@@ -709,6 +863,7 @@ def _process_single_query_with_error_handling(
             "sections_found": sections_found,
             "segments_found": segments_found,
             "processing_time": processing_time,
+            "supporting_passage_validation_scores": str(similarity_scores),
         }
 
     except Exception as e:
@@ -727,6 +882,7 @@ def _process_single_query_with_error_handling(
             "sections_found": 0,
             "segments_found": 0,
             "processing_time": processing_time,
+            "supporting_passage_validation_scores": "[]",
         }
 
 
@@ -746,6 +902,7 @@ def _compile_query_results(results: list[dict]) -> pl.DataFrame:
                 "sections_found": pl.Int64,
                 "segments_found": pl.Int64,
                 "processing_time": pl.Float64,
+                "supporting_passage_validation_scores": pl.Utf8,
             }
         )
 

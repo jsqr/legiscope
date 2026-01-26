@@ -14,7 +14,7 @@ from pydantic import BaseModel
 T = TypeVar("T", bound=BaseModel)
 
 # Constants for LLM operations (imported from other modules when needed)
-DEFAULT_TEMPERATURE = 0.1
+DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_RETRIES = 3
 
 
@@ -43,7 +43,7 @@ class LLMConfig:
         >>> config = LLMConfig(
         ...     client=Config.get_powerful_client(),
         ...     model="gpt-4",
-        ...     temperature=0.2,
+        ...     temperature=0.0,
         ...     max_retries=5
         ... )
     """
@@ -144,7 +144,7 @@ def ask(
         ...     prompt="Extract legal fruits from this text...",
         ...     response_model=LegalFruits,
         ...     system="You are an expert on law and types of fruit.",
-        ...     temperature=0.1
+        ...     temperature=0.0
         ... )
     """
     if not prompt or not prompt.strip():

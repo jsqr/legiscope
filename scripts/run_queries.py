@@ -18,24 +18,14 @@ try:
 except ImportError:
     pass  # python-dotenv not installed, continue without it
 
-from legiscope.llm_config import Config
-from legiscope.utils import LLMConfig
-from legiscope.query import BatchQuerySettings, run_queries
-
 # Add src to path to import legiscope modules
 src_path = Path(__file__).parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
-
-def read_queries(file_path: str) -> list[str]:
-    """Read queries from text file (one per paragraph)."""
-    with open(file_path, "r") as f:
-        content = f.read()
-
-    # Split by double newlines to get paragraphs
-    queries = [q.strip() for q in content.split("\n\n") if q.strip()]
-    return queries
+from legiscope.llm_config import Config
+from legiscope.utils import LLMConfig
+from legiscope.query import BatchQuerySettings, run_queries, load_queries
 
 
 def main():
@@ -43,41 +33,52 @@ def main():
     parser.add_argument(
         "--queries-path", required=True, help="Path to queries text file"
     )
-    parser.add_argument("--jurisdiction-id", required=True, help="Jurisdiction ID")
     parser.add_argument(
-        "--sections-parquet", required=True, help="Path to sections.parquet"
-    )
+        "--jurisdiction-id", required=True, help="Jurisdiction ID")
     parser.add_argument(
         "--collection-name",
         default=os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_all"),
         help="ChromaDB collection name",
     )
     parser.add_argument(
-        "--output", default="query_results.parquet", help="Output file path"
+        "--output", default="data/output/query_results.csv", help="Output file path"
     )
 
     args = parser.parse_args()
 
-    queries = read_queries(args.queries_path)
+    # Load queries using shared library function
+    # This automatically handles dataset-specific formatting and structured input
+    queries = load_queries(args.queries_path)
     print(f"Loaded {len(queries)} queries from {args.queries_path}")
 
-    chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
+    sections_parquet_path = f"data/laws/{args.jurisdiction_id}/tables/sections.parquet"
+    chromadb_path = "./data/chroma_db"
+    
+    chroma_client = chromadb.PersistentClient(path=chromadb_path)
     collection = chroma_client.get_collection(args.collection_name)
 
     # Create LLM config and settings
-    llm_config = LLMConfig(client=Config.get_powerful_client())
+    llm_config = LLMConfig(
+        client=Config.get_powerful_client(), 
+        model=Config.get_powerful_model()
+    )
     settings = BatchQuerySettings(llm=llm_config)
 
     # Run queries with new API
+    # run_queries now accepts list[QueryInput] directly
     results_df = run_queries(
         collection=collection,
-        sections_parquet_path=args.sections_parquet,
+        sections_parquet_path=sections_parquet_path,
         queries=queries,
         jurisdiction_id=args.jurisdiction_id,
         settings=settings,
     )
 
-    results_df.write_parquet(args.output)
+    # Ensure output directory exists
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    results_df.write_csv(args.output)
     print(f"Results saved to {args.output}")
     print(f"Average confidence: {results_df['confidence'].mean():.2f}")
 
