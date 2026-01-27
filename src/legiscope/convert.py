@@ -15,7 +15,7 @@ from legiscope.utils import ask, resolve_model_default
 
 # Constants for legal text scanning
 DEFAULT_SCAN_MAX_LINES = (
-    500  # Maximum lines to analyze when scanning legal text structure
+    200  # Maximum lines to analyze when scanning legal text structure
 )
 DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal text analysis
 
@@ -62,7 +62,7 @@ def scan_legal_text(
     Args:
         client: Instructor client instance for LLM calls
         file_path: Path to the .txt file containing municipal ordinance or statute
-        max_lines: Maximum number of lines to analyze (default: 150)
+        max_lines: Maximum number of lines to analyze (default: 200)
         model: OpenAI model to use for analysis (default: POWERFUL_MODEL)
 
     Returns:

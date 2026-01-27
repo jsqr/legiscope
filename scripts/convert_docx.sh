@@ -49,8 +49,21 @@ for file in "$input_dir"/*.docx; do
             # macOS textutil
             textutil -convert txt -output "$temp_dir/$filename.txt" "$file"
         else
-            # Fallback to pandoc (preserves Unicode)
-            pandoc "$file" -f docx -t plain --output "$temp_dir/$filename.txt"
+            # Fallback to pandoc
+            # Use ASCII encoding + restoration to ensure no hidden artifacts (like NBSP) remain
+            pandoc "$file" -f docx -t plain --ascii --output "$temp_dir/$filename.txt"
+            
+            # Handle sed in-place argument for both macOS and Linux
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                SED_OPTS=(-i '')
+            else
+                SED_OPTS=(-i)
+            fi
+            
+            # Restore symbols and clean artifacts
+            sed "${SED_OPTS[@]}" 's/&nbsp;/ /g' "$temp_dir/$filename.txt"
+            sed "${SED_OPTS[@]}" 's/&ndash;/-/g' "$temp_dir/$filename.txt"
+            sed "${SED_OPTS[@]}" 's/&sect;/§/g' "$temp_dir/$filename.txt"
         fi
         echo "  Converted: $filename.docx"
     else
