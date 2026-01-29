@@ -260,8 +260,13 @@ def main():
         joined_df.write_csv(debug_path)
         logger.info(f"Debug: Saved queries and ground truth to {debug_path}")
     
-    # Check for missing ground truth
-    missing_truth = joined_df.filter(pl.col("ground_truth").is_null())
+
+    # Check for missing ground truth (Null, empty, or "-")
+    missing_truth = joined_df.filter(
+        pl.col("ground_truth").is_null() | 
+        (pl.col("ground_truth").str.strip_chars() == "") |
+        (pl.col("ground_truth") == "-")
+    )
     if len(missing_truth) > 0:
         logger.warning(
             f"{len(missing_truth)} queries have no ground truth: "
@@ -276,17 +281,31 @@ def main():
     # Filter to only rows with ground truth for evaluation
     eval_df = joined_df.filter(
         pl.col("ground_truth").is_not_null() & 
-        (pl.col("ground_truth") != "")
+        (pl.col("ground_truth") != "") &
+        (pl.col("ground_truth") != "-")
     )
     
     if len(eval_df) == 0:
         logger.error("No rows with ground truth to evaluate!")
         sys.exit(1)
     
+    # Construct comprehensive answer context for evaluation
+    eval_df = eval_df.with_columns(
+        pl.concat_str(
+            [
+                pl.col("short_answer"),
+                pl.lit("\n\nReasoning: "),
+                pl.col("reasoning"),
+                pl.lit("\n\nSupporting Passages: "),
+                pl.col("supporting_passages")
+            ]
+        ).alias("comprehensive_answer")
+    )
+    
     eval_df = evaluator.evaluate_batch(
         eval_df,
         question_col="query",
-        answer_col="short_answer",
+        answer_col="comprehensive_answer",
         truth_col="ground_truth"
     )
     
