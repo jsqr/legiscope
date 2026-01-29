@@ -77,6 +77,9 @@ class QuerySettings:
     filter_relevance: bool = False
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     filter_llm: LLMConfig | None = None
+    
+    # Validation
+    validate_supporting_passages: bool = True
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
@@ -144,6 +147,7 @@ class BatchQuerySettings:
     # Query processing
     filter_relevance: bool = False
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
+    validate_supporting_passages: bool = True
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
@@ -520,7 +524,9 @@ def query_legal_documents(
         logger.debug("LLM call completed successfully")
 
         # Validate supporting passages against retrieved text
-        similarity_scores = _validate_supporting_passages(response, sections)
+        similarity_scores = []
+        if settings.validate_supporting_passages:
+            similarity_scores = _validate_supporting_passages(response, sections)
 
         return response, similarity_scores
 
@@ -842,6 +848,7 @@ def _process_single_query_with_error_handling(
             llm=llm,
             filter_relevance=settings.filter_relevance,
             relevance_threshold=settings.relevance_threshold,
+            validate_supporting_passages=settings.validate_supporting_passages
         )
 
         query_response, similarity_scores = query_legal_documents(

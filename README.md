@@ -180,6 +180,40 @@ The pipeline can optionally run a batch of queries against the processed legal c
 ./scripts/pipeline.sh CA LosAngeles data/queries/test_queries.csv
 ```
 
+You can also run the query script directly for more control over processing options:
+
+```bash
+# Full configuration example (maximum control)
+source .venv/bin/activate
+python scripts/run_queries.py \
+    --queries-path "data/queries/test_queries.csv" \
+    --jurisdiction-id "CA-LosAngeles" \
+    --n-results 10 \
+    --use-hyde False \
+    --filter-relevance True \
+    --relevance-threshold 0.5 \
+    --validate-supporting-passages True \
+    --output "data/output/CA-LosAngeles/test_results.csv"
+
+# Minimal example (using defaults)
+source .venv/bin/activate
+python scripts/run_queries.py \
+    --queries-path "data/queries/test_queries.csv" \
+    --jurisdiction-id "CA-LosAngeles"
+```
+
+**Script Arguments (run_queries.py):**
+
+- `--queries-path`: Path to queries CSV file (required)
+- `--jurisdiction-id`: Target jurisdiction ID (e.g., "CA-LosAngeles") (required)
+- `--collection-name`: ChromaDB collection name (defaults to env var)
+- `--output`: Output CSV file path
+- `--n-results`: Number of results to retrieve per query (default: 10)
+- `--use-hyde`: Enable HYDE query rewriting (default: False)
+- `--filter-relevance`: Enable LLM-based relevance filtering (default: True)
+- `--relevance-threshold`: Confidence threshold for filtering (default: 0.5)
+- `--validate-supporting-passages`: Validate LLM citations against text (default: True)
+
 **Query File Format:**
 
 - CSV format with a "question" column
