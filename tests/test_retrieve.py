@@ -561,3 +561,491 @@ class TestFilterResults:
             assert len(result.ids[0]) == 1
             assert result.ids[0] == ["1"]
             assert result.metadatas is None or result.metadatas == [[None]]
+
+
+class TestRetrievalConfig:
+    """Test RetrievalSettings dataclass."""
+
+    def test_minimal_config(self):
+        """Test creating settings with defaults."""
+        from legiscope.retrieve import RetrievalSettings
+
+        settings = RetrievalSettings()
+
+        assert settings.n_results == 10  # Default
+        assert settings.jurisdiction_id is None
+        assert settings.use_hyde is False
+
+    def test_with_jurisdiction(self):
+        """Test settings with jurisdiction filter."""
+        from legiscope.retrieve import RetrievalSettings
+
+        settings = RetrievalSettings(jurisdiction_id="IL-WindyCity")
+
+        assert settings.jurisdiction_id == "IL-WindyCity"
+
+    def test_with_hyde(self):
+        """Test settings with HYDE rewriting enabled."""
+        from legiscope.retrieve import RetrievalSettings
+        from unittest.mock import Mock
+
+        mock_client = Mock()
+        settings = RetrievalSettings(use_hyde=True, hyde_client=mock_client)
+
+        assert settings.use_hyde is True
+        assert settings.hyde_client is mock_client
+
+    def test_hyde_without_client_raises_error(self):
+        """Test that use_hyde=True without hyde_client raises error."""
+        from legiscope.retrieve import RetrievalSettings
+
+        with pytest.raises(ValueError, match="hyde_client required"):
+            RetrievalSettings(use_hyde=True)
+
+    def test_empty_query_text_raises_error(self):
+        """Test that empty query_text is validated at function call."""
+        from legiscope.retrieve import retrieve_segments
+        from unittest.mock import Mock
+
+        # query_text validation moved to function, not settings
+        with pytest.raises(ValueError, match="query_text cannot be empty"):
+            retrieve_segments(
+                Mock(),
+                "",  # Empty query_text
+            )
+
+    def test_invalid_n_results_raises_error(self):
+        """Test that invalid n_results raises error."""
+        from legiscope.retrieve import RetrievalSettings
+
+        with pytest.raises(ValueError, match="n_results must be positive"):
+            RetrievalSettings(n_results=0)
+
+
+class TestSectionRetrievalConfig:
+    """Test SectionRetrievalSettings dataclass."""
+
+    def test_minimal_config(self):
+        """Test creating settings with defaults."""
+        from legiscope.retrieve import SectionRetrievalSettings
+
+        settings = SectionRetrievalSettings()
+
+        # All inherited from RetrievalSettings
+        assert settings.n_results == 10
+        assert settings.use_hyde is False
+
+    def test_missing_parquet_path_raises_error(self):
+        """Test that sections_parquet_path is now a function parameter."""
+        from legiscope.retrieve import retrieve_sections
+        from unittest.mock import Mock
+
+        # sections_parquet_path is now a required function parameter
+        with pytest.raises(TypeError):
+            retrieve_sections(
+                Mock(),
+                # Missing sections_parquet_path
+                "test query",
+            )
+
+    def test_inherits_from_retrieval_config(self):
+        """Test that SectionRetrievalSettings inherits RetrievalSettings attributes."""
+        from legiscope.retrieve import SectionRetrievalSettings
+        from unittest.mock import Mock
+
+        mock_client = Mock()
+        settings = SectionRetrievalSettings(
+            jurisdiction_id="IL-WindyCity",
+            n_results=20,
+            use_hyde=True,
+            hyde_client=mock_client,
+        )
+
+        # Check inherited attributes work
+        assert settings.jurisdiction_id == "IL-WindyCity"
+        assert settings.n_results == 20
+        assert settings.use_hyde is True
+        assert settings.hyde_client is mock_client
+
+
+class TestRetrievalConfigBasics:
+    """Test RetrievalSettings-based retrieve_segments function."""
+
+    def test_retrieve_segments_with_config_basic(self):
+        """Test basic retrieve_segments with settings object."""
+        from legiscope.retrieve import retrieve_segments
+        from chromadb.api.models.Collection import Collection
+        from unittest.mock import Mock, patch
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["1", "2"]],
+            "documents": [["doc1", "doc2"]],
+            "metadatas": [[{}, {}]],
+            "distances": [[0.1, 0.2]],
+        }
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
+                mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_segments(mock_collection, "test query")
+
+                assert len(results.ids[0]) == 2
+                assert results.documents[0] == ["doc1", "doc2"]
+                mock_collection.query.assert_called_once()
+
+    def test_retrieve_segments_with_jurisdiction_filter(self):
+        """Test retrieve_segments with jurisdiction filtering."""
+        from legiscope.retrieve import RetrievalSettings, retrieve_segments
+        from chromadb.api.models.Collection import Collection
+        from unittest.mock import Mock, patch
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["1"]],
+            "documents": [["doc1"]],
+            "metadatas": [[{"jurisdiction_id": "IL-WindyCity"}]],
+            "distances": [[0.1]],
+        }
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_get_embeddings:
+                mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                settings = RetrievalSettings(
+                    jurisdiction_id="IL-WindyCity", n_results=5
+                )
+
+                retrieve_segments(mock_collection, "test query", settings)
+
+                # Check that query was called with where filter
+                call_kwargs = mock_collection.query.call_args.kwargs
+                assert "where" in call_kwargs
+                assert call_kwargs["where"] == {"jurisdiction_id": "IL-WindyCity"}
+
+    def test_retrieve_segments_hyde_requires_client(self):
+        """Test that use_hyde=True requires hyde_client."""
+        from legiscope.retrieve import RetrievalSettings
+        
+        with pytest.raises(ValueError, match="hyde_client required"):
+            RetrievalSettings(
+                use_hyde=True  # Missing hyde_client
+            )
+
+    def test_retrieve_segments_with_hyde(self):
+        """Test retrieve_segments with HYDE rewriting enabled."""
+        from legiscope.retrieve import HydeRewrite, RetrievalSettings, retrieve_segments
+        from chromadb.api.models.Collection import Collection
+        from unittest.mock import Mock, patch
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["1", "2"]],
+            "documents": [["doc1", "doc2"]],
+            "metadatas": [[{}, {}]],
+            "distances": [[0.1, 0.2]],
+        }
+
+        mock_hyde_result = HydeRewrite(
+            rewritten_query="Municipal code parking regulations",
+            confidence=0.9,
+            reasoning="Rewritten",
+            query_type="parking",
+        )
+
+        with patch("legiscope.retrieve.hyde_rewriter", return_value=mock_hyde_result):
+            with patch("legiscope.retrieve.get_embedding_client"):
+                with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                    mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                    mock_client = Mock(spec=Instructor)
+                    settings = RetrievalSettings(use_hyde=True, hyde_client=mock_client)
+
+                    results = retrieve_segments(
+                        mock_collection, "where can I park", settings
+                    )
+
+                    assert len(results.ids[0]) == 2
+
+
+class TestSectionRetrievalConfigBasics:
+    """Test SectionRetrievalSettings-based retrieve_sections function."""
+
+    def test_retrieve_sections_requires_parquet_path(self):
+        """Test that retrieve_sections requires sections_parquet_path parameter."""
+        from legiscope.retrieve import retrieve_sections
+        from chromadb.api.models.Collection import Collection
+        from unittest.mock import Mock
+        
+        mock_collection = Mock(spec=Collection)
+
+        # This should raise because sections_parquet_path is a required parameter
+        with pytest.raises(TypeError):
+            retrieve_sections(
+                mock_collection,
+                # Missing sections_parquet_path parameter
+                query_text="test query",
+            )
+
+    def test_retrieve_sections_with_config(self, tmp_path):
+        """Test retrieve_sections with settings object."""
+        import polars as pl
+        from legiscope.retrieve import retrieve_sections
+        from chromadb.api.models.Collection import Collection
+        from unittest.mock import Mock, patch
+
+        # Create test sections parquet file
+        sections_data = {
+            "section_idx": [0, 1],
+            "heading_text": ["# Section 1", "## Section 2"],
+            "body_text": ["Content 1", "Content 2"],
+            "heading_level": [1, 2],
+            "parent": [None, 0],
+        }
+        sections_df = pl.DataFrame(sections_data)
+        sections_path = tmp_path / "sections.parquet"
+        sections_df.write_parquet(sections_path)
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["0", "1"]],
+            "documents": [["seg1", "seg2"]],
+            "metadatas": [
+                [
+                    {
+                        "section_ref": 0,
+                        "segment_position": 0,
+                        "section_heading": "# Section 1",
+                        "section_level": 1,
+                    },
+                    {
+                        "section_ref": 1,
+                        "segment_position": 0,
+                        "section_heading": "## Section 2",
+                        "section_level": 2,
+                    },
+                ]
+            ],
+            "distances": [[0.1, 0.2]],
+        }
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_sections(
+                    mock_collection, str(sections_path), "test query"
+                )
+
+                assert hasattr(results, "sections")
+                assert hasattr(results, "query_info")
+                assert len(results.sections) == 2
+
+
+class TestGetJurisdictionStats:
+    """Test the get_jurisdiction_stats function."""
+
+    def test_stats_with_data(self):
+        """Test stats calculation with populated collection."""
+        from legiscope.retrieve import get_jurisdiction_stats
+        from unittest.mock import Mock
+
+        mock_collection = Mock()
+        mock_collection.get.return_value = {
+            "metadatas": [
+                {"jurisdiction_id": "J1", "state": "S1", "municipality": "M1"},
+                {"jurisdiction_id": "J1", "state": "S1", "municipality": "M2"},
+                {"jurisdiction_id": "J2", "state": "S2", "municipality": "M3"},
+                None,  # Should be handled
+                {},  # Should be handled
+            ]
+        }
+
+        stats = get_jurisdiction_stats(mock_collection)
+
+        assert stats.total_documents == 5
+        assert stats.jurisdictions == {"J1": 2, "J2": 1}
+        assert stats.states == {"S1": 2, "S2": 1}
+        assert stats.municipalities == {"M1": 1, "M2": 1, "M3": 1}
+
+    def test_stats_empty_collection(self):
+        """Test stats with empty collection."""
+        from legiscope.retrieve import get_jurisdiction_stats
+        from unittest.mock import Mock
+
+        mock_collection = Mock()
+        mock_collection.get.return_value = {"metadatas": []}
+
+        stats = get_jurisdiction_stats(mock_collection)
+
+        assert stats.total_documents == 0
+        assert stats.jurisdictions == {}
+
+    def test_stats_error_handling(self):
+        """Test that errors return empty stats."""
+        from legiscope.retrieve import get_jurisdiction_stats
+        from unittest.mock import Mock
+
+        mock_collection = Mock()
+        mock_collection.get.side_effect = Exception("DB Error")
+
+        stats = get_jurisdiction_stats(mock_collection)
+
+        assert stats.total_documents == 0
+        assert stats.jurisdictions == {}
+
+
+class TestFilterSections:
+    """Test the filter_sections function."""
+
+    def test_filter_sections_basic(self):
+        """Test basic section filtering."""
+        from legiscope.retrieve import (
+            SectionCollection,
+            SectionResult,
+            QueryInfo,
+            RelevanceAssessment,
+            filter_sections,
+        )
+        from unittest.mock import Mock, patch
+
+        # Mock sections
+        sections = [
+            SectionResult(
+                section_idx=1,
+                heading_text="H1",
+                body_text="B1",
+                heading_level=1,
+                parent=None,
+                matching_segments=[],
+                relevance_score=0.1,
+                segment_count=1,
+            ),
+            SectionResult(
+                section_idx=2,
+                heading_text="H2",
+                body_text="B2",
+                heading_level=1,
+                parent=None,
+                matching_segments=[],
+                relevance_score=0.2,
+                segment_count=1,
+            ),
+        ]
+
+        input_results = SectionCollection(
+            sections=sections, query_info=QueryInfo(original_query="query")
+        )
+
+        # Mock assessments
+        mock_assessments = [
+            RelevanceAssessment(
+                is_relevant=True,
+                relevance_score=0.9,
+                confidence=0.9,
+                reasoning="Good",
+            ),
+            RelevanceAssessment(
+                is_relevant=False,
+                relevance_score=0.1,
+                confidence=0.9,
+                reasoning="Bad",
+            ),
+        ]
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
+            # Patch Path.mkdir to avoid filesystem side effects from debug logging
+            with patch(
+                "pathlib.Path.mkdir"
+            ), patch("legiscope.retrieve.pl.DataFrame.write_csv"):
+                mock_client = Mock(spec=Instructor)
+
+                result = filter_sections(
+                    mock_client, input_results, "query", confidence_threshold=0.5
+                )
+
+                assert len(result.sections) == 1
+                assert result.sections[0].section_idx == 1
+                assert result.sections[0].relevance_score == 0.9  # Updated from LLM
+                assert result.sections[0].llm_assessed is True
+                assert result.filtering_metadata.filtered_count == 1
+
+    def test_filter_sections_sorting(self):
+        """Test that results are sorted by LLM relevance score."""
+        from legiscope.retrieve import (
+            SectionCollection,
+            SectionResult,
+            QueryInfo,
+            RelevanceAssessment,
+            filter_sections,
+        )
+        from unittest.mock import Mock, patch
+
+        sections = [
+            SectionResult(
+                section_idx=1,
+                heading_text="H1",
+                body_text="B1",
+                heading_level=1,
+                parent=None,
+                matching_segments=[],
+                relevance_score=0,
+                segment_count=1,
+            ),
+            SectionResult(
+                section_idx=2,
+                heading_text="H2",
+                body_text="B2",
+                heading_level=1,
+                parent=None,
+                matching_segments=[],
+                relevance_score=0,
+                segment_count=1,
+            ),
+        ]
+
+        input_results = SectionCollection(
+            sections=sections, query_info=QueryInfo(original_query="query")
+        )
+
+        mock_assessments = [
+            RelevanceAssessment(
+                is_relevant=True,
+                relevance_score=0.7,
+                confidence=0.9,
+                reasoning="Okay",
+            ),
+            RelevanceAssessment(
+                is_relevant=True,
+                relevance_score=0.9,
+                confidence=0.9,
+                reasoning="Great",
+            ),
+        ]
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
+            with patch(
+                "pathlib.Path.mkdir"
+            ), patch("legiscope.retrieve.pl.DataFrame.write_csv"):
+                mock_client = Mock(spec=Instructor)
+                result = filter_sections(mock_client, input_results, "query")
+
+                # Should be sorted by score descending (Great > Okay)
+                assert len(result.sections) == 2
+                assert result.sections[0].section_idx == 2  # Score 0.9
+                assert result.sections[1].section_idx == 1  # Score 0.7
+
+    def test_filter_sections_validation(self):
+        """Test input validation."""
+        from legiscope.retrieve import filter_sections
+        from unittest.mock import Mock
+
+        with pytest.raises(ValueError, match="sections_results cannot be None"):
+            filter_sections(Mock(), None, "query")  # type: ignore
+
+        with pytest.raises(ValueError, match="client is required"):
+            filter_sections(None, Mock(), "query")  # type: ignore
+
+
+

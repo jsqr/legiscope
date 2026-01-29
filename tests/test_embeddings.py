@@ -471,3 +471,148 @@ class TestCreateEmbeddingsDf:
         ]
         assert set(result.columns) == set(expected_columns)
         assert result["extra_column"][0] == "extra_value"
+
+
+class TestChromaOperations:
+    """Test cases for ChromaDB operations."""
+
+    def test_get_or_create_collection(self):
+        """Test getting or creating a collection."""
+        from legiscope.embeddings import (
+            CollectionConfig,
+            get_or_create_legal_collection,
+        )
+        from unittest.mock import MagicMock, patch
+
+        with patch("chromadb.PersistentClient") as mock_client_cls:
+            mock_client = MagicMock()
+            mock_client_cls.return_value = mock_client
+
+            # Case 1: Collection exists
+            mock_collection = MagicMock()
+            mock_client.get_collection.return_value = mock_collection
+
+            config = CollectionConfig(collection_name="test_coll")
+            result = get_or_create_legal_collection(config)
+
+            assert result == mock_collection
+            mock_client.get_collection.assert_called_with(name="test_coll")
+
+            # Case 2: Collection needs creation
+            mock_client.get_collection.side_effect = Exception("Not found")
+            mock_client.create_collection.return_value = mock_collection
+
+            result = get_or_create_legal_collection(config)
+
+            mock_client.create_collection.assert_called_with(name="test_coll")
+
+    def test_create_embedding_index(self):
+        """Test creating an embedding index from DataFrame."""
+        from legiscope.embeddings import create_embedding_index, EmbeddingIndexConfig
+        from unittest.mock import MagicMock, patch
+
+        # Create test DataFrame
+        df = pl.DataFrame(
+            {
+                "segment_idx": [0, 1],
+                "segment_text": ["text1", "text2"],
+                "embedding": [[0.1, 0.2], [0.3, 0.4]],
+                "section_heading": ["Heading 1", "Heading 2"],
+            }
+        )
+
+        with patch(
+            "legiscope.embeddings.get_or_create_legal_collection"
+        ) as mock_get_coll:
+            mock_collection = MagicMock()
+            mock_get_coll.return_value = mock_collection
+
+            config = EmbeddingIndexConfig(
+                df=df, collection_name="test_coll", jurisdiction_id="IL-Test"
+            )
+
+            create_embedding_index(config)
+
+            # Verify data added
+            mock_collection.add.assert_called()
+            call_kwargs = mock_collection.add.call_args.kwargs
+
+            assert call_kwargs["ids"] == ["0", "1"]
+            assert call_kwargs["documents"] == ["text1", "text2"]
+            assert call_kwargs["embeddings"] == [[0.1, 0.2], [0.3, 0.4]]
+
+            # Check metadata includes jurisdiction
+            metadatas = call_kwargs["metadatas"]
+            assert len(metadatas) == 2
+            assert metadatas[0]["jurisdiction_id"] == "IL-Test"
+            assert metadatas[0]["section_heading"] == "Heading 1"
+
+    def test_add_jurisdiction_embeddings(self):
+        """Test adding jurisdiction embeddings."""
+        from legiscope.embeddings import add_jurisdiction_embeddings
+        from unittest.mock import MagicMock, patch
+
+        df = pl.DataFrame(
+            {
+                "segment_idx": [0],
+                "segment_text": ["text"],
+                "embedding": [[0.1]],
+                "section_heading": ["H"],
+            }
+        )
+
+        mock_collection = MagicMock()
+        mock_collection.name = "test_coll"
+
+        with patch("legiscope.embeddings.create_embedding_index") as mock_create_idx:
+            add_jurisdiction_embeddings(mock_collection, df, "IL-Test")
+
+            mock_create_idx.assert_called_once()
+            config = mock_create_idx.call_args[0][0]
+            assert config.jurisdiction_id == "IL-Test"
+            assert config.collection_name == "test_coll"
+
+    def test_create_and_persist_embeddings(self):
+        """Test the unified workflow."""
+        from legiscope.embeddings import (
+            create_and_persist_embeddings,
+            JurisdictionConfig,
+        )
+        from unittest.mock import MagicMock, patch
+
+        df = pl.DataFrame({"text": ["content"]})
+        mock_client = MagicMock()
+
+        # Mock dependencies
+        with patch("legiscope.embeddings.create_embeddings_df") as mock_create_df, \
+             patch("legiscope.embeddings.create_embedding_index") as mock_create_idx:
+
+            # Setup mock return for create_embeddings_df
+            embeddings_df = pl.DataFrame(
+                {
+                    "segment_idx": [0],
+                    "segment_text": ["content"],
+                    "embedding": [[0.1]],
+                }
+            )
+            # Add write_parquet mock to the dataframe
+            embeddings_df.write_parquet = MagicMock()
+            mock_create_df.return_value = embeddings_df
+
+            mock_collection = MagicMock()
+            mock_create_idx.return_value = mock_collection
+
+            # Run workflow
+            jur_config = JurisdictionConfig(jurisdiction_id="IL-Test")
+            result_df, result_coll = create_and_persist_embeddings(
+                df, mock_client, jurisdiction_config=jur_config
+            )
+
+            # Verify steps
+            mock_create_df.assert_called_once()
+            embeddings_df.write_parquet.assert_called_once()  # Persistence
+            mock_create_idx.assert_called_once()  # Index creation
+
+            assert result_df is embeddings_df
+            assert result_coll is mock_collection
+

@@ -301,7 +301,7 @@ data/
 │       ├── retrieve.py   # Information retrieval with HYDE and section-level search
 │       ├── segment.py   # Text segmentation utilities
 │       └── query.py     # Legal query processing with structured responses
-├── tests/               # Test files (123 tests including HYDE functionality)
+├── tests/               # Test files
 ├── scripts/             # Utility scripts
 ├── docs/                # Documentation
 │   └── VALIDATION_EXAMPLE.md  # Supporting passages validation guide
