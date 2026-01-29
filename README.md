@@ -290,35 +290,45 @@ data/
 
 ### Project Structure
 
-```{txt}
+```txt
 .
 ├── src/
 │   └── legiscope/       # Main package source code
 │       ├── llm_config.py    # LLM configuration and client management
 │       ├── convert.py   # Conversion utilities and response models
-│       ├── utils.py     # Core utility functions (ask function, directory creation)
+│       ├── utils.py     # Core utility functions
 │       ├── embeddings.py # Embedding generation and ChromaDB management
 │       ├── retrieve.py   # Information retrieval with HYDE and section-level search
 │       ├── segment.py   # Text segmentation utilities
-│       └── query.py     # Legal query processing with structured responses
-├── tests/               # Test files (123 tests including HYDE functionality)
+│       ├── query.py     # Legal query processing with structured responses
+│       └── eval.py      # Evaluation and benchmarking logic
+├── tests/               # Test files
 ├── scripts/             # Utility scripts
+│   ├── pipeline.sh          # End-to-end processing pipeline
+│   ├── benchmark_pipeline.py # Benchmarking workflow
+│   ├── run_queries.py       # Batch query execution
+│   └── ...
+├── notebooks/           # Interactive notebooks
+│   └── query_demo.py    # Demo notebook
 ├── docs/                # Documentation
-│   └── VALIDATION_EXAMPLE.md  # Supporting passages validation guide
+│   ├── BENCHMARKING.md      # Benchmarking guide
+│   └── VALIDATION_EXAMPLE.md # Validation guide
 ├── data/                # Data directory (not tracked by git)
 ├── pyproject.toml       # Project configuration and dependencies
 ├── Makefile            # Development commands
-└── AGENTS.md           # Detailed development documentation
+├── AGENTS.md           # Detailed development documentation
+└── CONTRIBUTING.md     # Contribution guidelines
 ```
 
 ## Documentation
 
 Additional documentation is available in the `docs/` directory:
 
+- [Benchmarking Workflow](docs/BENCHMARKING.md) - Guide to running the RAG evaluation pipeline against MonQcle data
 - [Supporting Passages Validation](docs/VALIDATION_EXAMPLE.md) - Guide to automatic validation of LLM-generated supporting passages
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on development setup, code style, commit conventions, and pull requests.
+See [CONTRIBUTING.md](docs/CONTRIBUTING.md) for guidelines on development setup, code style, commit conventions, and pull requests.
 
 Instructions for the bots: [AGENTS.md](AGENTS.md).
