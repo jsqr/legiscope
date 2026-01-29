@@ -9,15 +9,15 @@ from typing import Any
 
 import yaml
 from instructor import Instructor
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from legiscope.utils import ask, resolve_model_default
 
 # Constants for legal text scanning
 DEFAULT_SCAN_MAX_LINES = (
-    150  # Maximum lines to analyze when scanning legal text structure
+    200  # Maximum lines to analyze when scanning legal text structure
 )
-DEFAULT_TEMPERATURE = 0.1  # Low temperature for consistent legal text analysis
+DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal text analysis
 
 
 class BooleanResult(BaseModel):
@@ -39,9 +39,11 @@ class HeadingLevel(BaseModel):
 class HeadingStructure(BaseModel):
     """Complete heading structure analysis for legal text."""
 
-    levels: list[HeadingLevel]
+    levels: list[HeadingLevel] = Field(alias="heading_levels")
     total_levels: int
     file_sample_size: int
+
+    model_config = {"populate_by_name": True}
 
 
 def scan_legal_text(
@@ -60,8 +62,8 @@ def scan_legal_text(
     Args:
         client: Instructor client instance for LLM calls
         file_path: Path to the .txt file containing municipal ordinance or statute
-        max_lines: Maximum number of lines to analyze (default: 150)
-        model: OpenAI model to use for analysis (default: FAST_MODEL)
+        max_lines: Maximum number of lines to analyze (default: 200)
+        model: OpenAI model to use for analysis (default: POWERFUL_MODEL)
 
     Returns:
         HeadingStructure: Analysis of heading levels, patterns, and formatting
@@ -79,8 +81,8 @@ def scan_legal_text(
         >>> for level in structure.levels:
         ...     print(f"Level {level.level}: {level.example_heading}")
     """
-    # Use default model if not specified
-    model = resolve_model_default(model, use_fast=True)
+    # Use powerful model for better pattern detection
+    model = resolve_model_default(model, use_fast=False)
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -95,8 +97,15 @@ def scan_legal_text(
         if not lines:
             raise ValueError(f"File is empty: {file_path}")
 
+        all_text = "".join(lines)
+
         # Limit to max_lines while preserving paragraph structure
-        sample_lines = lines[:max_lines]
+        if len(lines) > 20 + max_lines:
+            start_idx = 20
+        else:
+            start_idx = 0
+
+        sample_lines = lines[start_idx : start_idx + max_lines]
         sample_text = "".join(sample_lines)
 
     except UnicodeDecodeError:
@@ -104,31 +113,128 @@ def scan_legal_text(
     except IOError as e:
         raise ValueError(f"Error reading file {file_path}: {str(e)}")
 
-    system_prompt = """You are a lawyer skilled at analyzing legal documents and municipal codes.
-Your task is to identify the hierarchical heading structure in legal text.
+    system_prompt = """
+You are a legal text analyst extracting heading hierarchies from statutory and municipal codes.
 
-Analyze the provided text sample and identify all distinct heading levels. For each level:
-1. Determine the hierarchical level (1=top level, 2=second level, etc.)
-2. Create a regex pattern that matches all headings at that level
-3. Suggest appropriate Markdown prefix (#, ##, ###, etc.)
-4. Provide an example heading from the text
+TASK: Identify ALL heading levels in the provided text and define their structure.
 
-Focus on patterns like:
-- "CHAPTER X: Title"
-- "SECTION X.Y: Title"
-- "ARTICLE X: Title"
-- "PART X: Title"
-- Numbered sections like "1. Title" or "1.1. Title"
+OUTPUT FORMAT (HeadingStructure schema):
+{
+  "level": <int>,              // 1 = most general, increasing = more specific
+  "regex_pattern": "<string>", // Pattern matching ALL headings at this level
+  "markdown_prefix": "<string>", // Literal string: "# ", "## ", "### ", etc.
+  "example_heading": "<string>"  // Complete verbatim example from text
+}
 
-Return your analysis in the structured format requested. Be precise with regex patterns."""
+CRITICAL RULES:
+
+1. HIERARCHY
+   - Each level number used exactly once (no duplicates)
+   - Strict nesting: 1 > 2 > 3 > 4
+   - Parent levels must structurally contain child levels
+   - Only report levels that ACTUALLY EXIST in the text
+   - Include only 4 levels of headings MAXIMUM (no deeper)
+   
+2. MARKDOWN PREFIX
+   - LITERAL strings only: "# ", "## ", "### ", "#### ", "##### "
+   - NO backreferences, NO heading text, NO variables
+   - ✓ CORRECT: "## "
+   - ✗ WRONG: "## Article \\1", "##"
+
+3. EXAMPLE_HEADING - CRITICAL
+   - MUST be COMPLETE verbatim text from document
+   - MUST include keyword AND number AND title (if on same line)
+   - ✓ CORRECT: "ARTICLE 1. GENERAL PROVISIONS"
+   - ✗ WRONG: "Article" (incomplete - will be rejected)
+
+4. REGEX PATTERNS
+   - Single-line matches only (NO \\n, NO multiline mode)
+   - NO capturing groups: use (?:...) for grouping
+   - NO backreferences (\\1, \\2, etc.)
+   - Each level must have UNIQUE pattern (no reuse)
+   - Make patterns as GENERAL as possible to match ALL instances at that level
+   - Always anchor to line start: ^
+   - End patterns based on heading structure:
+     * If title on same line: .*$ or \\s+.*$
+     * If title on separate line: (?:\\s+.*)?$
+
+5. PATTERN UNIQUENESS - CRITICAL
+   - Patterns differing ONLY in whitespace (^\\s* vs ^\\s{2,}) are NOT unique
+   - Patterns differing ONLY in optional groups are likely NOT unique
+   - ✗ FORBIDDEN: Level 3: ^\\s*SECTION and Level 4: ^\\s{2,}SECTION
+   
+6. INDENTATION IS NOT HIERARCHY - CRITICAL
+   - Do NOT create separate levels based solely on leading whitespace
+   - ^\\s{2,}, ^\\s{4,} indicate formatting, NOT structure
+   - Use ^\\s* (any whitespace) or omit entirely
+
+7. PATTERN CONSTRUCTION
+   - Handle case variants: (?:CHAPTER|Chapter)
+   - Handle optional dots: \\.?
+   - Handle number formats:
+     * Roman numerals: [IVXLCDM]+
+     * Arabic: \\d+
+     * Decimals: \\d+(?:\\.\\d+)*
+     * Letters: [A-Z]|[a-z]
+   - Handle optional whitespace: \\s* or \\s+
+
+8. OPTIONAL GROUPS JUSTIFICATION
+   - Every (?:...)? must be justified by actual text variation
+   - Only add if you've seen BOTH variants in text
+   - Do NOT add speculative optional patterns
+
+9. PATTERN SPECIFICITY:
+- Subsections with (a), (b), (c): ^\\([a-z]\\)\\s+.*$
+- Numbered subsections with (1), (2): ^\\(\\d+\\)\\s+.*$
+- Do NOT use ^\\s+\\w+.*$ - this is too generic
+
+TYPICAL LEGAL HIERARCHY (use actual text patterns):
+Level 1: CHAPTER [Roman/Arabic]
+Level 2: ARTICLE [number]
+Level 3: SECTION/SEC./§ [decimal number]
+Level 4: ([A-Z]) Title
+
+REGEX EXAMPLES:
+^CHAPTER\\s+[IVXLCDM]+(?:\\s+.*)?$
+  → "CHAPTER I", "CHAPTER II GENERAL PROVISIONS"
+
+^ARTICLE\\s+\\d+(?:\\.\\d+)?(?:\\s+.*)?$
+  → "ARTICLE 1", "ARTICLE 1.2 Title"
+
+^\\s*(?:SECTION|SEC\\.|Section)\\s+\\d+(?:\\.\\d+)*\\.?\\s+.*$
+  → "SECTION 12.04 Purpose", "SEC. 11.00 Provisions"
+
+^\\([a-z]\\)\\s+[^.\\n]+\\.?
+  → "(b) Existing Law Continued"
+
+PRE-OUTPUT VALIDATION:
+□ All example_heading fields contain COMPLETE verbatim text (not just "Article" or "Section")
+□ No two regex patterns differ only in whitespace amounts
+□ No levels based solely on indentation
+□ Every optional group justified by actual text variation
+□ Each regex is unique across levels
+
+COMMON ERRORS TO AVOID:
+1. Incomplete example_heading ("Article" instead of "ARTICLE 1. GENERAL PROVISIONS")
+2. Duplicate patterns differing only in ^\\s* vs ^\\s{2,}
+3. Creating levels from indentation alone
+4. Adding (?:...)? without seeing both variants
+
+CONSTRAINTS:
+- Output ONLY valid JSON matching HeadingStructure schema
+- No explanations, preamble, or commentary
+- Be conservative: only report observed structure
+- Maintain precise regex syntax
+- If uncertain, use simpler interpretation with fewer levels"""
 
     user_prompt = f"""Analyze the heading structure in this legal text sample:
 
 {sample_text}
 
 Identify all heading levels, create regex patterns for each level, and suggest appropriate Markdown formatting.
-The text contains {len(sample_lines)} lines (limited sample for analysis)."""
-
+The text contains {len(sample_lines)} lines (limited sample for analysis).
+"""
+    print(f"Scanning legal text using model: {model}")
     try:
         structure = ask(
             client=client,
@@ -141,7 +247,17 @@ The text contains {len(sample_lines)} lines (limited sample for analysis)."""
         # Validate regex patterns
         for level in structure.levels:
             try:
-                re.compile(level.regex_pattern)
+                pattern = re.compile(level.regex_pattern, re.IGNORECASE | re.MULTILINE)
+                # Check coverage against full text
+                matches = pattern.findall(all_text)
+                if not matches:
+                    print(
+                        f"WARNING: Regex for Level {level.level} ({level.regex_pattern}) found 0 matches in full text."
+                    )
+                else:
+                    print(
+                        f"Level {level.level} regex validated: {len(matches)} matches found."
+                    )
             except re.error as e:
                 raise ValueError(
                     f"Invalid regex pattern for level {level.level}: {level.regex_pattern}. Error: {str(e)}"
@@ -305,7 +421,9 @@ def _compile_heading_patterns(structure: HeadingStructure) -> list:
         pattern = heading_level.regex_pattern
         level = heading_level.level
         try:
-            compiled = re.compile(pattern)
+            # Use IGNORECASE to handle consistent casing (ARTICLE vs Article)
+            # Use MULTILINE so ^ matchers work expectedly even if stripped line behavior changes
+            compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
             compiled_patterns.append((level, compiled))
         except re.error as e:
             raise ValueError(
@@ -439,7 +557,10 @@ def _process_markdown_lines(
             converted_lines.append(markdown_heading + "\n")
             heading_lines_processed.add(i)
             i += 1
-            logger.debug(f"Line {i}: Converted to level {heading_level} heading")
+            if (len(heading_lines_processed) % 50) == 0:
+                logger.debug(
+                    f"Line {i} (heading # {len(heading_lines_processed)}): Converted to level {heading_level} heading"
+                )
             continue
 
         # Not a heading - process as paragraph content

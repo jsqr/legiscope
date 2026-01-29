@@ -1,12 +1,24 @@
 #!/bin/bash
 
-# Check if pandoc is installed
-if ! command -v pandoc &> /dev/null; then
-    echo "pandoc is not installed. Please install it before running this script."
+# Detect best available converter (textutil on macOS is ~100x faster than pandoc)
+if command -v textutil &> /dev/null; then
+    CONVERTER="textutil"
+    echo "Using textutil (macOS native) for fast conversion"
+elif command -v pandoc &> /dev/null; then
+    CONVERTER="pandoc"
+    echo "Using pandoc for conversion (slower for large files)"
+else
+    echo "No DOCX converter found. Install pandoc: brew install pandoc"
     exit 1
 fi
 
 municipality_name=$1
+
+if [ -z "$municipality_name" ]; then
+    echo "Usage: $0 <municipality_name>"
+    echo "Example: $0 CA-LosAngeles"
+    exit 1
+fi
 
 echo "Converting docx files to plain text for $municipality_name"
 
@@ -32,15 +44,28 @@ for file in "$input_dir"/*.docx; do
         # Extract the file name without the .docx extension
         filename=$(basename "$file" .docx)
 
-        # Use pandoc to convert the docx file to plain text (still has some Unicode characters)
-        #pandoc "$file" -f docx -t plain --output "$temp_dir/$filename.txt"
-
-        # Use pandoc to convert the docx file to plain text with ASCII encoding
-        pandoc "$file" -f docx -t plain --ascii --output "$temp_dir/$filename.txt"
-        # Replace &nbsp; with a space, &ndash; with a hyphen, &sect; with a section symbol, etc.
-        sed -i '' 's/&nbsp;/ /g' "$temp_dir/$filename.txt"
-        sed -i '' 's/&ndash;/-/g' "$temp_dir/$filename.txt"
-        sed -i '' 's/&sect;/§/g' "$temp_dir/$filename.txt"
+        # Convert using the best available tool
+        if [ "$CONVERTER" = "textutil" ]; then
+            # macOS textutil
+            textutil -convert txt -output "$temp_dir/$filename.txt" "$file"
+        else
+            # Fallback to pandoc
+            # Use ASCII encoding + restoration to ensure no hidden artifacts (like NBSP) remain
+            pandoc "$file" -f docx -t plain --ascii --output "$temp_dir/$filename.txt"
+            
+            # Handle sed in-place argument for both macOS and Linux
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+                SED_OPTS=(-i '')
+            else
+                SED_OPTS=(-i)
+            fi
+            
+            # Restore symbols and clean artifacts
+            sed "${SED_OPTS[@]}" 's/&nbsp;/ /g' "$temp_dir/$filename.txt"
+            sed "${SED_OPTS[@]}" 's/&ndash;/-/g' "$temp_dir/$filename.txt"
+            sed "${SED_OPTS[@]}" 's/&sect;/§/g' "$temp_dir/$filename.txt"
+        fi
+        echo "  Converted: $filename.docx"
     else
         echo "'$file' is not a file. Skipping..."
     fi

@@ -60,14 +60,15 @@ def convert_jurisdiction_to_markdown(jurisdiction_path: str) -> None:
     print(f"Converting {state}-{municipality}...")
 
     try:
-        client = Config.get_fast_client()
-
+        # Use powerful model for better heading detection
+        client = Config.get_powerful_client()
+        
         # Scan for heading structure
-        print("Analyzing heading structure...")
+        # Use 200 lines to capture enough examples of heading patterns
         structure = scan_legal_text(
             client=client,
             file_path=str(input_path),
-            max_lines=150,
+            max_lines=200,
         )
 
         # Convert to Markdown
