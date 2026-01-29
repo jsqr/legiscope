@@ -1,6 +1,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, cast
 
 import chromadb
 import numpy as np
@@ -570,7 +571,7 @@ def create_embeddings_df(
     return result_df
 
 
-def _get_or_create_legal_collection(
+def get_or_create_legal_collection(
     config: CollectionConfig | None = None,
 ) -> chromadb.Collection:
     """Get or create the centralized legal code collection.
@@ -615,7 +616,7 @@ def _add_documents_to_collection(
     ids: list[str],
     documents: list[str],
     embeddings: list,
-    metadata_list: list[dict] | None,
+    metadata_list: list[dict[str, Any]] | None,
 ) -> None:
     """Add documents to ChromaDB collection in batches.
 
@@ -644,7 +645,7 @@ def _add_documents_to_collection(
             ids=batch_ids,
             documents=batch_documents,
             embeddings=batch_embeddings,
-            metadatas=batch_metadata,
+            metadatas=cast(Any, batch_metadata),
         )
 
 
@@ -723,7 +724,7 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     )
 
     # Get or create collection
-    collection = _get_or_create_legal_collection(collection_config)
+    collection = get_or_create_legal_collection(collection_config)
     logger.info(f"Using collection: {collection.name}")
 
     # Prepare data for ChromaDB
