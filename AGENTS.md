@@ -218,60 +218,6 @@ client = get_embedding_client(config.provider)
 ### Testing
 
 ```bash
-make test
-```
-
-Or manually:
-
-```bash
-pytest
-pytest --cov=src/legiscope --cov-report=html
-```
-
-### Linting and Formatting
-
-```bash
-make lint
-```
-
-Or manually:
-
-```bash
-ruff check src/ tests/
-ruff format --check src/ tests/
-ruff format src/ tests/
-ruff check --fix src/ tests/
-```
-
-### Environment Management
-
-```bash
-make env
-make clean-env
-make list
-```
-
-Or manually:
-
-```bash
-uv pip list
-```
-
-### Pipeline Commands
-
-```bash
-# Run complete pipeline for specific jurisdiction
-make pipeline STATE=CA MUNICIPALITY="San Francisco"
-
-# Or manually:
-./scripts/pipeline.sh california "San Francisco"
-```
-
-## Development Commands
-
-### Testing
-
-```bash
 # Run all tests
 make test
 # Or manually:
@@ -321,23 +267,84 @@ make list
 uv pip list
 ```
 
+### Pipeline Commands
+
+```bash
+# Run complete pipeline for specific jurisdiction
+make pipeline STATE=CA MUNICIPALITY="San Francisco"
+
+# Or manually:
+./scripts/pipeline.sh california "San Francisco"
+```
+
+### Benchmarking
+
+The project handles benchmarking against MonQcle data using an LLM-as-judge approach.
+See `BENCHMARKING.md` for full documentation.
+
+```bash
+# Run benchmarking pipeline
+uv run python scripts/benchmark_pipeline.py \
+    --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
+    --monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
+    --series-title DPL_2025_Consolidated \
+    --jurisdiction-id CA-LosAngeles \
+    --output data/output/CA-LosAngeles/benchmark_results.csv \
+    --n-results 10 \
+    --use-hyde False \
+    --filter-relevance False \
+    --relevance-threshold 0.5 \
+    --validate-supporting-passages False \
+    --test-limit 5 \
+    --debug
+```
+
+### Advanced Query Execution
+
+For granular control over query execution (HYDE, Relevance Filtering), run the script directly:
+
+```bash
+uv run python scripts/run_queries.py \
+    --queries-path "data/queries/test_queries.csv" \
+    --jurisdiction-id "CA-LosAngeles" \
+    --n-results 10 \
+    --use-hyde False \
+    --filter-relevance False \
+    --relevance-threshold 0.5 \
+    --validate-supporting-passages False \
+    --output "data/output/CA-LosAngeles/test_results.csv"
+```
+
 ## Project Structure
 
 ```
 .
 ├── src/
 │   └── legiscope/       # Main package source code
+│       ├── llm_config.py    # LLM configuration and client management
+│       ├── convert.py   # Conversion utilities and response models
+│       ├── utils.py     # Core utility functions
+│       ├── embeddings.py # Embedding generation and ChromaDB management
+│       ├── retrieve.py   # Information retrieval with HYDE and section-level search
+│       ├── segment.py   # Text segmentation utilities
+│       ├── query.py     # Legal query processing with structured responses
+│       └── eval.py      # Evaluation and benchmarking logic
 ├── tests/               # Test files
-├── notebooks/           # Jupyter notebooks for analysis
-│   ├── demo_nb.py       # Demo notebook
-│   └── README.md
 ├── scripts/             # Utility scripts
-│   ├── pipeline.sh      # Complete processing pipeline
+│   ├── pipeline.sh          # End-to-end processing pipeline
+│   ├── benchmark_pipeline.py # Benchmarking workflow
+│   ├── run_queries.py       # Batch query execution
 │   └── ...
-├── .env.example         # Environment variables template
+├── notebooks/           # Interactive notebooks
+│   └── query_demo.py    # Demo notebook
+├── docs/                # Documentation
+│   ├── BENCHMARKING.md      # Benchmarking guide
+│   └── VALIDATION_EXAMPLE.md # Validation guide
+├── data/                # Data directory (not tracked by git)
 ├── pyproject.toml       # Project configuration and dependencies
 ├── Makefile            # Development commands
-└── AGENTS.md           # This file
+├── AGENTS.md           # This file
+└── CONTRIBUTING.md     # Contribution guidelines
 ```
 
 ## Key Dependencies
