@@ -27,7 +27,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from legiscope.llm_config import Config
-from legiscope.utils import LLMConfig
+from legiscope.utils import LLMConfig, str2bool
 from legiscope.query import BatchQuerySettings, run_queries, load_queries
 from legiscope.eval import (
     Evaluator, 
@@ -80,6 +80,36 @@ def main():
         "--series-title",
         default="DPL_2025_Consolidated",
         help="MonQcle series title to use for ground truth"
+    )
+    parser.add_argument(
+        "--use-hyde",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Enable HYDE query rewriting (default: False). Can be passed as '--use-hyde True/False'"
+    )
+    parser.add_argument(
+        "--filter-relevance",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Enable LLM-based relevance filtering (default: False). Can be passed as '--filter-relevance True/False'"
+    )
+    parser.add_argument(
+        "--relevance-threshold",
+        type=float,
+        default=0.5,
+        help="Threshold for relevance filtering (0.0-1.0, default: 0.5)"
+    )
+    parser.add_argument(
+        "--validate-supporting-passages",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=True,
+        help="Enable validation of supporting passages against retrieved text (default: True). Can be passed as '--validate-supporting-passages True/False'"
     )
     parser.add_argument(
         "--debug",
@@ -188,8 +218,10 @@ def main():
     query_settings = BatchQuerySettings(
         llm=query_llm, 
         n_results=args.n_results, 
-        filter_relevance=True,
-        relevance_threshold=0.5
+        filter_relevance=args.filter_relevance,
+        relevance_threshold=args.relevance_threshold,
+        use_hyde=args.use_hyde,
+        validate_supporting_passages=args.validate_supporting_passages
     )
 
     # Evaluator Agent (Powerful model for judging)
@@ -296,5 +328,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
     main()

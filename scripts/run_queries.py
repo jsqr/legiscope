@@ -24,7 +24,7 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from legiscope.llm_config import Config
-from legiscope.utils import LLMConfig
+from legiscope.utils import LLMConfig, str2bool
 from legiscope.query import BatchQuerySettings, run_queries, load_queries
 
 
@@ -42,6 +42,42 @@ def main():
     )
     parser.add_argument(
         "--output", default="data/output/query_results.csv", help="Output file path"
+    )
+    parser.add_argument(
+        "--n-results", 
+        type=int, 
+        default=10, 
+        help="Number of embedding segments to retrieve per query"
+    )
+    parser.add_argument(
+        "--use-hyde",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help="Enable HYDE query rewriting (default: False). Can be passed as '--use-hyde True/False'"
+    )
+    parser.add_argument(
+        "--filter-relevance",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=True,
+        help="Enable LLM-based relevance filtering (default: True). Can be passed as '--filter-relevance True/False'"
+    )
+    parser.add_argument(
+        "--relevance-threshold",
+        type=float,
+        default=0.5,
+        help="Threshold for relevance filtering (0.0-1.0, default: 0.5)"
+    )
+    parser.add_argument(
+        "--validate-supporting-passages",
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=True,
+        help="Enable validation of supporting passages against retrieved text (default: True). Can be passed as '--validate-supporting-passages True/False'"
     )
 
     args = parser.parse_args()
@@ -62,7 +98,14 @@ def main():
         client=Config.get_powerful_client(), 
         model=Config.get_powerful_model()
     )
-    settings = BatchQuerySettings(llm=llm_config)
+    settings = BatchQuerySettings(
+        llm=llm_config,
+        n_results=args.n_results,
+        use_hyde=args.use_hyde,
+        filter_relevance=args.filter_relevance,
+        relevance_threshold=args.relevance_threshold,
+        validate_supporting_passages=args.validate_supporting_passages
+    )
 
     # Run queries with new API
     # run_queries now accepts list[QueryInput] directly

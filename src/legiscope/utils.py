@@ -2,6 +2,7 @@
 Utility functions for the legiscope package.
 """
 
+import argparse
 import os
 from dataclasses import dataclass
 from typing import Type, TypeVar
@@ -232,3 +233,14 @@ def create_jurisdiction_structure(state: str, municipality: str) -> str:
         raise OSError(
             f"Failed to create directory structure for {jurisdiction_name}: {str(e)}"
         ) from e
+
+def str2bool(v: str | bool) -> bool:
+    """Convert string to boolean for argparse."""
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
