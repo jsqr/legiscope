@@ -1114,6 +1114,38 @@ class TestCreateSegmentsDf:
         assert result["section_ref"][0] == 0
         assert result["segment_text"][0] == "Content here"
 
+    def test_long_heading_adjustment(self):
+        """Test token limit adjustment for long headings."""
+        # words_per_token = 0.75
+        # min_tokens is hardcoded to 20 in implementation
+        
+        # Setup:
+        # token_limit = 50
+        # Heading: 23 words (~30 tokens: int(23/0.75) = 30)
+        # Adjusted limit: max(20, 50 - 30) = 20
+        # 20 tokens * 0.75 = 15 words capacity
+        
+        # Body: 19 words (~25 tokens)
+        # 19 words > 15 words capacity -> Should split
+        # If no adjustment: 50 tokens * 0.75 = 37.5 words -> 19 words fits -> 1 segment
+        
+        long_heading = " ".join(["Head"] * 23)
+        body_text = " ".join(["Body"] * 19)
+
+        df = pl.DataFrame(
+            {
+                "section_idx": [0],
+                "heading_level": [1],
+                "heading_text": [long_heading],
+                "body_text": [body_text],
+            }
+        )
+
+        result = create_segments_df(df, token_limit=50, words_per_token=0.75)
+
+        # Should be split due to reduced effective limit
+        assert len(result) >= 2
+
     def test_segment_position_tracking(self):
         """Test that segment_position is correctly tracked within sections."""
         df = pl.DataFrame(
