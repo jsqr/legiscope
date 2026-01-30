@@ -38,6 +38,7 @@ dependencies = [
     "mcp>=1",
     "pydantic>=2",
     "pyzmq>=27.1.0",
+    "rapidfuzz>=3.0.0",
 ]
 
 [dependency-groups]

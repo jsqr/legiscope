@@ -4,7 +4,7 @@ Query processing module for the legiscope package.
 
 import os
 from dataclasses import dataclass, field
-from difflib import SequenceMatcher
+from rapidfuzz import fuzz
 from pathlib import Path
 from typing import Any, cast
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -30,6 +30,8 @@ DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
 DEFAULT_N_RESULTS = 10  # Default number of results to retrieve
 DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
 DEFAULT_LLM_TIMEOUT_SECONDS = float(os.getenv("LEGISCOPE_LLM_TIMEOUT", "300"))
+DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD: float = 1.0
+DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD: float = 0.9
 
 
 @dataclass
@@ -256,8 +258,8 @@ class LegalQueryResponse(BaseModel):
 def _validate_supporting_passages(
     response: LegalQueryResponse,
     sections: list[SectionResult],
-    exact_match_threshold: float = 1.0,
-    fuzzy_match_threshold: float = 0.9,
+    exact_match_threshold: float = DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD,
+    fuzzy_match_threshold: float = DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD,
 ) -> list[float]:
     """
     Validate that supporting passages exist in retrieved text with fuzzy matching.
@@ -310,11 +312,29 @@ def _validate_supporting_passages(
 
     similarity_scores = []
     unmatched_count = 0
+
+    # Helper for robust matching
+    def normalize_text(text: str) -> str:
+        # Normalize whitespace (collapses multiple spaces, tabs, newlines)
+        text = " ".join(text.split())
+        # Normalize smart quotes to standard ASCII
+        text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+        return text
+
+    # Pre-compute normalized texts
+    normalized_texts = [normalize_text(t) for t in all_texts]
+
     for i, passage in enumerate(response.supporting_passages):
+        # Normalize passage for matching to normalized texts
         passage_stripped = passage.strip()
+        passage_normalized = normalize_text(passage_stripped)
 
         # First try exact substring match (fast path)
-        exact_match = any(passage_stripped in text for text in all_texts)
+        # Check both raw and normalized versions
+        exact_match = (
+            any(passage_stripped in text for text in all_texts)
+            or any(passage_normalized in text for text in normalized_texts)
+        )
 
         if exact_match:
             logger.debug(f"Supporting passage {i + 1} validated (exact match)")
@@ -325,37 +345,16 @@ def _validate_supporting_passages(
         best_similarity = 0.0
         best_match_text = ""
 
-        for text in all_texts:
-            # Check all substrings of similar length in the text
-            passage_len = len(passage_stripped)
-            text_len = len(text)
-
-            # Optimization: skip if text is much shorter than passage
-            if text_len < passage_len * 0.5:
+        for text in normalized_texts:
+            # Use rapidfuzz for fast partial matching (returns 0-100)
+            alignment = fuzz.partial_ratio_alignment(passage_normalized, text)
+            if alignment is None:
                 continue
 
-            # For efficiency, use a sliding window approach
-            # Check substrings around the passage length (±20%)
-            min_len = max(int(passage_len * 0.8), 1)
-            max_len = min(int(passage_len * 1.2), text_len)
-
-            for substr_len in range(min_len, max_len + 1):
-                for start in range(text_len - substr_len + 1):
-                    substring = text[start : start + substr_len]
-                    similarity = SequenceMatcher(
-                        None, passage_stripped, substring
-                    ).ratio()
-
-                    if similarity > best_similarity:
-                        best_similarity = similarity
-                        best_match_text = substring
-
-                    # Early exit if we find a good enough match
-                    if similarity >= exact_match_threshold:
-                        break
-
-                if best_similarity >= exact_match_threshold:
-                    break
+            score = alignment.score / 100.0
+            if score > best_similarity:
+                best_similarity = score
+                best_match_text = text[alignment.dest_start : alignment.dest_end]
 
             if best_similarity >= exact_match_threshold:
                 break

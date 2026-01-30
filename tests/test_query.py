@@ -5,6 +5,7 @@ Tests for the query module.
 import os
 import tempfile
 import pytest
+from loguru import logger
 import polars as pl
 from unittest.mock import Mock, patch
 from instructor import Instructor
@@ -165,6 +166,14 @@ class TestLoadQueries:
             assert queries[0].variable_name == "normal"
         finally:
             os.unlink(temp_path)
+
+
+@pytest.fixture(autouse=True)
+def capture_loguru_logs(caplog):
+    """Make loguru logs visible to pytest's caplog."""
+    handler_id = logger.add(caplog.handler, format="{message}")
+    yield caplog
+    logger.remove(handler_id)
 
 
 class TestLegalQueryResponse:
@@ -509,6 +518,30 @@ class TestValidateSupportingPassages:
         # Should complete without errors (warnings logged to stderr via loguru)
         _validate_supporting_passages(response, [])
 
+    def test_validate_with_normalization(self, caplog):
+        """Test validation works with whitespace and smart quote differences."""
+        response = LegalQueryResponse(
+            short_answer="Test",
+            reasoning="Test",
+            citations=[],
+            supporting_passages=[
+                "No person shall sell   drug paraphernalia.",  # Extra spaces
+                "“Smart quotes” are supported.",  # Smart quotes
+            ],
+            confidence=0.9,
+            limitations="",
+        )
+
+        sections = self.create_test_sections(
+            body_text='Section 5-12-3: No person shall sell drug paraphernalia. "Smart quotes" are supported.',
+        )
+
+        _validate_supporting_passages(response, sections)
+
+        # Should match exactly due to normalization
+        assert "validated (exact match)" in caplog.text
+        assert "HALLUCINATION WARNING" not in caplog.text
+        assert "NOT FOUND" not in caplog.text
 class TestPrepareLegalContext:
     """Test _prepare_legal_context function."""
 
