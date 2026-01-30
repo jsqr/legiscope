@@ -3,6 +3,7 @@ Tests for the llm_config module environment variable functionality.
 """
 
 import os
+import pytest
 from legiscope.llm_config import Config
 
 
@@ -119,3 +120,51 @@ class TestEnvironmentVariables:
         # Environment variable should override OpenAI default
         assert Config.get_fast_model() == "should-win"
         assert Config.get_powerful_model() == "gpt-4.1"  # Still uses OpenAI default
+
+    def test_get_llm_params_defaults(self):
+        """Test default LLM parameters."""
+        params = Config.get_llm_params()
+        assert params["temperature"] == 0.0
+        assert params["max_retries"] == 3
+        assert "extra_body" not in params
+
+    def test_get_llm_params_overrides(self):
+        """Test LLM parameter overrides."""
+        params = Config.get_llm_params(temperature=0.5, max_retries=5, foo="bar")
+        assert params["temperature"] == 0.5
+        assert params["max_retries"] == 5
+        assert params["foo"] == "bar"
+
+    def test_get_llm_params_ollama_context(self):
+        """Test Ollama context window parameter."""
+        os.environ["LEGISCOPE_LLM_PROVIDER"] = "ollama"
+        os.environ["LEGISCOPE_OLLAMA_NUM_CTX"] = "8192"
+        
+        params = Config.get_llm_params()
+        assert "extra_body" in params
+        assert params["extra_body"]["num_ctx"] == 8192
+
+    def test_get_llm_params_ollama_context_invalid(self):
+        """Test invalid Ollama context window parameter."""
+        os.environ["LEGISCOPE_LLM_PROVIDER"] = "ollama"
+        os.environ["LEGISCOPE_OLLAMA_NUM_CTX"] = "invalid"
+        
+        # Should log warning but not crash, and not set extra_body
+        params = Config.get_llm_params()
+        assert "extra_body" not in params
+
+    def test_unsupported_provider_error(self):
+        """Test error for unsupported provider."""
+        os.environ["LEGISCOPE_LLM_PROVIDER"] = "unsupported"
+        
+        with pytest.raises(ValueError, match="Unsupported LLM provider"):
+            Config.get_fast_client()
+            
+        with pytest.raises(ValueError, match="Unsupported LLM provider"):
+            Config.get_powerful_client()
+            
+        with pytest.raises(ValueError, match="Unsupported LLM provider"):
+            Config.get_fast_model()
+            
+        with pytest.raises(ValueError, match="Unsupported LLM provider"):
+            Config.get_powerful_model()

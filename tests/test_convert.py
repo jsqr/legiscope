@@ -189,6 +189,78 @@ Administrative procedures are outlined here."""
         finally:
             os.unlink(test_file)
 
+    def test_scan_legal_text_skips_preamble(self):
+        """Test that scan_legal_text skips the first 20 lines for long files."""
+        # Create file with 30 lines
+        lines = [f"Line {i}\n" for i in range(1, 40)]
+        content = "".join(lines)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(content)
+            test_file = f.name
+
+        try:
+            mock_client = Mock()
+            # Setup mock response
+            mock_response = HeadingStructure(
+                levels=[],
+                total_levels=0,
+                file_sample_size=100,
+            )
+            mock_client.chat.completions.create.return_value = mock_response
+
+            # Call with max_lines=5
+            scan_legal_text(mock_client, test_file, max_lines=5)
+
+            # Get the call args
+            call_args = mock_client.chat.completions.create.call_args
+            kwargs = call_args.kwargs
+            messages = kwargs["messages"]
+            prompt_content = messages[1]["content"]
+
+            # Should skip first 20 lines (Line 1 to Line 20)
+            # Should assume Lines 21-25 are present
+            assert "Line 21" in prompt_content
+            # Should NOT contain Line 1
+            assert "Line 1\n" not in prompt_content
+
+        finally:
+            os.unlink(test_file)
+
+    def test_scan_legal_text_uses_powerful_model(self):
+        """Test that scan_legal_text defaults to use_fast=False (powerful model)."""
+        # Create minimal file
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write("Some text")
+            test_file = f.name
+
+        try:
+            mock_client = Mock()
+            mock_response = HeadingStructure(
+                levels=[], total_levels=0, file_sample_size=10
+            )
+            mock_client.chat.completions.create.return_value = mock_response
+
+            # We need to patch resolve_model_default to verify it's called with use_fast=False
+            with patch("legiscope.convert.resolve_model_default") as mock_resolve:
+                mock_resolve.return_value = "mock-powerful-model"
+
+                scan_legal_text(mock_client, test_file)
+
+                # Check resolve_model_default was called with use_fast=False
+                mock_resolve.assert_called_with(None, use_fast=False)
+
+                # Check client was called with the resolved model
+                call_args = mock_client.chat.completions.create.call_args
+                assert call_args.kwargs["model"] == "mock-powerful-model"
+
+        finally:
+            os.unlink(test_file)
+
     def test_scan_legal_text_invalid_regex(self):
         """Test error handling when LLM returns invalid regex pattern."""
         sample_text = "CHAPTER 1: TEST"

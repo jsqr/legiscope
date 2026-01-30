@@ -300,8 +300,7 @@ data/
 │       ├── embeddings.py # Embedding generation and ChromaDB management
 │       ├── retrieve.py   # Information retrieval with HYDE and section-level search
 │       ├── segment.py   # Text segmentation utilities
-│       ├── query.py     # Legal query processing with structured responses
-│       └── eval.py      # Evaluation and benchmarking logic
+│       └── query.py     # Legal query processing with structured responses
 ├── tests/               # Test files
 ├── scripts/             # Utility scripts
 │   ├── pipeline.sh          # End-to-end processing pipeline
