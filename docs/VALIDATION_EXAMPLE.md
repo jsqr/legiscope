@@ -8,8 +8,9 @@ The `query.py` module now includes automatic validation of `supporting_passages`
 
 When `query_legal_documents()` generates a response, it automatically validates each supporting passage against the retrieved text using:
 
-1. **Exact substring matching** (fast path) - checks if the passage appears exactly in the retrieved sections
-2. **Fuzzy matching** (fallback) - uses `difflib.SequenceMatcher` to detect near-misses or distortions
+1. **Text Normalization**: Collapses whitespace (tabs, newlines) and converts smart quotes to standard ASCII to ensure robust matching.
+2. **Exact substring matching** (fast path) - checks if the passage appears exactly in the retrieved sections (both raw and normalized).
+3. **Fuzzy matching** (fallback) - uses `rapidfuzz` (C++ accelerated) to find the best matching alignment and detect near-misses or distortions.
 
 ## Warning Levels
 
@@ -48,20 +49,24 @@ _validate_supporting_passages(
 ## Example Usage
 
 ```python
-from legiscope.query import QueryConfig, query_legal_documents
+from legiscope.query import QuerySettings, query_legal_documents
 from legiscope.utils import LLMConfig
 from legiscope.llm_config import Config
 
-# Create query config
+# Create query settings
 llm_config = LLMConfig(client=Config.get_fast_client())
-config = QueryConfig(
+settings = QuerySettings(
     llm=llm_config,
-    query="Are there parking restrictions?",
-    retrieval_results=results,
+    filter_relevance=True,
+    relevance_threshold=0.7
 )
 
 # Process query - validation happens automatically
-response = query_legal_documents(config)
+response, scores = query_legal_documents(
+    retrieval_results=results,
+    query="Are there parking restrictions?",
+    settings=settings
+)
 
 # Check logs for any hallucination warnings
 # Warnings are logged via loguru at WARNING level
@@ -77,8 +82,8 @@ This ensures passages must actually appear somewhere in the retrieved documents.
 
 ## Performance
 
-The validation uses optimized fuzzy matching:
-- Skips fuzzy matching if exact match found (fast path)
-- Only checks substrings within ±20% of passage length
-- Early exits when good match found
-- Minimal overhead for typical legal documents
+The validation uses optimized matching:
+- **Pre-computed Normalization**: Text is normalized once to handle formatting differences.
+- **Rapidfuzz**: Uses C++ implementation for string matching, which is orders of magnitude faster than Python's standard library.
+- **Fast Path**: Skips fuzzy matching if exact match found.
+- **Minimal Overhead**: Even with fuzzy matching, the C++ acceleration keeps this step extremely fast.
