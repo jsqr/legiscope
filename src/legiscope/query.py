@@ -331,8 +331,10 @@ def _validate_supporting_passages(
 
         # First try exact substring match (fast path)
         # Check both raw and normalized versions
-        exact_match = any(passage_stripped in text for text in all_texts) or \
-                      any(passage_normalized in text for text in normalized_texts)
+        exact_match = (
+            any(passage_stripped in text for text in all_texts)
+            or any(passage_normalized in text for text in normalized_texts)
+        )
 
         if exact_match:
             logger.debug(f"Supporting passage {i + 1} validated (exact match)")
