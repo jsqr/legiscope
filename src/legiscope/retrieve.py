@@ -27,7 +27,7 @@ DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering 
 class SegmentMatch:
     """A single matching segment from retrieval."""
 
-    segment_idx: int
+    segment_id: str
     segment_text: str
     distance: float
     segment_position: int
@@ -55,11 +55,11 @@ class SectionResult:
     Check llm_assessed flag to determine which scoring method was used.
     """
 
-    section_idx: int
+    section_id: str
     heading_text: str
     body_text: str
     heading_level: int
-    parent: int | None
+    parent_id: str | None
     matching_segments: list[SegmentMatch]
     relevance_score: float
     segment_count: int
@@ -1025,7 +1025,7 @@ def filter_sections(
             assessments.append(
                 {
                     "index": i,
-                    "section_idx": section.section_idx,
+                    "section_id": section.section_id,
                     "is_relevant": assessment.is_relevant,
                     "relevance_score": assessment.relevance_score,
                     "confidence": assessment.confidence,
@@ -1037,11 +1037,11 @@ def filter_sections(
             if assessment.is_relevant and assessment.confidence >= confidence_threshold:
                 # Update section with LLM relevance score for ranking
                 updated_section = SectionResult(
-                    section_idx=section.section_idx,
+                    section_id=section.section_id,
                     heading_text=section.heading_text,
                     body_text=section.body_text,
                     heading_level=section.heading_level,
-                    parent=section.parent,
+                    parent_id=section.parent_id,
                     matching_segments=section.matching_segments,
                     relevance_score=assessment.relevance_score,  # Use LLM score instead of distance
                     segment_count=section.segment_count,
@@ -1123,7 +1123,7 @@ def _group_segments_by_section(
         segment_results.metadatas[0] if segment_results.metadatas else None
     )
 
-    # Group segments by section_ref
+    # Group segments by section_ordinal
     sections_to_segments: dict[int, list[dict[str, Any]]] = {}
 
     for i, seg_id in enumerate(segment_ids):
@@ -1133,13 +1133,13 @@ def _group_segments_by_section(
             else {}
         )
 
-        section_ref = metadata.get("section_ref")
-        if section_ref is None:
-            logger.warning(f"Segment {seg_id} missing section_ref in metadata")
+        section_ordinal = metadata.get("section_ordinal")
+        if section_ordinal is None:
+            logger.warning(f"Segment {seg_id} missing section_ordinal in metadata")
             continue
 
         segment_data = {
-            "segment_idx": int(seg_id),
+            "segment_id": str(seg_id),
             "segment_text": segment_documents[i],
             "distance": segment_distances[i],
             "segment_position": metadata.get("segment_position", 0),
@@ -1148,9 +1148,9 @@ def _group_segments_by_section(
         }
 
         # Group by section
-        if section_ref not in sections_to_segments:
-            sections_to_segments[section_ref] = []
-        sections_to_segments[section_ref].append(segment_data)
+        if section_ordinal not in sections_to_segments:
+            sections_to_segments[section_ordinal] = []
+        sections_to_segments[section_ordinal].append(segment_data)
 
     unique_sections = len(sections_to_segments)
     logger.info(f"Grouped segments into {unique_sections} unique sections")
@@ -1170,7 +1170,12 @@ def _load_section_data(
         logger.debug(f"Loaded {len(sections_df)} sections from parquet")
 
         # Validate required columns exist
-        required_columns = {"section_idx", "heading_text", "body_text", "heading_level"}
+        required_columns = {
+            "section_ordinal",
+            "heading_text",
+            "body_text",
+            "heading_level",
+        }
         missing_columns = required_columns - set(sections_df.columns)
         if missing_columns:
             logger.error(
@@ -1181,9 +1186,9 @@ def _load_section_data(
             )
 
         # Filter to only sections we have results for
-        section_indices = list(sections_to_segments.keys())
+        section_ordinals = list(sections_to_segments.keys())
         filtered_sections_df = sections_df.filter(
-            pl.col("section_idx").is_in(section_indices)
+            pl.col("section_ordinal").is_in(section_ordinals)
         )
 
         logger.debug(f"Filtered to {len(filtered_sections_df)} matching sections")
@@ -1191,7 +1196,7 @@ def _load_section_data(
         # Convert to dictionary for easier lookup
         sections_dict = {}
         for row in filtered_sections_df.to_dicts():
-            sections_dict[row["section_idx"]] = row
+            sections_dict[row["section_ordinal"]] = row
 
         return sections_dict
 
@@ -1209,11 +1214,13 @@ def _build_section_results(
 
     section_results = []
 
-    for section_idx, segments in sections_to_segments.items():
+    for section_ordinal, segments in sections_to_segments.items():
         # Get section data
-        section_data = sections_dict.get(section_idx)
+        section_data = sections_dict.get(section_ordinal)
         if not section_data:
-            logger.warning(f"Section {section_idx} not found in parquet data")
+            logger.warning(
+                f"Section ordinal {section_ordinal} not found in parquet data"
+            )
             continue
 
         # Calculate relevance score (best segment distance)
@@ -1225,7 +1232,7 @@ def _build_section_results(
         # Create SegmentMatch dataclasses
         matching_segments = [
             SegmentMatch(
-                segment_idx=seg["segment_idx"],
+                segment_id=seg["segment_id"],
                 segment_text=seg["segment_text"],
                 distance=seg["distance"],
                 segment_position=seg["segment_position"],
@@ -1236,11 +1243,11 @@ def _build_section_results(
         ]
 
         section_result = SectionResult(
-            section_idx=section_idx,
+            section_id=section_data.get("section_id", str(section_ordinal)),
             heading_text=section_data["heading_text"],
             body_text=section_data["body_text"],
             heading_level=section_data["heading_level"],
-            parent=section_data.get("parent"),
+            parent_id=section_data.get("parent_id"),
             matching_segments=matching_segments,
             relevance_score=best_distance,
             segment_count=len(segments),

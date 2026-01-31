@@ -1,6 +1,6 @@
 """Tests for legiscope.embeddings module."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, MagicMock, patch
 
 import polars as pl
 import pytest
@@ -9,7 +9,10 @@ from legiscope.embeddings import (
     create_embeddings_df,
     EmbeddingConfig,
     get_embeddings,
+    _build_embedding_text,
+    create_and_save_embeddings,
 )
+from legiscope.models import CodeRef, JurisdictionRef
 
 
 class TestOllamaClient:
@@ -473,6 +476,311 @@ class TestCreateEmbeddingsDf:
         assert result["extra_column"][0] == "extra_value"
 
 
+class TestEmbeddingConfigDefaults:
+    """Test that EmbeddingConfig defaults use the new ID column names."""
+
+    def test_id_col_default(self):
+        """Test that id_col defaults to segment_id."""
+        config = EmbeddingConfig()
+        assert config.id_col == "segment_id"
+
+    def test_id_col_custom(self):
+        """Test that id_col can be overridden."""
+        config = EmbeddingConfig(id_col="custom_id")
+        assert config.id_col == "custom_id"
+
+
+class TestEmbeddingIndexConfigDefaults:
+    """Test that EmbeddingIndexConfig defaults use the new ID column names."""
+
+    def test_id_col_default(self):
+        """Test that id_col defaults to segment_id."""
+        from legiscope.embeddings import EmbeddingIndexConfig
+
+        df = pl.DataFrame(
+            {"segment_id": [0], "segment_text": ["t"], "embedding": [[0.1]]}
+        )
+        config = EmbeddingIndexConfig(df=df)
+        assert config.id_col == "segment_id"
+
+
+class TestBuildEmbeddingText:
+    """Test cases for _build_embedding_text function."""
+
+    def test_basic_with_ancestors(self):
+        """Test embedding text assembly with ancestor headings."""
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1, 2],
+                "heading_text": ["Title I", "Chapter 1", "Section 1.1"],
+                "ancestor_path": [None, "0", "0/1"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "section_ordinal": [2],
+                "segment_text": ["Body text here."],
+            }
+        )
+
+        result = _build_embedding_text(segments_df, sections_df)
+
+        assert len(result) == 1
+        assert result[0] == "Title I\n\nChapter 1\n\nBody text here."
+
+    def test_no_ancestors(self):
+        """Test segment with no ancestor_path (root section)."""
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Root"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "segment_text": ["Root body."],
+            }
+        )
+
+        result = _build_embedding_text(segments_df, sections_df)
+
+        assert len(result) == 1
+        assert result[0] == "Root body."
+
+    def test_empty_segment_text(self):
+        """Test segment with empty text."""
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": ["Title", "Section"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "section_ordinal": [1],
+                "segment_text": [""],
+            }
+        )
+
+        result = _build_embedding_text(segments_df, sections_df)
+
+        assert len(result) == 1
+        # Only ancestor heading, no empty text appended
+        assert result[0] == "Title"
+
+    def test_multiple_segments(self):
+        """Test with multiple segments from different sections."""
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1, 2],
+                "heading_text": ["Title", "Sec A", "Sec B"],
+                "ancestor_path": [None, "0", "0"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "section_ordinal": [1, 2],
+                "segment_text": ["Body A", "Body B"],
+            }
+        )
+
+        result = _build_embedding_text(segments_df, sections_df)
+
+        assert len(result) == 2
+        assert result[0] == "Title\n\nBody A"
+        assert result[1] == "Title\n\nBody B"
+
+    def test_missing_section_ordinal(self):
+        """Test segment referencing a section not in sections_df."""
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Title"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "section_ordinal": [99],
+                "segment_text": ["Orphan text"],
+            }
+        )
+
+        result = _build_embedding_text(segments_df, sections_df)
+
+        assert len(result) == 1
+        assert result[0] == "Orphan text"
+
+
+class TestCreateAndSaveEmbeddings:
+    """Test cases for create_and_save_embeddings function."""
+
+    def _make_code_ref(self):
+        """Helper to create a CodeRef for testing."""
+        return CodeRef(
+            jurisdiction=JurisdictionRef(state="CA", municipality="TestCity"),
+            code_slug="test-code",
+        )
+
+    def test_basic_workflow(self, tmp_path):
+        """Test the full create-and-save workflow."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": ["Title", "Section 1"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0, 1],
+                "section_ordinal": [1, 1],
+                "section_heading": ["Section 1", "Section 1"],
+                "segment_text": ["Part one.", "Part two."],
+            }
+        )
+
+        mock_client = Mock()
+        mock_client.embeddings.side_effect = [
+            {"embedding": [0.1, 0.2, 0.3]},
+            {"embedding": [0.4, 0.5, 0.6]},
+        ]
+
+        output_path = tmp_path / "embeddings.parquet"
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        result = create_and_save_embeddings(
+            segments_df=segments_df,
+            sections_df=sections_df,
+            client=mock_client,
+            code_ref=code_ref,
+            embedding_config=config,
+            output_path=output_path,
+        )
+
+        # Verify output DataFrame
+        assert len(result) == 2
+        assert "segment_id" in result.columns
+        assert "embedding_text" in result.columns
+        assert "embedding" in result.columns
+        assert "code_id" in result.columns
+        assert "jurisdiction_id" in result.columns
+
+        # Verify IDs
+        assert result["segment_id"][0] == code_ref.segment_id(0)
+        assert result["segment_id"][1] == code_ref.segment_id(1)
+        assert result["code_id"][0] == code_ref.code_id
+        assert result["jurisdiction_id"][0] == code_ref.jurisdiction_id
+
+        # Verify embedding_text contains ancestor headings
+        assert "Title" in result["embedding_text"][0]
+        assert "Part one." in result["embedding_text"][0]
+
+        # Verify file was written
+        assert output_path.exists()
+        loaded = pl.read_parquet(output_path)
+        assert len(loaded) == 2
+
+    def test_default_output_path(self, tmp_path, monkeypatch):
+        """Test that default output path uses code_ref.full_data_dir."""
+        code_ref = self._make_code_ref()
+
+        # Create the directory so the write succeeds
+        output_dir = tmp_path / "data" / "laws" / "CA" / "TestCity" / "test-code"
+        output_dir.mkdir(parents=True)
+
+        # Monkeypatch the LAWS_DIR so full_data_dir resolves to tmp_path
+        import legiscope.models as models_mod
+
+        monkeypatch.setattr(models_mod, "LAWS_DIR", tmp_path / "data" / "laws")
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Title"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "section_heading": ["Title"],
+                "segment_text": ["Body."],
+            }
+        )
+
+        mock_client = Mock()
+        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2]}
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        create_and_save_embeddings(
+            segments_df=segments_df,
+            sections_df=sections_df,
+            client=mock_client,
+            code_ref=code_ref,
+            embedding_config=config,
+        )
+
+        expected_path = output_dir / "embeddings.parquet"
+        assert expected_path.exists()
+
+    def test_output_schema(self, tmp_path):
+        """Test that the output has the expected columns and types."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Title"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "section_heading": ["Title"],
+                "segment_text": ["Body."],
+            }
+        )
+
+        mock_client = Mock()
+        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2]}
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        result = create_and_save_embeddings(
+            segments_df=segments_df,
+            sections_df=sections_df,
+            client=mock_client,
+            code_ref=code_ref,
+            embedding_config=config,
+            output_path=tmp_path / "embeddings.parquet",
+        )
+
+        expected_columns = [
+            "segment_id",
+            "segment_ordinal",
+            "section_ordinal",
+            "code_id",
+            "jurisdiction_id",
+            "section_heading",
+            "segment_text",
+            "embedding_text",
+            "embedding",
+        ]
+        assert result.columns == expected_columns
+        assert result.schema["segment_id"] == pl.String
+        assert result.schema["embedding_text"] == pl.String
+        assert result.schema["embedding"] == pl.List(pl.Float32)
+
+
 class TestChromaOperations:
     """Test cases for ChromaDB operations."""
 
@@ -482,7 +790,6 @@ class TestChromaOperations:
             CollectionConfig,
             get_or_create_legal_collection,
         )
-        from unittest.mock import MagicMock, patch
 
         with patch("chromadb.PersistentClient") as mock_client_cls:
             mock_client = MagicMock()
@@ -509,12 +816,11 @@ class TestChromaOperations:
     def test_create_embedding_index(self):
         """Test creating an embedding index from DataFrame."""
         from legiscope.embeddings import create_embedding_index, EmbeddingIndexConfig
-        from unittest.mock import MagicMock, patch
 
         # Create test DataFrame
         df = pl.DataFrame(
             {
-                "segment_idx": [0, 1],
+                "segment_id": ["s0", "s1"],
                 "segment_text": ["text1", "text2"],
                 "embedding": [[0.1, 0.2], [0.3, 0.4]],
                 "section_heading": ["Heading 1", "Heading 2"],
@@ -537,7 +843,7 @@ class TestChromaOperations:
             mock_collection.add.assert_called()
             call_kwargs = mock_collection.add.call_args.kwargs
 
-            assert call_kwargs["ids"] == ["0", "1"]
+            assert call_kwargs["ids"] == ["s0", "s1"]
             assert call_kwargs["documents"] == ["text1", "text2"]
             assert call_kwargs["embeddings"] == [[0.1, 0.2], [0.3, 0.4]]
 
@@ -550,11 +856,10 @@ class TestChromaOperations:
     def test_add_jurisdiction_embeddings(self):
         """Test adding jurisdiction embeddings."""
         from legiscope.embeddings import add_jurisdiction_embeddings
-        from unittest.mock import MagicMock, patch
 
         df = pl.DataFrame(
             {
-                "segment_idx": [0],
+                "segment_id": ["s0"],
                 "segment_text": ["text"],
                 "embedding": [[0.1]],
                 "section_heading": ["H"],
@@ -578,19 +883,19 @@ class TestChromaOperations:
             create_and_persist_embeddings,
             JurisdictionConfig,
         )
-        from unittest.mock import MagicMock, patch
 
         df = pl.DataFrame({"text": ["content"]})
         mock_client = MagicMock()
 
         # Mock dependencies
-        with patch("legiscope.embeddings.create_embeddings_df") as mock_create_df, \
-             patch("legiscope.embeddings.create_embedding_index") as mock_create_idx:
-
+        with (
+            patch("legiscope.embeddings.create_embeddings_df") as mock_create_df,
+            patch("legiscope.embeddings.create_embedding_index") as mock_create_idx,
+        ):
             # Setup mock return for create_embeddings_df
             embeddings_df = pl.DataFrame(
                 {
-                    "segment_idx": [0],
+                    "segment_id": ["s0"],
                     "segment_text": ["content"],
                     "embedding": [[0.1]],
                 }
@@ -615,4 +920,3 @@ class TestChromaOperations:
 
             assert result_df is embeddings_df
             assert result_coll is mock_collection
-

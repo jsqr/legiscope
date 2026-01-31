@@ -62,6 +62,7 @@ powerful_model = Config.get_powerful_model() # For complex reasoning
 The library uses config objects for cleaner, more maintainable API:
 
 ```python
+from legiscope.models import JurisdictionRef, CodeRef
 from legiscope.utils import LLMConfig
 from legiscope.retrieve import SectionRetrievalSettings, retrieve_sections
 from legiscope.query import QuerySettings, BatchQuerySettings
@@ -70,19 +71,22 @@ from legiscope.llm_config import Config
 import chromadb
 
 # Setup
+jurisdiction = JurisdictionRef(state="IL", municipality="WindyCity")
+code_ref = CodeRef(jurisdiction=jurisdiction, code_slug="municipal-code")
+
 chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
 collection = chroma_client.get_collection("legal_code_all")
 
 # Example 1: Retrieve sections with settings
 retrieval_settings = SectionRetrievalSettings(
-    jurisdiction_id="IL-WindyCity",
+    jurisdiction_id=code_ref.jurisdiction_id,
     n_results=10,
     use_hyde=True,
     hyde_client=Config.get_fast_client()
 )
 results = retrieve_sections(
     collection=collection,
-    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
+    sections_parquet_path=str(code_ref.full_data_dir / "sections.parquet"),
     query_text="What are the parking regulations?",
     settings=retrieval_settings
 )
@@ -108,9 +112,9 @@ batch_settings = BatchQuerySettings(
 )
 results_df = run_queries(
     collection=collection,
-    sections_parquet_path="./data/laws/IL-WindyCity/tables/sections.parquet",
+    sections_parquet_path=str(code_ref.full_data_dir / "sections.parquet"),
     queries=["Query 1", "Query 2", "Query 3"],
-    jurisdiction_id="IL-WindyCity",
+    jurisdiction_id=code_ref.jurisdiction_id,
     settings=batch_settings
 )
 ```
@@ -270,11 +274,18 @@ uv pip list
 ### Pipeline Commands
 
 ```bash
-# Run complete pipeline for specific jurisdiction
-make pipeline STATE=CA MUNICIPALITY="San Francisco"
+# Run complete pipeline for a local code
+make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+
+# Run complete pipeline for a state-level code
+make pipeline STATE=CA CODE_SLUG=penal-code
+
+# With queries
+make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
 
 # Or manually:
-./scripts/pipeline.sh california "San Francisco"
+./scripts/pipeline.sh CA LosAngeles municipal-code
+./scripts/pipeline.sh CA - penal-code  # use '-' for state-level
 ```
 
 ### Benchmarking
@@ -305,14 +316,16 @@ For granular control over query execution (HYDE, Relevance Filtering), run the s
 
 ```bash
 uv run python scripts/run_queries.py \
+    --state CA \
+    --municipality LosAngeles \
+    --code-slug municipal-code \
     --queries-path "data/queries/test_queries.csv" \
-    --jurisdiction-id "CA-LosAngeles" \
     --n-results 10 \
     --use-hyde False \
     --filter-relevance False \
     --relevance-threshold 0.5 \
     --validate-supporting-passages False \
-    --output "data/output/CA-LosAngeles/test_results.csv"
+    --output "data/output/test_results.csv"
 ```
 
 ## Project Structure
@@ -321,6 +334,7 @@ uv run python scripts/run_queries.py \
 .
 ├── src/
 │   └── legiscope/       # Main package source code
+│       ├── models.py    # Data models (JurisdictionRef, CodeRef, schema constants)
 │       ├── llm_config.py    # LLM configuration and client management
 │       ├── convert.py   # Conversion utilities and response models
 │       ├── utils.py     # Core utility functions
@@ -332,15 +346,26 @@ uv run python scripts/run_queries.py \
 ├── tests/               # Test files
 ├── scripts/             # Utility scripts
 │   ├── pipeline.sh          # End-to-end processing pipeline
-│   ├── benchmark_pipeline.py # Benchmarking workflow
-│   ├── run_queries.py       # Batch query execution
+│   ├── create_jurisdiction.py # Register jurisdiction and create directory structure
+│   ├── convert_to_markdown.py # Convert raw text to structured Markdown
+│   ├── segment_legal_code.py  # Segment Markdown into sections and segments
+│   ├── create_embeddings.py   # Generate embeddings (Parquet, no ChromaDB)
+│   ├── build_chroma_index.py  # Build ChromaDB index from embeddings
+│   ├── run_queries.py         # Batch query execution
+│   ├── benchmark_pipeline.py  # Benchmarking workflow
 │   └── ...
-├── notebooks/           # Interactive notebooks
-│   └── query_demo.py    # Demo notebook
-├── docs/                # Documentation
-│   ├── BENCHMARKING.md      # Benchmarking guide
-│   └── VALIDATION_EXAMPLE.md # Validation guide
 ├── data/                # Data directory (not tracked by git)
+│   ├── jurisdictions.parquet  # Registry of all jurisdictions
+│   ├── codes.parquet          # Registry of all legal codes
+│   └── laws/                  # Per-code data directories
+│       └── {STATE}/{Municipality}/{code-slug}/
+│           ├── raw/               # Raw source files
+│           ├── code.md            # Structured Markdown
+│           ├── sections.parquet   # Section hierarchy
+│           ├── segments.parquet   # Text segments
+│           ├── embeddings.parquet # Embedding vectors
+│           ├── relations.parquet  # Intra-code relations
+│           └── external_references.parquet
 ├── pyproject.toml       # Project configuration and dependencies
 ├── Makefile            # Development commands
 ├── AGENTS.md           # This file

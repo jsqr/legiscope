@@ -3,11 +3,14 @@
 Segment legal code markdown files into sections and segments.
 
 Usage:
-    python scripts/segment_legal_code.py data/laws/IL-WindyCity
+    python scripts/segment_legal_code.py --state CA --municipality LosAngeles --code-slug municipal-code
+    python scripts/segment_legal_code.py --state CA --code-slug penal-code
 """
 
+import argparse
 import sys
 from pathlib import Path
+
 import polars as pl
 
 # Load environment variables from .env file
@@ -21,47 +24,35 @@ except ImportError:
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from legiscope.models import (
+    EXTERNAL_REFERENCES_SCHEMA,
+    RELATIONS_SCHEMA,
+    CodeRef,
+    JurisdictionRef,
+)
 from legiscope.segment import (
     add_parent_relationships,
     create_segments_df,
     divide_into_sections,
+    enrich_sections,
 )
 
 
-def segment_legal_code(jurisdiction_path: str) -> None:
-    """Segment legal code for a jurisdiction directory."""
-    path = Path(jurisdiction_path)
+def segment_legal_code(code_ref: CodeRef) -> None:
+    """Segment legal code for a code directory."""
+    code_dir = code_ref.full_data_dir
 
-    if not path.exists():
-        print(f"Error: Directory does not exist: {path}")
+    if not code_dir.exists():
+        print(f"Error: Directory does not exist: {code_dir}")
         sys.exit(1)
-
-    # Parse state and municipality from directory name
-    dir_name = path.name
-    if "-" not in dir_name:
-        print(f"Error: Directory name must contain '-': {dir_name}")
-        sys.exit(1)
-
-    state, municipality = dir_name.split("-", 1)
-    state = state.upper()
-
-    # Check for required subdirectories
-    for subdir in ["processed", "tables"]:
-        if not (path / subdir).exists():
-            print(f"Error: Missing required subdirectory: {path / subdir}")
-            sys.exit(1)
 
     # Find markdown file
-    markdown_path = path / "processed" / "code.md"
+    markdown_path = code_dir / "code.md"
     if not markdown_path.exists():
-        md_files = list((path / "processed").glob("*.md"))
-        if md_files:
-            print(f"Error: code.md not found. Found: {[f.name for f in md_files]}")
-        else:
-            print(f"Error: No .md files found in {path / 'processed'}")
+        print(f"Error: code.md not found at {markdown_path}")
         sys.exit(1)
 
-    print(f"Segmenting {state}-{municipality}...")
+    print(f"Segmenting {code_ref.code_id}...")
 
     try:
         # Read markdown content
@@ -84,20 +75,11 @@ def segment_legal_code(jurisdiction_path: str) -> None:
                 content = "\n".join(lines[end_idx:]).strip()
 
         print("Creating sections...")
-        # Create sections
         sections_df = divide_into_sections(content)
         sections_df = add_parent_relationships(sections_df)
-
-        # Add total word count for heading_text + body_text
-        sections_df = sections_df.with_columns(
-            (pl.col("heading_text") + " " + pl.col("body_text"))
-            .str.split(" ")
-            .list.len()
-            .alias("section_word_count")
-        )
+        sections_df = enrich_sections(sections_df, code_ref)
 
         print("Creating segments...")
-        # Create segments
         segments_df = create_segments_df(
             sections_df,
             text_column="body_text",
@@ -105,15 +87,22 @@ def segment_legal_code(jurisdiction_path: str) -> None:
             words_per_token=0.75,
         )
 
-        # Save DataFrames
-        tables_dir = path / "tables"
-        sections_path = tables_dir / "sections.parquet"
-        segments_path = tables_dir / "segments.parquet"
+        # Save DataFrames to code directory
+        sections_path = code_dir / "sections.parquet"
+        segments_path = code_dir / "segments.parquet"
+        relations_path = code_dir / "relations.parquet"
+        external_refs_path = code_dir / "external_references.parquet"
 
         sections_df.write_parquet(sections_path)
         segments_df.write_parquet(segments_path)
 
-        print(f"Successfully processed {state}-{municipality}")
+        # Write empty relations and external_references parquets
+        pl.DataFrame(schema=RELATIONS_SCHEMA).write_parquet(relations_path)
+        pl.DataFrame(schema=EXTERNAL_REFERENCES_SCHEMA).write_parquet(
+            external_refs_path
+        )
+
+        print(f"Successfully processed {code_ref.code_id}")
         print(f"  Sections: {sections_path} ({len(sections_df)} sections)")
         print(f"  Segments: {segments_path} ({len(segments_df)} segments)")
 
@@ -130,12 +119,27 @@ def segment_legal_code(jurisdiction_path: str) -> None:
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python segment_legal_code.py <jurisdiction_path>")
-        print("Example: python segment_legal_code.py data/laws/IL-WindyCity")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Segment legal code markdown into sections and segments",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --state CA --municipality LosAngeles --code-slug municipal-code
+  %(prog)s --state CA --code-slug penal-code
+        """,
+    )
+    parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
+    parser.add_argument(
+        "--municipality", default=None, help="Municipality name (omit for state-level)"
+    )
+    parser.add_argument("--code-slug", required=True, help="Code slug identifier")
 
-    segment_legal_code(sys.argv[1])
+    args = parser.parse_args()
+
+    jurisdiction = JurisdictionRef(state=args.state, municipality=args.municipality)
+    code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
+
+    segment_legal_code(code_ref)
 
 
 if __name__ == "__main__":

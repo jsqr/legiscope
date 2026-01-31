@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from legiscope.models import CodeRef
 
 import chromadb
 import numpy as np
@@ -124,7 +129,7 @@ class EmbeddingConfig:
     heading_col: str = "section_heading"
     text_col: str = "segment_text"
     embedding_col: str = "embedding"
-    id_col: str = "segment_idx"
+    id_col: str = "segment_id"
 
     def __post_init__(self):
         """Validate configuration."""
@@ -667,7 +672,7 @@ class EmbeddingIndexConfig:
     df: pl.DataFrame
     collection_name: str = "legal_code_all"
     persist_directory: str | Path | None = None
-    id_col: str = "segment_idx"
+    id_col: str = "segment_id"
     text_col: str = "segment_text"
     embedding_col: str = "embedding"
     metadata_cols: list[str] | None = None
@@ -842,6 +847,135 @@ def add_jurisdiction_embeddings(
     logger.info(
         f"Successfully added embeddings for {jurisdiction_id} to shared collection"
     )
+
+
+def _build_embedding_text(
+    segments_df: pl.DataFrame,
+    sections_df: pl.DataFrame,
+) -> list[str]:
+    """Assemble embedding text for each segment: ancestor headings + segment text.
+
+    Args:
+        segments_df: Segments DataFrame with ``section_ordinal`` and ``segment_text``.
+        sections_df: Sections DataFrame with ``section_ordinal``, ``heading_text``,
+            and ``ancestor_path``.
+
+    Returns:
+        List of assembled text strings, one per segment row.
+    """
+    # Build lookup: section_ordinal -> section dict
+    sections_by_ordinal: dict[int, dict] = {
+        row["section_ordinal"]: row for row in sections_df.to_dicts()
+    }
+
+    texts: list[str] = []
+    for row in segments_df.to_dicts():
+        section_ordinal = row.get("section_ordinal")
+        segment_text = row.get("segment_text", "")
+
+        parts: list[str] = []
+
+        # Look up ancestor headings via ancestor_path
+        section = (
+            sections_by_ordinal.get(section_ordinal)
+            if section_ordinal is not None
+            else None
+        )
+        if section and section.get("ancestor_path"):
+            ancestor_ordinals = [int(x) for x in section["ancestor_path"].split("/")]
+            for anc_ordinal in ancestor_ordinals:
+                anc_section = sections_by_ordinal.get(anc_ordinal)
+                if anc_section and anc_section.get("heading_text"):
+                    # Don't duplicate the immediate section heading if it's the last ancestor
+                    parts.append(anc_section["heading_text"])
+
+        if segment_text:
+            parts.append(segment_text)
+
+        texts.append("\n\n".join(parts))
+
+    return texts
+
+
+def create_and_save_embeddings(
+    segments_df: pl.DataFrame,
+    sections_df: pl.DataFrame,
+    client,
+    code_ref: CodeRef,
+    embedding_config: EmbeddingConfig | None = None,
+    output_path: Path | None = None,
+) -> pl.DataFrame:
+    """Create embeddings with full context and save as a self-describing Parquet file.
+
+    This is the primary embedding workflow.  It assembles ``embedding_text`` from
+    ancestor headings + segment text, generates embedding vectors, and writes a
+    Parquet file containing all metadata needed for a downstream index rebuild.
+
+    Args:
+        segments_df: Segments DataFrame (from :func:`~legiscope.segment.create_segments_df`).
+        sections_df: Sections DataFrame (from :func:`~legiscope.segment.enrich_sections`).
+        client: Embedding client instance.
+        code_ref: A :class:`~legiscope.models.CodeRef` identifying the code.
+        embedding_config: Optional embedding configuration overrides.
+        output_path: Where to write the Parquet file. Defaults to
+            ``{code_ref.full_data_dir}/embeddings.parquet``.
+
+    Returns:
+        The embeddings DataFrame that was written.
+    """
+    config = embedding_config or EmbeddingConfig()
+
+    logger.info(f"Creating embeddings for {code_ref.code_id}")
+
+    # Assemble embedding_text
+    embedding_texts = _build_embedding_text(segments_df, sections_df)
+
+    # Generate embedding vectors
+    embeddings = get_embeddings(client, embedding_texts, config.model, config.provider)
+
+    # Build the output DataFrame
+    # Start with key columns from segments_df
+    segment_ids = [
+        code_ref.segment_id(ordinal)
+        for ordinal in segments_df["segment_ordinal"].to_list()
+    ]
+
+    out = pl.DataFrame(
+        {
+            "segment_id": segment_ids,
+            "segment_ordinal": segments_df["segment_ordinal"],
+            "section_ordinal": segments_df["section_ordinal"],
+            "code_id": [code_ref.code_id] * len(segments_df),
+            "jurisdiction_id": [code_ref.jurisdiction_id] * len(segments_df),
+            "section_heading": segments_df["section_heading"],
+            "segment_text": segments_df["segment_text"],
+            "embedding_text": embedding_texts,
+            "embedding": embeddings.tolist()
+            if hasattr(embeddings, "tolist")
+            else list(embeddings),
+        },
+        schema={
+            "segment_id": pl.String,
+            "segment_ordinal": pl.Int64,
+            "section_ordinal": pl.Int64,
+            "code_id": pl.String,
+            "jurisdiction_id": pl.String,
+            "section_heading": pl.String,
+            "segment_text": pl.String,
+            "embedding_text": pl.String,
+            "embedding": POLARS_EMBEDDING_DTYPE,
+        },
+    )
+
+    # Write to parquet
+    if output_path is None:
+        output_path = code_ref.full_data_dir / "embeddings.parquet"
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    out.write_parquet(output_path)
+    logger.info(f"Saved embeddings: {output_path} ({len(out)} rows)")
+
+    return out
 
 
 def create_and_persist_embeddings(

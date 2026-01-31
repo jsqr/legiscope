@@ -8,11 +8,19 @@ The main functions are:
 - segment_text(): Segment text into chunks with paragraph preservation
 - create_segments_df(): Create flattened DataFrame (one row per segment)
 - add_segments_to_sections(): Add segment information to sections (backward compatible)
+- enrich_sections(): Add globally unique IDs (code_id, section_id, parent_id)
+- get_section_text(): Expand a section's full subtree into a single text string
 """
 
+from __future__ import annotations
+
 import re
+from typing import TYPE_CHECKING
 
 import polars as pl
+
+if TYPE_CHECKING:
+    from legiscope.models import CodeRef
 
 # Text segmentation constants
 DEFAULT_TOKEN_LIMIT = 256  # Maximum approximate tokens per segment
@@ -32,7 +40,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
 
     Returns:
         pl.DataFrame: DataFrame with columns:
-            - section_idx (pl.Int64): Serial number of sections in order (0-based)
+            - section_ordinal (pl.Int64): Serial number of sections in order (0-based)
             - heading_level (pl.Int64): Heading level (1-6, e.g., 2 for "## Section 5")
             - heading_text (pl.String): Full heading text including markdown markers
             - body_text (pl.String): Text of following non-heading paragraphs,
@@ -46,7 +54,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
     Examples:
         >>> text = "# Main Title\\n\\nThis is the introduction.\\n\\n## Section 1\\n\\nContent here."
         >>> df = divide_into_sections(text)
-        >>> df.select(["section_idx", "heading_level", "heading_text", "body_text"]).to_dicts()
+        >>> df.select(["section_ordinal", "heading_level", "heading_text", "body_text"]).to_dicts()
         [{'section_idx': 0, 'heading_level': 1, 'heading_text': '# Main Title', 'body_text': 'This is the introduction.'},
          {'section_idx': 1, 'heading_level': 2, 'heading_text': '## Section 1', 'body_text': 'Content here.'}]
 
@@ -63,7 +71,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
     if not markdown_text.strip():
         return pl.DataFrame(
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
@@ -91,7 +99,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
                 body_text = "\n".join(stripped_lines).strip()
                 sections.append(
                     {
-                        "section_idx": section_idx,
+                        "section_ordinal": section_idx,
                         "heading_level": current_section["level"],
                         "heading_text": current_section["text"],
                         "body_text": body_text if body_text else None,
@@ -120,7 +128,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
         body_text = "\n".join(stripped_lines).strip()
         sections.append(
             {
-                "section_idx": section_idx,
+                "section_ordinal": section_idx,
                 "heading_level": current_section["level"],
                 "heading_text": current_section["text"],
                 "body_text": body_text if body_text else None,
@@ -131,7 +139,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
         df = pl.DataFrame(
             sections,
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
@@ -141,7 +149,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
         # No headings found - return empty DataFrame
         df = pl.DataFrame(
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
@@ -161,11 +169,14 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
 
     Args:
         df: DataFrame from divide_into_sections() with columns:
-             section_idx, heading_level, heading_text, body_text
+             section_ordinal, heading_level, heading_text, body_text
 
     Returns:
-        pl.DataFrame: Original DataFrame with additional 'parent' column (pl.Int64)
-                     containing the section_idx of the parent section or None
+        pl.DataFrame: Original DataFrame with additional columns:
+            - parent (pl.Int64): section_ordinal of the parent section, or None
+            - children (pl.List[pl.Int64]): section_ordinal values of direct children
+            - depth (pl.Int64): depth in hierarchy (0 for root)
+            - ancestor_path (pl.String): materialized path, e.g. ``"0/3/7"``
 
     Raises:
         ValueError: If DataFrame doesn't have required columns
@@ -176,7 +187,7 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
         >>> text = "# Main\\n\\n## Section 1\\n\\n### Subsection 1.1\\n\\n## Section 2"
         >>> sections = divide_into_sections(text)
         >>> result = add_parent_relationships(sections)
-        >>> result.select(["section_idx", "heading_level", "parent"]).to_dicts()
+        >>> result.select(["section_ordinal", "heading_level", "parent"]).to_dicts()
         [{'section_idx': 0, 'heading_level': 1, 'parent': None},
          {'section_idx': 1, 'heading_level': 2, 'parent': 0},
          {'section_idx': 2, 'heading_level': 3, 'parent': 1},
@@ -188,24 +199,29 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
         - Level 1 sections (root) always have parent = None
         - Handles complex hierarchies with level jumps
     """
-    required_columns = {"section_idx", "heading_level", "heading_text", "body_text"}
+    required_columns = {"section_ordinal", "heading_level", "heading_text", "body_text"}
     if not required_columns.issubset(set(df.columns)):
         missing = required_columns - set(df.columns)
         raise ValueError(f"DataFrame missing required columns: {missing}")
 
     # Handle empty DataFrame
     if len(df) == 0:
-        return df.with_columns(pl.lit(None, dtype=pl.Int64).alias("parent"))
+        return df.with_columns(
+            pl.lit(None, dtype=pl.Int64).alias("parent"),
+            pl.Series("children", [], dtype=pl.List(pl.Int64)),
+            pl.lit(None, dtype=pl.Int64).alias("depth"),
+            pl.lit(None, dtype=pl.String).alias("ancestor_path"),
+        )
 
     sections = df.to_dicts()
 
     # Stack to track the most recent section at each level
-    # level_stack maps: heading_level -> section_idx
-    level_stack = {}
+    # level_stack maps: heading_level -> section_ordinal
+    level_stack: dict[int, int] = {}
 
     for section in sections:
         current_level = section["heading_level"]
-        current_idx = section["section_idx"]
+        current_idx = section["section_ordinal"]
 
         # Clear stack of levels that are deeper than or equal to current level
         levels_to_remove = [lvl for lvl in level_stack.keys() if lvl >= current_level]
@@ -215,11 +231,9 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
         # Find parent: highest level in stack that's less than current level
         parent_levels = [lvl for lvl in level_stack.keys() if lvl < current_level]
         if parent_levels:
-            # Parent is the section with the highest level that's still lower than current
             parent_level = max(parent_levels)
             parent_idx = level_stack[parent_level]
         else:
-            # No parent found (root level)
             parent_idx = None
 
         section["parent"] = parent_idx
@@ -227,19 +241,121 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
         # Add current section to stack
         level_stack[current_level] = current_idx
 
-    # Create new DataFrame with parent column
+    # --- Compute children, depth, ancestor_path ---
+
+    # Build index for fast lookup: section_ordinal -> section dict
+    by_ordinal: dict[int, dict] = {s["section_ordinal"]: s for s in sections}
+
+    # Initialise children lists
+    for section in sections:
+        section["children"] = []
+
+    # Populate children from parent pointers
+    for section in sections:
+        parent_idx = section["parent"]
+        if parent_idx is not None and parent_idx in by_ordinal:
+            by_ordinal[parent_idx]["children"].append(section["section_ordinal"])
+
+    # Compute depth and ancestor_path by walking up the parent chain
+    for section in sections:
+        ancestors: list[int] = []
+        cur = section["parent"]
+        while cur is not None:
+            ancestors.append(cur)
+            cur = by_ordinal[cur]["parent"]
+        ancestors.reverse()
+        ancestors.append(section["section_ordinal"])
+        section["depth"] = len(ancestors) - 1  # root = 0
+        section["ancestor_path"] = "/".join(str(a) for a in ancestors)
+
+    # Create new DataFrame with all new columns
     result_df = pl.DataFrame(
         sections,
         schema={
-            "section_idx": pl.Int64,
+            "section_ordinal": pl.Int64,
             "heading_level": pl.Int64,
             "heading_text": pl.String,
             "body_text": pl.String,
             "parent": pl.Int64,
+            "children": pl.List(pl.Int64),
+            "depth": pl.Int64,
+            "ancestor_path": pl.String,
         },
     )
 
     return result_df
+
+
+def enrich_sections(df: pl.DataFrame, code_ref: CodeRef) -> pl.DataFrame:
+    """Add globally unique IDs to a sections DataFrame.
+
+    Adds ``code_id``, ``section_id``, and ``parent_id`` columns derived from
+    the ``code_ref`` and existing ``section_ordinal`` / ``parent`` columns.
+
+    Args:
+        df: Sections DataFrame (output of :func:`add_parent_relationships`).
+        code_ref: A :class:`~legiscope.models.CodeRef` identifying the code.
+
+    Returns:
+        DataFrame with three additional columns appended.
+    """
+    code_id = code_ref.code_id
+    section_ids = [
+        code_ref.section_id(ordinal) for ordinal in df["section_ordinal"].to_list()
+    ]
+    parent_ids = [
+        code_ref.section_id(p) if p is not None else None
+        for p in df["parent"].to_list()
+    ]
+
+    return df.with_columns(
+        pl.lit(code_id).alias("code_id"),
+        pl.Series("section_id", section_ids, dtype=pl.String),
+        pl.Series("parent_id", parent_ids, dtype=pl.String),
+    )
+
+
+def get_section_text(sections_df: pl.DataFrame, section_ordinal: int) -> str:
+    """Expand a section's full subtree into a single text string.
+
+    This is the canonical way to retrieve "the text of a section".  It
+    recursively walks the ``children`` column in document order (ascending
+    ``section_ordinal``) and concatenates each node's ``heading_text`` and
+    ``body_text``.
+
+    Args:
+        sections_df: Sections DataFrame with at least ``section_ordinal``,
+            ``heading_text``, ``body_text``, and ``children`` columns.
+        section_ordinal: The ordinal of the root section to expand.
+
+    Returns:
+        The assembled text for the section and all its descendants.
+
+    Raises:
+        KeyError: If the given ``section_ordinal`` is not in the DataFrame.
+    """
+    # Build a lookup dict for O(1) access
+    by_ordinal: dict[int, dict] = {
+        row["section_ordinal"]: row for row in sections_df.to_dicts()
+    }
+
+    if section_ordinal not in by_ordinal:
+        raise KeyError(
+            f"section_ordinal {section_ordinal} not found in sections DataFrame"
+        )
+
+    def _expand(ordinal: int) -> list[str]:
+        node = by_ordinal[ordinal]
+        parts: list[str] = []
+        if node["heading_text"]:
+            parts.append(node["heading_text"])
+        if node.get("body_text"):
+            parts.append(node["body_text"])
+        for child in node.get("children") or []:
+            parts.extend(_expand(child))
+        return parts
+
+    return "\n\n".join(_expand(section_ordinal))
 
 
 def segment_text(
@@ -388,7 +504,7 @@ def segment_text(
 
 
 def _aggregate_segments(
-    segs_df: pl.DataFrame, section_ref_col: str = "section_ref"
+    segs_df: pl.DataFrame, section_ref_col: str = "section_ordinal"
 ) -> pl.DataFrame:
     """
     Aggregate a flattened segments DataFrame into per-section segment lists and counts.
@@ -397,14 +513,14 @@ def _aggregate_segments(
     avoid possible expression/agg incompatibilities across Polars versions.
 
     Args:
-        segs_df: Flattened segments DataFrame (as returned by create_segments_dataframe)
-                 Expected columns: at minimum, `section_ref`, `segment_text`, `word_count`.
-        section_ref_col: Name of the column in `segs_df` that references the original section index.
-                         Defaults to "section_ref".
+        segs_df: Flattened segments DataFrame (as returned by create_segments_df)
+                 Expected columns: at minimum, `section_ordinal`, `segment_text`, `word_count`.
+        section_ref_col: Name of the column in `segs_df` that references the original section ordinal.
+                         Defaults to "section_ordinal".
 
     Returns:
         pl.DataFrame: DataFrame with one row per section that has segments, columns:
-            - section_idx (pl.Int64): reference to original section_idx
+            - section_ordinal (pl.Int64): reference to original section_ordinal
             - segments (pl.List[pl.Utf8]): list of segment_text strings for that section
             - segment_count (pl.Int64): number of segments for that section
             - total_words (pl.Int64): sum of word_count across segments for that section
@@ -419,7 +535,7 @@ def _aggregate_segments(
     if len(segs_df) == 0:
         return pl.DataFrame(
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "segments": pl.List(pl.Utf8),
                 "segment_count": pl.Int64,
                 "total_words": pl.Int64,
@@ -453,7 +569,7 @@ def _aggregate_segments(
         v = mapping[section_idx]
         rows.append(
             {
-                "section_idx": section_idx,
+                "section_ordinal": section_idx,
                 "segments": v["segments"],
                 "segment_count": v["segment_count"],
                 "total_words": v["total_words"],
@@ -464,7 +580,7 @@ def _aggregate_segments(
         agg = pl.DataFrame(
             rows,
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "segments": pl.List(pl.Utf8),
                 "segment_count": pl.Int64,
                 "total_words": pl.Int64,
@@ -473,7 +589,7 @@ def _aggregate_segments(
     else:
         agg = pl.DataFrame(
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "segments": pl.List(pl.Utf8),
                 "segment_count": pl.Int64,
                 "total_words": pl.Int64,
@@ -536,10 +652,10 @@ def add_segments_to_sections(
     )
 
     # Aggregate back to per-section lists/counts
-    agg = _aggregate_segments(flat_segments, section_ref_col="section_ref")
+    agg = _aggregate_segments(flat_segments, section_ref_col="section_ordinal")
 
     # Left join to preserve original sections (including those with no segments)
-    result_df = df.join(agg, on="section_idx", how="left")
+    result_df = df.join(agg, on="section_ordinal", how="left")
 
     # Fill missing aggregated values for sections with no segments
     result_df = result_df.with_columns(
@@ -560,9 +676,9 @@ def add_segments_to_sections(
     )
 
     # Reorder columns to put new ones at the end
-    original_columns = [col for col in df.columns if col != "section_idx"]
+    original_columns = [col for col in df.columns if col != "section_ordinal"]
     new_columns = ["segments", "segment_count", "total_words"]
-    result_columns = ["section_idx"] + original_columns + new_columns
+    result_columns = ["section_ordinal"] + original_columns + new_columns
 
     return result_df.select(result_columns)
 
@@ -588,8 +704,8 @@ def create_segments_df(
 
     Returns:
         pl.DataFrame: Flattened DataFrame with one row per segment and columns:
-            - segment_idx (pl.Int64): Global segment index (0-based, sequential)
-            - section_ref (pl.Int64): Reference to original section_idx
+            - segment_ordinal (pl.Int64): Global segment index (0-based, sequential)
+            - section_ordinal (pl.Int64): Reference to original section_ordinal
             - section_heading (pl.String): Full heading text including markdown markers
             - section_level (pl.Int64): Heading level (1-6, e.g., 2 for "## Section")
             - segment_position (pl.Int64): Position of segment within its section (0-based)
@@ -605,7 +721,7 @@ def create_segments_df(
         >>> text = "# Title\\n\\nFirst paragraph.\\n\\nSecond paragraph."
         >>> sections = divide_into_sections(text)
         >>> segments_df = create_segments_df(sections)
-        >>> segments_df.select(["segment_idx", "section_ref", "segment_text"]).to_dicts()
+        >>> segments_df.select(["segment_ordinal", "section_ordinal", "segment_text"]).to_dicts()
         [{'segment_idx': 0, 'section_ref': 0, 'segment_text': 'First paragraph.'},
          {'segment_idx': 1, 'section_ref': 0, 'segment_text': 'Second paragraph.'}]
 
@@ -630,7 +746,7 @@ def create_segments_df(
     global_segment_idx = 0
 
     for row in df.to_dicts():
-        section_idx = row["section_idx"]
+        section_idx = row["section_ordinal"]
         heading_text = row["heading_text"]
         heading_level = row["heading_level"]
         text = row[text_column]
@@ -664,8 +780,8 @@ def create_segments_df(
             word_count = len(segment_content.split())
 
             segment_row = {
-                "segment_idx": global_segment_idx,
-                "section_ref": section_idx,
+                "segment_ordinal": global_segment_idx,
+                "section_ordinal": section_idx,
                 "section_heading": heading_text,
                 "section_level": heading_level,
                 "segment_position": segment_position,
@@ -680,8 +796,8 @@ def create_segments_df(
         result_df = pl.DataFrame(
             all_segments,
             schema={
-                "segment_idx": pl.Int64,
-                "section_ref": pl.Int64,
+                "segment_ordinal": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "section_heading": pl.String,
                 "section_level": pl.Int64,
                 "segment_position": pl.Int64,
@@ -693,8 +809,8 @@ def create_segments_df(
         # No segments found - return empty DataFrame with correct schema
         result_df = pl.DataFrame(
             schema={
-                "segment_idx": pl.Int64,
-                "section_ref": pl.Int64,
+                "segment_ordinal": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "section_heading": pl.String,
                 "section_level": pl.Int64,
                 "segment_position": pl.Int64,

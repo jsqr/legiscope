@@ -9,7 +9,10 @@ from legiscope.segment import (
     segment_text,
     add_segments_to_sections,
     create_segments_df,
+    enrich_sections,
+    get_section_text,
 )
+from legiscope.models import JurisdictionRef, CodeRef
 
 
 class TestDivideIntoSections:
@@ -39,14 +42,14 @@ Content of section 2."""
         # Check DataFrame structure
         assert len(result) == 4
         assert result.columns == [
-            "section_idx",
+            "section_ordinal",
             "heading_level",
             "heading_text",
             "body_text",
         ]
 
         # Check section indices
-        assert result["section_idx"].to_list() == [0, 1, 2, 3]
+        assert result["section_ordinal"].to_list() == [0, 1, 2, 3]
 
         # Check heading levels
         assert result["heading_level"].to_list() == [1, 2, 3, 2]
@@ -96,7 +99,7 @@ Some content here.
         result = divide_into_sections("")
         assert len(result) == 0
         assert result.columns == [
-            "section_idx",
+            "section_ordinal",
             "heading_level",
             "heading_text",
             "body_text",
@@ -124,7 +127,7 @@ This is the content under the single heading."""
         result = divide_into_sections(markdown_text)
 
         assert len(result) == 1
-        assert result["section_idx"][0] == 0
+        assert result["section_ordinal"][0] == 0
         assert result["heading_level"][0] == 1
         assert result["heading_text"][0] == "# Only Heading"
         assert result["body_text"][0] == "This is the content under the single heading."
@@ -217,10 +220,10 @@ This content should be captured."""
         markdown_text = """# Title
 
    This line has leading spaces.
-   
-   This line has trailing spaces.   
-   
-   This line has both.   
+
+   This line has trailing spaces.
+
+   This line has both.
 
 ## Next
 
@@ -258,7 +261,7 @@ Some content."""
 
         # Check column names
         assert result.columns == [
-            "section_idx",
+            "section_ordinal",
             "heading_level",
             "heading_text",
             "body_text",
@@ -266,7 +269,7 @@ Some content."""
 
         # Check column types
         schema = result.schema
-        assert schema["section_idx"] == pl.Int64
+        assert schema["section_ordinal"] == pl.Int64
         assert schema["heading_level"] == pl.Int64
         assert schema["heading_text"] == pl.String
         assert schema["body_text"] == pl.String
@@ -284,7 +287,7 @@ Some content."""
         result = divide_into_sections(markdown_text)
 
         assert len(result) == 100
-        assert result["section_idx"].to_list() == list(range(100))
+        assert result["section_ordinal"].to_list() == list(range(100))
         assert result["heading_level"].to_list() == [2] * 100
 
         # Check a few sample sections
@@ -340,11 +343,14 @@ Subsection content."""
         assert len(result) == 3
         assert "parent" in result.columns
         assert result.columns == [
-            "section_idx",
+            "section_ordinal",
             "heading_level",
             "heading_text",
             "body_text",
             "parent",
+            "children",
+            "depth",
+            "ancestor_path",
         ]
 
         # Check parent relationships
@@ -352,6 +358,18 @@ Subsection content."""
         assert parents[0] is None  # H1 has no parent
         assert parents[1] == 0  # H2 parent is H1 (idx 0)
         assert parents[2] == 1  # H3 parent is H2 (idx 1)
+
+        # Check children
+        children = result["children"].to_list()
+        assert children[0] == [1]  # H1 has H2 as child
+        assert children[1] == [2]  # H2 has H3 as child
+        assert children[2] == []  # H3 is a leaf
+
+        # Check depth
+        assert result["depth"].to_list() == [0, 1, 2]
+
+        # Check ancestor_path
+        assert result["ancestor_path"].to_list() == ["0", "0/1", "0/1/2"]
 
     def test_multiple_branches(self):
         """Test multiple branches from same parent."""
@@ -448,7 +466,7 @@ Content here."""
         """Test handling of empty DataFrame."""
         empty_df = pl.DataFrame(
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
@@ -459,6 +477,9 @@ Content here."""
 
         assert len(result) == 0
         assert "parent" in result.columns
+        assert "children" in result.columns
+        assert "depth" in result.columns
+        assert "ancestor_path" in result.columns
         assert result.schema["parent"] == pl.Int64
 
     def test_same_level_sections(self):
@@ -505,7 +526,7 @@ Content here."""
         # DataFrame missing required columns
         invalid_df = pl.DataFrame(
             {
-                "section_idx": [0, 1],
+                "section_ordinal": [0, 1],
                 "heading_level": [1, 2],
                 # Missing heading_text and body_text
             }
@@ -527,21 +548,27 @@ Content."""
 
         # Check column names
         expected_columns = [
-            "section_idx",
+            "section_ordinal",
             "heading_level",
             "heading_text",
             "body_text",
             "parent",
+            "children",
+            "depth",
+            "ancestor_path",
         ]
         assert result.columns == expected_columns
 
         # Check column types
         schema = result.schema
-        assert schema["section_idx"] == pl.Int64
+        assert schema["section_ordinal"] == pl.Int64
         assert schema["heading_level"] == pl.Int64
         assert schema["heading_text"] == pl.String
         assert schema["body_text"] == pl.String
         assert schema["parent"] == pl.Int64
+        assert schema["children"] == pl.List(pl.Int64)
+        assert schema["depth"] == pl.Int64
+        assert schema["ancestor_path"] == pl.String
 
     def test_chained_usage(self):
         """Test typical usage pattern with function chaining."""
@@ -698,9 +725,9 @@ class TestSegmentText:
     def test_text_with_newlines_and_whitespace(self):
         """Test text with various whitespace patterns."""
         text = """First sentence.
-        
+
         Second sentence with extra spaces.
-        
+
         Third sentence."""
 
         segments = segment_text(text, token_limit=50)
@@ -820,9 +847,9 @@ Short conclusion paragraph."""
     def test_paragraph_with_various_whitespace(self):
         """Test paragraph handling with various whitespace patterns."""
         text = """First paragraph.
-        
+
         Second paragraph with extra spaces.
-        
+
         Third paragraph."""
 
         segments = segment_text(text, token_limit=50)
@@ -839,11 +866,11 @@ Short conclusion paragraph."""
         """Test that empty paragraphs are ignored."""
         text = """First paragraph.
 
-        
+
         Second paragraph.
 
 
-        
+
         Third paragraph."""
 
         segments = segment_text(text, token_limit=50)
@@ -865,7 +892,7 @@ class TestAddSegmentsToSections:
         long_content = "This is sentence one. " * 50  # 50 sentences
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1],
+                "section_ordinal": [0, 1],
                 "heading_level": [1, 2],
                 "heading_text": ["# Title", "## Section"],
                 "body_text": ["Short content.", long_content],
@@ -888,7 +915,7 @@ class TestAddSegmentsToSections:
         """Test handling of empty body text."""
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1],
+                "section_ordinal": [0, 1],
                 "heading_level": [1, 2],
                 "heading_text": ["# Title", "## Section"],
                 "body_text": [None, ""],
@@ -909,7 +936,7 @@ class TestAddSegmentsToSections:
         """Test with custom text column name."""
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 "custom_text": ["Content to be segmented."],
@@ -931,7 +958,7 @@ class TestAddSegmentsToSections:
         # Missing column
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 # Missing body_text
@@ -945,7 +972,7 @@ class TestAddSegmentsToSections:
         """Test that original column order is preserved."""
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 "body_text": ["Content."],
@@ -957,14 +984,14 @@ class TestAddSegmentsToSections:
 
         # Original columns should be preserved
         original_columns = [
-            "section_idx",
+            "section_ordinal",
             "heading_level",
             "heading_text",
             "body_text",
             "parent",
         ]
         new_columns = ["segments", "segment_count", "total_words"]
-        expected_columns = ["section_idx"] + original_columns[1:] + new_columns
+        expected_columns = ["section_ordinal"] + original_columns[1:] + new_columns
 
         assert result.columns == expected_columns
 
@@ -973,7 +1000,7 @@ class TestAddSegmentsToSections:
         # Create sections with parent relationships
         base_df = pl.DataFrame(
             {
-                "section_idx": [0, 1, 2],
+                "section_ordinal": [0, 1, 2],
                 "heading_level": [1, 2, 3],
                 "heading_text": ["# Title", "## Section", "### Subsection"],
                 "body_text": [
@@ -992,11 +1019,14 @@ class TestAddSegmentsToSections:
 
         # Should have all columns
         expected_columns = [
-            "section_idx",
+            "section_ordinal",
             "heading_level",
             "heading_text",
             "body_text",
             "parent",
+            "children",
+            "depth",
+            "ancestor_path",
             "segments",
             "segment_count",
             "total_words",
@@ -1014,7 +1044,7 @@ class TestAddSegmentsToSections:
 
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Large Section"],
                 "body_text": [large_content],
@@ -1035,7 +1065,7 @@ class TestAddSegmentsToSections:
         """Test with custom token limit and words per token."""
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 "body_text": [
@@ -1065,7 +1095,7 @@ class TestCreateSegmentsDf:
         # Create test DataFrame with multiple paragraphs
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1],
+                "section_ordinal": [0, 1],
                 "heading_level": [1, 2],
                 "heading_text": ["# Title", "## Section"],
                 "body_text": [
@@ -1079,8 +1109,8 @@ class TestCreateSegmentsDf:
 
         # Check DataFrame structure
         expected_columns = [
-            "segment_idx",
-            "section_ref",
+            "segment_ordinal",
+            "section_ordinal",
             "section_heading",
             "section_level",
             "segment_position",
@@ -1093,14 +1123,14 @@ class TestCreateSegmentsDf:
         assert len(result) >= 2
 
         # Check segment indices are sequential
-        segment_indices = result["segment_idx"].to_list()
+        segment_indices = result["segment_ordinal"].to_list()
         assert segment_indices == list(range(len(result)))
 
     def test_empty_sections_handling(self):
         """Test handling of sections with empty or null text."""
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1, 2],
+                "section_ordinal": [0, 1, 2],
                 "heading_level": [1, 2, 3],
                 "heading_text": ["# Title", "## Section", "### Subsection"],
                 "body_text": ["Content here", None, ""],
@@ -1111,30 +1141,30 @@ class TestCreateSegmentsDf:
 
         # Should only have segments for non-empty sections
         assert len(result) == 1
-        assert result["section_ref"][0] == 0
+        assert result["section_ordinal"][0] == 0
         assert result["segment_text"][0] == "Content here"
 
     def test_long_heading_adjustment(self):
         """Test token limit adjustment for long headings."""
         # words_per_token = 0.75
         # min_tokens is hardcoded to 20 in implementation
-        
+
         # Setup:
         # token_limit = 50
         # Heading: 23 words (~30 tokens: int(23/0.75) = 30)
         # Adjusted limit: max(20, 50 - 30) = 20
         # 20 tokens * 0.75 = 15 words capacity
-        
+
         # Body: 19 words (~25 tokens)
         # 19 words > 15 words capacity -> Should split
         # If no adjustment: 50 tokens * 0.75 = 37.5 words -> 19 words fits -> 1 segment
-        
+
         long_heading = " ".join(["Head"] * 23)
         body_text = " ".join(["Body"] * 19)
 
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": [long_heading],
                 "body_text": [body_text],
@@ -1150,7 +1180,7 @@ class TestCreateSegmentsDf:
         """Test that segment_position is correctly tracked within sections."""
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1],
+                "section_ordinal": [0, 1],
                 "heading_level": [1, 2],
                 "heading_text": ["# Title", "## Section"],
                 "body_text": [
@@ -1163,12 +1193,12 @@ class TestCreateSegmentsDf:
         result = create_segments_df(df, token_limit=30)
 
         # Check segment positions for first section (should have multiple segments)
-        first_section_segments = result.filter(result["section_ref"] == 0)
+        first_section_segments = result.filter(result["section_ordinal"] == 0)
         positions = first_section_segments["segment_position"].to_list()
         assert positions == list(range(len(first_section_segments)))
 
         # Check segment positions for second section
-        second_section_segments = result.filter(result["section_ref"] == 1)
+        second_section_segments = result.filter(result["section_ordinal"] == 1)
         positions = second_section_segments["segment_position"].to_list()
         assert positions == list(range(len(second_section_segments)))
 
@@ -1176,7 +1206,7 @@ class TestCreateSegmentsDf:
         """Test that section context is preserved for each segment."""
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1],
+                "section_ordinal": [0, 1],
                 "heading_level": [1, 3],
                 "heading_text": ["# Main Title", "### Deep Section"],
                 "body_text": ["Main content.", "Deep content here."],
@@ -1187,10 +1217,10 @@ class TestCreateSegmentsDf:
 
         # Check section context is preserved
         for row in result.to_dicts():
-            if row["section_ref"] == 0:
+            if row["section_ordinal"] == 0:
                 assert row["section_heading"] == "# Main Title"
                 assert row["section_level"] == 1
-            elif row["section_ref"] == 1:
+            elif row["section_ordinal"] == 1:
                 assert row["section_heading"] == "### Deep Section"
                 assert row["section_level"] == 3
 
@@ -1198,7 +1228,7 @@ class TestCreateSegmentsDf:
         """Test that word_count is accurate for each segment."""
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 "body_text": ["One two three four five."],
@@ -1218,7 +1248,7 @@ class TestCreateSegmentsDf:
 
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1],
+                "section_ordinal": [0, 1],
                 "heading_level": [1, 2],
                 "heading_text": ["# Title", "## Section"],
                 "body_text": [long_content, "Short content."],
@@ -1245,7 +1275,7 @@ Third paragraph content."""
 
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 "body_text": [text],
@@ -1264,14 +1294,14 @@ Third paragraph content."""
         assert "Third paragraph" in segment_texts[2]
 
         # All segments should belong to same section
-        section_refs = result["section_ref"].to_list()
+        section_refs = result["section_ordinal"].to_list()
         assert all(ref == 0 for ref in section_refs)
 
     def test_mixed_scenarios_flat_format(self):
         """Test mixed scenarios with various section lengths."""
         df = pl.DataFrame(
             {
-                "section_idx": [0, 1, 2],
+                "section_ordinal": [0, 1, 2],
                 "heading_level": [1, 2, 3],
                 "heading_text": ["# Title", "## Section", "### Subsection"],
                 "body_text": [
@@ -1289,9 +1319,9 @@ Third paragraph content."""
         assert len(result) >= 3
 
         # Check section distribution
-        section_0_segments = result.filter(result["section_ref"] == 0)
-        section_1_segments = result.filter(result["section_ref"] == 1)
-        section_2_segments = result.filter(result["section_ref"] == 2)
+        section_0_segments = result.filter(result["section_ordinal"] == 0)
+        section_1_segments = result.filter(result["section_ordinal"] == 1)
+        section_2_segments = result.filter(result["section_ordinal"] == 2)
 
         assert len(section_0_segments) == 1  # Short content
         assert len(section_1_segments) >= 1  # Medium content
@@ -1301,7 +1331,7 @@ Third paragraph content."""
         """Test handling of empty DataFrame input."""
         empty_df = pl.DataFrame(
             schema={
-                "section_idx": pl.Int64,
+                "section_ordinal": pl.Int64,
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
@@ -1313,8 +1343,8 @@ Third paragraph content."""
         # Should return empty DataFrame with correct schema
         assert len(result) == 0
         expected_columns = [
-            "segment_idx",
-            "section_ref",
+            "segment_ordinal",
+            "section_ordinal",
             "section_heading",
             "section_level",
             "segment_position",
@@ -1332,7 +1362,7 @@ Third paragraph content."""
         # Missing column
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 # Missing body_text
@@ -1346,7 +1376,7 @@ Third paragraph content."""
         """Test with custom text column name."""
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [1],
                 "heading_text": ["# Title"],
                 "custom_text": ["Content to be segmented."],
@@ -1363,7 +1393,7 @@ Third paragraph content."""
         """Test that returned DataFrame has correct schema."""
         df = pl.DataFrame(
             {
-                "section_idx": [0],
+                "section_ordinal": [0],
                 "heading_level": [2],
                 "heading_text": ["## Section"],
                 "body_text": ["Test content."],
@@ -1374,8 +1404,8 @@ Third paragraph content."""
 
         # Check column names
         expected_columns = [
-            "segment_idx",
-            "section_ref",
+            "segment_ordinal",
+            "section_ordinal",
             "section_heading",
             "section_level",
             "segment_position",
@@ -1386,8 +1416,8 @@ Third paragraph content."""
 
         # Check column types
         schema = result.schema
-        assert schema["segment_idx"] == pl.Int64
-        assert schema["section_ref"] == pl.Int64
+        assert schema["segment_ordinal"] == pl.Int64
+        assert schema["section_ordinal"] == pl.Int64
         assert schema["section_heading"] == pl.String
         assert schema["section_level"] == pl.Int64
         assert schema["segment_position"] == pl.Int64
@@ -1399,7 +1429,7 @@ Third paragraph content."""
         # Create sections with parent relationships
         base_df = pl.DataFrame(
             {
-                "section_idx": [0, 1, 2],
+                "section_ordinal": [0, 1, 2],
                 "heading_level": [1, 2, 3],
                 "heading_text": ["# Title", "## Section", "### Subsection"],
                 "body_text": [
@@ -1421,5 +1451,120 @@ Third paragraph content."""
 
         # Check that section context is preserved including parent info
         # (parent info is not directly in segments but section_ref allows lookup)
-        section_refs = result["section_ref"].to_list()
+        section_refs = result["section_ordinal"].to_list()
         assert set(section_refs) == {0, 1, 2}
+
+
+class TestEnrichSections:
+    """Test cases for enrich_sections function."""
+
+    def _make_sections(self, markdown_text: str) -> pl.DataFrame:
+        return add_parent_relationships(divide_into_sections(markdown_text))
+
+    def _make_code_ref(self) -> CodeRef:
+        return CodeRef(
+            jurisdiction=JurisdictionRef(state="CA", municipality="LosAngeles"),
+            code_slug="municipal-code",
+        )
+
+    def test_adds_code_id_section_id_parent_id(self):
+        sections = self._make_sections("# Main\n\n## Child\n\nBody.")
+        code_ref = self._make_code_ref()
+        result = enrich_sections(sections, code_ref)
+
+        assert "code_id" in result.columns
+        assert "section_id" in result.columns
+        assert "parent_id" in result.columns
+
+        assert result["code_id"][0] == "CA:LosAngeles:municipal-code"
+        assert result["section_id"][0] == "CA:LosAngeles:municipal-code:s0"
+        assert result["section_id"][1] == "CA:LosAngeles:municipal-code:s1"
+        assert result["parent_id"][0] is None  # root has no parent
+        assert result["parent_id"][1] == "CA:LosAngeles:municipal-code:s0"
+
+    def test_preserves_existing_columns(self):
+        sections = self._make_sections("# Title\n\nBody.")
+        code_ref = self._make_code_ref()
+        result = enrich_sections(sections, code_ref)
+
+        for col in [
+            "section_ordinal",
+            "heading_level",
+            "heading_text",
+            "body_text",
+            "parent",
+            "children",
+            "depth",
+            "ancestor_path",
+        ]:
+            assert col in result.columns
+
+
+class TestGetSectionText:
+    """Test cases for get_section_text function."""
+
+    def _make_sections(self, markdown_text: str) -> pl.DataFrame:
+        return add_parent_relationships(divide_into_sections(markdown_text))
+
+    def test_leaf_section(self):
+        """Leaf section returns its heading + body."""
+        sections = self._make_sections("# Title\n\nBody content.")
+        text = get_section_text(sections, 0)
+        assert "# Title" in text
+        assert "Body content." in text
+
+    def test_leaf_no_body(self):
+        """Leaf section with no body returns just heading."""
+        sections = self._make_sections("# Title\n\n## Child")
+        # Section 1 (## Child) is a leaf with no body
+        text = get_section_text(sections, 1)
+        assert text == "## Child"
+
+    def test_section_with_children(self):
+        """Parent section expands children in document order."""
+        md = "# Main\n\nIntro.\n\n## A\n\nA body.\n\n## B\n\nB body."
+        sections = self._make_sections(md)
+        text = get_section_text(sections, 0)
+
+        assert "# Main" in text
+        assert "Intro." in text
+        assert "## A" in text
+        assert "A body." in text
+        assert "## B" in text
+        assert "B body." in text
+
+        # Children should appear after parent
+        main_pos = text.index("# Main")
+        a_pos = text.index("## A")
+        b_pos = text.index("## B")
+        assert main_pos < a_pos < b_pos
+
+    def test_nested_subtree(self):
+        """Deep nesting is expanded recursively."""
+        md = "# Root\n\n## L2\n\n### L3\n\nDeep body."
+        sections = self._make_sections(md)
+        text = get_section_text(sections, 0)
+
+        assert "# Root" in text
+        assert "## L2" in text
+        assert "### L3" in text
+        assert "Deep body." in text
+
+    def test_partial_subtree(self):
+        """Expanding a mid-level section only includes its subtree."""
+        md = "# Root\n\n## A\n\n### A1\n\nA1 body.\n\n## B\n\nB body."
+        sections = self._make_sections(md)
+
+        # Expand only section A (ordinal 1)
+        text = get_section_text(sections, 1)
+        assert "## A" in text
+        assert "### A1" in text
+        assert "A1 body." in text
+        # Should NOT include sibling B
+        assert "## B" not in text
+        assert "B body." not in text
+
+    def test_missing_ordinal_raises(self):
+        sections = self._make_sections("# Title\n\nBody.")
+        with pytest.raises(KeyError, match="section_ordinal 99"):
+            get_section_text(sections, 99)

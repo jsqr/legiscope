@@ -727,7 +727,7 @@ class TestRetrievalConfigBasics:
     def test_retrieve_segments_hyde_requires_client(self):
         """Test that use_hyde=True requires hyde_client."""
         from legiscope.retrieve import RetrievalSettings
-        
+
         with pytest.raises(ValueError, match="hyde_client required"):
             RetrievalSettings(
                 use_hyde=True  # Missing hyde_client
@@ -777,7 +777,7 @@ class TestSectionRetrievalConfigBasics:
         from legiscope.retrieve import retrieve_sections
         from chromadb.api.models.Collection import Collection
         from unittest.mock import Mock
-        
+
         mock_collection = Mock(spec=Collection)
 
         # This should raise because sections_parquet_path is a required parameter
@@ -797,11 +797,11 @@ class TestSectionRetrievalConfigBasics:
 
         # Create test sections parquet file
         sections_data = {
-            "section_idx": [0, 1],
+            "section_ordinal": [0, 1],
             "heading_text": ["# Section 1", "## Section 2"],
             "body_text": ["Content 1", "Content 2"],
             "heading_level": [1, 2],
-            "parent": [None, 0],
+            "parent_id": [None, "s0"],
         }
         sections_df = pl.DataFrame(sections_data)
         sections_path = tmp_path / "sections.parquet"
@@ -814,13 +814,13 @@ class TestSectionRetrievalConfigBasics:
             "metadatas": [
                 [
                     {
-                        "section_ref": 0,
+                        "section_ordinal": 0,
                         "segment_position": 0,
                         "section_heading": "# Section 1",
                         "section_level": 1,
                     },
                     {
-                        "section_ref": 1,
+                        "section_ordinal": 1,
                         "segment_position": 0,
                         "section_heading": "## Section 2",
                         "section_level": 2,
@@ -913,21 +913,21 @@ class TestFilterSections:
         # Mock sections
         sections = [
             SectionResult(
-                section_idx=1,
+                section_id="s1",
                 heading_text="H1",
                 body_text="B1",
                 heading_level=1,
-                parent=None,
+                parent_id=None,
                 matching_segments=[],
                 relevance_score=0.1,
                 segment_count=1,
             ),
             SectionResult(
-                section_idx=2,
+                section_id="s2",
                 heading_text="H2",
                 body_text="B2",
                 heading_level=1,
-                parent=None,
+                parent_id=None,
                 matching_segments=[],
                 relevance_score=0.2,
                 segment_count=1,
@@ -956,9 +956,10 @@ class TestFilterSections:
 
         with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
             # Patch Path.mkdir to avoid filesystem side effects from debug logging
-            with patch(
-                "pathlib.Path.mkdir"
-            ), patch("legiscope.retrieve.pl.DataFrame.write_csv"):
+            with (
+                patch("pathlib.Path.mkdir"),
+                patch("legiscope.retrieve.pl.DataFrame.write_csv"),
+            ):
                 mock_client = Mock(spec=Instructor)
 
                 result = filter_sections(
@@ -966,7 +967,7 @@ class TestFilterSections:
                 )
 
                 assert len(result.sections) == 1
-                assert result.sections[0].section_idx == 1
+                assert result.sections[0].section_id == "s1"
                 assert result.sections[0].relevance_score == 0.9  # Updated from LLM
                 assert result.sections[0].llm_assessed is True
                 assert result.filtering_metadata.filtered_count == 1
@@ -984,21 +985,21 @@ class TestFilterSections:
 
         sections = [
             SectionResult(
-                section_idx=1,
+                section_id="s1",
                 heading_text="H1",
                 body_text="B1",
                 heading_level=1,
-                parent=None,
+                parent_id=None,
                 matching_segments=[],
                 relevance_score=0,
                 segment_count=1,
             ),
             SectionResult(
-                section_idx=2,
+                section_id="s2",
                 heading_text="H2",
                 body_text="B2",
                 heading_level=1,
-                parent=None,
+                parent_id=None,
                 matching_segments=[],
                 relevance_score=0,
                 segment_count=1,
@@ -1025,16 +1026,17 @@ class TestFilterSections:
         ]
 
         with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
-            with patch(
-                "pathlib.Path.mkdir"
-            ), patch("legiscope.retrieve.pl.DataFrame.write_csv"):
+            with (
+                patch("pathlib.Path.mkdir"),
+                patch("legiscope.retrieve.pl.DataFrame.write_csv"),
+            ):
                 mock_client = Mock(spec=Instructor)
                 result = filter_sections(mock_client, input_results, "query")
 
                 # Should be sorted by score descending (Great > Okay)
                 assert len(result.sections) == 2
-                assert result.sections[0].section_idx == 2  # Score 0.9
-                assert result.sections[1].section_idx == 1  # Score 0.7
+                assert result.sections[0].section_id == "s2"  # Score 0.9
+                assert result.sections[1].section_id == "s1"  # Score 0.7
 
     def test_filter_sections_validation(self):
         """Test input validation."""
@@ -1046,6 +1048,3 @@ class TestFilterSections:
 
         with pytest.raises(ValueError, match="client is required"):
             filter_sections(None, Mock(), "query")  # type: ignore
-
-
-

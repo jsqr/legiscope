@@ -3,12 +3,15 @@
 Create embeddings for segmented legal code.
 
 Usage:
-    python scripts/create_embeddings.py data/laws/IL-WindyCity
+    python scripts/create_embeddings.py --state CA --municipality LosAngeles --code-slug municipal-code
+    python scripts/create_embeddings.py --state CA --code-slug penal-code
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
+
 import polars as pl
 
 # Load environment variables from .env file
@@ -24,64 +27,46 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from legiscope.embeddings import (
     EmbeddingConfig,
-    JurisdictionConfig,
-    PersistenceConfig,
-    create_and_persist_embeddings,
+    create_and_save_embeddings,
     get_default_model,
     get_embedding_client,
 )
+from legiscope.models import CodeRef, JurisdictionRef
 
 # Embedding provider configuration from environment
-EMBEDDING_PROVIDER = os.getenv(
-    "LEGISCOPE_EMBEDDING_PROVIDER", "mistral"
-)  # Options: "ollama", "mistral"
+EMBEDDING_PROVIDER = os.getenv("LEGISCOPE_EMBEDDING_PROVIDER", "mistral")
 
 
-def create_embeddings(jurisdiction_path: str) -> None:
-    """Create embeddings for a jurisdiction directory."""
-    path = Path(jurisdiction_path)
+def create_embeddings(code_ref: CodeRef) -> None:
+    """Create embeddings for a code directory."""
+    code_dir = code_ref.full_data_dir
 
-    if not path.exists():
-        print(f"Error: Directory does not exist: {path}")
+    if not code_dir.exists():
+        print(f"Error: Directory does not exist: {code_dir}")
         sys.exit(1)
 
-    # Parse state and municipality from directory name
-    dir_name = path.name
-    if "-" not in dir_name:
-        print(f"Error: Directory name must contain '-': {dir_name}")
-        sys.exit(1)
+    # Check for required files
+    sections_path = code_dir / "sections.parquet"
+    segments_path = code_dir / "segments.parquet"
 
-    state, municipality = dir_name.split("-", 1)
-    state = state.upper()
-
-    # Check for required subdirectories
-    for subdir in ["processed", "tables"]:
-        if not (path / subdir).exists():
-            print(f"Error: Missing required subdirectory: {path / subdir}")
+    for path in [sections_path, segments_path]:
+        if not path.exists():
+            print(f"Error: Required file not found: {path}")
             sys.exit(1)
 
-    # Check for segments file
-    segments_path = path / "tables" / "segments.parquet"
-    if not segments_path.exists():
-        print(f"Error: Segments file not found: {segments_path}")
-        sys.exit(1)
-
-    print(f"Creating embeddings for {state}-{municipality}...")
+    print(f"Creating embeddings for {code_ref.code_id}...")
 
     try:
-        # Load segments
+        sections_df = pl.read_parquet(sections_path)
         segments_df = pl.read_parquet(segments_path)
-        print(f"Loaded {len(segments_df)} segments")
+        print(f"Loaded {len(sections_df)} sections, {len(segments_df)} segments")
 
-        # Create embedding client using new interface
+        # Create embedding client
         provider = EMBEDDING_PROVIDER
         try:
             client = get_embedding_client(provider)
             model = get_default_model(provider)
-
-            # Simple test - just try to create the client successfully
-            # The actual embedding test will happen in create_and_persist_embeddings
-            print(f"Successfully initialized {provider} client with model: {model}")
+            print(f"Initialized {provider} client with model: {model}")
         except Exception as e:
             print(f"Error: Could not initialize {provider} client.")
             print(f"Details: {e}")
@@ -93,32 +78,18 @@ def create_embeddings(jurisdiction_path: str) -> None:
                 print("Make sure MISTRAL_API_KEY environment variable is set")
             sys.exit(1)
 
-        # Create embeddings and persist to ChromaDB
-        embeddings_df, collection = create_and_persist_embeddings(
-            df=segments_df,
+        # Create and save embeddings (no ChromaDB)
+        embeddings_df = create_and_save_embeddings(
+            segments_df=segments_df,
+            sections_df=sections_df,
             client=client,
+            code_ref=code_ref,
             embedding_config=EmbeddingConfig(model=model, provider=provider),
-            persistence_config=PersistenceConfig(
-                persist_directory="data/chroma_db",
-                collection_name=os.getenv(
-                    "LEGISCOPE_COLLECTION_NAME", "legal_code_all"
-                ),
-                save_parquet=True,
-                parquet_path=path / "tables" / "embeddings.parquet",
-                provider=provider,
-            ),
-            jurisdiction_config=JurisdictionConfig(
-                jurisdiction_id=f"{state}-{municipality}",
-            ),
         )
 
-        print(f"Successfully created embeddings for {state}-{municipality}")
-        print(
-            f"  Parquet: {path / 'tables' / 'embeddings.parquet'} ({len(embeddings_df)} embeddings)"
-        )
-        print(
-            f"  ChromaDB: {collection.name} collection ({collection.count()} documents)"
-        )
+        output_path = code_dir / "embeddings.parquet"
+        print(f"Successfully created embeddings for {code_ref.code_id}")
+        print(f"  Parquet: {output_path} ({len(embeddings_df)} embeddings)")
 
     except Exception as e:
         print(f"Error: {e}")
@@ -126,12 +97,27 @@ def create_embeddings(jurisdiction_path: str) -> None:
 
 
 def main():
-    if len(sys.argv) != 2:
-        print("Usage: python create_embeddings.py <jurisdiction_path>")
-        print("Example: python create_embeddings.py data/laws/IL-WindyCity")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Create embeddings for segmented legal code",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --state CA --municipality LosAngeles --code-slug municipal-code
+  %(prog)s --state CA --code-slug penal-code
+        """,
+    )
+    parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
+    parser.add_argument(
+        "--municipality", default=None, help="Municipality name (omit for state-level)"
+    )
+    parser.add_argument("--code-slug", required=True, help="Code slug identifier")
 
-    create_embeddings(sys.argv[1])
+    args = parser.parse_args()
+
+    jurisdiction = JurisdictionRef(state=args.state, municipality=args.municipality)
+    code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
+
+    create_embeddings(code_ref)
 
 
 if __name__ == "__main__":

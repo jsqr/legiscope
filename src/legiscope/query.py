@@ -79,7 +79,7 @@ class QuerySettings:
     filter_relevance: bool = False
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     filter_llm: LLMConfig | None = None
-    
+
     # Validation
     validate_supporting_passages: bool = True
 
@@ -318,7 +318,9 @@ def _validate_supporting_passages(
         # Normalize whitespace (collapses multiple spaces, tabs, newlines)
         text = " ".join(text.split())
         # Normalize smart quotes to standard ASCII
-        text = text.replace('“', '"').replace('”', '"').replace('‘', "'").replace('’', "'")
+        text = (
+            text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+        )
         return text
 
     # Pre-compute normalized texts
@@ -331,9 +333,8 @@ def _validate_supporting_passages(
 
         # First try exact substring match (fast path)
         # Check both raw and normalized versions
-        exact_match = (
-            any(passage_stripped in text for text in all_texts)
-            or any(passage_normalized in text for text in normalized_texts)
+        exact_match = any(passage_stripped in text for text in all_texts) or any(
+            passage_normalized in text for text in normalized_texts
         )
 
         if exact_match:
@@ -847,7 +848,7 @@ def _process_single_query_with_error_handling(
             llm=llm,
             filter_relevance=settings.filter_relevance,
             relevance_threshold=settings.relevance_threshold,
-            validate_supporting_passages=settings.validate_supporting_passages
+            validate_supporting_passages=settings.validate_supporting_passages,
         )
 
         query_response, similarity_scores = query_legal_documents(

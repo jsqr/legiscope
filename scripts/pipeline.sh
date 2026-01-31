@@ -1,72 +1,88 @@
 #!/bin/bash
 
-# pipeline_simple.sh - Simplified jurisdiction processing pipeline
+# pipeline.sh - Jurisdiction processing pipeline
 # Basic workflow from DOCX files to searchable embeddings
 
 set -e  # Exit on error
 
-# Basic configuration
+# Configuration
 STATE="$1"
 MUNICIPALITY="$2"
-QUERIES_FILE="$3"  # Optional queries file
-JURISDICTION_NAME="${STATE}-${MUNICIPALITY}"
+CODE_SLUG="$3"
+QUERIES_FILE="$4"  # Optional queries file
 
 # Check basic arguments
-if [[ $# -lt 2 ]]; then
-    echo "Usage: $0 <STATE> <MUNICIPALITY> [QUERIES_FILE]"
-    echo "Example: $0 NY \"New York\""
-    echo "Example with queries: $0 NY \"New York\" data/queries/ny_queries.txt"
+if [[ $# -lt 3 ]]; then
+    echo "Usage: $0 <STATE> <MUNICIPALITY|-> <CODE_SLUG> [QUERIES_FILE]"
+    echo "  Use '-' for MUNICIPALITY for state-level codes."
+    echo ""
+    echo "Examples:"
+    echo "  $0 CA LosAngeles municipal-code"
+    echo "  $0 CA - penal-code"
+    echo "  $0 CA LosAngeles municipal-code data/queries/example.csv"
     exit 1
 fi
 
-echo "Starting pipeline for $JURISDICTION_NAME..."
+# Build common args
+COMMON_ARGS="--state $STATE --code-slug $CODE_SLUG"
+if [[ "$MUNICIPALITY" != "-" ]]; then
+    COMMON_ARGS="$COMMON_ARGS --municipality $MUNICIPALITY"
+fi
 
-# Step 1: Create directory structure
+echo "Starting pipeline for state=$STATE municipality=$MUNICIPALITY code=$CODE_SLUG..."
+
+# Step 1: Create directory structure and register jurisdiction/code
 echo "Step 1: Creating directory structure..."
-source .venv/bin/activate && python scripts/create_jurisdiction.py "$STATE" "$MUNICIPALITY"
+source .venv/bin/activate && python scripts/create_jurisdiction.py $COMMON_ARGS
 
 # Step 2: Convert DOCX to text (if DOCX files exist)
-RAW_DIR="data/laws/$JURISDICTION_NAME/raw"
+# Determine the data directory
+if [[ "$MUNICIPALITY" != "-" ]]; then
+    CODE_DIR="data/laws/$STATE/$MUNICIPALITY/$CODE_SLUG"
+else
+    CODE_DIR="data/laws/$STATE/State/$CODE_SLUG"
+fi
+RAW_DIR="$CODE_DIR/raw"
+
 if [[ -d "$RAW_DIR" ]] && [[ -n "$(ls -A "$RAW_DIR"/*.docx 2>/dev/null)" ]]; then
     echo "Step 2: Converting DOCX to text..."
-    ./scripts/convert_docx.sh "$JURISDICTION_NAME"
+    ./scripts/convert_docx.sh "$RAW_DIR"
 else
     echo "Step 2: Skipping DOCX conversion (no DOCX files found)"
 fi
 
 # Step 3: Convert text to Markdown
 echo "Step 3: Converting text to structured Markdown..."
-source .venv/bin/activate && python scripts/convert_to_markdown.py "data/laws/$JURISDICTION_NAME"
+source .venv/bin/activate && python scripts/convert_to_markdown.py $COMMON_ARGS
 
 # Step 4: Segment legal code
 echo "Step 4: Segmenting Markdown into sections..."
-source .venv/bin/activate && python scripts/segment_legal_code.py "data/laws/$JURISDICTION_NAME"
+source .venv/bin/activate && python scripts/segment_legal_code.py $COMMON_ARGS
 
 # Step 5: Create embeddings
 echo "Step 5: Generating embeddings..."
-source .venv/bin/activate && python scripts/create_embeddings.py "data/laws/$JURISDICTION_NAME"
+source .venv/bin/activate && python scripts/create_embeddings.py $COMMON_ARGS
 
-# Step 6: Run queries (if queries file provided)
+# Step 6: Build ChromaDB index
+echo "Step 6: Building ChromaDB index..."
+source .venv/bin/activate && python scripts/build_chroma_index.py
+
+# Step 7: Run queries (if queries file provided)
 if [[ -n "$QUERIES_FILE" ]] && [[ -f "$QUERIES_FILE" ]]; then
-    echo "Step 6: Running queries from $QUERIES_FILE..."
-    SECTIONS_PATH="data/laws/$JURISDICTION_NAME/tables/sections.parquet"
-    OUTPUT_PATH="data/output/$JURISDICTION_NAME/query_results.parquet"
-    
+    echo "Step 7: Running queries from $QUERIES_FILE..."
+    OUTPUT_PATH="data/output/query_results.csv"
+
     source .venv/bin/activate && python scripts/run_queries.py \
+        $COMMON_ARGS \
         --queries-path "$QUERIES_FILE" \
-        --jurisdiction-id "$JURISDICTION_NAME" \
-        --sections-parquet "$SECTIONS_PATH" \
         --output "$OUTPUT_PATH"
-    
+
     echo "Query results saved to: $OUTPUT_PATH"
 elif [[ -n "$QUERIES_FILE" ]]; then
-    echo "Step 6: Skipping queries (file not found: $QUERIES_FILE)"
+    echo "Step 7: Skipping queries (file not found: $QUERIES_FILE)"
 else
-    echo "Step 6: Skipping queries (no queries file provided)"
+    echo "Step 7: Skipping queries (no queries file provided)"
 fi
 
-echo "Pipeline completed successfully for $JURISDICTION_NAME!"
-echo "Files created in: data/laws/$JURISDICTION_NAME"
-if [[ -n "$QUERIES_FILE" ]] && [[ -f "$QUERIES_FILE" ]]; then
-    echo "Query results: data/output/$JURISDICTION_NAME/query_results.parquet"
-fi
+echo "Pipeline completed successfully!"
+echo "Files created in: $CODE_DIR"

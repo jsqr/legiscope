@@ -74,16 +74,19 @@ install:
 
 # Pipeline
 pipeline:
-	@if [ -z "$(STATE)" ] || [ -z "$(MUNICIPALITY)" ]; then \
-		echo "Usage: make pipeline STATE=NY MUNICIPALITY=\"New York\" [QUERIES=path/to/queries.txt]"; \
-		echo "Example: make pipeline STATE=CA MUNICIPALITY=LosAngeles"; \
-		echo "Example with queries: make pipeline STATE=CA MUNICIPALITY=LosAngeles QUERIES=data/queries/example_queries.txt"; \
+	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
+		echo "Usage: make pipeline STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles] [QUERIES=path/to/queries.csv]"; \
+		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo ""; \
+		echo "Examples:"; \
+		echo "  make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code"; \
+		echo "  make pipeline STATE=CA CODE_SLUG=penal-code"; \
+		echo "  make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=queries.csv"; \
 		exit 1; \
 	fi
-	@echo "Running complete pipeline for $(STATE)-$(MUNICIPALITY)..."
+	@echo "Running complete pipeline for $(STATE) $(CODE_SLUG)..."
 	@if [ -n "$(QUERIES)" ]; then \
-		./scripts/pipeline.sh "$(STATE)" $(MUNICIPALITY) $(QUERIES); \
+		./scripts/pipeline.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)" "$(QUERIES)"; \
 	else \
-		./scripts/pipeline.sh "$(STATE)" $(MUNICIPALITY); \
+		./scripts/pipeline.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"; \
 	fi
-
