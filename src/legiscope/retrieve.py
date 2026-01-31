@@ -934,7 +934,9 @@ def _reconstruct_filtered_results(
     filtered_ids = [ids[i] for i in filtered_indices]
     filtered_documents = [documents[i] for i in filtered_indices]
     filtered_distances = [distances[i] for i in filtered_indices]
-    filtered_metadatas = [metadatas[i] if metadatas else None for i in filtered_indices]
+    filtered_metadatas: list[list[dict[str, Any]]] | None = None
+    if metadatas is not None:
+        filtered_metadatas = [[metadatas[i] for i in filtered_indices]]
 
     filtered_count = len(filtered_indices)
     logger.info(
@@ -946,9 +948,7 @@ def _reconstruct_filtered_results(
         ids=[filtered_ids],
         documents=[filtered_documents],
         distances=[filtered_distances],
-        metadatas=[filtered_metadatas]
-        if any(m is not None for m in filtered_metadatas)
-        else None,
+        metadatas=filtered_metadatas,
         filtering_metadata=FilteringMetadata(
             original_count=original_count,
             filtered_count=filtered_count,
