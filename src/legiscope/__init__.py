@@ -21,10 +21,15 @@ from legiscope.embeddings import (
     EmbeddingIndexConfig,
     add_jurisdiction_embeddings,
     create_and_persist_embeddings,
+    create_and_save_embeddings,
     create_embedding_index,
     create_embeddings_df,
     get_embeddings,
     get_or_create_legal_collection,
+)
+from legiscope.models import (
+    CodeRef,
+    JurisdictionRef,
 )
 from legiscope.query import (
     BatchQuerySettings,
@@ -46,12 +51,17 @@ from legiscope.segment import (
     add_segments_to_sections,
     create_segments_df,
     divide_into_sections,
+    enrich_sections,
+    get_section_text,
     segment_text,
 )
 
 # Version
 __version__ = "0.1.0"
 __all__ = [
+    # Models module
+    "JurisdictionRef",
+    "CodeRef",
     # Convert module
     "scan_legal_text",
     "text2md",
@@ -62,6 +72,8 @@ __all__ = [
     # Segment module
     "divide_into_sections",
     "add_parent_relationships",
+    "enrich_sections",
+    "get_section_text",
     "segment_text",
     "add_segments_to_sections",
     "create_segments_df",
@@ -73,6 +85,7 @@ __all__ = [
     "get_or_create_legal_collection",
     "add_jurisdiction_embeddings",
     "create_and_persist_embeddings",
+    "create_and_save_embeddings",
     # Retrieve module
     "retrieve_segments",
     "retrieve_sections",

@@ -5,7 +5,11 @@ Utility functions for the legiscope package.
 import argparse
 import os
 from dataclasses import dataclass
-from typing import Type, TypeVar
+from pathlib import Path
+from typing import TYPE_CHECKING, Type, TypeVar
+
+if TYPE_CHECKING:
+    from legiscope.models import CodeRef
 
 from instructor import Instructor
 from loguru import logger
@@ -168,6 +172,40 @@ def ask(
     )
 
 
+def create_code_structure(code_ref: "CodeRef") -> Path:
+    """Create the directory structure for a legal code.
+
+    Creates the directory hierarchy under ``data/laws/`` for the given code
+    reference, including a ``raw/`` subdirectory for source files.
+
+    Args:
+        code_ref: A :class:`~legiscope.models.CodeRef` identifying the code.
+
+    Returns:
+        Path to the created code directory.
+
+    Raises:
+        OSError: If directory creation fails.
+    """
+    from legiscope.models import LAWS_DIR
+
+    code_dir = LAWS_DIR / code_ref.data_dir
+    raw_dir = code_dir / "raw"
+
+    logger.info("Creating code structure for {}", code_ref.code_id)
+
+    try:
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug("Created directory: {}", raw_dir)
+        logger.info("Successfully created code structure: {}", code_dir)
+        return code_dir
+    except OSError as e:
+        logger.error("Failed to create code structure: {}", str(e))
+        raise OSError(
+            f"Failed to create directory structure for {code_ref.code_id}: {str(e)}"
+        ) from e
+
+
 def create_jurisdiction_structure(state: str, municipality: str) -> str:
     """
     Create the directory structure for a new jurisdiction.
@@ -234,13 +272,14 @@ def create_jurisdiction_structure(state: str, municipality: str) -> str:
             f"Failed to create directory structure for {jurisdiction_name}: {str(e)}"
         ) from e
 
+
 def str2bool(v: str | bool) -> bool:
     """Convert string to boolean for argparse."""
     if isinstance(v, bool):
         return v
-    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+    if v.lower() in ("yes", "true", "t", "y", "1"):
         return True
-    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+    elif v.lower() in ("no", "false", "f", "n", "0"):
         return False
     else:
-        raise argparse.ArgumentTypeError('Boolean value expected.')
+        raise argparse.ArgumentTypeError("Boolean value expected.")

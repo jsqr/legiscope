@@ -40,9 +40,7 @@ class TestQueryInput:
     def test_query_input_full(self):
         """Test with all fields."""
         query = QueryInput(
-            question="Test question",
-            variable_name="test_var",
-            metadata={"priority": 1}
+            question="Test question", variable_name="test_var", metadata={"priority": 1}
         )
         assert query.question == "Test question"
         assert query.variable_name == "test_var"
@@ -54,15 +52,17 @@ class TestLoadQueries:
 
     def test_load_queries_basic(self):
         """Test basic loading of queries from CSV."""
-        df = pl.DataFrame({
-            "question": ["Question 1", "Question 2"],
-            "variable_name": ["var1", "var2"]
-        })
-        
+        df = pl.DataFrame(
+            {
+                "question": ["Question 1", "Question 2"],
+                "variable_name": ["var1", "var2"],
+            }
+        )
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             df.write_csv(f.name)
             temp_path = f.name
-            
+
         try:
             queries = load_queries(temp_path, adjust_for_dataset=False)
             assert len(queries) == 2
@@ -75,14 +75,12 @@ class TestLoadQueries:
 
     def test_load_queries_missing_column(self):
         """Test error when question column is missing."""
-        df = pl.DataFrame({
-            "wrong_column": ["value"]
-        })
-        
+        df = pl.DataFrame({"wrong_column": ["value"]})
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             df.write_csv(f.name)
             temp_path = f.name
-            
+
         try:
             with pytest.raises(ValueError, match="must contain a 'question' column"):
                 load_queries(temp_path)
@@ -91,14 +89,12 @@ class TestLoadQueries:
 
     def test_load_queries_filter_empty(self):
         """Test filtering of empty questions."""
-        df = pl.DataFrame({
-            "question": ["Q1", None, "", "   ", "Q2"]
-        })
-        
+        df = pl.DataFrame({"question": ["Q1", None, "", "   ", "Q2"]})
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             df.write_csv(f.name)
             temp_path = f.name
-            
+
         try:
             queries = load_queries(temp_path, adjust_for_dataset=False)
             assert len(queries) == 2
@@ -106,20 +102,22 @@ class TestLoadQueries:
             assert queries[1].question == "Q2"
         finally:
             os.unlink(temp_path)
-            
+
     def test_load_queries_metadata(self):
         """Test that extra columns are captured as metadata."""
-        df = pl.DataFrame({
-            "question": ["Q1"],
-            "variable_name": ["v1"],
-            "category": ["general"],
-            "priority": [1]
-        })
-        
+        df = pl.DataFrame(
+            {
+                "question": ["Q1"],
+                "variable_name": ["v1"],
+                "category": ["general"],
+                "priority": [1],
+            }
+        )
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             df.write_csv(f.name)
             temp_path = f.name
-            
+
         try:
             queries = load_queries(temp_path, adjust_for_dataset=False)
             assert len(queries) == 1
@@ -131,15 +129,17 @@ class TestLoadQueries:
     def test_load_queries_dataset_adjustment(self):
         """Test dataset specific adjustments for drug paraphernalia."""
         # Case 1: Trigger context addition
-        df = pl.DataFrame({
-            "question": ["Is drug paraphernalia allowed?", "Other question"],
-            "variable_name": ["q1", "q2"]
-        })
-        
+        df = pl.DataFrame(
+            {
+                "question": ["Is drug paraphernalia allowed?", "Other question"],
+                "variable_name": ["q1", "q2"],
+            }
+        )
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             df.write_csv(f.name)
             temp_path = f.name
-            
+
         try:
             queries = load_queries(temp_path, adjust_for_dataset=True)
             # Should have prepended context
@@ -147,18 +147,20 @@ class TestLoadQueries:
             assert "ordinance that prohibits drug paraphernalia" in queries[1].question
         finally:
             os.unlink(temp_path)
-            
+
     def test_load_queries_exclusions(self):
         """Test exclusion of specific variable names."""
-        df = pl.DataFrame({
-            "question": ["drug paraphernalia Q1", "Q2", "Q3", "Q4"],
-            "variable_name": ["normal", "dp_database", "dp_url", "dp_note"]
-        })
-        
+        df = pl.DataFrame(
+            {
+                "question": ["drug paraphernalia Q1", "Q2", "Q3", "Q4"],
+                "variable_name": ["normal", "dp_database", "dp_url", "dp_note"],
+            }
+        )
+
         with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
             df.write_csv(f.name)
             temp_path = f.name
-            
+
         try:
             queries = load_queries(temp_path, adjust_for_dataset=True)
             # Should filter out the 3 specific vars
@@ -340,7 +342,7 @@ class TestValidateSupportingPassages:
 
         segments = [
             SegmentMatch(
-                segment_idx=i,
+                segment_id=str(i),
                 segment_text=text,
                 distance=0.1,
                 segment_position=i,
@@ -352,11 +354,11 @@ class TestValidateSupportingPassages:
 
         return [
             SectionResult(
-                section_idx=0,
+                section_id="s0",
                 heading_text="Test Section",
                 body_text=body_text,
                 heading_level=1,
-                parent=None,
+                parent_id=None,
                 matching_segments=segments,
                 relevance_score=0.9,
                 segment_count=len(segments),
@@ -542,6 +544,8 @@ class TestValidateSupportingPassages:
         assert "validated (exact match)" in caplog.text
         assert "HALLUCINATION WARNING" not in caplog.text
         assert "NOT FOUND" not in caplog.text
+
+
 class TestPrepareLegalContext:
     """Test _prepare_legal_context function."""
 
@@ -549,45 +553,45 @@ class TestPrepareLegalContext:
         """Test that body text is truncated to 1000 words."""
         # Create 1500 word text
         body_text = " ".join(["word"] * 1500)
-        
+
         section = SectionResult(
-            section_idx=1,
+            section_id="s1",
             heading_text="Section 1",
             body_text=body_text,
             heading_level=1,
-            parent=None,
+            parent_id=None,
             matching_segments=[],
             relevance_score=0.9,
-            segment_count=1
+            segment_count=1,
         )
-        
+
         context = _prepare_legal_context([section])
-        
+
         # Should contain "... [content truncated]"
         assert "... [content truncated]" in context
-        
+
     def test_matching_segments_included(self):
         """Test that matching segments are included."""
         section = SectionResult(
-            section_idx=1,
+            section_id="s1",
             heading_text="Section 1",
             body_text="Start body. End body.",
             heading_level=1,
-            parent=None,
+            parent_id=None,
             matching_segments=[
                 SegmentMatch(
-                    segment_idx=1,
+                    segment_id="g1",
                     segment_text="Relevant segment here.",
                     distance=0.2,
-                    segment_position=0
+                    segment_position=0,
                 )
             ],
             relevance_score=0.9,
-            segment_count=1
+            segment_count=1,
         )
-        
+
         context = _prepare_legal_context([section])
-        
+
         assert "Matching Passages (1):" in context
         assert "Relevant segment here." in context
         assert "(score: 0.200)" in context
@@ -727,7 +731,7 @@ class TestBatchQueryConfig:
         """Test default values for new parameters."""
         mock_llm = Mock(spec=LLMConfig)
         settings = BatchQuerySettings(llm=mock_llm)
-        
+
         assert settings.n_results == 10
         assert settings.use_hyde is False
         assert settings.filter_relevance is False
@@ -743,9 +747,9 @@ class TestBatchQueryConfig:
             use_hyde=True,
             filter_relevance=True,
             relevance_threshold=0.8,
-            validate_supporting_passages=False
+            validate_supporting_passages=False,
         )
-        
+
         assert settings.n_results == 20
         assert settings.use_hyde is True
         assert settings.filter_relevance is True
@@ -764,11 +768,11 @@ class TestQueryConfigBasics:
         retrieval_results = SectionCollection(
             sections=[
                 SectionResult(
-                    section_idx=0,
+                    section_id="s0",
                     heading_text="# Parking Regulations",
                     body_text="No parking between 2am and 6am",
                     heading_level=1,
-                    parent=None,
+                    parent_id=None,
                     matching_segments=[],
                     relevance_score=0.1,
                     segment_count=1,
@@ -808,11 +812,11 @@ class TestQueryConfigBasics:
         mock_client = Mock(spec=Instructor)
 
         section = SectionResult(
-            section_idx=0,
+            section_id="s0",
             heading_text="# Test Section",
             body_text="Test content",
             heading_level=1,
-            parent=None,
+            parent_id=None,
             matching_segments=[],
             relevance_score=0.1,
             segment_count=1,
@@ -856,11 +860,11 @@ class TestBatchQueryConfigBasics:
 
         # Create test sections parquet
         sections_data = {
-            "section_idx": [0],
+            "section_ordinal": [0],
             "heading_text": ["# Test"],
             "body_text": ["Content"],
             "heading_level": [1],
-            "parent": [None],
+            "parent_id": [None],
         }
         sections_df = pl.DataFrame(sections_data)
         sections_path = tmp_path / "sections.parquet"
@@ -873,7 +877,7 @@ class TestBatchQueryConfigBasics:
             "metadatas": [
                 [
                     {
-                        "section_ref": 0,
+                        "section_ordinal": 0,
                         "segment_position": 0,
                         "section_heading": "# Test",
                         "section_level": 1,

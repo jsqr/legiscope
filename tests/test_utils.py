@@ -6,7 +6,13 @@ import os
 from unittest.mock import Mock, patch
 from pydantic import BaseModel
 
-from legiscope.utils import ask, str2bool, LLMConfig, create_jurisdiction_structure, resolve_model_default
+from legiscope.utils import (
+    ask,
+    str2bool,
+    LLMConfig,
+    create_jurisdiction_structure,
+    resolve_model_default,
+)
 
 
 class MockResponseModel(BaseModel):
@@ -128,50 +134,56 @@ class TestAskFunction:
 class TestStr2Bool:
     """Test str2bool function."""
 
-    @pytest.mark.parametrize("value,expected", [
-        (True, True),
-        (False, False),
-        ("true", True),
-        ("True", True),
-        ("TRUE", True),
-        ("t", True),
-        ("T", True),
-        ("yes", True),
-        ("YES", True),
-        ("y", True),
-        ("Y", True),
-        ("1", True),
-        ("false", False),
-        ("False", False),
-        ("FALSE", False),
-        ("f", False),
-        ("F", False),
-        ("no", False),
-        ("NO", False),
-        ("n", False),
-        ("N", False),
-        ("0", False),
-    ])
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("True", True),
+            ("TRUE", True),
+            ("t", True),
+            ("T", True),
+            ("yes", True),
+            ("YES", True),
+            ("y", True),
+            ("Y", True),
+            ("1", True),
+            ("false", False),
+            ("False", False),
+            ("FALSE", False),
+            ("f", False),
+            ("F", False),
+            ("no", False),
+            ("NO", False),
+            ("n", False),
+            ("N", False),
+            ("0", False),
+        ],
+    )
     def test_valid_inputs(self, value, expected):
         """Test valid boolean string representations."""
         assert str2bool(value) == expected
 
-    @pytest.mark.parametrize("value", [
-        "maybe",
-        "2",
-        "foo",
-        "",
-        None,
-    ])
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "maybe",
+            "2",
+            "foo",
+            "",
+            None,
+        ],
+    )
     def test_invalid_inputs(self, value):
         """Test invalid inputs raise ArgumentTypeError (if user provided) or TypeError."""
         # argparse would catch this in real usage, but str2bool raises ArgumentTypeError
         # or AttributeError if not string/bool.
         if value is None:
-             # This depends on implementation if it expects strict string
-             # The implementation uses v.lower() so it will raise AttributeError for None
-             with pytest.raises(AttributeError):
-                 str2bool(value)
+            # This depends on implementation if it expects strict string
+            # The implementation uses v.lower() so it will raise AttributeError for None
+            with pytest.raises(AttributeError):
+                str2bool(value)
         else:
             with pytest.raises(argparse.ArgumentTypeError):
                 str2bool(value)
@@ -298,8 +310,12 @@ class TestCreateJurisdictionStructure:
             base_path = os.path.join("data", "laws", "IL-WindyCity")
             mock_makedirs.assert_any_call(base_path, exist_ok=True)
             mock_makedirs.assert_any_call(os.path.join(base_path, "raw"), exist_ok=True)
-            mock_makedirs.assert_any_call(os.path.join(base_path, "processed"), exist_ok=True)
-            mock_makedirs.assert_any_call(os.path.join(base_path, "tables"), exist_ok=True)
+            mock_makedirs.assert_any_call(
+                os.path.join(base_path, "processed"), exist_ok=True
+            )
+            mock_makedirs.assert_any_call(
+                os.path.join(base_path, "tables"), exist_ok=True
+            )
 
     def test_empty_inputs(self):
         """Test validation of empty inputs."""
@@ -314,8 +330,12 @@ class TestCreateJurisdictionStructure:
         with pytest.raises(ValueError, match="State must contain only alphanumeric"):
             create_jurisdiction_structure("CA!", "LosAngeles")
 
-        with pytest.raises(ValueError, match="Municipality must contain only alphanumeric"):
-            create_jurisdiction_structure("CA", "Los Angeles!")  # spaces not allowed in validation logic?
+        with pytest.raises(
+            ValueError, match="Municipality must contain only alphanumeric"
+        ):
+            create_jurisdiction_structure(
+                "CA", "Los Angeles!"
+            )  # spaces not allowed in validation logic?
             # actually logic says: municipality.strip().replace(" ", "") then check isalnum
             # So "Los Angeles" is valid. "Los Angeles!" is invalid.
 
@@ -349,4 +369,3 @@ class TestResolveModelDefault:
 
         assert resolve_model_default(None, use_fast=False) == "powerful-model"
         mock_get_powerful.assert_called_once()
-

@@ -139,7 +139,7 @@ class TestEnvironmentVariables:
         """Test Ollama context window parameter."""
         os.environ["LEGISCOPE_LLM_PROVIDER"] = "ollama"
         os.environ["LEGISCOPE_OLLAMA_NUM_CTX"] = "8192"
-        
+
         params = Config.get_llm_params()
         assert "extra_body" in params
         assert params["extra_body"]["num_ctx"] == 8192
@@ -148,7 +148,7 @@ class TestEnvironmentVariables:
         """Test invalid Ollama context window parameter."""
         os.environ["LEGISCOPE_LLM_PROVIDER"] = "ollama"
         os.environ["LEGISCOPE_OLLAMA_NUM_CTX"] = "invalid"
-        
+
         # Should log warning but not crash, and not set extra_body
         params = Config.get_llm_params()
         assert "extra_body" not in params
@@ -156,15 +156,15 @@ class TestEnvironmentVariables:
     def test_unsupported_provider_error(self):
         """Test error for unsupported provider."""
         os.environ["LEGISCOPE_LLM_PROVIDER"] = "unsupported"
-        
+
         with pytest.raises(ValueError, match="Unsupported LLM provider"):
             Config.get_fast_client()
-            
+
         with pytest.raises(ValueError, match="Unsupported LLM provider"):
             Config.get_powerful_client()
-            
+
         with pytest.raises(ValueError, match="Unsupported LLM provider"):
             Config.get_fast_model()
-            
+
         with pytest.raises(ValueError, match="Unsupported LLM provider"):
             Config.get_powerful_model()

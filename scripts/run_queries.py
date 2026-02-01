@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
 Run multiple queries against legal code database.
+
+Usage:
+    python scripts/run_queries.py --state CA --municipality LosAngeles --code-slug municipal-code --queries-path queries.csv
+    python scripts/run_queries.py --state CA --code-slug penal-code --queries-path queries.csv
 """
 
 import argparse
@@ -24,17 +28,29 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from legiscope.llm_config import Config
+from legiscope.models import CodeRef, JurisdictionRef
 from legiscope.utils import LLMConfig, str2bool
 from legiscope.query import BatchQuerySettings, run_queries, load_queries
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run batch queries against legal code")
-    parser.add_argument(
-        "--queries-path", required=True, help="Path to queries text file"
+    parser = argparse.ArgumentParser(
+        description="Run batch queries against legal code",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s --state CA --municipality LosAngeles --code-slug municipal-code --queries-path queries.csv
+  %(prog)s --state CA --code-slug penal-code --queries-path queries.csv
+        """,
     )
+    parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
     parser.add_argument(
-        "--jurisdiction-id", required=True, help="Jurisdiction ID")
+        "--municipality", default=None, help="Municipality name (omit for state-level)"
+    )
+    parser.add_argument("--code-slug", required=True, help="Code slug identifier")
+    parser.add_argument(
+        "--queries-path", required=True, help="Path to queries CSV file"
+    )
     parser.add_argument(
         "--collection-name",
         default=os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_all"),
@@ -44,59 +60,61 @@ def main():
         "--output", default="data/output/query_results.csv", help="Output file path"
     )
     parser.add_argument(
-        "--n-results", 
-        type=int, 
-        default=10, 
-        help="Number of embedding segments to retrieve per query"
+        "--n-results",
+        type=int,
+        default=10,
+        help="Number of embedding segments to retrieve per query",
     )
     parser.add_argument(
         "--use-hyde",
         type=str2bool,
-        nargs='?',
+        nargs="?",
         const=True,
         default=False,
-        help="Enable HYDE query rewriting (default: False). Can be passed as '--use-hyde True/False'"
+        help="Enable HYDE query rewriting (default: False)",
     )
     parser.add_argument(
         "--filter-relevance",
         type=str2bool,
-        nargs='?',
+        nargs="?",
         const=True,
         default=True,
-        help="Enable LLM-based relevance filtering (default: True). Can be passed as '--filter-relevance True/False'"
+        help="Enable LLM-based relevance filtering (default: True)",
     )
     parser.add_argument(
         "--relevance-threshold",
         type=float,
         default=0.5,
-        help="Threshold for relevance filtering (0.0-1.0, default: 0.5)"
+        help="Threshold for relevance filtering (0.0-1.0, default: 0.5)",
     )
     parser.add_argument(
         "--validate-supporting-passages",
         type=str2bool,
-        nargs='?',
+        nargs="?",
         const=True,
         default=True,
-        help="Enable validation of supporting passages against retrieved text (default: True). Can be passed as '--validate-supporting-passages True/False'"
+        help="Enable validation of supporting passages against retrieved text (default: True)",
     )
 
     args = parser.parse_args()
 
+    jurisdiction = JurisdictionRef(state=args.state, municipality=args.municipality)
+    code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
+
     # Load queries using shared library function
-    # This automatically handles dataset-specific formatting and structured input
     queries = load_queries(args.queries_path)
     print(f"Loaded {len(queries)} queries from {args.queries_path}")
 
-    sections_parquet_path = f"data/laws/{args.jurisdiction_id}/tables/sections.parquet"
+    sections_parquet_path = code_ref.full_data_dir / "sections.parquet"
     chromadb_path = "./data/chroma_db"
-    
+
     chroma_client = chromadb.PersistentClient(path=chromadb_path)
     collection = chroma_client.get_collection(args.collection_name)
 
     # Create LLM config and settings
     llm_config = LLMConfig(
-        client=Config.get_powerful_client(), 
-        model=Config.get_powerful_model()
+        client=Config.get_powerful_client(),
+        model=Config.get_powerful_model(),
     )
     settings = BatchQuerySettings(
         llm=llm_config,
@@ -104,16 +122,15 @@ def main():
         use_hyde=args.use_hyde,
         filter_relevance=args.filter_relevance,
         relevance_threshold=args.relevance_threshold,
-        validate_supporting_passages=args.validate_supporting_passages
+        validate_supporting_passages=args.validate_supporting_passages,
     )
 
-    # Run queries with new API
-    # run_queries now accepts list[QueryInput] directly
+    # Run queries
     results_df = run_queries(
         collection=collection,
-        sections_parquet_path=sections_parquet_path,
+        sections_parquet_path=str(sections_parquet_path),
         queries=queries,
-        jurisdiction_id=args.jurisdiction_id,
+        jurisdiction_id=code_ref.jurisdiction_id,
         settings=settings,
     )
 
