@@ -148,28 +148,52 @@ make fix
 
 ### Processing Municipal Codes
 
-To process a new municipal code from DOCX files to searchable embeddings:
+The pipeline is split into independent stages for flexibility:
+
+#### Stage 1: Initialize
+Creates directory structure for a new jurisdiction:
 
 ```bash
-# Basic usage (without queries)
-./scripts/pipeline.sh NY "New York"
-
-# With queries
-./scripts/pipeline.sh NY "New York" data/queries/example_queries.txt
-
-# Using Makefile
-make pipeline STATE=NY MUNICIPALITY="New York"
-make pipeline STATE=NY MUNICIPALITY="New York" QUERIES=data/queries/example_queries.txt
+make init STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+# Creates: data/laws/CA/LosAngeles/municipal-code/raw/
 ```
 
-The pipeline performs these steps automatically:
+After initialization, place your raw files (DOCX, TXT, etc.) in the `raw/` directory.
 
-1. Creates directory structure for the jurisdiction
-2. Converts DOCX files to plain text (if present)
-3. Converts text to structured Markdown with headings
-4. Segments the code into searchable sections
-5. Generates embeddings for semantic search
-6. Runs queries against the legal code (optional, if queries file provided)
+#### Stage 2: Parse
+Converts raw files to structured Markdown:
+
+```bash
+make parse STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+# Converts DOCX → text → Markdown
+# Output: code.md
+```
+
+#### Stage 3: Process
+Creates embeddings and builds search index:
+
+```bash
+make process STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+# Segments code, generates embeddings, builds ChromaDB index
+# Outputs: sections.parquet, segments.parquet, embeddings.parquet
+```
+
+#### Stage 4: Query (Optional)
+Runs batch queries against the processed code:
+
+```bash
+make query STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
+# Output: data/output/query_results.csv
+```
+
+#### State-level codes
+For state-level codes (not municipal), omit the MUNICIPALITY parameter or use a hyphen:
+
+```bash
+make init STATE=CA CODE_SLUG=penal-code
+make parse STATE=CA CODE_SLUG=penal-code
+make process STATE=CA CODE_SLUG=penal-code
+```
 
 ### Running Queries
 

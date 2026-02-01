@@ -273,19 +273,25 @@ uv pip list
 
 ### Pipeline Commands
 
+The pipeline is split into 4 independent stages:
+
 ```bash
-# Run complete pipeline for a local code
-make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+# Stage 1: Initialize (create directory structure)
+make init STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
 
-# Run complete pipeline for a state-level code
-make pipeline STATE=CA CODE_SLUG=penal-code
+# Stage 2: Parse (convert raw files to Markdown)
+make parse STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
 
-# With queries
-make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
+# Stage 3: Process (create embeddings and build index)
+make process STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
 
-# Or manually:
-./scripts/pipeline.sh CA LosAngeles municipal-code
-./scripts/pipeline.sh CA - penal-code  # use '-' for state-level
+# Stage 4: Query (run queries, optional)
+make query STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
+
+# For state-level codes, omit MUNICIPALITY:
+make init STATE=CA CODE_SLUG=penal-code
+make parse STATE=CA CODE_SLUG=penal-code
+make process STATE=CA CODE_SLUG=penal-code
 ```
 
 ### Benchmarking
@@ -345,7 +351,10 @@ uv run python scripts/run_queries.py \
 │       └── eval.py      # Evaluation and benchmarking logic
 ├── tests/               # Test files
 ├── scripts/             # Utility scripts
-│   ├── pipeline.sh          # End-to-end processing pipeline
+│   ├── pipeline_init.sh       # Stage 1: Initialize jurisdiction
+│   ├── pipeline_parse.sh      # Stage 2: Parse raw files to Markdown
+│   ├── pipeline_process.sh    # Stage 3: Create embeddings and index
+│   ├── pipeline_query.sh      # Stage 4: Run queries
 │   ├── create_jurisdiction.py # Register jurisdiction and create directory structure
 │   ├── convert_to_markdown.py # Convert raw text to structured Markdown
 │   ├── segment_legal_code.py  # Segment Markdown into sections and segments

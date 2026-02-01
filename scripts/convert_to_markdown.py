@@ -40,16 +40,19 @@ def convert_to_markdown(code_ref: CodeRef) -> None:
         print(f"Error: Missing raw subdirectory: {raw_dir}")
         sys.exit(1)
 
-    # Find input text file in raw/
-    input_path = raw_dir / "code.txt"
+    # Find input text file - check code directory first, then raw/
+    input_path = code_dir / "code.txt"
     if not input_path.exists():
-        txt_files = list(raw_dir.glob("*.txt"))
-        if txt_files:
-            input_path = txt_files[0]
-            print(f"Using: {input_path.name}")
-        else:
-            print(f"Error: No .txt files found in {raw_dir}")
-            sys.exit(1)
+        # Fallback to checking raw/ directory
+        input_path = raw_dir / "code.txt"
+        if not input_path.exists():
+            txt_files = list(raw_dir.glob("*.txt"))
+            if txt_files:
+                input_path = txt_files[0]
+                print(f"Using: {input_path.name}")
+            else:
+                print(f"Error: No .txt files found in {raw_dir} or {code_dir}")
+                sys.exit(1)
 
     print(f"Converting {code_ref.code_id}...")
 

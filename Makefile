@@ -1,4 +1,4 @@
-.PHONY: help env clean-env test test-cov lint format fix list clean install pipeline
+.PHONY: help env clean-env test test-cov lint format fix list clean install init parse process query
 
 # Default target
 help:
@@ -13,7 +13,10 @@ help:
 	@echo "  list       - Show installed packages"
 	@echo "  clean      - Clean build artifacts"
 	@echo "  install    - Install package in development mode"
-	@echo "  pipeline   - Run complete jurisdiction processing pipeline"
+	@echo "  init       - Initialize jurisdiction directory structure"
+	@echo "  parse      - Convert raw files to structured Markdown"
+	@echo "  process    - Create embeddings and build search index"
+	@echo "  query      - Run queries against processed codes"
 
 # Environment management
 env:
@@ -72,21 +75,35 @@ install:
 	@uv sync
 	@echo "Installation complete."
 
-# Pipeline
-pipeline:
+# Pipeline stages
+init:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
-		echo "Usage: make pipeline STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles] [QUERIES=path/to/queries.csv]"; \
+		echo "Usage: make init STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
 		echo "  Omit MUNICIPALITY for state-level codes."; \
-		echo ""; \
-		echo "Examples:"; \
-		echo "  make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code"; \
-		echo "  make pipeline STATE=CA CODE_SLUG=penal-code"; \
-		echo "  make pipeline STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=queries.csv"; \
 		exit 1; \
 	fi
-	@echo "Running complete pipeline for $(STATE) $(CODE_SLUG)..."
-	@if [ -n "$(QUERIES)" ]; then \
-		./scripts/pipeline.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)" "$(QUERIES)"; \
-	else \
-		./scripts/pipeline.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"; \
+	@./scripts/pipeline_init.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+
+parse:
+	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
+		echo "Usage: make parse STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
+		echo "  Omit MUNICIPALITY for state-level codes."; \
+		exit 1; \
 	fi
+	@./scripts/pipeline_parse.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+
+process:
+	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
+		echo "Usage: make process STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
+		echo "  Omit MUNICIPALITY for state-level codes."; \
+		exit 1; \
+	fi
+	@./scripts/pipeline_process.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+
+query:
+	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ] || [ -z "$(QUERIES)" ]; then \
+		echo "Usage: make query STATE=CA CODE_SLUG=municipal-code QUERIES=path/to/queries.csv [MUNICIPALITY=LosAngeles]"; \
+		echo "  Omit MUNICIPALITY for state-level codes."; \
+		exit 1; \
+	fi
+	@./scripts/pipeline_query.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)" "$(QUERIES)"
