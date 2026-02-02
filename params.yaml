@@ -1,65 +1,71 @@
 # Pipeline parameters tracked by DVC
 # Changes here trigger pipeline reruns
 
+# Jurisdiction targeting (override via: dvc exp run -S jurisdiction.state=CA ...)
+jurisdiction:
+    state: "IL"
+    municipality: "WindyCity"
+    code_slug: "municipal-code"
+
 # LLM configuration
 llm:
-  default_provider: "mistral"
+    default_provider: "mistral"
 
-  providers:
-    openai:
-      fast: "gpt-4.1-mini"
-      powerful: "gpt-4.1"
+    providers:
+        openai:
+            fast: "gpt-4.1-mini"
+            powerful: "gpt-4.1"
 
-    mistral:
-      fast: "mistral-small-2506"
-      powerful: "mistral-large-2512"
+        mistral:
+            fast: "mistral-small-2506"
+            powerful: "mistral-large-2512"
 
-    ollama:
-      fast: "qwen3:8b"
-      powerful: "qwen3:30b"
-      num_ctx: null
+        ollama:
+            fast: "qwen3:8b"
+            powerful: "qwen3:30b"
+            num_ctx: null
 
-  temperature: 0.0
-  max_retries: 3
-  timeout: 300
+    temperature: 0.0
+    max_retries: 3
+    timeout: 300
 
 # Embedding configuration
 embeddings:
-  default_provider: "ollama"
+    default_provider: "ollama"
 
-  providers:
-    mistral:
-      model: "mistral-embed"
-      batch_size: 100
+    providers:
+        mistral:
+            model: "mistral-embed"
+            batch_size: 100
 
-    ollama:
-      model: "embeddinggemma"
-      batch_size: null
+        ollama:
+            model: "embeddinggemma"
+            batch_size: null
 
-  dtype: "float32"
+    dtype: "float32"
 
 # Segmentation settings
 segmentation:
-  token_limit: 256
-  words_per_token: 0.75
+    token_limit: 256
+    words_per_token: 0.75
 
 # Retrieval settings
 retrieval:
-  n_results: 10
+    n_results: 10
 
-  hyde:
-    enabled: false
+    hyde:
+        enabled: false
 
-  relevance:
-    enabled: false
-    threshold: 0.5
+    relevance:
+        enabled: false
+        threshold: 0.5
 
 # Query settings
 query:
-  filter_relevance: false
-  relevance_threshold: 0.5
+    filter_relevance: false
+    relevance_threshold: 0.5
 
-  validation:
-    enabled: true
-    exact_match_threshold: 1.0
-    fuzzy_match_threshold: 0.9
+    validation:
+        enabled: true
+        exact_match_threshold: 1.0
+        fuzzy_match_threshold: 0.9

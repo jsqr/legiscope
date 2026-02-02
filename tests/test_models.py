@@ -16,7 +16,6 @@ from legiscope.models import (
     JurisdictionRef,
 )
 
-
 # ---------------------------------------------------------------------------
 # JurisdictionRef
 # ---------------------------------------------------------------------------
@@ -133,6 +132,46 @@ class TestCodeRef:
         c = CodeRef(jurisdiction=j, code_slug="penal-code")
         with pytest.raises(AttributeError):
             c.code_slug = "other"
+
+
+class TestCodeRefFromDvcVars:
+    def test_basic_local(self):
+        ref = CodeRef.from_dvc_vars(
+            state="CA", municipality="LosAngeles", code_slug="mc"
+        )
+        assert ref.jurisdiction.state == "CA"
+        assert ref.jurisdiction.municipality == "LosAngeles"
+        assert ref.jurisdiction.level == "local"
+
+    def test_state_sentinel_normalised_to_none(self):
+        """'State' municipality sentinel is normalised to None."""
+        ref = CodeRef.from_dvc_vars(
+            state="CA", municipality="State", code_slug="penal-code"
+        )
+        assert ref.jurisdiction.municipality is None
+        assert ref.jurisdiction.level == "state"
+        assert ref.jurisdiction_id == "CA"
+        assert str(ref.data_dir) == "CA/State/penal-code"
+
+    def test_state_sentinel_with_whitespace(self):
+        ref = CodeRef.from_dvc_vars(
+            state="CA", municipality="  State  ", code_slug="pc"
+        )
+        assert ref.jurisdiction.municipality is None
+        assert ref.jurisdiction.level == "state"
+
+    def test_none_municipality(self):
+        ref = CodeRef.from_dvc_vars(state="CA", municipality=None, code_slug="pc")
+        assert ref.jurisdiction.municipality is None
+        assert ref.jurisdiction.level == "state"
+
+    def test_missing_state_raises(self):
+        with pytest.raises(ValueError, match="state is required"):
+            CodeRef.from_dvc_vars(state=None, code_slug="pc")
+
+    def test_missing_code_slug_raises(self):
+        with pytest.raises(ValueError, match="code_slug is required"):
+            CodeRef.from_dvc_vars(state="CA", code_slug=None)
 
 
 # ---------------------------------------------------------------------------

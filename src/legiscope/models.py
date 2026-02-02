@@ -195,13 +195,19 @@ class CodeRef:
     ) -> "CodeRef":
         """Create a ``CodeRef`` from DVC pipeline variables.
 
-        DVC stages pass ``${item.state}``, ``${item.municipality}``, and
-        ``${item.code_slug}`` as CLI arguments.  This factory mirrors that
-        convention and raises :class:`ValueError` for any missing field.
+        DVC stages pass ``${jurisdiction.state}``,
+        ``${jurisdiction.municipality}``, and ``${jurisdiction.code_slug}``
+        as CLI arguments.  This factory mirrors that convention and raises
+        :class:`ValueError` for any missing field.
+
+        The sentinel value ``"State"`` for *municipality* is normalised to
+        ``None`` so that DVC pipelines (which cannot omit an interpolated
+        argument) can represent state-level codes.
 
         Args:
             state: Two-letter state abbreviation.
-            municipality: Municipality name (``None`` for state-level codes).
+            municipality: Municipality name, ``"State"`` for state-level,
+                or ``None``.
             code_slug: URL-friendly code identifier.
 
         Returns:
@@ -211,6 +217,9 @@ class CodeRef:
             raise ValueError("state is required")
         if not code_slug:
             raise ValueError("code_slug is required")
+        # Normalise the DVC sentinel: "State" means state-level (no municipality)
+        if municipality is not None and municipality.strip() == "State":
+            municipality = None
         jurisdiction = JurisdictionRef(state=state, municipality=municipality)
         return cls(jurisdiction=jurisdiction, code_slug=code_slug)
 
