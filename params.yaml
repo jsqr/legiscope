@@ -1,0 +1,65 @@
+# Pipeline parameters tracked by DVC
+# Changes here trigger pipeline reruns
+
+# LLM configuration
+llm:
+  default_provider: "mistral"
+
+  providers:
+    openai:
+      fast: "gpt-4.1-mini"
+      powerful: "gpt-4.1"
+
+    mistral:
+      fast: "mistral-small-2506"
+      powerful: "mistral-large-2512"
+
+    ollama:
+      fast: "qwen3:8b"
+      powerful: "qwen3:30b"
+      num_ctx: null
+
+  temperature: 0.0
+  max_retries: 3
+  timeout: 300
+
+# Embedding configuration
+embeddings:
+  default_provider: "ollama"
+
+  providers:
+    mistral:
+      model: "mistral-embed"
+      batch_size: 100
+
+    ollama:
+      model: "embeddinggemma"
+      batch_size: null
+
+  dtype: "float32"
+
+# Segmentation settings
+segmentation:
+  token_limit: 256
+  words_per_token: 0.75
+
+# Retrieval settings
+retrieval:
+  n_results: 10
+
+  hyde:
+    enabled: false
+
+  relevance:
+    enabled: false
+    threshold: 0.5
+
+# Query settings
+query:
+  filter_relevance: false
+  relevance_threshold: 0.5
+
+  validation:
+    enabled: true
+    exact_match_threshold: 1.0
+    fuzzy_match_threshold: 0.9

@@ -19,12 +19,12 @@ PROVIDER_CONFIG = {
     },
     "mistral": {
         "fast_model": "mistral-small-2506",
-        "powerful_model": "mistral-medium-2508",
+        "powerful_model": "mistral-large-2512",
         "mode": instructor.Mode.MISTRAL_TOOLS,
     },
     "ollama": {
-        "fast_model": "ministral-3",
-        "powerful_model": "ministral-3:14b",
+        "fast_model": "qwen3:8b",
+        "powerful_model": "qwen3:30b",
         "mode": None,  # Ollama auto-configures the best mode
     },
 }

@@ -127,11 +127,11 @@ results_df = run_queries(
 
 **Mistral Provider:**
 - Fast model: `mistral-small-2506` (for quick tasks)
-- Powerful model: `mistral-medium-2508` (for complex reasoning)
+- Powerful model: `mistral-large-2512` (for complex reasoning)
 
 **Ollama Provider:**
-- Fast model: `ministral-3` (for quick local tasks)
-- Powerful model: `ministral-3:14b` (for complex local reasoning)
+- Fast model: `qwen3:8b` (for quick local tasks)
+- Powerful model: `qwen3:30b` (for complex local reasoning)
 - Requires Ollama server running locally
 
 #### Example Setup
