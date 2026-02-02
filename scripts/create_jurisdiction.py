@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: Use the pipeline module instead:
+    python -m legiscope.pipeline.init --state STATE --locality LOCALITY \\
+        --code-slug SLUG --name "Display Name"
+
 Command-line script to create jurisdiction and code directory structures,
 and register them in the global Parquet registries.
 """

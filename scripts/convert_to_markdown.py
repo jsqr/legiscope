@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: Use the DVC pipeline instead:
+    ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG --stage parse
+
 Convert jurisdiction legal text files to Markdown.
 
 Usage:

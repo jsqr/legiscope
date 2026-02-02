@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# DEPRECATED: Use the DVC pipeline instead:
+#   ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG
+#
 # pipeline_process.sh - Create embeddings and build search index
 # Segments code, creates embeddings, and builds ChromaDB index
 

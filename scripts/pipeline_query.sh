@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# DEPRECATED: Use scripts/run_queries.py directly instead.
+# Query execution is not a DVC stage.
+#
 # pipeline_query.sh - Run queries against processed codes
 # Executes batch queries and saves results
 

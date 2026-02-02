@@ -142,37 +142,37 @@ export OPENAI_API_KEY=your_openai_key
 export MISTRAL_API_KEY=your_mistral_key
 
 # To change the default provider, edit params.yaml:
-#   llm.default_provider: "openai"  (or "mistral", "ollama")
+#   llm.default_provider: "mistral"  (or "openai", "ollama")
 
 # For Ollama (local), ensure server is running: ollama serve
 ```
 
 ### Embedding Model Configuration
 
-The project supports multiple embedding models for generating text embeddings. The default provider is Mistral.
+The project supports multiple embedding models for generating text embeddings. The default provider is Ollama.
 
 #### Current Configuration
 
-**Mistral with mistral-embed (default)**
+**Ollama with embeddinggemma (default)**
+- Uses local Ollama server
+- Model: `embeddinggemma`
+- Client: `get_embedding_client("ollama")`
+- Requires: Ollama server running locally (`ollama serve`)
+
+#### Alternative Configuration
+
+**Mistral with mistral-embed**
 - Uses Mistral's API
 - Model: `mistral-embed`
 - Client: `get_embedding_client("mistral")`
 - Requires: `MISTRAL_API_KEY` environment variable
-
-#### Alternative Configuration
-
-**Ollama with embeddinggemma**
-- Uses local Ollama server
-- Model: `embeddinggemma`
-- Client: `get_embedding_client("ollama")`
-- Auto-detected provider and model
 
 #### Switching Between Embedding Models
 
 To switch between embedding providers, edit `params.yaml`:
 ```yaml
 embeddings:
-  default_provider: "mistral"  # or "ollama"
+  default_provider: "ollama"  # or "mistral"
 ```
 
 Use the embedding interface:
@@ -204,7 +204,7 @@ embeddings = get_embeddings(client, texts)
 embeddings = get_embeddings(client, texts, model="mistral-embed", provider="mistral")
 
 # Using with EmbeddingConfig
-config = EmbeddingConfig(provider="mistral")  # Uses default mistral-embed model
+config = EmbeddingConfig(provider="ollama")  # Uses default embeddinggemma model
 client = get_embedding_client(config.provider)
 ```
 
@@ -264,26 +264,39 @@ uv pip list
 
 ### Pipeline Commands
 
-The pipeline is split into 4 independent stages:
+The pipeline is managed by DVC with four stages: **parse → segment → embed → index**.
+
+#### Initialize a jurisdiction (one-time, not a DVC stage)
 
 ```bash
-# Stage 1: Initialize (create directory structure)
-make init STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
+python -m legiscope.pipeline.init \
+    --state CA --locality LosAngeles \
+    --code-slug municipal-code --name "LA Municipal Code"
 
-# Stage 2: Parse (convert raw files to Markdown)
-make parse STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
-
-# Stage 3: Process (create embeddings and build index)
-make process STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
-
-# Stage 4: Query (run queries, optional)
-make query STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
-
-# For state-level codes, omit LOCALITY:
-make init STATE=CA CODE_SLUG=penal-code
-make parse STATE=CA CODE_SLUG=penal-code
-make process STATE=CA CODE_SLUG=penal-code
+# For state-level codes:
+python -m legiscope.pipeline.init \
+    --state CA --code-slug penal-code --name "CA Penal Code"
 ```
+
+#### Run the pipeline
+
+```bash
+# Using the wrapper script (recommended):
+./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code
+
+# Or calling DVC directly:
+dvc exp run \
+    -S jurisdiction.state=CA \
+    -S jurisdiction.locality=LosAngeles \
+    -S jurisdiction.code_slug=municipal-code
+
+# Run a single stage:
+./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code \
+    --stage segment
+```
+
+> **Note:** The legacy `make init/parse/process/query` targets still work but are
+> deprecated. Use the DVC workflow above instead.
 
 ### Benchmarking
 
@@ -331,28 +344,37 @@ uv run python scripts/run_queries.py \
 .
 ├── src/
 │   └── legiscope/       # Main package source code
-│       ├── models.py    # Data models (JurisdictionRef, CodeRef, schema constants)
+│       ├── pipeline/        # DVC stage modules
+│       │   ├── init.py      # Initialize jurisdiction (not a DVC stage)
+│       │   ├── parse.py     # Parse raw files to Markdown
+│       │   ├── segment.py   # Segment Markdown into sections
+│       │   ├── embed.py     # Generate embedding vectors
+│       │   └── index.py     # Build ChromaDB search index
+│       ├── config.py        # Infrastructure configuration (config.yaml)
+│       ├── params.py        # DVC params.yaml loader
+│       ├── models.py        # Data models (JurisdictionRef, CodeRef, schema constants)
 │       ├── llm_config.py    # LLM configuration and client management
-│       ├── convert.py   # Conversion utilities and response models
-│       ├── utils.py     # Core utility functions
-│       ├── embeddings.py # Embedding generation and ChromaDB management
-│       ├── retrieve.py   # Information retrieval with HYDE and section-level search
-│       ├── segment.py   # Text segmentation utilities
-│       ├── query.py     # Legal query processing with structured responses
-│       └── eval.py      # Evaluation and benchmarking logic
+│       ├── convert.py       # Conversion utilities and response models
+│       ├── utils.py         # Core utility functions
+│       ├── embeddings.py    # Embedding generation and ChromaDB management
+│       ├── retrieve.py      # Information retrieval with HYDE and section-level search
+│       ├── segment.py       # Text segmentation utilities
+│       ├── query.py         # Legal query processing with structured responses
+│       └── eval.py          # Evaluation and benchmarking logic
 ├── tests/               # Test files
 ├── scripts/             # Utility scripts
-│   ├── pipeline_init.sh       # Stage 1: Initialize jurisdiction
-│   ├── pipeline_parse.sh      # Stage 2: Parse raw files to Markdown
-│   ├── pipeline_process.sh    # Stage 3: Create embeddings and index
-│   ├── pipeline_query.sh      # Stage 4: Run queries
-│   ├── create_jurisdiction.py # Register jurisdiction and create directory structure
-│   ├── convert_to_markdown.py # Convert raw text to structured Markdown
-│   ├── segment_legal_code.py  # Segment Markdown into sections and segments
-│   ├── create_embeddings.py   # Generate embeddings (Parquet, no ChromaDB)
-│   ├── build_chroma_index.py  # Build ChromaDB index from embeddings
+│   ├── dvc_repro.sh           # DVC pipeline wrapper (primary interface)
 │   ├── run_queries.py         # Batch query execution
 │   ├── benchmark_pipeline.py  # Benchmarking workflow
+│   ├── pipeline_init.sh       # (deprecated) Initialize jurisdiction
+│   ├── pipeline_parse.sh      # (deprecated) Parse raw files to Markdown
+│   ├── pipeline_process.sh    # (deprecated) Create embeddings and index
+│   ├── pipeline_query.sh      # (deprecated) Run queries
+│   ├── create_jurisdiction.py # (deprecated) Register jurisdiction
+│   ├── convert_to_markdown.py # (deprecated) Convert raw text to Markdown
+│   ├── segment_legal_code.py  # (deprecated) Segment Markdown
+│   ├── create_embeddings.py   # (deprecated) Generate embeddings
+│   ├── build_chroma_index.py  # (deprecated) Build ChromaDB index
 │   └── ...
 ├── data/                # Data directory (not tracked by git)
 │   ├── jurisdictions.parquet  # Registry of all jurisdictions
@@ -366,6 +388,9 @@ uv run python scripts/run_queries.py \
 │           ├── embeddings.parquet # Embedding vectors
 │           ├── relations.parquet  # Intra-code relations
 │           └── external_references.parquet
+├── config.yaml          # Infrastructure settings (data dir, ChromaDB path)
+├── params.yaml          # DVC parameters (provider, models, jurisdiction)
+├── dvc.yaml             # DVC pipeline definition
 ├── pyproject.toml       # Project configuration and dependencies
 ├── Makefile            # Development commands
 ├── AGENTS.md           # This file
@@ -374,6 +399,7 @@ uv run python scripts/run_queries.py \
 
 ## Key Dependencies
 
+- `dvc`: Pipeline orchestration and experiment tracking
 - `openai`: OpenAI API client for embeddings and language models
 - `mistralai`: Mistral API client for embeddings and language models
 - `ollama`: Ollama client for local LLM inference

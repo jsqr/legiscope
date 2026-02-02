@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# DEPRECATED: Use the DVC pipeline instead:
+#   python -m legiscope.pipeline.init --state STATE --locality LOCALITY \
+#       --code-slug SLUG --name "Display Name"
+#
 # pipeline_init.sh - Initialize jurisdiction directory structure
 # Creates directory structure and registers jurisdiction/code in Parquet files
 

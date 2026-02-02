@@ -29,7 +29,7 @@ import chromadb
 import polars as pl
 from loguru import logger
 
-from legiscope.embeddings import CHROMA_BATCH_SIZE, _add_documents_to_collection
+from legiscope.embeddings import _add_documents_to_collection
 from legiscope.models import LAWS_DIR
 
 

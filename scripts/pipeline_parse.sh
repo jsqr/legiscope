@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# DEPRECATED: Use the DVC pipeline instead:
+#   ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG --stage parse
+#
 # pipeline_parse.sh - Convert raw files to structured Markdown
 # Converts DOCX to text (if present) and text to Markdown
 

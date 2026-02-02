@@ -46,82 +46,36 @@ uv run marimo edit
 
 ### Model Configuration
 
-The project uses environment variables for model configuration.
+Model and provider settings are managed in two YAML files tracked by DVC:
+
+- **`params.yaml`** — Hyperparameters: LLM provider, model names, temperature, embedding settings, etc.
+- **`config.yaml`** — Infrastructure settings: data directory path, ChromaDB location.
+
+Secrets (API keys) are kept in `.env` and are **not** tracked.
+
+#### Setup
+
+1. Copy the example environment file and add your API keys:
+
+   ```bash
+   cp .env.example .env
+   # Edit .env to set OPENAI_API_KEY and/or MISTRAL_API_KEY
+   ```
+
+2. Edit `params.yaml` to select your provider and models:
+
+   ```yaml
+   llm:
+     default_provider: "mistral"   # or "openai", "ollama"
+   embeddings:
+     default_provider: "ollama"    # or "mistral"
+   ```
 
 The main client types are:
 
 - **Fast Client** (`Config.get_fast_client()`): Uses configured fast model
 - **Powerful Client** (`Config.get_powerful_client()`): Uses configured powerful model
 - **Embedding Client** (`get_embedding_client()`): Uses configured embedding provider
-
-Models are automatically selected based on your `.env` configuration.
-
-#### Environment Variables
-
-1. Copy the example environment file:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Edit `.env` with your settings:
-
-   ```bash
-   # Example: Use OpenAI
-   LEGISCOPE_LLM_PROVIDER=openai
-   LEGISCOPE_FAST_MODEL=gpt-4.1-mini
-   LEGISCOPE_POWERFUL_MODEL=gpt-4.1
-   OPENAI_API_KEY=XXXXXX
-   ```
-
-3. Load environment variables:
-
-   ```bash
-   export $(cat .env | grep -v '^#' | xargs)
-   ```
-
-### Example .env Configurations
-
-**Local models only** (e.g., for hacking on the plane):
-
-```bash
-LEGISCOPE_LLM_PROVIDER=ollama
-LEGISCOPE_FAST_MODEL=gemma3:4b
-LEGISCOPE_POWERFUL_MODEL=gemma3:12b
-
-LEGISCOPE_EMBEDDING_PROVIDER=ollama
-LEGISCOPE_EMBEDDING_MODEL=embeddinggemma
-LEGISCOPE_COLLECTION_NAME=legal_code_ollama
-```
-
-**Mistral LLMs and embedding models** (for development; only one API key needed):
-
-```bash
-LEGISCOPE_LLM_PROVIDER=mistral
-LEGISCOPE_FAST_MODEL=mistral-small-2506
-LEGISCOPE_POWERFUL_MODEL=mistral-medium-2508
-
-LEGISCOPE_EMBEDDING_PROVIDER=mistral
-LEGISCOPE_EMBEDDING_MODEL=mistral-embed
-LEGISCOPE_COLLECTION_NAME=legal_code_mistral
-
-MISTRAL_API_KEY=XXXXXX
-```
-
-**OpenAI LLMs and Mistral embeddings** (two API keys needed):
-
-```bash
-LEGISCOPE_LLM_PROVIDER=openai
-LEGISCOPE_FAST_MODEL=gpt-4.1-mini
-LEGISCOPE_POWERFUL_MODEL=gpt-4.1
-
-LEGISCOPE_EMBEDDING_PROVIDER=mistral
-LEGISCOPE_EMBEDDING_MODEL=mistral-embed
-LEGISCOPE_COLLECTION_NAME=legal_code_mistral
-
-OPENAI_API_KEY=XXXXXX
-MISTRAL_API_KEY=XXXXXX
-```
 
 ## Development
 
@@ -148,51 +102,51 @@ make fix
 
 ### Processing Municipal Codes
 
-The pipeline is split into independent stages for flexibility:
+The pipeline uses [DVC](https://dvc.org/) to manage reproducible stages:
+**parse → segment → embed → index**.
 
-#### Stage 1: Initialize
-Creates directory structure for a new jurisdiction:
+#### Step 1: Initialize a jurisdiction (one-time setup)
+
+Initialization is not a DVC stage — run it directly:
 
 ```bash
-make init STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
+python -m legiscope.pipeline.init \
+    --state CA --locality LosAngeles \
+    --code-slug municipal-code --name "LA Municipal Code"
 # Creates: data/laws/CA/LosAngeles/municipal-code/raw/
 ```
 
 After initialization, place your raw files (DOCX, TXT, etc.) in the `raw/` directory.
 
-#### Stage 2: Parse
-Converts raw files to structured Markdown:
+For state-level codes, use `--locality State` (or omit it):
 
 ```bash
-make parse STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
-# Converts DOCX → text → Markdown
-# Output: code.md
+python -m legiscope.pipeline.init \
+    --state CA --code-slug penal-code --name "CA Penal Code"
 ```
 
-#### Stage 3: Process
-Creates embeddings and builds search index:
+#### Step 2: Run the pipeline
+
+Use the wrapper script, which calls `dvc exp run` with the right `-S` flags:
 
 ```bash
-make process STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
-# Segments code, generates embeddings, builds ChromaDB index
-# Outputs: sections.parquet, segments.parquet, embeddings.parquet
+./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code
 ```
 
-#### Stage 4: Query (Optional)
-Runs batch queries against the processed code:
+Or call DVC directly:
 
 ```bash
-make query STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
-# Output: data/output/query_results.csv
+dvc exp run \
+    -S jurisdiction.state=CA \
+    -S jurisdiction.locality=LosAngeles \
+    -S jurisdiction.code_slug=municipal-code
 ```
 
-#### State-level codes
-For state-level codes (not municipal), omit the LOCALITY parameter or use a hyphen:
+Run a single stage:
 
 ```bash
-make init STATE=CA CODE_SLUG=penal-code
-make parse STATE=CA CODE_SLUG=penal-code
-make process STATE=CA CODE_SLUG=penal-code
+./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code \
+    --stage segment
 ```
 
 ### Running Queries
@@ -262,15 +216,24 @@ Query results are saved to `data/output/{JURISDICTION}/query_results.csv` and in
 
 ## Scripts and Modules
 
+### Pipeline Package (DVC stages)
+
+- `legiscope.pipeline.init` — Initialize jurisdiction (not a DVC stage; run directly)
+- `legiscope.pipeline.parse` — Convert raw files to structured Markdown
+- `legiscope.pipeline.segment` — Segment Markdown into sections and segments
+- `legiscope.pipeline.embed` — Generate embedding vectors
+- `legiscope.pipeline.index` — Build ChromaDB search index
+
 ### Scripts
 
-- `scripts/pipeline.sh` - Simple jurisdiction processing workflow automation
-- `scripts/create_jurisdiction.py` - Create jurisdiction directory structure
-- `scripts/convert_docx.sh` - Convert DOCX files to plain text using pandoc
-- `scripts/convert_to_markdown.py` - Convert legal text to structured Markdown
-- `scripts/segment_legal_code.py` - Segment Markdown into sections and segments
-- `scripts/create_embeddings.py` - Generate embeddings and populate ChromaDB
-- `scripts/run_queries.py` - Run batch queries against legal code database
+- `scripts/dvc_repro.sh` — Wrapper around `dvc exp run` for running the pipeline
+- `scripts/run_queries.py` — Run batch queries against legal code database
+- `scripts/benchmark_pipeline.py` — Benchmarking workflow
+- `scripts/convert_docx.sh` — Convert DOCX files to plain text using pandoc
+- `scripts/pipeline_init.sh` — *(deprecated: use `legiscope.pipeline.init`)*
+- `scripts/pipeline_parse.sh` — *(deprecated: use `dvc_repro.sh`)*
+- `scripts/pipeline_process.sh` — *(deprecated: use `dvc_repro.sh`)*
+- `scripts/pipeline_query.sh` — *(deprecated: use `run_queries.py`)*
 
 ### Notebooks
 
@@ -278,38 +241,39 @@ Query results are saved to `data/output/{JURISDICTION}/query_results.csv` and in
 
 ### Source Modules
 
-- `utils.py` - Core utilities including LLM client and directory functions
-- `llm_config.py` - Centralized LLM configuration using instructor's provider abstraction
-- `convert.py` - Text conversion utilities and LLM response models
-- `segment.py` - Text segmentation and hierarchical section processing
-- `embeddings.py` - Embedding generation and ChromaDB management
-- `retrieve.py` - Information retrieval with HYDE query rewriting and section-level search
-- `query.py` - Legal query processing with structured responses and batch query execution
+- `config.py` — Infrastructure configuration (data directory, ChromaDB path)
+- `params.py` — DVC params.yaml loader
+- `llm_config.py` — Centralized LLM configuration using instructor's provider abstraction
+- `utils.py` — Core utilities including LLM client and directory functions
+- `convert.py` — Text conversion utilities and LLM response models
+- `segment.py` — Text segmentation and hierarchical section processing
+- `embeddings.py` — Embedding generation and ChromaDB management
+- `retrieve.py` — Information retrieval with HYDE query rewriting and section-level search
+- `query.py` — Legal query processing with structured responses and batch query execution
 
 ## Data Directory Structure
 
 The project organizes municipal code data in a structured hierarchy:
 
-```{txt}
+```txt
 data/
+├── jurisdictions.parquet           # Registry of all jurisdictions
+├── codes.parquet                   # Registry of all legal codes
 ├── laws/                           # Municipal code data
-│   └── {state}-{locality}/     # Jurisdiction-specific directories
+│   └── {STATE}/{Locality}/{code-slug}/
 │       ├── raw/                    # Original source files (DOCX, PDF, etc.)
-│       ├── processed/              # Processed text files and intermediate results
-│       │   ├── code.txt            # Converted plain text
-│       │   └── code.md             # Structured markdown
-│       └── tables/                 # Structured data tables and exports
-│           ├── sections.parquet    # Section-level data
-│           ├── segments.parquet    # Segment-level data
-│           └── embeddings.parquet  # Generated embeddings
+│       ├── code.md                 # Structured Markdown
+│       ├── sections.parquet        # Section hierarchy
+│       ├── segments.parquet        # Text segments
+│       ├── embeddings.parquet      # Embedding vectors
+│       ├── relations.parquet       # Intra-code relations
+│       └── external_references.parquet
 ├── chroma_db/                      # ChromaDB vector database
 ├── queries/                        # Query templates and examples
-│   └── example_queries.txt         # Example legal queries
 ├── output/                         # LLM query output
-│   └── {state}-{locality}/     # Jurisdiction-specific directories
-│       └── query_results.parquet   # Query results (if queries were run)
+│   └── {STATE}-{Locality}/
+│       └── query_results.csv
 └── monqcle_data/                   # Human-annotated MonQcle data
-        └── monqcle_data.csv        # Data file of human-answered legal questions
 ```
 
 ### Project Structure
@@ -317,30 +281,35 @@ data/
 ```txt
 .
 ├── src/
-│   └── legiscope/       # Main package source code
+│   └── legiscope/           # Main package source code
+│       ├── pipeline/        # DVC stage modules (parse, segment, embed, index, init)
+│       ├── config.py        # Infrastructure configuration (config.yaml)
+│       ├── params.py        # DVC params.yaml loader
 │       ├── llm_config.py    # LLM configuration and client management
-│       ├── convert.py   # Conversion utilities and response models
-│       ├── utils.py     # Core utility functions
-│       ├── embeddings.py # Embedding generation and ChromaDB management
-│       ├── retrieve.py   # Information retrieval with HYDE and section-level search
-│       ├── segment.py   # Text segmentation utilities
-│       └── query.py     # Legal query processing with structured responses
-├── tests/               # Test files
-├── scripts/             # Utility scripts
-│   ├── pipeline.sh          # End-to-end processing pipeline
-│   ├── benchmark_pipeline.py # Benchmarking workflow
-│   ├── run_queries.py       # Batch query execution
+│       ├── models.py        # Data models (JurisdictionRef, CodeRef, schema constants)
+│       ├── convert.py       # Conversion utilities and response models
+│       ├── utils.py         # Core utility functions
+│       ├── embeddings.py    # Embedding generation and ChromaDB management
+│       ├── retrieve.py      # Information retrieval with HYDE and section-level search
+│       ├── segment.py       # Text segmentation utilities
+│       ├── query.py         # Legal query processing with structured responses
+│       └── eval.py          # Evaluation and benchmarking logic
+├── tests/                   # Test files
+├── scripts/                 # Utility scripts
+│   ├── dvc_repro.sh             # DVC pipeline wrapper
+│   ├── benchmark_pipeline.py    # Benchmarking workflow
+│   ├── run_queries.py           # Batch query execution
 │   └── ...
-├── notebooks/           # Interactive notebooks
-│   └── query_demo.py    # Demo notebook
-├── docs/                # Documentation
-│   ├── BENCHMARKING.md      # Benchmarking guide
-│   └── VALIDATION_EXAMPLE.md # Validation guide
-├── data/                # Data directory (not tracked by git)
-├── pyproject.toml       # Project configuration and dependencies
-├── Makefile            # Development commands
-├── AGENTS.md           # Detailed development documentation
-└── CONTRIBUTING.md     # Contribution guidelines
+├── notebooks/               # Interactive notebooks
+├── docs/                    # Documentation
+├── config.yaml              # Infrastructure settings (data dir, ChromaDB path)
+├── params.yaml              # DVC parameters (provider, models, jurisdiction)
+├── dvc.yaml                 # DVC pipeline definition
+├── data/                    # Data directory (not tracked by git)
+├── pyproject.toml           # Project configuration and dependencies
+├── Makefile                 # Development commands
+├── AGENTS.md                # Detailed development documentation
+└── CONTRIBUTING.md          # Contribution guidelines
 ```
 
 ## Documentation

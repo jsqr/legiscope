@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import stat
+import subprocess
 from pathlib import Path
 
 import yaml
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
+
+PIPELINE_MODULES = ["parse", "segment", "embed", "index"]
 
 
 class TestDvcParamsCoherence:
@@ -111,4 +114,71 @@ class TestDvcParamsCoherence:
         index_stage = dvc_config["stages"]["index"]
         assert "outs" not in index_stage, (
             "Index stage should not have 'outs' — ChromaDB is persistent, not DVC-tracked"
+        )
+
+
+class TestDvcPipelineCli:
+    """Validate that DVC pipeline tooling is invocable."""
+
+    def test_dvc_repro_dry(self):
+        """dvc repro --dry parses dvc.yaml without errors."""
+        result = subprocess.run(
+            ["dvc", "repro", "--dry"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+        )
+        # Exit code 0 means the YAML parsed and the graph resolved.
+        # A non-zero code with "no changes" or missing deps is also acceptable
+        # (the pipeline definition itself is valid, just no data to process).
+        stderr_lower = result.stderr.lower()
+        assert (
+            result.returncode == 0
+            or "no changes" in stderr_lower
+            or "does not exist" in stderr_lower
+        ), (
+            f"dvc repro --dry failed (rc={result.returncode}):\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+    def test_dvc_repro_script_help(self):
+        """scripts/dvc_repro.sh --help exits cleanly."""
+        script = PROJECT_ROOT / "scripts" / "dvc_repro.sh"
+        result = subprocess.run(
+            [str(script), "--help"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+        )
+        assert result.returncode == 0, (
+            f"dvc_repro.sh --help failed (rc={result.returncode}):\n"
+            f"stderr: {result.stderr}"
+        )
+        assert "usage" in result.stdout.lower()
+
+    def test_pipeline_modules_help(self):
+        """Each pipeline module accepts --help without error."""
+        for module in PIPELINE_MODULES:
+            result = subprocess.run(
+                ["python", "-m", f"legiscope.pipeline.{module}", "--help"],
+                capture_output=True,
+                text=True,
+                cwd=PROJECT_ROOT,
+            )
+            assert result.returncode == 0, (
+                f"python -m legiscope.pipeline.{module} --help failed "
+                f"(rc={result.returncode}):\nstderr: {result.stderr}"
+            )
+
+    def test_pipeline_init_module_help(self):
+        """The init module (not a DVC stage) also accepts --help."""
+        result = subprocess.run(
+            ["python", "-m", "legiscope.pipeline.init", "--help"],
+            capture_output=True,
+            text=True,
+            cwd=PROJECT_ROOT,
+        )
+        assert result.returncode == 0, (
+            f"python -m legiscope.pipeline.init --help failed "
+            f"(rc={result.returncode}):\nstderr: {result.stderr}"
         )

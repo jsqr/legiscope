@@ -1,4 +1,4 @@
-.PHONY: help env clean-env test test-cov lint format fix list clean install init parse process query
+.PHONY: help env clean-env test test-cov lint format fix list clean install init parse process query dvc-repro
 
 # Default target
 help:
@@ -13,6 +13,11 @@ help:
 	@echo "  list       - Show installed packages"
 	@echo "  clean      - Clean build artifacts"
 	@echo "  install    - Install package in development mode"
+	@echo ""
+	@echo "Pipeline (DVC — preferred):"
+	@echo "  dvc-repro  - Show DVC pipeline usage"
+	@echo ""
+	@echo "Pipeline (legacy — deprecated, use DVC instead):"
 	@echo "  init       - Initialize jurisdiction directory structure"
 	@echo "  parse      - Convert raw files to structured Markdown"
 	@echo "  process    - Create embeddings and build search index"
@@ -77,7 +82,23 @@ install:
 	@uv sync
 	@echo "Installation complete."
 
-# Pipeline stages
+# DVC pipeline (preferred interface)
+dvc-repro:
+	@echo "Run the DVC pipeline with:"
+	@echo ""
+	@echo "  ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG"
+	@echo ""
+	@echo "Or call DVC directly:"
+	@echo ""
+	@echo "  dvc exp run -S jurisdiction.state=STATE -S jurisdiction.locality=LOCALITY -S jurisdiction.code_slug=SLUG"
+	@echo ""
+	@echo "Initialize a new jurisdiction first:"
+	@echo ""
+	@echo "  python -m legiscope.pipeline.init --state STATE --locality LOCALITY --code-slug SLUG --name 'Display Name'"
+	@echo ""
+	@echo "See ./scripts/dvc_repro.sh --help for full options."
+
+# Legacy pipeline stages (deprecated — use DVC workflow above)
 init:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
 		echo "Usage: make init STATE=CA CODE_SLUG=municipal-code [LOCALITY=LosAngeles]"; \
