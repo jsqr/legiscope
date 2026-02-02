@@ -42,6 +42,7 @@ def _load() -> dict[str, Any]:
         path = _find_config_path()
         with open(path) as f:
             _config = yaml.safe_load(f) or {}
+    assert _config is not None
     return _config
 
 

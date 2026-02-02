@@ -44,6 +44,8 @@ lint:
 	@uv run ruff check src/ tests/
 	@echo "Checking formatting..."
 	@uv run ruff format --check src/ tests/
+	@echo "Running type checks..."
+	@uv run basedpyright src/
 
 format:
 	@echo "Formatting code..."
