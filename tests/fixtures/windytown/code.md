@@ -1,26 +1,38 @@
 ---
 jurisdiction:
   state: IL
-  municipality: WindyTown
+  locality: WindyTown
   full_name: IL - WindyTown
 heading_patterns:
 - level: 1
   regex_pattern: ^CHAPTER\s+\d+(?:-\d+)?(?::?\s+.*)?$
   markdown_prefix: '# '
   example_heading: CHAPTER 7-4 LEAD-BEARING SUBSTANCES
+  type_label: chapter
+  number_regex: \d+(?:-\d+)?
+  multiline: false
 - level: 2
   regex_pattern: ^\d+(?:-\d+)+\s+.*$
   markdown_prefix: '## '
   example_heading: 7-4-010 Definitions.
+  type_label: section
+  number_regex: \d+(?:-\d+)+
+  multiline: false
 - level: 3
   regex_pattern: ^\(\d+\)\s+[^\[\]\n]*.*$
   markdown_prefix: '### '
   example_heading: (1)   "Child care facility" means any structure used by a child
     care provider, school or other facility frequented by children.
+  type_label: paragraph
+  number_regex: \(\d+\)
+  multiline: false
 - level: 4
   regex_pattern: ^\([a-z]\)\s+[^\[\]\n]*.*$
   markdown_prefix: '#### '
   example_heading: (a)   soil;
+  type_label: subparagraph
+  number_regex: \([a-z]\)
+  multiline: false
 created_at: '2026-02-01T03:39:29.347540+00:00'
 ---
 

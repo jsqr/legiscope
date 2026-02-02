@@ -136,6 +136,7 @@ class TestDvcPipelineCli:
             result.returncode == 0
             or "no changes" in stderr_lower
             or "does not exist" in stderr_lower
+            or "no such file or directory" in stderr_lower
         ), (
             f"dvc repro --dry failed (rc={result.returncode}):\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"

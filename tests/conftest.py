@@ -41,6 +41,12 @@ def sample_segments_df() -> pl.DataFrame:
 
 
 @pytest.fixture
+def sample_headings_df() -> pl.DataFrame:
+    """Headings DataFrame loaded from fixture."""
+    return pl.read_parquet(FIXTURE_DIR / "headings.parquet")
+
+
+@pytest.fixture
 def sample_embeddings_df() -> pl.DataFrame:
     """Embeddings DataFrame loaded from fixture."""
     return pl.read_parquet(FIXTURE_DIR / "embeddings.parquet")

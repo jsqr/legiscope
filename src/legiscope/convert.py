@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import polars as pl
 import yaml
 from instructor import Instructor
 from pydantic import BaseModel, Field
@@ -18,6 +19,16 @@ from legiscope.utils import ask, resolve_model_default
 
 if TYPE_CHECKING:
     from legiscope.models import CodeRef
+
+# Schema for headings.parquet
+HEADINGS_SCHEMA = {
+    "line_number": pl.Int64,
+    "heading_level": pl.Int64,
+    "markdown_level": pl.Int64,
+    "section_type": pl.String,
+    "section_number": pl.String,
+    "heading_text": pl.String,
+}
 
 # Constants for legal text scanning
 DEFAULT_SCAN_MAX_LINES = (
@@ -40,6 +51,9 @@ class HeadingLevel(BaseModel):
     regex_pattern: str
     markdown_prefix: str
     example_heading: str
+    type_label: str = ""  # e.g. "chapter", "section", "paragraph"
+    number_regex: str | None = None  # regex to extract identifier portion
+    multiline: bool = False  # heading keyword on one line, title on next
 
 
 class HeadingStructure(BaseModel):
@@ -128,21 +142,26 @@ OUTPUT FORMAT (HeadingStructure schema):
 {
   "level": <int>,              // 1 = most general, increasing = more specific
   "regex_pattern": "<string>", // Pattern matching ALL headings at this level
-  "markdown_prefix": "<string>", // Literal string: "# ", "## ", "### ", etc.
-  "example_heading": "<string>"  // Complete verbatim example from text
+  "markdown_prefix": "<string>", // Literal string: "# ", "## ", "### ", or "#### "
+  "example_heading": "<string>", // Complete verbatim example from text
+  "type_label": "<string>",     // Short lowercase label: "chapter", "section", "article", "paragraph", "subparagraph", etc.
+  "number_regex": "<string>|null", // Regex capturing JUST the identifier portion, e.g. "\\d+(?:-\\d+)*"
+  "multiline": <bool>           // true if heading keyword is on one line and title on the next
 }
 
 CRITICAL RULES:
 
 1. HIERARCHY
    - Each level number used exactly once (no duplicates)
-   - Strict nesting: 1 > 2 > 3 > 4
+   - Strict nesting: 1 > 2 > 3 > ... > 8
    - Parent levels must structurally contain child levels
    - Only report levels that ACTUALLY EXIST in the text
-   - Include only 4 levels of headings MAXIMUM (no deeper)
+   - Include up to 8 levels of headings MAXIMUM
 
 2. MARKDOWN PREFIX
-   - LITERAL strings only: "# ", "## ", "### ", "#### ", "##### "
+   - LITERAL strings only: "# ", "## ", "### ", "#### "
+   - Levels 1–4 use "# " through "#### " respectively
+   - Levels 5–8 ALL use "#### " (capped at 4 hash marks)
    - NO backreferences, NO heading text, NO variables
    - ✓ CORRECT: "## "
    - ✗ WRONG: "## Article \\1", "##"
@@ -194,6 +213,22 @@ CRITICAL RULES:
 - Numbered subsections with (1), (2): ^\\(\\d+\\)\\s+.*$
 - Do NOT use ^\\s+\\w+.*$ - this is too generic
 
+10. TYPE_LABEL
+   - Short lowercase label describing what this heading type represents
+   - Examples: "title", "chapter", "article", "section", "subsection", "paragraph", "subparagraph"
+   - Use the actual term from the legal text when possible
+
+11. NUMBER_REGEX
+   - A regex that captures JUST the identifier/number portion of the heading
+   - Examples: "\\d+(?:-\\d+)*" for "7-4-010", "\\d+" for "CHAPTER 7"
+   - Use null if the heading type has no identifier
+   - NO anchors (^ or $) — this is applied against the heading text
+
+12. MULTILINE
+   - Set to true when the heading keyword appears on one line and the title on the next
+   - Example: "CHAPTER 7\\nLEAD-BEARING SUBSTANCES" — keyword "CHAPTER 7" is on its own line
+   - Set to false (default) when the full heading is on a single line
+
 TYPICAL LEGAL HIERARCHY (use actual text patterns):
 Level 1: CHAPTER [Roman/Arabic]
 Level 2: ARTICLE [number]
@@ -219,6 +254,7 @@ PRE-OUTPUT VALIDATION:
 □ No levels based solely on indentation
 □ Every optional group justified by actual text variation
 □ Each regex is unique across levels
+□ markdown_prefix is capped at "#### " for levels > 4
 
 COMMON ERRORS TO AVOID:
 1. Incomplete example_heading ("Article" instead of "ARTICLE 1. GENERAL PROVISIONS")
@@ -321,6 +357,9 @@ def _generate_frontmatter(
                 "regex_pattern": level.regex_pattern,
                 "markdown_prefix": level.markdown_prefix,
                 "example_heading": level.example_heading,
+                "type_label": level.type_label,
+                "number_regex": level.number_regex,
+                "multiline": level.multiline,
             }
             for level in structure.levels
         ],
@@ -354,6 +393,9 @@ def text2md(
     headings and replace them with appropriate Markdown prefixes.
     Include YAML frontmatter with jurisdiction metadata and heading patterns.
 
+    Writes ``headings.parquet`` alongside ``code.md`` with structured heading
+    metadata (line numbers, true levels, type labels, section numbers).
+
     Args:
         structure: HeadingStructure from scan_legal_text analysis
         input_path: Path to source .txt file containing legal text
@@ -376,9 +418,39 @@ def text2md(
     _validate_conversion_inputs(structure, input_path, output_path, state, locality)
     compiled_patterns = _compile_heading_patterns(structure)
     lines = _read_source_file(input_path)
-    converted_lines = _process_markdown_lines(lines, compiled_patterns, structure)
+    converted_lines, heading_records = _process_markdown_lines(
+        lines, compiled_patterns, structure
+    )
     frontmatter = _generate_frontmatter(structure, state, locality)
+
+    # Compute frontmatter line count to offset output_line_number
+    frontmatter_line_count = frontmatter.count("\n")
+
     _write_markdown_file(output_path, frontmatter, converted_lines)
+
+    # Build and write headings.parquet alongside the output markdown file
+    output_dir = Path(output_path).parent
+    headings_path = output_dir / "headings.parquet"
+
+    if heading_records:
+        headings_df = pl.DataFrame(
+            [
+                {
+                    "line_number": rec["output_line_number"] + frontmatter_line_count,
+                    "heading_level": rec["heading_level"],
+                    "markdown_level": rec["markdown_level"],
+                    "section_type": rec["section_type"],
+                    "section_number": rec["section_number"],
+                    "heading_text": rec["heading_text"],
+                }
+                for rec in heading_records
+            ],
+            schema=HEADINGS_SCHEMA,
+        )
+    else:
+        headings_df = pl.DataFrame(schema=HEADINGS_SCHEMA)
+
+    headings_df.write_parquet(headings_path)
 
 
 def _validate_conversion_inputs(
@@ -533,14 +605,49 @@ def _collect_paragraph_lines(
     return paragraph_lines, i
 
 
+def _is_multiline_heading(level: int, structure: HeadingStructure) -> bool:
+    """Check if a heading level is configured as multiline."""
+    for hl in structure.levels:
+        if hl.level == level:
+            return hl.multiline
+    return False
+
+
+def _get_heading_level_obj(
+    level: int, structure: HeadingStructure
+) -> HeadingLevel | None:
+    """Get the HeadingLevel object for a given level number."""
+    for hl in structure.levels:
+        if hl.level == level:
+            return hl
+    return None
+
+
+def _extract_section_number(
+    heading_text: str, heading_level_obj: HeadingLevel | None
+) -> str | None:
+    """Extract section number from heading text using number_regex."""
+    if heading_level_obj is None or not heading_level_obj.number_regex:
+        return None
+    m = re.search(heading_level_obj.number_regex, heading_text)
+    return m.group(0) if m else None
+
+
 def _process_markdown_lines(
     lines: list[str], compiled_patterns: list, structure: HeadingStructure
-) -> list[str]:
-    """Process lines and convert headings to Markdown format with proper paragraph handling."""
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Process lines and convert headings to Markdown format with proper paragraph handling.
+
+    Returns:
+        Tuple of (converted_lines, heading_records) where heading_records is a list
+        of dicts with keys: output_line_number, heading_level, markdown_level,
+        section_type, section_number, heading_text.
+    """
     from loguru import logger
 
-    converted_lines = []
-    heading_lines_processed = set()
+    converted_lines: list[str] = []
+    heading_records: list[dict[str, Any]] = []
+    heading_lines_processed: set[int] = set()
     i = 0
 
     while i < len(lines):
@@ -556,12 +663,43 @@ def _process_markdown_lines(
         is_heading, heading_level = _is_heading_line(line_stripped, compiled_patterns)
 
         if is_heading:
+            heading_text = line_stripped
+
+            # Handle two-line (multiline) headings: peek at next non-empty line
+            if _is_multiline_heading(heading_level, structure):
+                j = i + 1
+                while j < len(lines) and lines[j].strip() == "":
+                    j += 1
+                if j < len(lines):
+                    next_line = lines[j].rstrip("\n\r")
+                    next_is_heading, _ = _is_heading_line(next_line, compiled_patterns)
+                    if not next_is_heading:
+                        heading_text = heading_text.strip() + " " + next_line.strip()
+                        heading_lines_processed.add(j)
+
             # Convert to Markdown format
             markdown_heading = _convert_heading_to_markdown(
-                line_stripped, heading_level, structure
+                heading_text, heading_level, structure
             )
             converted_lines.append(markdown_heading + "\n")
             heading_lines_processed.add(i)
+
+            # Record heading metadata
+            # output_line_number is 1-based, counting lines written so far
+            output_line_number = len(converted_lines)
+            hl_obj = _get_heading_level_obj(heading_level, structure)
+            markdown_level = min(heading_level, 4)
+            heading_records.append(
+                {
+                    "output_line_number": output_line_number,
+                    "heading_level": heading_level,
+                    "markdown_level": markdown_level,
+                    "section_type": hl_obj.type_label if hl_obj else None,
+                    "section_number": _extract_section_number(heading_text, hl_obj),
+                    "heading_text": heading_text.strip(),
+                }
+            )
+
             i += 1
             if (len(heading_lines_processed) % 50) == 0:
                 logger.debug(
@@ -592,7 +730,7 @@ def _process_markdown_lines(
 
             i = next_i
 
-    return converted_lines
+    return converted_lines, heading_records
 
 
 def _write_markdown_file(

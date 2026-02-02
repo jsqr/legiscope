@@ -46,6 +46,7 @@ Content of section 2."""
             "heading_level",
             "heading_text",
             "body_text",
+            "line_number",
         ]
 
         # Check section indices
@@ -103,6 +104,7 @@ Some content here.
             "heading_level",
             "heading_text",
             "body_text",
+            "line_number",
         ]
 
         # Whitespace only
@@ -265,6 +267,7 @@ Some content."""
             "heading_level",
             "heading_text",
             "body_text",
+            "line_number",
         ]
 
         # Check column types
@@ -273,6 +276,7 @@ Some content."""
         assert schema["heading_level"] == pl.Int64
         assert schema["heading_text"] == pl.String
         assert schema["body_text"] == pl.String
+        assert schema["line_number"] == pl.Int64
 
     def test_large_document(self):
         """Test handling of a larger document with many sections."""
@@ -347,6 +351,7 @@ Subsection content."""
             "heading_level",
             "heading_text",
             "body_text",
+            "line_number",
             "parent",
             "children",
             "depth",
@@ -552,6 +557,7 @@ Content."""
             "heading_level",
             "heading_text",
             "body_text",
+            "line_number",
             "parent",
             "children",
             "depth",
@@ -565,6 +571,7 @@ Content."""
         assert schema["heading_level"] == pl.Int64
         assert schema["heading_text"] == pl.String
         assert schema["body_text"] == pl.String
+        assert schema["line_number"] == pl.Int64
         assert schema["parent"] == pl.Int64
         assert schema["children"] == pl.List(pl.Int64)
         assert schema["depth"] == pl.Int64
@@ -1017,7 +1024,7 @@ class TestAddSegmentsToSections:
         # Then add segments
         result = add_segments_to_sections(df_with_parents)
 
-        # Should have all columns
+        # Should have all columns (no line_number since base_df was manually created)
         expected_columns = [
             "section_ordinal",
             "heading_level",
