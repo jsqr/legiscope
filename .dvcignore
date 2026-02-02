@@ -1,0 +1,2 @@
+# ChromaDB persistent index (derived state, not DVC-tracked)
+data/chroma_db/

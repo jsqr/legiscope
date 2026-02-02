@@ -26,6 +26,7 @@ src_path = Path(__file__).parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.llm_config import Config
 from legiscope.utils import LLMConfig, str2bool
 from legiscope.query import BatchQuerySettings, run_queries, load_queries
@@ -197,7 +198,10 @@ def main():
     # Step 3: Initialize Resources
     # =========================================================================
     chroma_client = chromadb.PersistentClient(path=DEFAULT_CHROMA_PATH)
-    collection_name = os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_all")
+    collection_name = os.getenv(
+        "LEGISCOPE_COLLECTION_NAME",
+        CollectionConfig(provider=EMBEDDING_PROVIDER).collection_name,
+    )
     collection = chroma_client.get_collection(collection_name)
     
     # Construct path to sections parquet

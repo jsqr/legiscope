@@ -158,6 +158,7 @@ class PersistenceConfig:
     parquet_path: str | Path | None = None
     metadata_cols: list[str] | None = None
     provider: str | None = None  # Embedding provider for collection naming
+    model: str | None = None  # Embedding model for collection naming
 
     def __post_init__(self):
         """Validate and normalize configuration."""
@@ -184,48 +185,50 @@ class JurisdictionConfig:
 
     jurisdiction_id: str | None = None
     state: str | None = None
-    municipality: str | None = None
+    locality: str | None = None
 
     def __post_init__(self):
         """Validate and derive jurisdiction information."""
-        # Auto-derive jurisdiction_id from state and municipality if needed
-        if not self.jurisdiction_id and self.state and self.municipality:
-            self.jurisdiction_id = f"{self.state}-{self.municipality}"
+        # Auto-derive jurisdiction_id from state and locality if needed
+        if not self.jurisdiction_id and self.state and self.locality:
+            self.jurisdiction_id = f"{self.state}-{self.locality}"
 
-        # Parse state and municipality from jurisdiction_id if not provided
+        # Parse state and locality from jurisdiction_id if not provided
         if self.jurisdiction_id and "-" in self.jurisdiction_id:
-            if not self.state or not self.municipality:
-                parsed_state, parsed_municipality = self.jurisdiction_id.split("-", 1)
+            if not self.state or not self.locality:
+                parsed_state, parsed_locality = self.jurisdiction_id.split("-", 1)
                 if not self.state:
                     self.state = parsed_state
-                if not self.municipality:
-                    self.municipality = parsed_municipality
+                if not self.locality:
+                    self.locality = parsed_locality
 
 
 @dataclass
 class CollectionConfig:
     """Configuration for ChromaDB collection operations.
 
-    Handles collection naming, persistence, and provider-specific naming conventions.
+    Handles collection naming, persistence, and provider/model-specific naming conventions.
 
     Attributes:
         persist_directory: Directory for ChromaDB persistence
-        collection_name: Base name of the collection (will be modified based on provider)
-        provider: Embedding provider for collection naming (appends provider suffix)
+        collection_name: Base name of the collection (will be modified based on provider/model)
+        provider: Embedding provider for collection naming
+        model: Embedding model for collection naming (auto-resolved from provider if not set)
 
     Example:
-        >>> config = CollectionConfig(provider="mistral")
+        >>> config = CollectionConfig(provider="ollama")
         >>> config.collection_name
-        'legal_code_mistral'
+        'legal_code_ollama_embeddinggemma'
 
         >>> config = CollectionConfig(collection_name="custom", provider="ollama")
         >>> config.collection_name
-        'custom_ollama'
+        'custom_ollama_embeddinggemma'
     """
 
     persist_directory: str | Path = "data/chroma_db"
     collection_name: str = "legal_code_all"
     provider: str | None = None
+    model: str | None = None
 
     def __post_init__(self):
         """Validate and normalize collection configuration."""
@@ -243,14 +246,19 @@ class CollectionConfig:
                 f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
             )
 
-        # Auto-append provider suffix to collection name
+        # Auto-resolve model from provider config when provider is set but model is not
+        if self.provider and not self.model:
+            self.model = EMBEDDING_PROVIDER_CONFIG[self.provider]["model"]
+
+        # Auto-append provider_model suffix to collection name
         if self.provider:
+            suffix = f"{self.provider}_{self.model}"
             if self.collection_name == "legal_code_all":
-                # Default collection name - make provider-specific
-                self.collection_name = f"legal_code_{self.provider}"
-            elif not self.collection_name.endswith(f"_{self.provider}"):
-                # Custom collection name - append provider if not already present
-                self.collection_name = f"{self.collection_name}_{self.provider}"
+                # Default collection name - make provider/model-specific
+                self.collection_name = f"legal_code_{suffix}"
+            elif not self.collection_name.endswith(f"_{suffix}"):
+                # Custom collection name - append suffix if not already present
+                self.collection_name = f"{self.collection_name}_{suffix}"
 
 
 def _detect_embedding_provider(client) -> str:
@@ -371,25 +379,53 @@ def _generate_embeddings_ollama(
     return embeddings_list
 
 
-# Embedding provider configuration: maps provider names to their settings
-# Note: Defined here after the embedding functions so we can reference them
-EMBEDDING_PROVIDER_CONFIG = {
-    "ollama": {
-        "model": "embeddinggemma",
-        "client_factory": get_ollama_client,
-        "batch_size": None,  # Ollama processes individually, no batching
-        "embedding_function": _generate_embeddings_ollama,
-    },
-    "mistral": {
-        "model": "mistral-embed",
-        "client_factory": get_mistral_client,
-        "batch_size": 100,  # Mistral supports batch processing
-        "embedding_function": _generate_embeddings_mistral,
-    },
-}
+# ---------------------------------------------------------------------------
+# Build embedding provider config from params.yaml
+# ---------------------------------------------------------------------------
 
-# Default embedding provider
-EMBEDDING_PROVIDER = "ollama"
+
+def _build_embedding_provider_config() -> dict:
+    """Build EMBEDDING_PROVIDER_CONFIG from params.yaml."""
+    from legiscope.params import load_params
+
+    p = load_params()
+    emb = p.get("embeddings", {})
+    providers_yaml = emb.get("providers", {})
+
+    client_factories = {
+        "ollama": get_ollama_client,
+        "mistral": get_mistral_client,
+    }
+    embedding_functions = {
+        "ollama": _generate_embeddings_ollama,
+        "mistral": _generate_embeddings_mistral,
+    }
+
+    config: dict = {}
+    for name, settings in providers_yaml.items():
+        config[name] = {
+            "model": settings.get("model", ""),
+            "client_factory": client_factories.get(name, get_ollama_client),
+            "batch_size": settings.get("batch_size"),
+            "embedding_function": embedding_functions.get(
+                name, _generate_embeddings_ollama
+            ),
+        }
+
+    return config
+
+
+def _get_default_provider() -> str:
+    """Read default embedding provider from params.yaml."""
+    from legiscope.params import load_params
+
+    p = load_params()
+    return p.get("embeddings", {}).get("default_provider", "ollama")
+
+
+EMBEDDING_PROVIDER_CONFIG = _build_embedding_provider_config()
+EMBEDDING_PROVIDER = _get_default_provider()
+EMBEDDING_MODEL = EMBEDDING_PROVIDER_CONFIG[EMBEDDING_PROVIDER]["model"]
 
 
 def get_embeddings(
@@ -740,11 +776,11 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     documents = config.df[config.text_col].to_list()
     embeddings = config.df[config.embedding_col].to_list()
 
-    # Derive state and municipality from jurisdiction_id, if available
+    # Derive state and locality from jurisdiction_id, if available
     parsed_state = None
-    parsed_municipality = None
+    parsed_locality = None
     if config.jurisdiction_id and "-" in config.jurisdiction_id:
-        parsed_state, parsed_municipality = config.jurisdiction_id.split("-", 1)
+        parsed_state, parsed_locality = config.jurisdiction_id.split("-", 1)
 
     # Prepare metadata with jurisdiction information
     metadata_list = []
@@ -758,15 +794,15 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
                 metadata["jurisdiction_id"] = config.jurisdiction_id
                 if parsed_state:
                     metadata["state"] = parsed_state
-                if parsed_municipality:
-                    metadata["municipality"] = parsed_municipality
+                if parsed_locality:
+                    metadata["locality"] = parsed_locality
 
             metadata_list.append(metadata)
 
         added_fields = (
             (1 if config.jurisdiction_id else 0)
             + (1 if parsed_state else 0)
-            + (1 if parsed_municipality else 0)
+            + (1 if parsed_locality else 0)
         )
         logger.debug(
             f"Prepared metadata with {len(config.metadata_cols) + added_fields} fields per document"
@@ -778,8 +814,8 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
                 metadata = {"jurisdiction_id": config.jurisdiction_id}
                 if parsed_state:
                     metadata["state"] = parsed_state
-                if parsed_municipality:
-                    metadata["municipality"] = parsed_municipality
+                if parsed_locality:
+                    metadata["locality"] = parsed_locality
                 metadata_list.append(metadata)
             logger.debug(
                 f"Prepared jurisdiction-only metadata for {len(config.df)} documents"
@@ -824,7 +860,7 @@ def add_jurisdiction_embeddings(
             collection_name=collection.name,
             jurisdiction_id="IL-WindyCity",
             id_col="custom_id",
-            metadata_cols=["state", "municipality"]
+            metadata_cols=["state", "locality"]
         )
         add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity", config)
     """
@@ -1020,15 +1056,24 @@ def create_and_persist_embeddings(
     if pers_config.provider is None and emb_config.provider:
         pers_config.provider = emb_config.provider
 
-    # Generate provider-specific collection name if provider is set
+    # Set model in persistence config if not already set
+    if pers_config.model is None and emb_config.model:
+        pers_config.model = emb_config.model
+
+    # Auto-resolve model from provider config if still unset
+    if pers_config.provider and not pers_config.model:
+        pers_config.model = EMBEDDING_PROVIDER_CONFIG[pers_config.provider]["model"]
+
+    # Generate provider/model-specific collection name if provider is set
     collection_name = pers_config.collection_name
     if pers_config.provider:
+        suffix = f"{pers_config.provider}_{pers_config.model}"
         if pers_config.collection_name == "legal_code_all":
-            # Default collection name - make provider-specific
-            collection_name = f"legal_code_{pers_config.provider}"
-        elif not pers_config.collection_name.endswith(f"_{pers_config.provider}"):
-            # Custom collection name - append provider if not already present
-            collection_name = f"{pers_config.collection_name}_{pers_config.provider}"
+            # Default collection name - make provider/model-specific
+            collection_name = f"legal_code_{suffix}"
+        elif not pers_config.collection_name.endswith(f"_{suffix}"):
+            # Custom collection name - append suffix if not already present
+            collection_name = f"{pers_config.collection_name}_{suffix}"
 
     logger.info("Starting unified embeddings creation and persistence workflow")
 
@@ -1061,9 +1106,9 @@ def create_and_persist_embeddings(
     logger.info("Step 3: Creating ChromaDB index")
 
     # Parse jurisdiction information if not provided
-    if not jur_config.jurisdiction_id and (jur_config.state or jur_config.municipality):
-        if jur_config.state and jur_config.municipality:
-            jur_config.jurisdiction_id = f"{jur_config.state}-{jur_config.municipality}"
+    if not jur_config.jurisdiction_id and (jur_config.state or jur_config.locality):
+        if jur_config.state and jur_config.locality:
+            jur_config.jurisdiction_id = f"{jur_config.state}-{jur_config.locality}"
         else:
             logger.warning("Incomplete jurisdiction information provided")
 

@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: Use the DVC pipeline instead:
+    ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG --stage parse
+
 Convert jurisdiction legal text files to Markdown.
 
 Usage:
-    python scripts/convert_to_markdown.py --state CA --municipality LosAngeles --code-slug municipal-code
+    python scripts/convert_to_markdown.py --state CA --locality LosAngeles --code-slug municipal-code
     python scripts/convert_to_markdown.py --state CA --code-slug penal-code
 """
 
@@ -75,7 +78,7 @@ def convert_to_markdown(code_ref: CodeRef) -> None:
             input_path=str(input_path),
             output_path=str(output_path),
             state=code_ref.jurisdiction.state,
-            municipality=code_ref.jurisdiction.municipality or "",
+            locality=code_ref.jurisdiction.locality or "",
         )
 
         print(f"Successfully converted {code_ref.code_id}")
@@ -93,19 +96,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --state CA --municipality LosAngeles --code-slug municipal-code
+  %(prog)s --state CA --locality LosAngeles --code-slug municipal-code
   %(prog)s --state CA --code-slug penal-code
         """,
     )
     parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
     parser.add_argument(
-        "--municipality", default=None, help="Municipality name (omit for state-level)"
+        "--locality", default=None, help="Locality name (omit for state-level)"
     )
     parser.add_argument("--code-slug", required=True, help="Code slug identifier")
 
     args = parser.parse_args()
 
-    jurisdiction = JurisdictionRef(state=args.state, municipality=args.municipality)
+    jurisdiction = JurisdictionRef(state=args.state, locality=args.locality)
     code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
 
     convert_to_markdown(code_ref)

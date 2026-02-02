@@ -1,18 +1,18 @@
 """Tests for legiscope.segment module."""
 
-import pytest
 import polars as pl
+import pytest
 
+from legiscope.models import CodeRef, JurisdictionRef
 from legiscope.segment import (
-    divide_into_sections,
     add_parent_relationships,
-    segment_text,
     add_segments_to_sections,
     create_segments_df,
+    divide_into_sections,
     enrich_sections,
     get_section_text,
+    segment_text,
 )
-from legiscope.models import JurisdictionRef, CodeRef
 
 
 class TestDivideIntoSections:
@@ -1463,7 +1463,7 @@ class TestEnrichSections:
 
     def _make_code_ref(self) -> CodeRef:
         return CodeRef(
-            jurisdiction=JurisdictionRef(state="CA", municipality="LosAngeles"),
+            jurisdiction=JurisdictionRef(state="CA", locality="LosAngeles"),
             code_slug="municipal-code",
         )
 

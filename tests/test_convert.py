@@ -3,14 +3,15 @@
 import os
 import tempfile
 from unittest.mock import Mock, patch
-from pydantic import BaseModel
+
 import yaml
+from pydantic import BaseModel
 
 from legiscope.convert import (
-    ask,
     BooleanResult,
     HeadingLevel,
     HeadingStructure,
+    ask,
     scan_legal_text,
     text2md,
 )
@@ -29,8 +30,8 @@ class TestConvertModule:
     def test_ask_function_import(self):
         """Test that ask function is properly imported from utils."""
         # Test that we can import ask from convert module
-        from legiscope.utils import ask as utils_ask
         from legiscope.convert import ask as convert_ask
+        from legiscope.utils import ask as utils_ask
 
         # Both should be same function
         assert utils_ask is convert_ask
@@ -43,14 +44,13 @@ class TestConvertModule:
         mock_client.chat.completions.create.return_value = mock_response
 
         # Call function imported from convert module
-        with patch.dict(os.environ, {"LEGISCOPE_LLM_PROVIDER": "mistral"}):
-            result = ask(
-                client=mock_client,
-                prompt="Extract name and value from this text",
-                response_model=MockResponseModel,
-                model="gpt-4",
-                temperature=0.5,
-            )
+        result = ask(
+            client=mock_client,
+            prompt="Extract name and value from this text",
+            response_model=MockResponseModel,
+            model="gpt-4",
+            temperature=0.5,
+        )
 
         # Verify call was made correctly
         mock_client.chat.completions.create.assert_called_once_with(
@@ -484,7 +484,7 @@ Just plain paragraphs."""
             assert "---" in output_content
             assert "jurisdiction:" in output_content
             assert "state: IL" in output_content
-            assert "municipality: TestCity" in output_content
+            assert "locality: TestCity" in output_content
 
         finally:
             os.unlink(input_file)
@@ -624,7 +624,7 @@ This is a test chapter."""
             assert "---" in output_content
             assert "jurisdiction:" in output_content
             assert "state: CA" in output_content
-            assert "municipality: LosAngeles" in output_content
+            assert "locality: LosAngeles" in output_content
             assert "full_name: CA - LosAngeles" in output_content
             assert "heading_patterns:" in output_content
             assert "level: 1" in output_content
@@ -641,7 +641,7 @@ This is a test chapter."""
 
             parsed_data = yaml.safe_load(frontmatter_yaml)
             assert parsed_data["jurisdiction"]["state"] == "CA"
-            assert parsed_data["jurisdiction"]["municipality"] == "LosAngeles"
+            assert parsed_data["jurisdiction"]["locality"] == "LosAngeles"
             assert len(parsed_data["heading_patterns"]) == 1
             assert "created_at" in parsed_data
 

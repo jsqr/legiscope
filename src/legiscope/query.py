@@ -2,7 +2,6 @@
 Query processing module for the legiscope package.
 """
 
-import os
 from dataclasses import dataclass, field
 from rapidfuzz import fuzz
 from pathlib import Path
@@ -16,6 +15,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.llm_config import Config
+from legiscope.params import load_params
 from legiscope.retrieve import (
     filter_sections,
     retrieve_sections,
@@ -24,14 +24,39 @@ from legiscope.retrieve import (
 )
 from legiscope.utils import ask, LLMConfig
 
-# Constants for query processing
-DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal analysis
-DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
-DEFAULT_N_RESULTS = 10  # Default number of results to retrieve
-DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
-DEFAULT_LLM_TIMEOUT_SECONDS = float(os.getenv("LEGISCOPE_LLM_TIMEOUT", "300"))
-DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD: float = 1.0
-DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD: float = 0.9
+
+def _query_params() -> dict:
+    """Load query-related params from params.yaml."""
+    p = load_params()
+    return p.get("query", {})
+
+
+def _llm_params() -> dict:
+    p = load_params()
+    return p.get("llm", {})
+
+
+def _retrieval_params() -> dict:
+    p = load_params()
+    return p.get("retrieval", {})
+
+
+# Constants for query processing — read from params.yaml
+_qp = _query_params()
+_lp = _llm_params()
+_rp = _retrieval_params()
+
+DEFAULT_TEMPERATURE = _lp.get("temperature", 0.0)
+DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
+DEFAULT_N_RESULTS = _rp.get("n_results", 10)
+DEFAULT_RELEVANCE_THRESHOLD = _qp.get("relevance_threshold", 0.5)
+DEFAULT_LLM_TIMEOUT_SECONDS = float(_lp.get("timeout", 300))
+DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
+    "exact_match_threshold", 1.0
+)
+DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
+    "fuzzy_match_threshold", 0.9
+)
 
 
 @dataclass

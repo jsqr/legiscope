@@ -820,3 +820,75 @@ def create_segments_df(
         )
 
     return result_df
+
+
+def segment_legal_code(
+    code_ref: CodeRef,
+    token_limit: int = DEFAULT_TOKEN_LIMIT,
+    words_per_token: float = DEFAULT_WORDS_PER_TOKEN,
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Segment a legal code's Markdown into sections and segments.
+
+    Reads ``code.md`` from ``code_ref.full_data_dir``, strips any YAML
+    frontmatter, runs the full segmentation pipeline, and writes four
+    Parquet files to the code's data directory:
+
+    * ``sections.parquet``
+    * ``segments.parquet``
+    * ``relations.parquet`` (empty scaffold)
+    * ``external_references.parquet`` (empty scaffold)
+
+    Args:
+        code_ref: Identifies the legal code to segment.
+        token_limit: Maximum approximate tokens per segment.
+        words_per_token: Approximate words-per-token ratio.
+
+    Returns:
+        Tuple of ``(sections_df, segments_df)``.
+
+    Raises:
+        FileNotFoundError: If the code directory or ``code.md`` is missing.
+    """
+    from legiscope.models import EXTERNAL_REFERENCES_SCHEMA, RELATIONS_SCHEMA
+
+    code_dir = code_ref.full_data_dir
+
+    if not code_dir.exists():
+        raise FileNotFoundError(f"Directory does not exist: {code_dir}")
+
+    markdown_path = code_dir / "code.md"
+    if not markdown_path.exists():
+        raise FileNotFoundError(f"code.md not found at {markdown_path}")
+
+    content = markdown_path.read_text(encoding="utf-8")
+    if not content.strip():
+        raise ValueError(f"Markdown file is empty: {markdown_path}")
+
+    # Strip YAML frontmatter if present
+    lines = content.split("\n")
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                content = "\n".join(lines[i + 1 :]).strip()
+                break
+
+    sections_df = divide_into_sections(content)
+    sections_df = add_parent_relationships(sections_df)
+    sections_df = enrich_sections(sections_df, code_ref)
+
+    segments_df = create_segments_df(
+        sections_df,
+        text_column="body_text",
+        token_limit=token_limit,
+        words_per_token=words_per_token,
+    )
+
+    # Write outputs
+    sections_df.write_parquet(code_dir / "sections.parquet")
+    segments_df.write_parquet(code_dir / "segments.parquet")
+    pl.DataFrame(schema=RELATIONS_SCHEMA).write_parquet(code_dir / "relations.parquet")
+    pl.DataFrame(schema=EXTERNAL_REFERENCES_SCHEMA).write_parquet(
+        code_dir / "external_references.parquet"
+    )
+
+    return sections_df, segments_df

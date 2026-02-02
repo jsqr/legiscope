@@ -39,13 +39,14 @@ dependencies = [
     "pydantic>=2",
     "pyzmq>=27.1.0",
     "rapidfuzz>=3.0.0",
+    "dvc>=3",
 ]
 
 [dependency-groups]
 dev = [
     "pytest",
     "ruff",
-    "black",
+    "basedpyright",
 ]
 
 [project.urls]
@@ -56,3 +57,6 @@ packages = ["src/legiscope"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+filterwarnings = [
+    "ignore::pyparsing.exceptions.PyparsingDeprecationWarning",
+]

@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: Use the pipeline module instead:
+    python -m legiscope.pipeline.init --state STATE --locality LOCALITY \\
+        --code-slug SLUG --name "Display Name"
+
 Command-line script to create jurisdiction and code directory structures,
 and register them in the global Parquet registries.
 """
@@ -48,7 +52,7 @@ def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
         logger.info("Jurisdiction {} already registered", ref.jurisdiction_id)
         return
 
-    parent = ref.state if ref.municipality else None
+    parent = ref.state if ref.locality else None
     # For state-level, don't set a parent
     if ref.level == "state":
         parent = None
@@ -58,7 +62,7 @@ def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
             {
                 "jurisdiction_id": ref.jurisdiction_id,
                 "state": ref.state,
-                "municipality": ref.municipality,
+                "locality": ref.locality,
                 "level": ref.level,
                 "name": name,
                 "parent_jurisdiction": parent,
@@ -107,7 +111,7 @@ def main():
         epilog="""
 Examples:
   %(prog)s --state CA --code-slug penal-code --name "California Penal Code" --code-type statute
-  %(prog)s --state CA --municipality LosAngeles --code-slug municipal-code --name "Los Angeles Municipal Code" --code-type municipal
+  %(prog)s --state CA --locality LosAngeles --code-slug municipal-code --name "Los Angeles Municipal Code" --code-type municipal
         """,
     )
 
@@ -117,9 +121,9 @@ Examples:
         help="Two-letter state abbreviation (e.g., CA, IL)",
     )
     parser.add_argument(
-        "--municipality",
+        "--locality",
         default=None,
-        help="Municipality name (e.g., LosAngeles, Chicago). Omit for state-level.",
+        help="Locality name (e.g., LosAngeles, Chicago). Omit for state-level.",
     )
     parser.add_argument(
         "--code-slug",
@@ -148,16 +152,14 @@ Examples:
     args = parser.parse_args()
 
     try:
-        jurisdiction = JurisdictionRef(
-            state=args.state, municipality=args.municipality
-        )
+        jurisdiction = JurisdictionRef(state=args.state, locality=args.locality)
         code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
 
         # Auto-generate jurisdiction name if not provided
         jurisdiction_name = args.jurisdiction_name
         if jurisdiction_name is None:
-            if jurisdiction.municipality:
-                jurisdiction_name = f"City of {jurisdiction.municipality}"
+            if jurisdiction.locality:
+                jurisdiction_name = f"City of {jurisdiction.locality}"
             else:
                 jurisdiction_name = jurisdiction.state
 

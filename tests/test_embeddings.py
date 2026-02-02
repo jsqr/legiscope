@@ -1,16 +1,16 @@
 """Tests for legiscope.embeddings module."""
 
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import polars as pl
 import pytest
 
 from legiscope.embeddings import (
-    create_embeddings_df,
     EmbeddingConfig,
-    get_embeddings,
     _build_embedding_text,
     create_and_save_embeddings,
+    create_embeddings_df,
+    get_embeddings,
 )
 from legiscope.models import CodeRef, JurisdictionRef
 
@@ -621,7 +621,7 @@ class TestCreateAndSaveEmbeddings:
     def _make_code_ref(self):
         """Helper to create a CodeRef for testing."""
         return CodeRef(
-            jurisdiction=JurisdictionRef(state="CA", municipality="TestCity"),
+            jurisdiction=JurisdictionRef(state="CA", locality="TestCity"),
             code_slug="test-code",
         )
 
@@ -694,10 +694,10 @@ class TestCreateAndSaveEmbeddings:
         output_dir = tmp_path / "data" / "laws" / "CA" / "TestCity" / "test-code"
         output_dir.mkdir(parents=True)
 
-        # Monkeypatch the LAWS_DIR so full_data_dir resolves to tmp_path
+        # Monkeypatch _laws_dir so full_data_dir resolves to tmp_path
         import legiscope.models as models_mod
 
-        monkeypatch.setattr(models_mod, "LAWS_DIR", tmp_path / "data" / "laws")
+        monkeypatch.setattr(models_mod, "_laws_dir", lambda: tmp_path / "data" / "laws")
 
         sections_df = pl.DataFrame(
             {
@@ -815,7 +815,7 @@ class TestChromaOperations:
 
     def test_create_embedding_index(self):
         """Test creating an embedding index from DataFrame."""
-        from legiscope.embeddings import create_embedding_index, EmbeddingIndexConfig
+        from legiscope.embeddings import EmbeddingIndexConfig, create_embedding_index
 
         # Create test DataFrame
         df = pl.DataFrame(
@@ -877,11 +877,45 @@ class TestChromaOperations:
             assert config.jurisdiction_id == "IL-Test"
             assert config.collection_name == "test_coll"
 
+    def test_collection_config_provider_model_naming(self):
+        """Test that CollectionConfig generates provider_model suffixed names."""
+        from legiscope.embeddings import CollectionConfig, EMBEDDING_PROVIDER_CONFIG
+
+        # Default provider (ollama) should auto-resolve model
+        config = CollectionConfig(provider="ollama")
+        expected_model = EMBEDDING_PROVIDER_CONFIG["ollama"]["model"]
+        assert config.collection_name == f"legal_code_ollama_{expected_model}"
+        assert config.model == expected_model
+
+    def test_collection_config_explicit_model(self):
+        """Test that an explicitly provided model overrides auto-resolution."""
+        from legiscope.embeddings import CollectionConfig
+
+        config = CollectionConfig(provider="ollama", model="custom")
+        assert config.collection_name == "legal_code_ollama_custom"
+        assert config.model == "custom"
+
+    def test_collection_config_custom_base_with_provider(self):
+        """Test custom base name with provider gets _{provider}_{model} suffix."""
+        from legiscope.embeddings import CollectionConfig, EMBEDDING_PROVIDER_CONFIG
+
+        expected_model = EMBEDDING_PROVIDER_CONFIG["ollama"]["model"]
+        config = CollectionConfig(collection_name="my_collection", provider="ollama")
+        assert config.collection_name == f"my_collection_ollama_{expected_model}"
+
+    def test_collection_config_no_provider(self):
+        """Test that without provider, collection name is unchanged."""
+        from legiscope.embeddings import CollectionConfig
+
+        config = CollectionConfig(collection_name="legal_code_all")
+        assert config.collection_name == "legal_code_all"
+        assert config.model is None
+
     def test_create_and_persist_embeddings(self):
         """Test the unified workflow."""
         from legiscope.embeddings import (
-            create_and_persist_embeddings,
             JurisdictionConfig,
+            create_and_persist_embeddings,
         )
 
         df = pl.DataFrame({"text": ["content"]})

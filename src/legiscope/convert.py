@@ -2,16 +2,22 @@
 Code to convert text files with outline structure and section headings to Markdown.
 """
 
+from __future__ import annotations
+
 import os
 import re
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from instructor import Instructor
 from pydantic import BaseModel, Field
 
 from legiscope.utils import ask, resolve_model_default
+
+if TYPE_CHECKING:
+    from legiscope.models import CodeRef
 
 # Constants for legal text scanning
 DEFAULT_SCAN_MAX_LINES = (
@@ -134,7 +140,7 @@ CRITICAL RULES:
    - Parent levels must structurally contain child levels
    - Only report levels that ACTUALLY EXIST in the text
    - Include only 4 levels of headings MAXIMUM (no deeper)
-   
+
 2. MARKDOWN PREFIX
    - LITERAL strings only: "# ", "## ", "### ", "#### ", "##### "
    - NO backreferences, NO heading text, NO variables
@@ -162,7 +168,7 @@ CRITICAL RULES:
    - Patterns differing ONLY in whitespace (^\\s* vs ^\\s{2,}) are NOT unique
    - Patterns differing ONLY in optional groups are likely NOT unique
    - ✗ FORBIDDEN: Level 3: ^\\s*SECTION and Level 4: ^\\s{2,}SECTION
-   
+
 6. INDENTATION IS NOT HIERARCHY - CRITICAL
    - Do NOT create separate levels based solely on leading whitespace
    - ^\\s{2,}, ^\\s{4,} indicate formatting, NOT structure
@@ -282,7 +288,7 @@ The text contains {len(sample_lines)} lines (limited sample for analysis).
 def _generate_frontmatter(
     structure: HeadingStructure,
     state: str,
-    municipality: str,
+    locality: str,
 ) -> str:
     """
     Generate YAML frontmatter for Markdown file.
@@ -293,21 +299,21 @@ def _generate_frontmatter(
     Args:
         structure: HeadingStructure from scan_legal_text analysis
         state: Two-letter state abbreviation
-        municipality: Municipality name
+        locality: Locality name
 
     Returns:
         str: YAML frontmatter string with proper formatting
     """
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
-    if not municipality or not municipality.strip():
-        raise ValueError("Municipality cannot be empty")
+    if not locality or not locality.strip():
+        raise ValueError("Locality cannot be empty")
 
     frontmatter_data: dict[str, Any] = {
         "jurisdiction": {
             "state": state.strip().upper(),
-            "municipality": municipality.strip(),
-            "full_name": f"{state.strip().upper()} - {municipality.strip()}",
+            "locality": locality.strip(),
+            "full_name": f"{state.strip().upper()} - {locality.strip()}",
         },
         "heading_patterns": [
             {
@@ -338,7 +344,7 @@ def text2md(
     input_path: str,
     output_path: str,
     state: str,
-    municipality: str,
+    locality: str,
 ) -> None:
     """
     Convert legal text file to Markdown using heading structure analysis.
@@ -353,7 +359,7 @@ def text2md(
         input_path: Path to source .txt file containing legal text
         output_path: Path where Markdown file should be written
         state: Two-letter state abbreviation (e.g., "IL", "CA")
-        municipality: Municipality name (e.g., "WindyCity", "LosAngeles")
+        locality: Locality name (e.g., "WindyCity", "LosAngeles")
 
     Raises:
         FileNotFoundError: If input file does not exist
@@ -367,11 +373,11 @@ def text2md(
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")
     """
-    _validate_conversion_inputs(structure, input_path, output_path, state, municipality)
+    _validate_conversion_inputs(structure, input_path, output_path, state, locality)
     compiled_patterns = _compile_heading_patterns(structure)
     lines = _read_source_file(input_path)
     converted_lines = _process_markdown_lines(lines, compiled_patterns, structure)
-    frontmatter = _generate_frontmatter(structure, state, municipality)
+    frontmatter = _generate_frontmatter(structure, state, locality)
     _write_markdown_file(output_path, frontmatter, converted_lines)
 
 
@@ -380,7 +386,7 @@ def _validate_conversion_inputs(
     input_path: str,
     output_path: str,
     state: str,
-    municipality: str,
+    locality: str,
 ) -> None:
     """Validate inputs for text2md function.
 
@@ -403,8 +409,8 @@ def _validate_conversion_inputs(
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
 
-    if not municipality or not municipality.strip():
-        raise ValueError("Municipality cannot be empty")
+    if not locality or not locality.strip():
+        raise ValueError("Locality cannot be empty")
 
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.exists(output_dir):
@@ -602,3 +608,75 @@ def _write_markdown_file(
         logger.debug(f"Wrote converted content to {output_path}")
     except IOError as e:
         raise ValueError(f"Error writing output file {output_path}: {str(e)}")
+
+
+def convert_to_markdown(code_ref: CodeRef) -> Path:
+    """Convert a legal code's raw text to structured Markdown.
+
+    Locates the raw text file under ``code_ref.full_data_dir``, analyses
+    heading structure via LLM, and writes ``code.md`` to the code directory.
+
+    File search order:
+        1. ``{code_dir}/code.txt``
+        2. ``{code_dir}/raw/code.txt``
+        3. First ``*.txt`` in ``{code_dir}/raw/``
+
+    Args:
+        code_ref: Identifies the legal code to convert.
+
+    Returns:
+        Path to the generated ``code.md`` file.
+
+    Raises:
+        FileNotFoundError: If the code directory, raw directory, or a
+            suitable text file cannot be found.
+    """
+    from loguru import logger
+
+    from legiscope.llm_config import Config
+
+    code_dir = code_ref.full_data_dir
+
+    if not code_dir.exists():
+        raise FileNotFoundError(f"Directory does not exist: {code_dir}")
+
+    raw_dir = code_dir / "raw"
+    if not raw_dir.exists():
+        raise FileNotFoundError(f"Missing raw subdirectory: {raw_dir}")
+
+    # Find input text file
+    input_path = code_dir / "code.txt"
+    if not input_path.exists():
+        input_path = raw_dir / "code.txt"
+        if not input_path.exists():
+            txt_files = list(raw_dir.glob("*.txt"))
+            if txt_files:
+                input_path = txt_files[0]
+                logger.info(f"Using: {input_path.name}")
+            else:
+                raise FileNotFoundError(
+                    f"No .txt files found in {raw_dir} or {code_dir}"
+                )
+
+    logger.info(f"Converting {code_ref.code_id}...")
+
+    client = Config.get_powerful_client()
+
+    structure = scan_legal_text(
+        client=client,
+        file_path=str(input_path),
+        max_lines=DEFAULT_SCAN_MAX_LINES,
+    )
+
+    output_path = code_dir / "code.md"
+    logger.info("Converting to Markdown...")
+    text2md(
+        structure=structure,
+        input_path=str(input_path),
+        output_path=str(output_path),
+        state=code_ref.jurisdiction.state,
+        locality=code_ref.jurisdiction.locality or "",
+    )
+
+    logger.info(f"Converted {code_ref.code_id}: {input_path} -> {output_path}")
+    return output_path

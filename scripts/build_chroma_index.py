@@ -29,13 +29,19 @@ import chromadb
 import polars as pl
 from loguru import logger
 
-from legiscope.embeddings import CHROMA_BATCH_SIZE, _add_documents_to_collection
+from legiscope.embeddings import (
+    EMBEDDING_PROVIDER,
+    CollectionConfig,
+    _add_documents_to_collection,
+)
 from legiscope.models import LAWS_DIR
+
+_DEFAULT_COLLECTION = CollectionConfig(provider=EMBEDDING_PROVIDER).collection_name
 
 
 def build_chroma_index(
     persist_directory: str = "data/chroma_db",
-    collection_name: str = "legal_code_all",
+    collection_name: str = _DEFAULT_COLLECTION,
 ) -> None:
     """Rebuild ChromaDB from all embeddings.parquet files."""
     parquet_files = sorted(LAWS_DIR.glob("**/embeddings.parquet"))
@@ -105,7 +111,7 @@ def main():
     )
     parser.add_argument(
         "--collection-name",
-        default="legal_code_all",
+        default=_DEFAULT_COLLECTION,
         help="ChromaDB collection name",
     )
 

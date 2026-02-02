@@ -12,11 +12,25 @@ from pathlib import Path
 
 import polars as pl
 
+from legiscope import config as cfg
+
+
 # ---------------------------------------------------------------------------
-# Data directory root (relative to project root)
+# Data directory helpers (read from config.yaml at access time)
 # ---------------------------------------------------------------------------
-DATA_DIR = Path("data")
-LAWS_DIR = DATA_DIR / "laws"
+def _data_dir() -> Path:
+    return cfg.data_dir()
+
+
+def _laws_dir() -> Path:
+    return cfg.laws_dir()
+
+
+# Backward-compatible module-level properties.  These are evaluated once at
+# import time, so callers that need runtime ``LEGISCOPE_DATA_DIR`` support
+# should use ``_data_dir()`` / ``_laws_dir()`` (or ``cfg.data_dir()``) instead.
+DATA_DIR = _data_dir()
+LAWS_DIR = _laws_dir()
 
 # ---------------------------------------------------------------------------
 # Parquet schema constants
@@ -25,7 +39,7 @@ LAWS_DIR = DATA_DIR / "laws"
 JURISDICTIONS_SCHEMA = {
     "jurisdiction_id": pl.String,
     "state": pl.String,
-    "municipality": pl.String,
+    "locality": pl.String,
     "level": pl.String,
     "name": pl.String,
     "parent_jurisdiction": pl.String,
@@ -72,42 +86,42 @@ EXTERNAL_REFERENCES_SCHEMA = {
 
 @dataclass(frozen=True)
 class JurisdictionRef:
-    """Reference to a jurisdiction (state or state + municipality).
+    """Reference to a jurisdiction (state or state + locality).
 
     Attributes:
         state: Two-letter state abbreviation (e.g. ``"CA"``).
-        municipality: Municipality name in PascalCase, or ``None`` for
+        locality: Locality name in PascalCase, or ``None`` for
             state-level jurisdictions (e.g. ``"LosAngeles"``).
     """
 
     state: str
-    municipality: str | None = None
+    locality: str | None = None
 
     def __post_init__(self):
         if not self.state or not self.state.strip():
             raise ValueError("state cannot be empty")
         # Normalize state to uppercase via object.__setattr__ (frozen dataclass)
         object.__setattr__(self, "state", self.state.strip().upper())
-        if self.municipality is not None:
-            stripped = self.municipality.strip().replace(" ", "")
+        if self.locality is not None:
+            stripped = self.locality.strip().replace(" ", "")
             if not stripped:
-                raise ValueError("municipality cannot be empty string")
-            object.__setattr__(self, "municipality", stripped)
+                raise ValueError("locality cannot be empty string")
+            object.__setattr__(self, "locality", stripped)
 
     @property
     def jurisdiction_id(self) -> str:
         """Globally unique jurisdiction identifier.
 
-        Format: ``"{STATE}"`` or ``"{STATE}-{Municipality}"``.
+        Format: ``"{STATE}"`` or ``"{STATE}-{Locality}"``.
         """
-        if self.municipality:
-            return f"{self.state}-{self.municipality}"
+        if self.locality:
+            return f"{self.state}-{self.locality}"
         return self.state
 
     @property
     def level(self) -> str:
         """``"state"`` or ``"local"``."""
-        return "local" if self.municipality else "state"
+        return "local" if self.locality else "state"
 
 
 @dataclass(frozen=True)
@@ -133,9 +147,9 @@ class CodeRef:
 
         Format: ``"{state}:{subdivision}:{code_slug}"``.
         The subdivision is ``"state"`` for state-level codes, or the
-        municipality name for local codes.
+        locality name for local codes.
         """
-        subdivision = self.jurisdiction.municipality or "state"
+        subdivision = self.jurisdiction.locality or "state"
         return f"{self.jurisdiction.state}:{subdivision}:{self.code_slug}"
 
     @property
@@ -162,20 +176,67 @@ class CodeRef:
         """Relative path from ``data/laws/`` to this code's directory.
 
         For state-level codes: ``{STATE}/State/{code_slug}/``
-        For local codes: ``{STATE}/{Municipality}/{code_slug}/``
+        For local codes: ``{STATE}/{Locality}/{code_slug}/``
         """
-        subdivision = self.jurisdiction.municipality or "State"
+        subdivision = self.jurisdiction.locality or "State"
         return Path(self.jurisdiction.state) / subdivision / self.code_slug
 
     @property
     def full_data_dir(self) -> Path:
         """Full relative path from project root to this code's directory."""
-        return LAWS_DIR / self.data_dir
+        return _laws_dir() / self.data_dir
+
+    @classmethod
+    def from_dvc_vars(
+        cls,
+        state: str | None = None,
+        locality: str | None = None,
+        code_slug: str | None = None,
+    ) -> "CodeRef":
+        """Create a ``CodeRef`` from DVC pipeline variables.
+
+        DVC stages pass ``${jurisdiction.state}``,
+        ``${jurisdiction.locality}``, and ``${jurisdiction.code_slug}``
+        as CLI arguments.  This factory mirrors that convention and raises
+        :class:`ValueError` for any missing field.
+
+        The sentinel value ``"State"`` for *locality* is normalised to
+        ``None`` so that DVC pipelines (which cannot omit an interpolated
+        argument) can represent state-level codes.
+
+        Args:
+            state: Two-letter state abbreviation.
+            locality: Locality name, ``"State"`` for state-level,
+                or ``None``.
+            code_slug: URL-friendly code identifier.
+
+        Returns:
+            A fully initialised ``CodeRef``.
+        """
+        if not state:
+            raise ValueError("state is required")
+        if not code_slug:
+            raise ValueError("code_slug is required")
+        # Normalise the DVC sentinel: "State" means state-level (no locality)
+        if locality is not None and locality.strip() == "State":
+            locality = None
+        jurisdiction = JurisdictionRef(state=state, locality=locality)
+        return cls(jurisdiction=jurisdiction, code_slug=code_slug)
 
 
 # ---------------------------------------------------------------------------
-# Registry file paths
+# Registry file paths (dynamic to respect LEGISCOPE_DATA_DIR)
 # ---------------------------------------------------------------------------
 
-JURISDICTIONS_PARQUET = DATA_DIR / "jurisdictions.parquet"
-CODES_PARQUET = DATA_DIR / "codes.parquet"
+
+def jurisdictions_parquet() -> Path:
+    return _data_dir() / "jurisdictions.parquet"
+
+
+def codes_parquet() -> Path:
+    return _data_dir() / "codes.parquet"
+
+
+# Backward-compatible constants (evaluated at import time)
+JURISDICTIONS_PARQUET = _data_dir() / "jurisdictions.parquet"
+CODES_PARQUET = _data_dir() / "codes.parquet"

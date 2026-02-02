@@ -1,17 +1,18 @@
 """Tests for legiscope.utils module."""
 
-import pytest
 import argparse
 import os
 from unittest.mock import Mock, patch
+
+import pytest
 from pydantic import BaseModel
 
 from legiscope.utils import (
-    ask,
-    str2bool,
     LLMConfig,
+    ask,
     create_jurisdiction_structure,
     resolve_model_default,
+    str2bool,
 )
 
 
@@ -297,17 +298,17 @@ class TestCreateJurisdictionStructure:
     def test_valid_creation(self):
         """Test successful structure creation."""
         with patch("os.makedirs") as mock_makedirs:
-            path = create_jurisdiction_structure("IL", "WindyCity")
+            path = create_jurisdiction_structure("IL", "WindyTown")
 
             # Check return value
-            assert path == os.path.join("data", "laws", "IL-WindyCity")
+            assert path == os.path.join("data", "laws", "IL-WindyTown")
 
             # Check directories created
             # Base directory + 3 subdirectories = 4 calls
             assert mock_makedirs.call_count == 4
 
             # Check calls
-            base_path = os.path.join("data", "laws", "IL-WindyCity")
+            base_path = os.path.join("data", "laws", "IL-WindyTown")
             mock_makedirs.assert_any_call(base_path, exist_ok=True)
             mock_makedirs.assert_any_call(os.path.join(base_path, "raw"), exist_ok=True)
             mock_makedirs.assert_any_call(
@@ -322,7 +323,7 @@ class TestCreateJurisdictionStructure:
         with pytest.raises(ValueError, match="State cannot be empty"):
             create_jurisdiction_structure("", "City")
 
-        with pytest.raises(ValueError, match="Municipality cannot be empty"):
+        with pytest.raises(ValueError, match="Locality cannot be empty"):
             create_jurisdiction_structure("State", "")
 
     def test_invalid_characters(self):
@@ -330,20 +331,18 @@ class TestCreateJurisdictionStructure:
         with pytest.raises(ValueError, match="State must contain only alphanumeric"):
             create_jurisdiction_structure("CA!", "LosAngeles")
 
-        with pytest.raises(
-            ValueError, match="Municipality must contain only alphanumeric"
-        ):
+        with pytest.raises(ValueError, match="Locality must contain only alphanumeric"):
             create_jurisdiction_structure(
                 "CA", "Los Angeles!"
             )  # spaces not allowed in validation logic?
-            # actually logic says: municipality.strip().replace(" ", "") then check isalnum
+            # actually logic says: locality.strip().replace(" ", "") then check isalnum
             # So "Los Angeles" is valid. "Los Angeles!" is invalid.
 
     def test_os_error_handling(self):
         """Test handling of OS errors."""
         with patch("os.makedirs", side_effect=OSError("Permission denied")):
             with pytest.raises(OSError, match="Failed to create directory structure"):
-                create_jurisdiction_structure("IL", "WindyCity")
+                create_jurisdiction_structure("IL", "WindyTown")
 
 
 class TestResolveModelDefault:

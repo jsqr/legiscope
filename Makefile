@@ -1,4 +1,4 @@
-.PHONY: help env clean-env test test-cov lint format fix list clean install init parse process query
+.PHONY: help env clean-env test test-cov lint typecheck format fix list clean install init parse process query dvc-repro
 
 # Default target
 help:
@@ -7,12 +7,18 @@ help:
 	@echo "  clean-env  - Remove virtual environment"
 	@echo "  test       - Run tests"
 	@echo "  test-cov   - Run tests with coverage report"
-	@echo "  lint       - Run linting checks"
+	@echo "  lint       - Run linting and formatting checks"
+	@echo "  typecheck  - Run type checks (basedpyright)"
 	@echo "  format     - Format code"
 	@echo "  fix        - Fix linting issues"
 	@echo "  list       - Show installed packages"
 	@echo "  clean      - Clean build artifacts"
 	@echo "  install    - Install package in development mode"
+	@echo ""
+	@echo "Pipeline (DVC — preferred):"
+	@echo "  dvc-repro  - Show DVC pipeline usage"
+	@echo ""
+	@echo "Pipeline (legacy — deprecated, use DVC instead):"
 	@echo "  init       - Initialize jurisdiction directory structure"
 	@echo "  parse      - Convert raw files to structured Markdown"
 	@echo "  process    - Create embeddings and build search index"
@@ -45,6 +51,10 @@ lint:
 	@echo "Checking formatting..."
 	@uv run ruff format --check src/ tests/
 
+typecheck:
+	@echo "Running type checks..."
+	@uv run basedpyright src/
+
 format:
 	@echo "Formatting code..."
 	@uv run ruff format src/ tests/
@@ -75,35 +85,51 @@ install:
 	@uv sync
 	@echo "Installation complete."
 
-# Pipeline stages
+# DVC pipeline (preferred interface)
+dvc-repro:
+	@echo "Run the DVC pipeline with:"
+	@echo ""
+	@echo "  ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG"
+	@echo ""
+	@echo "Or call DVC directly:"
+	@echo ""
+	@echo "  dvc exp run -S jurisdiction.state=STATE -S jurisdiction.locality=LOCALITY -S jurisdiction.code_slug=SLUG"
+	@echo ""
+	@echo "Initialize a new jurisdiction first:"
+	@echo ""
+	@echo "  python -m legiscope.pipeline.init --state STATE --locality LOCALITY --code-slug SLUG --name 'Display Name'"
+	@echo ""
+	@echo "See ./scripts/dvc_repro.sh --help for full options."
+
+# Legacy pipeline stages (deprecated — use DVC workflow above)
 init:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
-		echo "Usage: make init STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make init STATE=CA CODE_SLUG=municipal-code [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_init.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+	@./scripts/pipeline_init.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)"
 
 parse:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
-		echo "Usage: make parse STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make parse STATE=CA CODE_SLUG=municipal-code [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_parse.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+	@./scripts/pipeline_parse.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)"
 
 process:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
-		echo "Usage: make process STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make process STATE=CA CODE_SLUG=municipal-code [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_process.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+	@./scripts/pipeline_process.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)"
 
 query:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ] || [ -z "$(QUERIES)" ]; then \
-		echo "Usage: make query STATE=CA CODE_SLUG=municipal-code QUERIES=path/to/queries.csv [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make query STATE=CA CODE_SLUG=municipal-code QUERIES=path/to/queries.csv [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_query.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)" "$(QUERIES)"
+	@./scripts/pipeline_query.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)" "$(QUERIES)"

@@ -206,22 +206,22 @@ def create_code_structure(code_ref: "CodeRef") -> Path:
         ) from e
 
 
-def create_jurisdiction_structure(state: str, municipality: str) -> str:
+def create_jurisdiction_structure(state: str, locality: str) -> str:
     """
     Create the directory structure for a new jurisdiction.
 
     Create the standard directory hierarchy under data/laws/ for a given
-    state and municipality, following the pattern: data/laws/{state}-{municipality}/
+    state and locality, following the pattern: data/laws/{state}-{locality}/
 
     Args:
         state: Two-letter state abbreviation (e.g., "IL", "CA", "NY")
-        municipality: Municipality name (e.g., "WindyCity", "LosAngeles", "NewYork")
+        locality: Locality name (e.g., "WindyCity", "LosAngeles", "NewYork")
 
     Returns:
         str: The base path to the created jurisdiction directory
 
     Raises:
-        ValueError: If state or municipality is empty or contains invalid characters
+        ValueError: If state or locality is empty or contains invalid characters
 
     Example:
         >>> base_path = create_jurisdiction_structure("CA", "LosAngeles")
@@ -236,18 +236,18 @@ def create_jurisdiction_structure(state: str, municipality: str) -> str:
     """
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
-    if not municipality or not municipality.strip():
-        raise ValueError("Municipality cannot be empty")
+    if not locality or not locality.strip():
+        raise ValueError("Locality cannot be empty")
 
     state = state.strip().upper()
-    municipality = municipality.strip().replace(" ", "")
+    locality = locality.strip().replace(" ", "")
 
     if not state.replace("-", "").isalnum():
         raise ValueError("State must contain only alphanumeric characters")
-    if not municipality.replace("-", "").isalnum():
-        raise ValueError("Municipality must contain only alphanumeric characters")
+    if not locality.replace("-", "").isalnum():
+        raise ValueError("Locality must contain only alphanumeric characters")
 
-    jurisdiction_name = f"{state}-{municipality}"
+    jurisdiction_name = f"{state}-{locality}"
 
     base_path = os.path.join("data", "laws", jurisdiction_name)
     subdirs = ["raw", "processed", "tables"]

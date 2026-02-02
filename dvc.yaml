@@ -1,0 +1,91 @@
+# Legiscope DVC Pipeline
+#
+# Process a single legal code through: parse -> segment -> embed -> index
+#
+# Default jurisdiction is set in params.yaml. Override at runtime:
+#
+#   dvc exp run \
+#     -S jurisdiction.state=CA \
+#     -S jurisdiction.locality=LosAngeles \
+#     -S jurisdiction.code_slug=municipal-code
+#
+# For state-level codes, use locality=State:
+#
+#   dvc exp run \
+#     -S jurisdiction.state=CA \
+#     -S jurisdiction.locality=State \
+#     -S jurisdiction.code_slug=penal-code
+#
+# Prerequisites:
+#   1. Initialise the jurisdiction (not a DVC stage):
+#        python -m legiscope.pipeline.init \
+#          --state CA --locality LosAngeles \
+#          --code-slug municipal-code --name "LA Municipal Code"
+#   2. Place raw source files in data/laws/{state}/{locality}/{code_slug}/raw/
+
+stages:
+    parse:
+        cmd: >-
+            python -m legiscope.pipeline.parse
+            --state ${jurisdiction.state}
+            --locality ${jurisdiction.locality}
+            --code-slug ${jurisdiction.code_slug}
+        deps:
+            - src/legiscope/pipeline/parse.py
+            - src/legiscope/convert.py
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/raw
+        params:
+            - jurisdiction
+            - llm
+        outs:
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
+
+    segment:
+        cmd: >-
+            python -m legiscope.pipeline.segment
+            --state ${jurisdiction.state}
+            --locality ${jurisdiction.locality}
+            --code-slug ${jurisdiction.code_slug}
+        deps:
+            - src/legiscope/pipeline/segment.py
+            - src/legiscope/segment.py
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
+        params:
+            - jurisdiction
+            - segmentation
+        outs:
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/segments.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/relations.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/external_references.parquet
+
+    embed:
+        cmd: >-
+            python -m legiscope.pipeline.embed
+            --state ${jurisdiction.state}
+            --locality ${jurisdiction.locality}
+            --code-slug ${jurisdiction.code_slug}
+        deps:
+            - src/legiscope/pipeline/embed.py
+            - src/legiscope/embeddings.py
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/segments.parquet
+        params:
+            - jurisdiction
+            - embeddings
+        outs:
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/embeddings.parquet
+
+    index:
+        cmd: >-
+            python -m legiscope.pipeline.index
+            --state ${jurisdiction.state}
+            --locality ${jurisdiction.locality}
+            --code-slug ${jurisdiction.code_slug}
+        deps:
+            - src/legiscope/pipeline/index.py
+            - src/legiscope/embeddings.py
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/embeddings.parquet
+        params:
+            - jurisdiction
+            - embeddings.default_provider

@@ -9,13 +9,28 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.embeddings import get_embedding_client, get_embeddings
+from legiscope.params import load_params
 from legiscope.utils import ask, resolve_model_default
 
-# Constants for retrieval and LLM operations
-DEFAULT_N_RESULTS = 10  # Default number of results to retrieve from embeddings
-DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal analysis
-DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
-DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
+
+def _retrieval_params() -> dict:
+    p = load_params()
+    return p.get("retrieval", {})
+
+
+def _llm_params() -> dict:
+    p = load_params()
+    return p.get("llm", {})
+
+
+# Constants for retrieval and LLM operations — read from params.yaml
+_rp = _retrieval_params()
+_lp = _llm_params()
+
+DEFAULT_N_RESULTS = _rp.get("n_results", 10)
+DEFAULT_TEMPERATURE = _lp.get("temperature", 0.0)
+DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
+DEFAULT_RELEVANCE_THRESHOLD = _rp.get("relevance", {}).get("threshold", 0.5)
 
 
 # ============================================================================
@@ -111,7 +126,7 @@ class JurisdictionStats:
     total_documents: int
     jurisdictions: dict[str, int] = field(default_factory=dict)
     states: dict[str, int] = field(default_factory=dict)
-    municipalities: dict[str, int] = field(default_factory=dict)
+    localities: dict[str, int] = field(default_factory=dict)
 
 
 # ============================================================================
@@ -574,7 +589,7 @@ def retrieve_segments(
             metadata_list = metadata_results[0]
             jurisdictions = set()
             states = set()
-            municipalities = set()
+            localities = set()
 
             for metadata in metadata_list:
                 if metadata:
@@ -582,15 +597,15 @@ def retrieve_segments(
                         jurisdictions.add(metadata["jurisdiction_id"])
                     if "state" in metadata:
                         states.add(metadata["state"])
-                    if "municipality" in metadata:
-                        municipalities.add(metadata["municipality"])
+                    if "locality" in metadata:
+                        localities.add(metadata["locality"])
 
             if jurisdictions:
                 logger.debug(f"Results from jurisdictions: {sorted(jurisdictions)}")
             if states:
                 logger.debug(f"Results from states: {sorted(states)}")
-            if municipalities:
-                logger.debug(f"Results from municipalities: {sorted(municipalities)}")
+            if localities:
+                logger.debug(f"Results from localities: {sorted(localities)}")
 
     # Convert ChromaDB results dict to dataclass
     return SegmentCollection(
@@ -608,7 +623,7 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
         collection: ChromaDB collection to analyze
 
     Returns:
-        JurisdictionStats: Statistics including counts per jurisdiction, state, and municipality
+        JurisdictionStats: Statistics including counts per jurisdiction, state, and locality
     """
     logger.info("Getting jurisdiction statistics from collection")
 
@@ -627,7 +642,7 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
         # Analyze jurisdiction distribution
         jurisdiction_counts = {}
         state_counts = {}
-        municipality_counts = {}
+        locality_counts = {}
 
         for metadata in metadata_list:
             if not metadata:
@@ -641,23 +656,21 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
                 state = metadata["state"]
                 state_counts[state] = state_counts.get(state, 0) + 1
 
-            if "municipality" in metadata:
-                municipality = metadata["municipality"]
-                municipality_counts[municipality] = (
-                    municipality_counts.get(municipality, 0) + 1
-                )
+            if "locality" in metadata:
+                locality = metadata["locality"]
+                locality_counts[locality] = locality_counts.get(locality, 0) + 1
 
         stats = JurisdictionStats(
             total_documents=len(metadata_list),
             jurisdictions=jurisdiction_counts,
             states=state_counts,
-            municipalities=municipality_counts,
+            localities=locality_counts,
         )
 
         logger.info(f"Collection stats: {stats.total_documents} total documents")
         logger.info(f"  Jurisdictions: {len(jurisdiction_counts)}")
         logger.info(f"  States: {len(state_counts)}")
-        logger.info(f"  Municipalities: {len(municipality_counts)}")
+        logger.info(f"  Localities: {len(locality_counts)}")
 
         return stats
 

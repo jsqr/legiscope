@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """
+DEPRECATED: Use the DVC pipeline instead:
+    ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG --stage embed
+
 Create embeddings for segmented legal code.
 
 Usage:
-    python scripts/create_embeddings.py --state CA --municipality LosAngeles --code-slug municipal-code
+    python scripts/create_embeddings.py --state CA --locality LosAngeles --code-slug municipal-code
     python scripts/create_embeddings.py --state CA --code-slug penal-code
 """
 
@@ -102,19 +105,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --state CA --municipality LosAngeles --code-slug municipal-code
+  %(prog)s --state CA --locality LosAngeles --code-slug municipal-code
   %(prog)s --state CA --code-slug penal-code
         """,
     )
     parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
     parser.add_argument(
-        "--municipality", default=None, help="Municipality name (omit for state-level)"
+        "--locality", default=None, help="Locality name (omit for state-level)"
     )
     parser.add_argument("--code-slug", required=True, help="Code slug identifier")
 
     args = parser.parse_args()
 
-    jurisdiction = JurisdictionRef(state=args.state, municipality=args.municipality)
+    jurisdiction = JurisdictionRef(state=args.state, locality=args.locality)
     code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
 
     create_embeddings(code_ref)

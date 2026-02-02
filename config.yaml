@@ -1,0 +1,21 @@
+# Infrastructure configuration
+# Not tracked by DVC - deployment/environment specific
+
+paths:
+  # Root data directory (override via LEGISCOPE_DATA_DIR env var)
+  data_dir: "data"
+
+  # Subdirectories (relative to data_dir)
+  laws_dir: "laws"
+  chroma_db_dir: "chroma_db"
+  queries_dir: "queries"
+  output_dir: "output"
+
+database:
+  chromadb:
+    default_collection: "legal_code"
+    model_suffix: true  # Append model name to collection (e.g., legal_code_mistral)
+
+logging:
+  level: "INFO"
+  batch_log_interval: 100
