@@ -1,9 +1,9 @@
 # legiscope
 
-Automated analysis of municipal codes for legal epidemiology.
+Automated analysis of local codes for legal epidemiology.
 
 `legiscope` implements a retrieval and query pipeline for extracting information
-from municipal codes for research purposes. It aims to:
+from local codes for research purposes. It aims to:
 
 1. preserve the structure of the source documents for precise segmentation
    and accurate citations, despite differences in source formats;
@@ -91,6 +91,9 @@ make test
 # Run linting and formatting checks
 make lint
 
+# Run type checks
+make typecheck
+
 # Format code
 make format
 
@@ -100,9 +103,9 @@ make fix
 
 ## Usage
 
-### Processing Municipal Codes
+### Processing Local Codes
 
-The pipeline uses [DVC](https://dvc.org/) to manage reproducible stages:
+The preprocessing pipeline uses [DVC](https://dvc.org/) to manage reproducible stages:
 **parse → segment → embed → index**.
 
 #### Step 1: Initialize a jurisdiction (one-time setup)
@@ -125,7 +128,7 @@ python -m legiscope.pipeline.init \
     --state CA --code-slug penal-code --name "CA Penal Code"
 ```
 
-#### Step 2: Run the pipeline
+#### Step 2: Run the preprocessing pipeline
 
 Use the wrapper script, which calls `dvc exp run` with the right `-S` flags:
 
@@ -151,19 +154,16 @@ Run a single stage:
 
 ### Running Queries
 
-The pipeline can optionally run a batch of queries against the processed legal code:
+Run batch queries against processed legal codes using the query script:
 
 ```bash
-# Run pipeline with queries
-./scripts/pipeline.sh CA LosAngeles data/queries/test_queries.csv
-```
+# Minimal example (using defaults)
+uv run python scripts/run_queries.py \
+    --queries-path "data/queries/test_queries.csv" \
+    --jurisdiction-id "CA-LosAngeles"
 
-You can also run the query script directly for more control over processing options:
-
-```bash
 # Full configuration example (maximum control)
-source .venv/bin/activate
-python scripts/run_queries.py \
+uv run python scripts/run_queries.py \
     --queries-path "data/queries/test_queries.csv" \
     --jurisdiction-id "CA-LosAngeles" \
     --n-results 10 \
@@ -172,12 +172,6 @@ python scripts/run_queries.py \
     --relevance-threshold 0.5 \
     --validate-supporting-passages True \
     --output "data/output/CA-LosAngeles/test_results.csv"
-
-# Minimal example (using defaults)
-source .venv/bin/activate
-python scripts/run_queries.py \
-    --queries-path "data/queries/test_queries.csv" \
-    --jurisdiction-id "CA-LosAngeles"
 ```
 
 **Script Arguments (run_queries.py):**
@@ -213,6 +207,10 @@ Query results are saved to `data/output/{JURISDICTION}/query_results.csv` and in
 - Citations and supporting passages
 - Confidence scores
 - Processing metrics
+
+> **Note:** Query execution is currently a standalone step, separate from the
+> DVC preprocessing pipeline. A dedicated query DVC pipeline may be added in
+> the future.
 
 ## Scripts and Modules
 
@@ -253,13 +251,16 @@ Query results are saved to `data/output/{JURISDICTION}/query_results.csv` and in
 
 ## Data Directory Structure
 
-The project organizes municipal code data in a structured hierarchy:
+The default data location is `data/` (set in `config.yaml`) and can be overridden
+with the `LEGISCOPE_DATA_DIR` environment variable.
+
+The project organizes local code data in a structured hierarchy:
 
 ```txt
 data/
 ├── jurisdictions.parquet           # Registry of all jurisdictions
 ├── codes.parquet                   # Registry of all legal codes
-├── laws/                           # Municipal code data
+├── laws/                           # Legal code data
 │   └── {STATE}/{Locality}/{code-slug}/
 │       ├── raw/                    # Original source files (DOCX, PDF, etc.)
 │       ├── code.md                 # Structured Markdown
@@ -275,6 +276,34 @@ data/
 │       └── query_results.csv
 └── monqcle_data/                   # Human-annotated MonQcle data
 ```
+
+### DVC Remote Storage
+
+DVC can push/pull data to a remote store so that collaborators and CI systems
+share processed artifacts without re-running the pipeline.
+
+#### Setup
+
+1. Choose a storage backend (S3, GCS, SSH, local path, etc.).
+2. Add the remote:
+
+   ```bash
+   dvc remote add -d myremote gs://my-bucket/legiscope
+   ```
+
+3. Push data after running the pipeline:
+
+   ```bash
+   dvc push
+   ```
+
+4. Pull data on another machine:
+
+   ```bash
+   dvc pull
+   ```
+
+See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management/remote-storage) for full configuration options.
 
 ### Project Structure
 
