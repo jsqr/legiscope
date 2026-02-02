@@ -230,11 +230,16 @@ pytest tests/test_llm_config.py
 ### Linting and Formatting
 
 ```bash
-# Run all linting and formatting checks
+# Run linting and formatting checks
 make lint
 # Or manually:
 ruff check src/ tests/
 ruff format --check src/ tests/
+
+# Run type checks separately
+make typecheck
+# Or manually:
+basedpyright src/
 
 # Format code
 make format

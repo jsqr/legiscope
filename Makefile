@@ -1,4 +1,4 @@
-.PHONY: help env clean-env test test-cov lint format fix list clean install init parse process query dvc-repro
+.PHONY: help env clean-env test test-cov lint typecheck format fix list clean install init parse process query dvc-repro
 
 # Default target
 help:
@@ -7,7 +7,8 @@ help:
 	@echo "  clean-env  - Remove virtual environment"
 	@echo "  test       - Run tests"
 	@echo "  test-cov   - Run tests with coverage report"
-	@echo "  lint       - Run linting checks"
+	@echo "  lint       - Run linting and formatting checks"
+	@echo "  typecheck  - Run type checks (basedpyright)"
 	@echo "  format     - Format code"
 	@echo "  fix        - Fix linting issues"
 	@echo "  list       - Show installed packages"
@@ -49,6 +50,8 @@ lint:
 	@uv run ruff check src/ tests/
 	@echo "Checking formatting..."
 	@uv run ruff format --check src/ tests/
+
+typecheck:
 	@echo "Running type checks..."
 	@uv run basedpyright src/
 
