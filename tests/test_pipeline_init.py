@@ -56,23 +56,23 @@ class TestLoadOrCreateParquet:
 class TestAppendJurisdiction:
     def test_appends_new_jurisdiction(self, tmp_path):
         parquet = tmp_path / "jurisdictions.parquet"
-        ref = JurisdictionRef(state="IL", locality="WindyCity")
+        ref = JurisdictionRef(state="IL", locality="WindyTown")
 
         with patch.object(pipeline_init, "JURISDICTIONS_PARQUET", parquet):
-            pipeline_init._append_jurisdiction(ref, "City of WindyCity")
+            pipeline_init._append_jurisdiction(ref, "City of WindyTown")
 
         df = pl.read_parquet(parquet)
         assert df.height == 1
-        assert df["jurisdiction_id"][0] == "IL-WindyCity"
+        assert df["jurisdiction_id"][0] == "IL-WindyTown"
         assert df["parent_jurisdiction"][0] == "IL"
 
     def test_skips_duplicate(self, tmp_path):
         parquet = tmp_path / "jurisdictions.parquet"
-        ref = JurisdictionRef(state="IL", locality="WindyCity")
+        ref = JurisdictionRef(state="IL", locality="WindyTown")
 
         with patch.object(pipeline_init, "JURISDICTIONS_PARQUET", parquet):
-            pipeline_init._append_jurisdiction(ref, "City of WindyCity")
-            pipeline_init._append_jurisdiction(ref, "City of WindyCity")
+            pipeline_init._append_jurisdiction(ref, "City of WindyTown")
+            pipeline_init._append_jurisdiction(ref, "City of WindyTown")
 
         df = pl.read_parquet(parquet)
         assert df.height == 1
@@ -108,33 +108,33 @@ class TestAppendCode:
     def test_appends_new_code(self, tmp_path):
         parquet = tmp_path / "codes.parquet"
         code_ref = CodeRef(
-            jurisdiction=JurisdictionRef(state="IL", locality="WindyCity"),
+            jurisdiction=JurisdictionRef(state="IL", locality="WindyTown"),
             code_slug="municipal-code",
         )
 
         with patch.object(pipeline_init, "CODES_PARQUET", parquet):
             pipeline_init._append_code(
-                code_ref, "WindyCity Municipal Code", "municipal"
+                code_ref, "WindyTown Municipal Code", "municipal"
             )
 
         df = pl.read_parquet(parquet)
         assert df.height == 1
-        assert df["code_id"][0] == "IL:WindyCity:municipal-code"
+        assert df["code_id"][0] == "IL:WindyTown:municipal-code"
         assert df["code_type"][0] == "municipal"
 
     def test_skips_duplicate(self, tmp_path):
         parquet = tmp_path / "codes.parquet"
         code_ref = CodeRef(
-            jurisdiction=JurisdictionRef(state="IL", locality="WindyCity"),
+            jurisdiction=JurisdictionRef(state="IL", locality="WindyTown"),
             code_slug="municipal-code",
         )
 
         with patch.object(pipeline_init, "CODES_PARQUET", parquet):
             pipeline_init._append_code(
-                code_ref, "WindyCity Municipal Code", "municipal"
+                code_ref, "WindyTown Municipal Code", "municipal"
             )
             pipeline_init._append_code(
-                code_ref, "WindyCity Municipal Code", "municipal"
+                code_ref, "WindyTown Municipal Code", "municipal"
             )
 
         df = pl.read_parquet(parquet)
@@ -168,16 +168,16 @@ class TestMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
                 "--name",
-                "WindyCity Municipal Code",
+                "WindyTown Municipal Code",
             ]
         )
         j_parquet = tmp_path / "jurisdictions.parquet"
         c_parquet = tmp_path / "codes.parquet"
-        code_dir = tmp_path / "laws" / "IL" / "WindyCity" / "municipal-code"
+        code_dir = tmp_path / "laws" / "IL" / "WindyTown" / "municipal-code"
 
         with (
             patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
@@ -199,11 +199,11 @@ class TestMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
                 "--name",
-                "WindyCity Municipal Code",
+                "WindyTown Municipal Code",
             ]
         )
         j_parquet = tmp_path / "jurisdictions.parquet"
@@ -219,7 +219,7 @@ class TestMain:
             pipeline_init.main()
 
         j_df = pl.read_parquet(j_parquet)
-        assert j_df["name"][0] == "City of WindyCity"
+        assert j_df["name"][0] == "City of WindyTown"
 
     def test_state_level_jurisdiction_name(self, tmp_path, mock_cli_args):
         mock_cli_args(

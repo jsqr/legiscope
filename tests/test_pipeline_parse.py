@@ -15,7 +15,7 @@ class TestParseMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]

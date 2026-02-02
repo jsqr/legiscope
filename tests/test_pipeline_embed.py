@@ -21,7 +21,7 @@ class TestEmbedMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -62,7 +62,7 @@ class TestEmbedMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -103,7 +103,7 @@ class TestEmbedMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -158,7 +158,7 @@ class TestEmbedMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]

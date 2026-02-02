@@ -708,7 +708,7 @@ class TestBatchQueryConfig:
                 collection=Mock(),
                 sections_parquet_path="./data/sections.parquet",
                 queries=[],  # Empty queries
-                jurisdiction_id="IL-WindyCity",
+                jurisdiction_id="IL-WindyTown",
             )
 
     def test_empty_jurisdiction_raises_error(self):
@@ -916,7 +916,7 @@ class TestBatchQueryConfigBasics:
                     collection=mock_collection,
                     sections_parquet_path=str(sections_path),
                     queries=["query1", "query2"],
-                    jurisdiction_id="IL-WindyCity",
+                    jurisdiction_id="IL-WindyTown",
                     settings=settings,
                 )
 

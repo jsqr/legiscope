@@ -100,8 +100,8 @@ stages:
       size: 160092
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: 092812e8e446b8afd17e5b1f2b82ebb1
-      size: 40058
+      md5: c4a2941aefdb00697015a97784bf038d
+      size: 40980
     - path: src/legiscope/pipeline/embed.py
       hash: md5
       md5: 5a147848706b051a8e2de23b8be44277
@@ -137,8 +137,8 @@ stages:
       size: 3177264
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: 092812e8e446b8afd17e5b1f2b82ebb1
-      size: 40058
+      md5: c4a2941aefdb00697015a97784bf038d
+      size: 40980
     - path: src/legiscope/pipeline/index.py
       hash: md5
       md5: 2a4d837b3513d8b6c10c95336f75ea9c

@@ -570,9 +570,9 @@ class TestRetrievalConfig:
         """Test settings with jurisdiction filter."""
         from legiscope.retrieve import RetrievalSettings
 
-        settings = RetrievalSettings(jurisdiction_id="IL-WindyCity")
+        settings = RetrievalSettings(jurisdiction_id="IL-WindyTown")
 
-        assert settings.jurisdiction_id == "IL-WindyCity"
+        assert settings.jurisdiction_id == "IL-WindyTown"
 
     def test_with_hyde(self):
         """Test settings with HYDE rewriting enabled."""
@@ -649,14 +649,14 @@ class TestSectionRetrievalConfig:
 
         mock_client = Mock()
         settings = SectionRetrievalSettings(
-            jurisdiction_id="IL-WindyCity",
+            jurisdiction_id="IL-WindyTown",
             n_results=20,
             use_hyde=True,
             hyde_client=mock_client,
         )
 
         # Check inherited attributes work
-        assert settings.jurisdiction_id == "IL-WindyCity"
+        assert settings.jurisdiction_id == "IL-WindyTown"
         assert settings.n_results == 20
         assert settings.use_hyde is True
         assert settings.hyde_client is mock_client
@@ -703,7 +703,7 @@ class TestRetrievalConfigBasics:
         mock_collection.query.return_value = {
             "ids": [["1"]],
             "documents": [["doc1"]],
-            "metadatas": [[{"jurisdiction_id": "IL-WindyCity"}]],
+            "metadatas": [[{"jurisdiction_id": "IL-WindyTown"}]],
             "distances": [[0.1]],
         }
 
@@ -712,7 +712,7 @@ class TestRetrievalConfigBasics:
                 mock_get_embeddings.return_value = [[0.1, 0.2, 0.3]]
 
                 settings = RetrievalSettings(
-                    jurisdiction_id="IL-WindyCity", n_results=5
+                    jurisdiction_id="IL-WindyTown", n_results=5
                 )
 
                 retrieve_segments(mock_collection, "test query", settings)
@@ -720,7 +720,7 @@ class TestRetrievalConfigBasics:
                 # Check that query was called with where filter
                 call_kwargs = mock_collection.query.call_args.kwargs
                 assert "where" in call_kwargs
-                assert call_kwargs["where"] == {"jurisdiction_id": "IL-WindyCity"}
+                assert call_kwargs["where"] == {"jurisdiction_id": "IL-WindyTown"}
 
     def test_retrieve_segments_hyde_requires_client(self):
         """Test that use_hyde=True requires hyde_client."""

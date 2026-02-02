@@ -17,7 +17,7 @@ class TestSegmentMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -46,7 +46,7 @@ class TestSegmentMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -75,7 +75,7 @@ class TestSegmentMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -103,7 +103,7 @@ class TestSegmentMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -132,7 +132,7 @@ class TestSegmentMain:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]

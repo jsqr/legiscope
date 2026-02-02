@@ -21,8 +21,8 @@ def _make_embeddings_df(segment_ids: list[str]) -> pl.DataFrame:
     return pl.DataFrame(
         {
             "segment_id": segment_ids,
-            "code_id": ["IL:WindyCity:municipal-code"] * n,
-            "jurisdiction_id": ["IL-WindyCity"] * n,
+            "code_id": ["IL:WindyTown:municipal-code"] * n,
+            "jurisdiction_id": ["IL-WindyTown"] * n,
             "embedding": [[0.1, 0.2, 0.3]] * n,
         }
     )
@@ -46,7 +46,7 @@ class TestIncrementalIndexing:
         self, tmp_path, mock_cli_args, sample_code_ref
     ):
         """Segments already in the collection are filtered out."""
-        all_ids = ["IL:WindyCity:municipal-code:g0", "IL:WindyCity:municipal-code:g1"]
+        all_ids = ["IL:WindyTown:municipal-code:g0", "IL:WindyTown:municipal-code:g1"]
         embeddings_df = _make_embeddings_df(all_ids)
         embeddings_path = tmp_path / "embeddings.parquet"
         embeddings_df.write_parquet(embeddings_path)
@@ -59,7 +59,7 @@ class TestIncrementalIndexing:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -92,11 +92,11 @@ class TestIncrementalIndexing:
     def test_adds_only_new_segments(self, tmp_path, mock_cli_args, sample_code_ref):
         """Only segment IDs not in the collection are passed to add_jurisdiction_embeddings."""
         all_ids = [
-            "IL:WindyCity:municipal-code:g0",
-            "IL:WindyCity:municipal-code:g1",
-            "IL:WindyCity:municipal-code:g2",
+            "IL:WindyTown:municipal-code:g0",
+            "IL:WindyTown:municipal-code:g1",
+            "IL:WindyTown:municipal-code:g2",
         ]
-        existing_ids = ["IL:WindyCity:municipal-code:g0"]
+        existing_ids = ["IL:WindyTown:municipal-code:g0"]
         embeddings_df = _make_embeddings_df(all_ids)
         embeddings_path = tmp_path / "embeddings.parquet"
         embeddings_df.write_parquet(embeddings_path)
@@ -109,7 +109,7 @@ class TestIncrementalIndexing:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -141,13 +141,13 @@ class TestIncrementalIndexing:
         added_df = call_kwargs.kwargs["embeddings_df"]
         added_ids = set(added_df["segment_id"].to_list())
         assert added_ids == {
-            "IL:WindyCity:municipal-code:g1",
-            "IL:WindyCity:municipal-code:g2",
+            "IL:WindyTown:municipal-code:g1",
+            "IL:WindyTown:municipal-code:g2",
         }
 
     def test_empty_collection_adds_all(self, tmp_path, mock_cli_args, sample_code_ref):
         """Empty collection → all segments are added."""
-        all_ids = ["IL:WindyCity:municipal-code:g0", "IL:WindyCity:municipal-code:g1"]
+        all_ids = ["IL:WindyTown:municipal-code:g0", "IL:WindyTown:municipal-code:g1"]
         embeddings_df = _make_embeddings_df(all_ids)
         embeddings_path = tmp_path / "embeddings.parquet"
         embeddings_df.write_parquet(embeddings_path)
@@ -160,7 +160,7 @@ class TestIncrementalIndexing:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]
@@ -199,7 +199,7 @@ class TestIncrementalIndexing:
                 "--state",
                 "IL",
                 "--locality",
-                "WindyCity",
+                "WindyTown",
                 "--code-slug",
                 "municipal-code",
             ]

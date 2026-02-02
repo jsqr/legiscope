@@ -1,8 +1,8 @@
 ---
 jurisdiction:
   state: IL
-  municipality: WindyCity
-  full_name: IL - WindyCity
+  municipality: WindyTown
+  full_name: IL - WindyTown
 heading_patterns:
 - level: 1
   regex_pattern: ^CHAPTER\s+\d+(?:-\d+)?(?::?\s+.*)?$

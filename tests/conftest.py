@@ -10,20 +10,20 @@ import pytest
 from legiscope.models import CodeRef, JurisdictionRef
 
 
-FIXTURE_DIR = Path(__file__).parent / "fixtures" / "windycity"
+FIXTURE_DIR = Path(__file__).parent / "fixtures" / "windytown"
 
 
 @pytest.fixture
-def windycity_fixture_dir() -> Path:
-    """Path to the WindyCity test fixture directory."""
+def windytown_fixture_dir() -> Path:
+    """Path to the WindyTown test fixture directory."""
     return FIXTURE_DIR
 
 
 @pytest.fixture
 def sample_code_ref() -> CodeRef:
-    """CodeRef for the WindyCity municipal-code fixture."""
+    """CodeRef for the WindyTown municipal-code fixture."""
     return CodeRef(
-        jurisdiction=JurisdictionRef(state="IL", locality="WindyCity"),
+        jurisdiction=JurisdictionRef(state="IL", locality="WindyTown"),
         code_slug="municipal-code",
     )
 
@@ -52,7 +52,7 @@ def mock_cli_args(monkeypatch):
 
     Usage::
 
-        mock_cli_args(["--state", "IL", "--locality", "WindyCity",
+        mock_cli_args(["--state", "IL", "--locality", "WindyTown",
                         "--code-slug", "municipal-code"])
     """
 

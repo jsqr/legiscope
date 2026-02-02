@@ -298,17 +298,17 @@ class TestCreateJurisdictionStructure:
     def test_valid_creation(self):
         """Test successful structure creation."""
         with patch("os.makedirs") as mock_makedirs:
-            path = create_jurisdiction_structure("IL", "WindyCity")
+            path = create_jurisdiction_structure("IL", "WindyTown")
 
             # Check return value
-            assert path == os.path.join("data", "laws", "IL-WindyCity")
+            assert path == os.path.join("data", "laws", "IL-WindyTown")
 
             # Check directories created
             # Base directory + 3 subdirectories = 4 calls
             assert mock_makedirs.call_count == 4
 
             # Check calls
-            base_path = os.path.join("data", "laws", "IL-WindyCity")
+            base_path = os.path.join("data", "laws", "IL-WindyTown")
             mock_makedirs.assert_any_call(base_path, exist_ok=True)
             mock_makedirs.assert_any_call(os.path.join(base_path, "raw"), exist_ok=True)
             mock_makedirs.assert_any_call(
@@ -342,7 +342,7 @@ class TestCreateJurisdictionStructure:
         """Test handling of OS errors."""
         with patch("os.makedirs", side_effect=OSError("Permission denied")):
             with pytest.raises(OSError, match="Failed to create directory structure"):
-                create_jurisdiction_structure("IL", "WindyCity")
+                create_jurisdiction_structure("IL", "WindyTown")
 
 
 class TestResolveModelDefault:
