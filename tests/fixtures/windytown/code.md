@@ -1,7 +1,7 @@
 ---
 jurisdiction:
   state: IL
-  municipality: WindyTown
+  locality: WindyTown
   full_name: IL - WindyTown
 heading_patterns:
 - level: 1
