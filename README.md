@@ -154,7 +154,7 @@ The pipeline is split into independent stages for flexibility:
 Creates directory structure for a new jurisdiction:
 
 ```bash
-make init STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+make init STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
 # Creates: data/laws/CA/LosAngeles/municipal-code/raw/
 ```
 
@@ -164,7 +164,7 @@ After initialization, place your raw files (DOCX, TXT, etc.) in the `raw/` direc
 Converts raw files to structured Markdown:
 
 ```bash
-make parse STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+make parse STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
 # Converts DOCX → text → Markdown
 # Output: code.md
 ```
@@ -173,7 +173,7 @@ make parse STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
 Creates embeddings and builds search index:
 
 ```bash
-make process STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+make process STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
 # Segments code, generates embeddings, builds ChromaDB index
 # Outputs: sections.parquet, segments.parquet, embeddings.parquet
 ```
@@ -182,12 +182,12 @@ make process STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
 Runs batch queries against the processed code:
 
 ```bash
-make query STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
+make query STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
 # Output: data/output/query_results.csv
 ```
 
 #### State-level codes
-For state-level codes (not municipal), omit the MUNICIPALITY parameter or use a hyphen:
+For state-level codes (not municipal), omit the LOCALITY parameter or use a hyphen:
 
 ```bash
 make init STATE=CA CODE_SLUG=penal-code
@@ -293,7 +293,7 @@ The project organizes municipal code data in a structured hierarchy:
 ```{txt}
 data/
 ├── laws/                           # Municipal code data
-│   └── {state}-{municipality}/     # Jurisdiction-specific directories
+│   └── {state}-{locality}/     # Jurisdiction-specific directories
 │       ├── raw/                    # Original source files (DOCX, PDF, etc.)
 │       ├── processed/              # Processed text files and intermediate results
 │       │   ├── code.txt            # Converted plain text
@@ -306,7 +306,7 @@ data/
 ├── queries/                        # Query templates and examples
 │   └── example_queries.txt         # Example legal queries
 ├── output/                         # LLM query output
-│   └── {state}-{municipality}/     # Jurisdiction-specific directories
+│   └── {state}-{locality}/     # Jurisdiction-specific directories
 │       └── query_results.parquet   # Query results (if queries were run)
 └── monqcle_data/                   # Human-annotated MonQcle data
         └── monqcle_data.csv        # Data file of human-answered legal questions

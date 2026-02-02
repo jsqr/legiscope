@@ -78,32 +78,32 @@ install:
 # Pipeline stages
 init:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
-		echo "Usage: make init STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make init STATE=CA CODE_SLUG=municipal-code [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_init.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+	@./scripts/pipeline_init.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)"
 
 parse:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
-		echo "Usage: make parse STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make parse STATE=CA CODE_SLUG=municipal-code [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_parse.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+	@./scripts/pipeline_parse.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)"
 
 process:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ]; then \
-		echo "Usage: make process STATE=CA CODE_SLUG=municipal-code [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make process STATE=CA CODE_SLUG=municipal-code [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_process.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)"
+	@./scripts/pipeline_process.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)"
 
 query:
 	@if [ -z "$(STATE)" ] || [ -z "$(CODE_SLUG)" ] || [ -z "$(QUERIES)" ]; then \
-		echo "Usage: make query STATE=CA CODE_SLUG=municipal-code QUERIES=path/to/queries.csv [MUNICIPALITY=LosAngeles]"; \
-		echo "  Omit MUNICIPALITY for state-level codes."; \
+		echo "Usage: make query STATE=CA CODE_SLUG=municipal-code QUERIES=path/to/queries.csv [LOCALITY=LosAngeles]"; \
+		echo "  Omit LOCALITY for state-level codes."; \
 		exit 1; \
 	fi
-	@./scripts/pipeline_query.sh "$(STATE)" "$(or $(MUNICIPALITY),-)" "$(CODE_SLUG)" "$(QUERIES)"
+	@./scripts/pipeline_query.sh "$(STATE)" "$(or $(LOCALITY),-)" "$(CODE_SLUG)" "$(QUERIES)"

@@ -5,15 +5,15 @@
 # Wraps `dvc exp run -S` so callers don't have to remember the full syntax.
 #
 # Usage:
-#   ./scripts/dvc_repro.sh --state IL --municipality WindyCity --code-slug municipal-code
-#   ./scripts/dvc_repro.sh --state CA --municipality State --code-slug penal-code
-#   ./scripts/dvc_repro.sh --state CA --municipality LosAngeles --code-slug mc --stage segment
+#   ./scripts/dvc_repro.sh --state IL --locality WindyCity --code-slug municipal-code
+#   ./scripts/dvc_repro.sh --state CA --locality State --code-slug penal-code
+#   ./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug mc --stage segment
 #
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────
 STATE=""
-MUNICIPALITY=""
+LOCALITY=""
 CODE_SLUG=""
 STAGE=""
 EXP_NAME=""
@@ -23,14 +23,14 @@ VERBOSE=false
 # ── Usage ─────────────────────────────────────────────────────────
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --state STATE --municipality MUNICIPALITY --code-slug SLUG [OPTIONS]
+Usage: $(basename "$0") --state STATE --locality LOCALITY --code-slug SLUG [OPTIONS]
 
 Run the legiscope DVC pipeline for a single jurisdiction / legal code.
 
 Required:
   --state STATE              Two-letter state abbreviation (e.g. IL, CA)
-  --municipality MUNICIPALITY
-                             Municipality name in PascalCase, or "State" for
+  --locality LOCALITY
+                             Locality name in PascalCase, or "State" for
                              state-level codes
   --code-slug SLUG           Code slug identifier (e.g. municipal-code)
 
@@ -43,20 +43,20 @@ Optional:
 
 Examples:
   # Full pipeline for a municipal code
-  $(basename "$0") --state IL --municipality WindyCity --code-slug municipal-code
+  $(basename "$0") --state IL --locality WindyCity --code-slug municipal-code
 
   # State-level code
-  $(basename "$0") --state CA --municipality State --code-slug penal-code
+  $(basename "$0") --state CA --locality State --code-slug penal-code
 
   # Only run through segment stage
-  $(basename "$0") --state IL --municipality WindyCity --code-slug municipal-code \\
+  $(basename "$0") --state IL --locality WindyCity --code-slug municipal-code \\
       --stage segment --name "test-segmentation"
 
 Prerequisite:
   The jurisdiction must be initialised first:
-    python -m legiscope.pipeline.init --state STATE [--municipality MUN] \\
+    python -m legiscope.pipeline.init --state STATE [--locality MUN] \\
         --code-slug SLUG --name "Display Name"
-  and raw files placed in data/laws/STATE/MUNICIPALITY/SLUG/raw/
+  and raw files placed in data/laws/STATE/LOCALITY/SLUG/raw/
 
 EOF
     exit "${1:-0}"
@@ -66,7 +66,7 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --state)         STATE="$2";        shift 2 ;;
-        --municipality)  MUNICIPALITY="$2"; shift 2 ;;
+        --locality)  LOCALITY="$2"; shift 2 ;;
         --code-slug)     CODE_SLUG="$2";    shift 2 ;;
         --stage)         STAGE="$2";        shift 2 ;;
         --name)          EXP_NAME="$2";     shift 2 ;;
@@ -78,8 +78,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Validation ────────────────────────────────────────────────────
-if [[ -z "$STATE" || -z "$MUNICIPALITY" || -z "$CODE_SLUG" ]]; then
-    echo "Error: --state, --municipality, and --code-slug are all required." >&2
+if [[ -z "$STATE" || -z "$LOCALITY" || -z "$CODE_SLUG" ]]; then
+    echo "Error: --state, --locality, and --code-slug are all required." >&2
     usage 1
 fi
 
@@ -90,14 +90,14 @@ if [[ -n "$STAGE" ]]; then
     esac
 fi
 
-CODE_DIR="data/laws/${STATE}/${MUNICIPALITY}/${CODE_SLUG}"
+CODE_DIR="data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}"
 
 if [[ ! -d "$CODE_DIR" ]]; then
     echo "Error: directory does not exist: ${CODE_DIR}" >&2
     echo "" >&2
     echo "Initialise the jurisdiction first:" >&2
     echo "  python -m legiscope.pipeline.init \\" >&2
-    echo "    --state ${STATE} --municipality ${MUNICIPALITY} \\" >&2
+    echo "    --state ${STATE} --locality ${LOCALITY} \\" >&2
     echo "    --code-slug ${CODE_SLUG} --name \"<Display Name>\"" >&2
     exit 1
 fi
@@ -110,7 +110,7 @@ fi
 # ── Build DVC command ─────────────────────────────────────────────
 CMD=(dvc exp run)
 CMD+=(-S "jurisdiction.state=${STATE}")
-CMD+=(-S "jurisdiction.municipality=${MUNICIPALITY}")
+CMD+=(-S "jurisdiction.locality=${LOCALITY}")
 CMD+=(-S "jurisdiction.code_slug=${CODE_SLUG}")
 
 [[ -n "$STAGE" ]]       && CMD+=(--targets "$STAGE")
@@ -120,7 +120,7 @@ CMD+=(-S "jurisdiction.code_slug=${CODE_SLUG}")
 
 # ── Execute ───────────────────────────────────────────────────────
 echo "=== Legiscope DVC Pipeline ==="
-echo "Jurisdiction : ${STATE} / ${MUNICIPALITY}"
+echo "Jurisdiction : ${STATE} / ${LOCALITY}"
 echo "Code slug    : ${CODE_SLUG}"
 echo "Data dir     : ${CODE_DIR}"
 [[ -n "$STAGE" ]]    && echo "Target stage : ${STAGE}"

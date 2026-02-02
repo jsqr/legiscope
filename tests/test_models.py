@@ -26,13 +26,13 @@ class TestJurisdictionRef:
         ref = JurisdictionRef(state="CA")
         assert ref.jurisdiction_id == "CA"
         assert ref.level == "state"
-        assert ref.municipality is None
+        assert ref.locality is None
 
-    def test_state_and_municipality(self):
-        ref = JurisdictionRef(state="CA", municipality="LosAngeles")
+    def test_state_and_locality(self):
+        ref = JurisdictionRef(state="CA", locality="LosAngeles")
         assert ref.jurisdiction_id == "CA-LosAngeles"
         assert ref.level == "local"
-        assert ref.municipality == "LosAngeles"
+        assert ref.locality == "LosAngeles"
 
     def test_state_normalised_to_uppercase(self):
         ref = JurisdictionRef(state="ca")
@@ -43,9 +43,9 @@ class TestJurisdictionRef:
         ref = JurisdictionRef(state="  il  ")
         assert ref.state == "IL"
 
-    def test_municipality_spaces_removed(self):
-        ref = JurisdictionRef(state="CA", municipality="Los Angeles")
-        assert ref.municipality == "LosAngeles"
+    def test_locality_spaces_removed(self):
+        ref = JurisdictionRef(state="CA", locality="Los Angeles")
+        assert ref.locality == "LosAngeles"
         assert ref.jurisdiction_id == "CA-LosAngeles"
 
     def test_empty_state_raises(self):
@@ -56,9 +56,9 @@ class TestJurisdictionRef:
         with pytest.raises(ValueError, match="state cannot be empty"):
             JurisdictionRef(state="   ")
 
-    def test_empty_municipality_string_raises(self):
-        with pytest.raises(ValueError, match="municipality cannot be empty"):
-            JurisdictionRef(state="CA", municipality="  ")
+    def test_empty_locality_string_raises(self):
+        with pytest.raises(ValueError, match="locality cannot be empty"):
+            JurisdictionRef(state="CA", locality="  ")
 
     def test_frozen(self):
         ref = JurisdictionRef(state="CA")
@@ -78,22 +78,22 @@ class TestCodeRef:
         assert c.code_id == "CA:state:penal-code"
 
     def test_local_code_id(self):
-        j = JurisdictionRef(state="CA", municipality="LosAngeles")
+        j = JurisdictionRef(state="CA", locality="LosAngeles")
         c = CodeRef(jurisdiction=j, code_slug="municipal-code")
         assert c.code_id == "CA:LosAngeles:municipal-code"
 
     def test_jurisdiction_id_shortcut(self):
-        j = JurisdictionRef(state="IL", municipality="Chicago")
+        j = JurisdictionRef(state="IL", locality="Chicago")
         c = CodeRef(jurisdiction=j, code_slug="municipal-code")
         assert c.jurisdiction_id == "IL-Chicago"
 
     def test_section_id(self):
-        j = JurisdictionRef(state="CA", municipality="LosAngeles")
+        j = JurisdictionRef(state="CA", locality="LosAngeles")
         c = CodeRef(jurisdiction=j, code_slug="municipal-code")
         assert c.section_id(42) == "CA:LosAngeles:municipal-code:s42"
 
     def test_segment_id(self):
-        j = JurisdictionRef(state="CA", municipality="LosAngeles")
+        j = JurisdictionRef(state="CA", locality="LosAngeles")
         c = CodeRef(jurisdiction=j, code_slug="municipal-code")
         assert c.segment_id(7) == "CA:LosAngeles:municipal-code:g7"
 
@@ -103,12 +103,12 @@ class TestCodeRef:
         assert c.data_dir == Path("CA/State/penal-code")
 
     def test_data_dir_local(self):
-        j = JurisdictionRef(state="CA", municipality="LosAngeles")
+        j = JurisdictionRef(state="CA", locality="LosAngeles")
         c = CodeRef(jurisdiction=j, code_slug="municipal-code")
         assert c.data_dir == Path("CA/LosAngeles/municipal-code")
 
     def test_full_data_dir(self):
-        j = JurisdictionRef(state="IL", municipality="Chicago")
+        j = JurisdictionRef(state="IL", locality="Chicago")
         c = CodeRef(jurisdiction=j, code_slug="municipal-code")
         assert c.full_data_dir == LAWS_DIR / "IL" / "Chicago" / "municipal-code"
 
@@ -136,33 +136,29 @@ class TestCodeRef:
 
 class TestCodeRefFromDvcVars:
     def test_basic_local(self):
-        ref = CodeRef.from_dvc_vars(
-            state="CA", municipality="LosAngeles", code_slug="mc"
-        )
+        ref = CodeRef.from_dvc_vars(state="CA", locality="LosAngeles", code_slug="mc")
         assert ref.jurisdiction.state == "CA"
-        assert ref.jurisdiction.municipality == "LosAngeles"
+        assert ref.jurisdiction.locality == "LosAngeles"
         assert ref.jurisdiction.level == "local"
 
     def test_state_sentinel_normalised_to_none(self):
-        """'State' municipality sentinel is normalised to None."""
+        """'State' locality sentinel is normalised to None."""
         ref = CodeRef.from_dvc_vars(
-            state="CA", municipality="State", code_slug="penal-code"
+            state="CA", locality="State", code_slug="penal-code"
         )
-        assert ref.jurisdiction.municipality is None
+        assert ref.jurisdiction.locality is None
         assert ref.jurisdiction.level == "state"
         assert ref.jurisdiction_id == "CA"
         assert str(ref.data_dir) == "CA/State/penal-code"
 
     def test_state_sentinel_with_whitespace(self):
-        ref = CodeRef.from_dvc_vars(
-            state="CA", municipality="  State  ", code_slug="pc"
-        )
-        assert ref.jurisdiction.municipality is None
+        ref = CodeRef.from_dvc_vars(state="CA", locality="  State  ", code_slug="pc")
+        assert ref.jurisdiction.locality is None
         assert ref.jurisdiction.level == "state"
 
-    def test_none_municipality(self):
-        ref = CodeRef.from_dvc_vars(state="CA", municipality=None, code_slug="pc")
-        assert ref.jurisdiction.municipality is None
+    def test_none_locality(self):
+        ref = CodeRef.from_dvc_vars(state="CA", locality=None, code_slug="pc")
+        assert ref.jurisdiction.locality is None
         assert ref.jurisdiction.level == "state"
 
     def test_missing_state_raises(self):
@@ -184,7 +180,7 @@ class TestSchemaConstants:
         expected = {
             "jurisdiction_id",
             "state",
-            "municipality",
+            "locality",
             "level",
             "name",
             "parent_jurisdiction",

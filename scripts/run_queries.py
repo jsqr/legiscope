@@ -3,7 +3,7 @@
 Run multiple queries against legal code database.
 
 Usage:
-    python scripts/run_queries.py --state CA --municipality LosAngeles --code-slug municipal-code --queries-path queries.csv
+    python scripts/run_queries.py --state CA --locality LosAngeles --code-slug municipal-code --queries-path queries.csv
     python scripts/run_queries.py --state CA --code-slug penal-code --queries-path queries.csv
 """
 
@@ -29,8 +29,8 @@ if str(src_path) not in sys.path:
 
 from legiscope.llm_config import Config
 from legiscope.models import CodeRef, JurisdictionRef
+from legiscope.query import BatchQuerySettings, load_queries, run_queries
 from legiscope.utils import LLMConfig, str2bool
-from legiscope.query import BatchQuerySettings, run_queries, load_queries
 
 
 def main():
@@ -39,13 +39,13 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s --state CA --municipality LosAngeles --code-slug municipal-code --queries-path queries.csv
+  %(prog)s --state CA --locality LosAngeles --code-slug municipal-code --queries-path queries.csv
   %(prog)s --state CA --code-slug penal-code --queries-path queries.csv
         """,
     )
     parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
     parser.add_argument(
-        "--municipality", default=None, help="Municipality name (omit for state-level)"
+        "--locality", default=None, help="Locality name (omit for state-level)"
     )
     parser.add_argument("--code-slug", required=True, help="Code slug identifier")
     parser.add_argument(
@@ -98,7 +98,7 @@ Examples:
 
     args = parser.parse_args()
 
-    jurisdiction = JurisdictionRef(state=args.state, municipality=args.municipality)
+    jurisdiction = JurisdictionRef(state=args.state, locality=args.locality)
     code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
 
     # Load queries using shared library function

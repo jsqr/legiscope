@@ -71,7 +71,7 @@ from legiscope.llm_config import Config
 import chromadb
 
 # Setup
-jurisdiction = JurisdictionRef(state="IL", municipality="WindyCity")
+jurisdiction = JurisdictionRef(state="IL", locality="WindyCity")
 code_ref = CodeRef(jurisdiction=jurisdiction, code_slug="municipal-code")
 
 chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
@@ -268,18 +268,18 @@ The pipeline is split into 4 independent stages:
 
 ```bash
 # Stage 1: Initialize (create directory structure)
-make init STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+make init STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
 
 # Stage 2: Parse (convert raw files to Markdown)
-make parse STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+make parse STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
 
 # Stage 3: Process (create embeddings and build index)
-make process STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code
+make process STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code
 
 # Stage 4: Query (run queries, optional)
-make query STATE=CA MUNICIPALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
+make query STATE=CA LOCALITY=LosAngeles CODE_SLUG=municipal-code QUERIES=data/queries/example.csv
 
-# For state-level codes, omit MUNICIPALITY:
+# For state-level codes, omit LOCALITY:
 make init STATE=CA CODE_SLUG=penal-code
 make parse STATE=CA CODE_SLUG=penal-code
 make process STATE=CA CODE_SLUG=penal-code
@@ -314,7 +314,7 @@ For granular control over query execution (HYDE, Relevance Filtering), run the s
 ```bash
 uv run python scripts/run_queries.py \
     --state CA \
-    --municipality LosAngeles \
+    --locality LosAngeles \
     --code-slug municipal-code \
     --queries-path "data/queries/test_queries.csv" \
     --n-results 10 \
@@ -358,7 +358,7 @@ uv run python scripts/run_queries.py \
 │   ├── jurisdictions.parquet  # Registry of all jurisdictions
 │   ├── codes.parquet          # Registry of all legal codes
 │   └── laws/                  # Per-code data directories
-│       └── {STATE}/{Municipality}/{code-slug}/
+│       └── {STATE}/{Locality}/{code-slug}/
 │           ├── raw/               # Raw source files
 │           ├── code.md            # Structured Markdown
 │           ├── sections.parquet   # Section hierarchy

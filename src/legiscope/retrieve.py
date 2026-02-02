@@ -126,7 +126,7 @@ class JurisdictionStats:
     total_documents: int
     jurisdictions: dict[str, int] = field(default_factory=dict)
     states: dict[str, int] = field(default_factory=dict)
-    municipalities: dict[str, int] = field(default_factory=dict)
+    localities: dict[str, int] = field(default_factory=dict)
 
 
 # ============================================================================
@@ -589,7 +589,7 @@ def retrieve_segments(
             metadata_list = metadata_results[0]
             jurisdictions = set()
             states = set()
-            municipalities = set()
+            localities = set()
 
             for metadata in metadata_list:
                 if metadata:
@@ -597,15 +597,15 @@ def retrieve_segments(
                         jurisdictions.add(metadata["jurisdiction_id"])
                     if "state" in metadata:
                         states.add(metadata["state"])
-                    if "municipality" in metadata:
-                        municipalities.add(metadata["municipality"])
+                    if "locality" in metadata:
+                        localities.add(metadata["locality"])
 
             if jurisdictions:
                 logger.debug(f"Results from jurisdictions: {sorted(jurisdictions)}")
             if states:
                 logger.debug(f"Results from states: {sorted(states)}")
-            if municipalities:
-                logger.debug(f"Results from municipalities: {sorted(municipalities)}")
+            if localities:
+                logger.debug(f"Results from localities: {sorted(localities)}")
 
     # Convert ChromaDB results dict to dataclass
     return SegmentCollection(
@@ -623,7 +623,7 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
         collection: ChromaDB collection to analyze
 
     Returns:
-        JurisdictionStats: Statistics including counts per jurisdiction, state, and municipality
+        JurisdictionStats: Statistics including counts per jurisdiction, state, and locality
     """
     logger.info("Getting jurisdiction statistics from collection")
 
@@ -642,7 +642,7 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
         # Analyze jurisdiction distribution
         jurisdiction_counts = {}
         state_counts = {}
-        municipality_counts = {}
+        locality_counts = {}
 
         for metadata in metadata_list:
             if not metadata:
@@ -656,23 +656,21 @@ def get_jurisdiction_stats(collection: chromadb.Collection) -> JurisdictionStats
                 state = metadata["state"]
                 state_counts[state] = state_counts.get(state, 0) + 1
 
-            if "municipality" in metadata:
-                municipality = metadata["municipality"]
-                municipality_counts[municipality] = (
-                    municipality_counts.get(municipality, 0) + 1
-                )
+            if "locality" in metadata:
+                locality = metadata["locality"]
+                locality_counts[locality] = locality_counts.get(locality, 0) + 1
 
         stats = JurisdictionStats(
             total_documents=len(metadata_list),
             jurisdictions=jurisdiction_counts,
             states=state_counts,
-            municipalities=municipality_counts,
+            localities=locality_counts,
         )
 
         logger.info(f"Collection stats: {stats.total_documents} total documents")
         logger.info(f"  Jurisdictions: {len(jurisdiction_counts)}")
         logger.info(f"  States: {len(state_counts)}")
-        logger.info(f"  Municipalities: {len(municipality_counts)}")
+        logger.info(f"  Localities: {len(locality_counts)}")
 
         return stats
 

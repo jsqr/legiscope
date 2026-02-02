@@ -288,7 +288,7 @@ The text contains {len(sample_lines)} lines (limited sample for analysis).
 def _generate_frontmatter(
     structure: HeadingStructure,
     state: str,
-    municipality: str,
+    locality: str,
 ) -> str:
     """
     Generate YAML frontmatter for Markdown file.
@@ -299,21 +299,21 @@ def _generate_frontmatter(
     Args:
         structure: HeadingStructure from scan_legal_text analysis
         state: Two-letter state abbreviation
-        municipality: Municipality name
+        locality: Locality name
 
     Returns:
         str: YAML frontmatter string with proper formatting
     """
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
-    if not municipality or not municipality.strip():
-        raise ValueError("Municipality cannot be empty")
+    if not locality or not locality.strip():
+        raise ValueError("Locality cannot be empty")
 
     frontmatter_data: dict[str, Any] = {
         "jurisdiction": {
             "state": state.strip().upper(),
-            "municipality": municipality.strip(),
-            "full_name": f"{state.strip().upper()} - {municipality.strip()}",
+            "locality": locality.strip(),
+            "full_name": f"{state.strip().upper()} - {locality.strip()}",
         },
         "heading_patterns": [
             {
@@ -344,7 +344,7 @@ def text2md(
     input_path: str,
     output_path: str,
     state: str,
-    municipality: str,
+    locality: str,
 ) -> None:
     """
     Convert legal text file to Markdown using heading structure analysis.
@@ -359,7 +359,7 @@ def text2md(
         input_path: Path to source .txt file containing legal text
         output_path: Path where Markdown file should be written
         state: Two-letter state abbreviation (e.g., "IL", "CA")
-        municipality: Municipality name (e.g., "WindyCity", "LosAngeles")
+        locality: Locality name (e.g., "WindyCity", "LosAngeles")
 
     Raises:
         FileNotFoundError: If input file does not exist
@@ -373,11 +373,11 @@ def text2md(
         >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
         >>> print("Conversion completed")
     """
-    _validate_conversion_inputs(structure, input_path, output_path, state, municipality)
+    _validate_conversion_inputs(structure, input_path, output_path, state, locality)
     compiled_patterns = _compile_heading_patterns(structure)
     lines = _read_source_file(input_path)
     converted_lines = _process_markdown_lines(lines, compiled_patterns, structure)
-    frontmatter = _generate_frontmatter(structure, state, municipality)
+    frontmatter = _generate_frontmatter(structure, state, locality)
     _write_markdown_file(output_path, frontmatter, converted_lines)
 
 
@@ -386,7 +386,7 @@ def _validate_conversion_inputs(
     input_path: str,
     output_path: str,
     state: str,
-    municipality: str,
+    locality: str,
 ) -> None:
     """Validate inputs for text2md function.
 
@@ -409,8 +409,8 @@ def _validate_conversion_inputs(
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
 
-    if not municipality or not municipality.strip():
-        raise ValueError("Municipality cannot be empty")
+    if not locality or not locality.strip():
+        raise ValueError("Locality cannot be empty")
 
     output_dir = os.path.dirname(output_path)
     if output_dir and not os.path.exists(output_dir):
@@ -675,7 +675,7 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
         input_path=str(input_path),
         output_path=str(output_path),
         state=code_ref.jurisdiction.state,
-        municipality=code_ref.jurisdiction.municipality or "",
+        locality=code_ref.jurisdiction.locality or "",
     )
 
     logger.info(f"Converted {code_ref.code_id}: {input_path} -> {output_path}")

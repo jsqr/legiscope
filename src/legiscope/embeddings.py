@@ -184,22 +184,22 @@ class JurisdictionConfig:
 
     jurisdiction_id: str | None = None
     state: str | None = None
-    municipality: str | None = None
+    locality: str | None = None
 
     def __post_init__(self):
         """Validate and derive jurisdiction information."""
-        # Auto-derive jurisdiction_id from state and municipality if needed
-        if not self.jurisdiction_id and self.state and self.municipality:
-            self.jurisdiction_id = f"{self.state}-{self.municipality}"
+        # Auto-derive jurisdiction_id from state and locality if needed
+        if not self.jurisdiction_id and self.state and self.locality:
+            self.jurisdiction_id = f"{self.state}-{self.locality}"
 
-        # Parse state and municipality from jurisdiction_id if not provided
+        # Parse state and locality from jurisdiction_id if not provided
         if self.jurisdiction_id and "-" in self.jurisdiction_id:
-            if not self.state or not self.municipality:
-                parsed_state, parsed_municipality = self.jurisdiction_id.split("-", 1)
+            if not self.state or not self.locality:
+                parsed_state, parsed_locality = self.jurisdiction_id.split("-", 1)
                 if not self.state:
                     self.state = parsed_state
-                if not self.municipality:
-                    self.municipality = parsed_municipality
+                if not self.locality:
+                    self.locality = parsed_locality
 
 
 @dataclass
@@ -374,6 +374,7 @@ def _generate_embeddings_ollama(
 # ---------------------------------------------------------------------------
 # Build embedding provider config from params.yaml
 # ---------------------------------------------------------------------------
+
 
 def _build_embedding_provider_config() -> dict:
     """Build EMBEDDING_PROVIDER_CONFIG from params.yaml."""
@@ -766,11 +767,11 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     documents = config.df[config.text_col].to_list()
     embeddings = config.df[config.embedding_col].to_list()
 
-    # Derive state and municipality from jurisdiction_id, if available
+    # Derive state and locality from jurisdiction_id, if available
     parsed_state = None
-    parsed_municipality = None
+    parsed_locality = None
     if config.jurisdiction_id and "-" in config.jurisdiction_id:
-        parsed_state, parsed_municipality = config.jurisdiction_id.split("-", 1)
+        parsed_state, parsed_locality = config.jurisdiction_id.split("-", 1)
 
     # Prepare metadata with jurisdiction information
     metadata_list = []
@@ -784,15 +785,15 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
                 metadata["jurisdiction_id"] = config.jurisdiction_id
                 if parsed_state:
                     metadata["state"] = parsed_state
-                if parsed_municipality:
-                    metadata["municipality"] = parsed_municipality
+                if parsed_locality:
+                    metadata["locality"] = parsed_locality
 
             metadata_list.append(metadata)
 
         added_fields = (
             (1 if config.jurisdiction_id else 0)
             + (1 if parsed_state else 0)
-            + (1 if parsed_municipality else 0)
+            + (1 if parsed_locality else 0)
         )
         logger.debug(
             f"Prepared metadata with {len(config.metadata_cols) + added_fields} fields per document"
@@ -804,8 +805,8 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
                 metadata = {"jurisdiction_id": config.jurisdiction_id}
                 if parsed_state:
                     metadata["state"] = parsed_state
-                if parsed_municipality:
-                    metadata["municipality"] = parsed_municipality
+                if parsed_locality:
+                    metadata["locality"] = parsed_locality
                 metadata_list.append(metadata)
             logger.debug(
                 f"Prepared jurisdiction-only metadata for {len(config.df)} documents"
@@ -850,7 +851,7 @@ def add_jurisdiction_embeddings(
             collection_name=collection.name,
             jurisdiction_id="IL-WindyCity",
             id_col="custom_id",
-            metadata_cols=["state", "municipality"]
+            metadata_cols=["state", "locality"]
         )
         add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity", config)
     """
@@ -1087,9 +1088,9 @@ def create_and_persist_embeddings(
     logger.info("Step 3: Creating ChromaDB index")
 
     # Parse jurisdiction information if not provided
-    if not jur_config.jurisdiction_id and (jur_config.state or jur_config.municipality):
-        if jur_config.state and jur_config.municipality:
-            jur_config.jurisdiction_id = f"{jur_config.state}-{jur_config.municipality}"
+    if not jur_config.jurisdiction_id and (jur_config.state or jur_config.locality):
+        if jur_config.state and jur_config.locality:
+            jur_config.jurisdiction_id = f"{jur_config.state}-{jur_config.locality}"
         else:
             logger.warning("Incomplete jurisdiction information provided")
 

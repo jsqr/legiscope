@@ -3,7 +3,7 @@
 Usage::
 
     python -m legiscope.pipeline.parse \\
-        --state CA --municipality LosAngeles --code-slug municipal-code
+        --state CA --locality LosAngeles --code-slug municipal-code
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ def main() -> None:
     )
     parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
     parser.add_argument(
-        "--municipality", default=None, help="Municipality name (omit for state-level)"
+        "--locality", default=None, help="Locality name (omit for state-level)"
     )
     parser.add_argument("--code-slug", required=True, help="Code slug identifier")
 
@@ -29,7 +29,7 @@ def main() -> None:
 
     code_ref = CodeRef.from_dvc_vars(
         state=args.state,
-        municipality=args.municipality,
+        locality=args.locality,
         code_slug=args.code_slug,
     )
 

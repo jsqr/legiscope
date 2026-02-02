@@ -39,7 +39,7 @@ LAWS_DIR = _laws_dir()
 JURISDICTIONS_SCHEMA = {
     "jurisdiction_id": pl.String,
     "state": pl.String,
-    "municipality": pl.String,
+    "locality": pl.String,
     "level": pl.String,
     "name": pl.String,
     "parent_jurisdiction": pl.String,
@@ -86,42 +86,42 @@ EXTERNAL_REFERENCES_SCHEMA = {
 
 @dataclass(frozen=True)
 class JurisdictionRef:
-    """Reference to a jurisdiction (state or state + municipality).
+    """Reference to a jurisdiction (state or state + locality).
 
     Attributes:
         state: Two-letter state abbreviation (e.g. ``"CA"``).
-        municipality: Municipality name in PascalCase, or ``None`` for
+        locality: Locality name in PascalCase, or ``None`` for
             state-level jurisdictions (e.g. ``"LosAngeles"``).
     """
 
     state: str
-    municipality: str | None = None
+    locality: str | None = None
 
     def __post_init__(self):
         if not self.state or not self.state.strip():
             raise ValueError("state cannot be empty")
         # Normalize state to uppercase via object.__setattr__ (frozen dataclass)
         object.__setattr__(self, "state", self.state.strip().upper())
-        if self.municipality is not None:
-            stripped = self.municipality.strip().replace(" ", "")
+        if self.locality is not None:
+            stripped = self.locality.strip().replace(" ", "")
             if not stripped:
-                raise ValueError("municipality cannot be empty string")
-            object.__setattr__(self, "municipality", stripped)
+                raise ValueError("locality cannot be empty string")
+            object.__setattr__(self, "locality", stripped)
 
     @property
     def jurisdiction_id(self) -> str:
         """Globally unique jurisdiction identifier.
 
-        Format: ``"{STATE}"`` or ``"{STATE}-{Municipality}"``.
+        Format: ``"{STATE}"`` or ``"{STATE}-{Locality}"``.
         """
-        if self.municipality:
-            return f"{self.state}-{self.municipality}"
+        if self.locality:
+            return f"{self.state}-{self.locality}"
         return self.state
 
     @property
     def level(self) -> str:
         """``"state"`` or ``"local"``."""
-        return "local" if self.municipality else "state"
+        return "local" if self.locality else "state"
 
 
 @dataclass(frozen=True)
@@ -147,9 +147,9 @@ class CodeRef:
 
         Format: ``"{state}:{subdivision}:{code_slug}"``.
         The subdivision is ``"state"`` for state-level codes, or the
-        municipality name for local codes.
+        locality name for local codes.
         """
-        subdivision = self.jurisdiction.municipality or "state"
+        subdivision = self.jurisdiction.locality or "state"
         return f"{self.jurisdiction.state}:{subdivision}:{self.code_slug}"
 
     @property
@@ -176,9 +176,9 @@ class CodeRef:
         """Relative path from ``data/laws/`` to this code's directory.
 
         For state-level codes: ``{STATE}/State/{code_slug}/``
-        For local codes: ``{STATE}/{Municipality}/{code_slug}/``
+        For local codes: ``{STATE}/{Locality}/{code_slug}/``
         """
-        subdivision = self.jurisdiction.municipality or "State"
+        subdivision = self.jurisdiction.locality or "State"
         return Path(self.jurisdiction.state) / subdivision / self.code_slug
 
     @property
@@ -190,23 +190,23 @@ class CodeRef:
     def from_dvc_vars(
         cls,
         state: str | None = None,
-        municipality: str | None = None,
+        locality: str | None = None,
         code_slug: str | None = None,
     ) -> "CodeRef":
         """Create a ``CodeRef`` from DVC pipeline variables.
 
         DVC stages pass ``${jurisdiction.state}``,
-        ``${jurisdiction.municipality}``, and ``${jurisdiction.code_slug}``
+        ``${jurisdiction.locality}``, and ``${jurisdiction.code_slug}``
         as CLI arguments.  This factory mirrors that convention and raises
         :class:`ValueError` for any missing field.
 
-        The sentinel value ``"State"`` for *municipality* is normalised to
+        The sentinel value ``"State"`` for *locality* is normalised to
         ``None`` so that DVC pipelines (which cannot omit an interpolated
         argument) can represent state-level codes.
 
         Args:
             state: Two-letter state abbreviation.
-            municipality: Municipality name, ``"State"`` for state-level,
+            locality: Locality name, ``"State"`` for state-level,
                 or ``None``.
             code_slug: URL-friendly code identifier.
 
@@ -217,10 +217,10 @@ class CodeRef:
             raise ValueError("state is required")
         if not code_slug:
             raise ValueError("code_slug is required")
-        # Normalise the DVC sentinel: "State" means state-level (no municipality)
-        if municipality is not None and municipality.strip() == "State":
-            municipality = None
-        jurisdiction = JurisdictionRef(state=state, municipality=municipality)
+        # Normalise the DVC sentinel: "State" means state-level (no locality)
+        if locality is not None and locality.strip() == "State":
+            locality = None
+        jurisdiction = JurisdictionRef(state=state, locality=locality)
         return cls(jurisdiction=jurisdiction, code_slug=code_slug)
 
 

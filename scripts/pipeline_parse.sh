@@ -7,13 +7,13 @@ set -e  # Exit on error
 
 # Configuration
 STATE="$1"
-MUNICIPALITY="$2"
+LOCALITY="$2"
 CODE_SLUG="$3"
 
 # Check arguments
 if [[ $# -lt 3 ]]; then
-    echo "Usage: $0 <STATE> <MUNICIPALITY|-> <CODE_SLUG>"
-    echo "  Use '-' for MUNICIPALITY for state-level codes."
+    echo "Usage: $0 <STATE> <LOCALITY|-> <CODE_SLUG>"
+    echo "  Use '-' for LOCALITY for state-level codes."
     echo ""
     echo "Examples:"
     echo "  $0 CA LosAngeles municipal-code"
@@ -23,15 +23,15 @@ fi
 
 # Build common args
 COMMON_ARGS="--state $STATE --code-slug $CODE_SLUG"
-if [[ "$MUNICIPALITY" != "-" ]]; then
-    COMMON_ARGS="$COMMON_ARGS --municipality $MUNICIPALITY"
+if [[ "$LOCALITY" != "-" ]]; then
+    COMMON_ARGS="$COMMON_ARGS --locality $LOCALITY"
 fi
 
-echo "Parsing legal code: state=$STATE municipality=$MUNICIPALITY code=$CODE_SLUG..."
+echo "Parsing legal code: state=$STATE locality=$LOCALITY code=$CODE_SLUG..."
 
 # Determine the data directory
-if [[ "$MUNICIPALITY" != "-" ]]; then
-    CODE_DIR="data/laws/$STATE/$MUNICIPALITY/$CODE_SLUG"
+if [[ "$LOCALITY" != "-" ]]; then
+    CODE_DIR="data/laws/$STATE/$LOCALITY/$CODE_SLUG"
 else
     CODE_DIR="data/laws/$STATE/State/$CODE_SLUG"
 fi
@@ -61,4 +61,4 @@ echo "Output: $CODE_DIR/code.md"
 echo ""
 echo "Next steps:"
 echo "  1. Review the Markdown file: $CODE_DIR/code.md"
-echo "  2. Run: make process STATE=$STATE MUNICIPALITY=${MUNICIPALITY} CODE_SLUG=$CODE_SLUG"
+echo "  2. Run: make process STATE=$STATE LOCALITY=${LOCALITY} CODE_SLUG=$CODE_SLUG"

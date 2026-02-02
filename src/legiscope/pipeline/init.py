@@ -3,7 +3,7 @@
 Usage::
 
     python -m legiscope.pipeline.init \\
-        --state CA --municipality LosAngeles \\
+        --state CA --locality LosAngeles \\
         --code-slug municipal-code --name "Los Angeles Municipal Code"
 """
 
@@ -45,7 +45,7 @@ def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
         logger.info("Jurisdiction {} already registered", ref.jurisdiction_id)
         return
 
-    parent = ref.state if ref.municipality else None
+    parent = ref.state if ref.locality else None
     if ref.level == "state":
         parent = None
 
@@ -54,7 +54,7 @@ def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
             {
                 "jurisdiction_id": ref.jurisdiction_id,
                 "state": ref.state,
-                "municipality": ref.municipality,
+                "locality": ref.locality,
                 "level": ref.level,
                 "name": name,
                 "parent_jurisdiction": parent,
@@ -107,7 +107,7 @@ def main() -> None:
     )
     parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
     parser.add_argument(
-        "--municipality", default=None, help="Municipality name (omit for state-level)"
+        "--locality", default=None, help="Locality name (omit for state-level)"
     )
     parser.add_argument("--code-slug", required=True, help="Code slug identifier")
     parser.add_argument("--name", required=True, help="Display name for the code")
@@ -124,14 +124,14 @@ def main() -> None:
 
     code_ref = CodeRef.from_dvc_vars(
         state=args.state,
-        municipality=args.municipality,
+        locality=args.locality,
         code_slug=args.code_slug,
     )
 
     jurisdiction_name = args.jurisdiction_name
     if jurisdiction_name is None:
-        if code_ref.jurisdiction.municipality:
-            jurisdiction_name = f"City of {code_ref.jurisdiction.municipality}"
+        if code_ref.jurisdiction.locality:
+            jurisdiction_name = f"City of {code_ref.jurisdiction.locality}"
         else:
             jurisdiction_name = code_ref.jurisdiction.state
 

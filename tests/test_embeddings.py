@@ -1,16 +1,16 @@
 """Tests for legiscope.embeddings module."""
 
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import polars as pl
 import pytest
 
 from legiscope.embeddings import (
-    create_embeddings_df,
     EmbeddingConfig,
-    get_embeddings,
     _build_embedding_text,
     create_and_save_embeddings,
+    create_embeddings_df,
+    get_embeddings,
 )
 from legiscope.models import CodeRef, JurisdictionRef
 
@@ -621,7 +621,7 @@ class TestCreateAndSaveEmbeddings:
     def _make_code_ref(self):
         """Helper to create a CodeRef for testing."""
         return CodeRef(
-            jurisdiction=JurisdictionRef(state="CA", municipality="TestCity"),
+            jurisdiction=JurisdictionRef(state="CA", locality="TestCity"),
             code_slug="test-code",
         )
 
@@ -815,7 +815,7 @@ class TestChromaOperations:
 
     def test_create_embedding_index(self):
         """Test creating an embedding index from DataFrame."""
-        from legiscope.embeddings import create_embedding_index, EmbeddingIndexConfig
+        from legiscope.embeddings import EmbeddingIndexConfig, create_embedding_index
 
         # Create test DataFrame
         df = pl.DataFrame(
@@ -880,8 +880,8 @@ class TestChromaOperations:
     def test_create_and_persist_embeddings(self):
         """Test the unified workflow."""
         from legiscope.embeddings import (
-            create_and_persist_embeddings,
             JurisdictionConfig,
+            create_and_persist_embeddings,
         )
 
         df = pl.DataFrame({"text": ["content"]})

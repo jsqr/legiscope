@@ -1,17 +1,18 @@
 """Tests for legiscope.utils module."""
 
-import pytest
 import argparse
 import os
 from unittest.mock import Mock, patch
+
+import pytest
 from pydantic import BaseModel
 
 from legiscope.utils import (
-    ask,
-    str2bool,
     LLMConfig,
+    ask,
     create_jurisdiction_structure,
     resolve_model_default,
+    str2bool,
 )
 
 
@@ -322,7 +323,7 @@ class TestCreateJurisdictionStructure:
         with pytest.raises(ValueError, match="State cannot be empty"):
             create_jurisdiction_structure("", "City")
 
-        with pytest.raises(ValueError, match="Municipality cannot be empty"):
+        with pytest.raises(ValueError, match="Locality cannot be empty"):
             create_jurisdiction_structure("State", "")
 
     def test_invalid_characters(self):
@@ -330,13 +331,11 @@ class TestCreateJurisdictionStructure:
         with pytest.raises(ValueError, match="State must contain only alphanumeric"):
             create_jurisdiction_structure("CA!", "LosAngeles")
 
-        with pytest.raises(
-            ValueError, match="Municipality must contain only alphanumeric"
-        ):
+        with pytest.raises(ValueError, match="Locality must contain only alphanumeric"):
             create_jurisdiction_structure(
                 "CA", "Los Angeles!"
             )  # spaces not allowed in validation logic?
-            # actually logic says: municipality.strip().replace(" ", "") then check isalnum
+            # actually logic says: locality.strip().replace(" ", "") then check isalnum
             # So "Los Angeles" is valid. "Los Angeles!" is invalid.
 
     def test_os_error_handling(self):
