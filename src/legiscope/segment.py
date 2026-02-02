@@ -75,6 +75,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
+                "line_number": pl.Int64,
             }
         )
 
@@ -88,7 +89,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
     current_body_lines = []
     section_idx = 0
 
-    for line in lines:
+    for line_idx, line in enumerate(lines):
         heading_match = heading_pattern.match(line)
 
         if heading_match:
@@ -103,16 +104,18 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
                         "heading_level": current_section["level"],
                         "heading_text": current_section["text"],
                         "body_text": body_text if body_text else None,
+                        "line_number": current_section["line_number"],
                     }
                 )
                 section_idx += 1
 
-            # Start new section
+            # Start new section (line_number is 1-based)
             heading_markers = heading_match.group(1)
             heading_content = heading_match.group(2)
             current_section = {
                 "level": len(heading_markers),
                 "text": f"{heading_markers} {heading_content}",
+                "line_number": line_idx + 1,
             }
             current_body_lines = []
         else:
@@ -132,6 +135,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
                 "heading_level": current_section["level"],
                 "heading_text": current_section["text"],
                 "body_text": body_text if body_text else None,
+                "line_number": current_section["line_number"],
             }
         )
 
@@ -143,6 +147,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
+                "line_number": pl.Int64,
             },
         )
     else:
@@ -153,6 +158,7 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
                 "heading_level": pl.Int64,
                 "heading_text": pl.String,
                 "body_text": pl.String,
+                "line_number": pl.Int64,
             }
         )
 
@@ -268,20 +274,18 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
         section["depth"] = len(ancestors) - 1  # root = 0
         section["ancestor_path"] = "/".join(str(a) for a in ancestors)
 
+    # Build schema from input columns plus new hierarchy columns
+    input_schema = {col: df.schema[col] for col in df.columns}
+    output_schema = {
+        **input_schema,
+        "parent": pl.Int64,
+        "children": pl.List(pl.Int64),
+        "depth": pl.Int64,
+        "ancestor_path": pl.String,
+    }
+
     # Create new DataFrame with all new columns
-    result_df = pl.DataFrame(
-        sections,
-        schema={
-            "section_ordinal": pl.Int64,
-            "heading_level": pl.Int64,
-            "heading_text": pl.String,
-            "body_text": pl.String,
-            "parent": pl.Int64,
-            "children": pl.List(pl.Int64),
-            "depth": pl.Int64,
-            "ancestor_path": pl.String,
-        },
-    )
+    result_df = pl.DataFrame(sections, schema=output_schema)
 
     return result_df
 
@@ -741,6 +745,11 @@ def create_segments_df(
             f"Column '{text_column}' not found in DataFrame. Available columns: {df.columns}"
         )
 
+    # Detect optional metadata columns
+    has_section_type = "section_type" in df.columns
+    has_section_number = "section_number" in df.columns
+    has_line_number = "line_number" in df.columns
+
     # Process each section to create segments
     all_segments = []
     global_segment_idx = 0
@@ -775,11 +784,16 @@ def create_segments_df(
                 f"Segment exceeds token limit: {segment}"
             )
 
+        # Check for optional metadata columns
+        section_type = row.get("section_type")
+        section_number = row.get("section_number")
+        line_number = row.get("line_number")
+
         # Create a row for each segment
         for segment_position, segment_content in enumerate(segments):
             word_count = len(segment_content.split())
 
-            segment_row = {
+            segment_row: dict = {
                 "segment_ordinal": global_segment_idx,
                 "section_ordinal": section_idx,
                 "section_heading": heading_text,
@@ -788,38 +802,73 @@ def create_segments_df(
                 "segment_text": segment_content,
                 "word_count": word_count,
             }
+
+            # Propagate optional metadata columns when present
+            if has_section_type:
+                segment_row["section_type"] = section_type
+            if has_section_number:
+                segment_row["section_number"] = section_number
+            if has_line_number:
+                segment_row["line_number"] = line_number
+
             all_segments.append(segment_row)
             global_segment_idx += 1
 
+    # Build schema dynamically based on which optional columns are present
+    base_schema = {
+        "segment_ordinal": pl.Int64,
+        "section_ordinal": pl.Int64,
+        "section_heading": pl.String,
+        "section_level": pl.Int64,
+        "segment_position": pl.Int64,
+        "segment_text": pl.String,
+        "word_count": pl.Int64,
+    }
+    if has_section_type:
+        base_schema["section_type"] = pl.String
+    if has_section_number:
+        base_schema["section_number"] = pl.String
+    if has_line_number:
+        base_schema["line_number"] = pl.Int64
+
     # Create flattened DataFrame
     if all_segments:
-        result_df = pl.DataFrame(
-            all_segments,
-            schema={
-                "segment_ordinal": pl.Int64,
-                "section_ordinal": pl.Int64,
-                "section_heading": pl.String,
-                "section_level": pl.Int64,
-                "segment_position": pl.Int64,
-                "segment_text": pl.String,
-                "word_count": pl.Int64,
-            },
-        )
+        result_df = pl.DataFrame(all_segments, schema=base_schema)
     else:
         # No segments found - return empty DataFrame with correct schema
-        result_df = pl.DataFrame(
-            schema={
-                "segment_ordinal": pl.Int64,
-                "section_ordinal": pl.Int64,
-                "section_heading": pl.String,
-                "section_level": pl.Int64,
-                "segment_position": pl.Int64,
-                "segment_text": pl.String,
-                "word_count": pl.Int64,
-            }
-        )
+        result_df = pl.DataFrame(schema=base_schema)
 
     return result_df
+
+
+def parse_frontmatter(content: str) -> tuple[str, int]:
+    """Parse and strip YAML frontmatter from code.md content.
+
+    The returned body text preserves leading blank lines after the closing
+    ``---`` delimiter so that 1-based line numbers within the body can be
+    converted to absolute file line numbers by simply adding
+    *frontmatter_line_count*.
+
+    Args:
+        content: Full file content that may begin with YAML frontmatter
+            delimited by ``---``.
+
+    Returns:
+        Tuple of ``(body_text, frontmatter_line_count)`` where
+        *frontmatter_line_count* is the number of lines consumed by the
+        frontmatter block (including the closing ``---`` line).  If no
+        frontmatter is found, returns the original content and ``0``.
+    """
+    lines = content.split("\n")
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                # Keep body exactly as-is (don't strip) so line offsets
+                # remain correct.
+                body = "\n".join(lines[i + 1 :])
+                frontmatter_line_count = i + 1
+                return body, frontmatter_line_count
+    return content, 0
 
 
 def segment_legal_code(
@@ -837,6 +886,10 @@ def segment_legal_code(
     * ``segments.parquet``
     * ``relations.parquet`` (empty scaffold)
     * ``external_references.parquet`` (empty scaffold)
+
+    If ``headings.parquet`` exists alongside ``code.md``, the true
+    structural heading level, ``section_type``, and ``section_number``
+    are joined in from that file using line numbers.
 
     Args:
         code_ref: Identifies the legal code to segment.
@@ -864,15 +917,35 @@ def segment_legal_code(
     if not content.strip():
         raise ValueError(f"Markdown file is empty: {markdown_path}")
 
-    # Strip YAML frontmatter if present
-    lines = content.split("\n")
-    if lines and lines[0].strip() == "---":
-        for i in range(1, len(lines)):
-            if lines[i].strip() == "---":
-                content = "\n".join(lines[i + 1 :]).strip()
-                break
+    # Strip YAML frontmatter and compute line offset
+    body, frontmatter_line_count = parse_frontmatter(content)
 
-    sections_df = divide_into_sections(content)
+    sections_df = divide_into_sections(body)
+
+    # Offset line numbers to be absolute within code.md
+    if frontmatter_line_count > 0:
+        sections_df = sections_df.with_columns(
+            (pl.col("line_number") + frontmatter_line_count).alias("line_number")
+        )
+
+    # Join with headings.parquet to get true level and metadata
+    headings_path = code_dir / "headings.parquet"
+    if headings_path.exists():
+        headings_df = pl.read_parquet(headings_path)
+        sections_df = sections_df.drop("heading_level").join(
+            headings_df.select(
+                "line_number", "heading_level", "section_type", "section_number"
+            ),
+            on="line_number",
+            how="left",
+        )
+    else:
+        # Backward compat: no headings.parquet, keep #-count as level
+        sections_df = sections_df.with_columns(
+            pl.lit(None, dtype=pl.String).alias("section_type"),
+            pl.lit(None, dtype=pl.String).alias("section_number"),
+        )
+
     sections_df = add_parent_relationships(sections_df)
     sections_df = enrich_sections(sections_df, code_ref)
 

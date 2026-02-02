@@ -39,6 +39,7 @@ stages:
             - llm
         outs:
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/headings.parquet
 
     segment:
         cmd: >-
@@ -50,6 +51,7 @@ stages:
             - src/legiscope/pipeline/segment.py
             - src/legiscope/segment.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/headings.parquet
         params:
             - jurisdiction
             - segmentation
