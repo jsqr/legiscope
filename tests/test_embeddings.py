@@ -877,6 +877,40 @@ class TestChromaOperations:
             assert config.jurisdiction_id == "IL-Test"
             assert config.collection_name == "test_coll"
 
+    def test_collection_config_provider_model_naming(self):
+        """Test that CollectionConfig generates provider_model suffixed names."""
+        from legiscope.embeddings import CollectionConfig, EMBEDDING_PROVIDER_CONFIG
+
+        # Default provider (ollama) should auto-resolve model
+        config = CollectionConfig(provider="ollama")
+        expected_model = EMBEDDING_PROVIDER_CONFIG["ollama"]["model"]
+        assert config.collection_name == f"legal_code_ollama_{expected_model}"
+        assert config.model == expected_model
+
+    def test_collection_config_explicit_model(self):
+        """Test that an explicitly provided model overrides auto-resolution."""
+        from legiscope.embeddings import CollectionConfig
+
+        config = CollectionConfig(provider="ollama", model="custom")
+        assert config.collection_name == "legal_code_ollama_custom"
+        assert config.model == "custom"
+
+    def test_collection_config_custom_base_with_provider(self):
+        """Test custom base name with provider gets _{provider}_{model} suffix."""
+        from legiscope.embeddings import CollectionConfig, EMBEDDING_PROVIDER_CONFIG
+
+        expected_model = EMBEDDING_PROVIDER_CONFIG["ollama"]["model"]
+        config = CollectionConfig(collection_name="my_collection", provider="ollama")
+        assert config.collection_name == f"my_collection_ollama_{expected_model}"
+
+    def test_collection_config_no_provider(self):
+        """Test that without provider, collection name is unchanged."""
+        from legiscope.embeddings import CollectionConfig
+
+        config = CollectionConfig(collection_name="legal_code_all")
+        assert config.collection_name == "legal_code_all"
+        assert config.model is None
+
     def test_create_and_persist_embeddings(self):
         """Test the unified workflow."""
         from legiscope.embeddings import (

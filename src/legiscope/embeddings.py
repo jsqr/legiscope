@@ -158,6 +158,7 @@ class PersistenceConfig:
     parquet_path: str | Path | None = None
     metadata_cols: list[str] | None = None
     provider: str | None = None  # Embedding provider for collection naming
+    model: str | None = None  # Embedding model for collection naming
 
     def __post_init__(self):
         """Validate and normalize configuration."""
@@ -206,26 +207,28 @@ class JurisdictionConfig:
 class CollectionConfig:
     """Configuration for ChromaDB collection operations.
 
-    Handles collection naming, persistence, and provider-specific naming conventions.
+    Handles collection naming, persistence, and provider/model-specific naming conventions.
 
     Attributes:
         persist_directory: Directory for ChromaDB persistence
-        collection_name: Base name of the collection (will be modified based on provider)
-        provider: Embedding provider for collection naming (appends provider suffix)
+        collection_name: Base name of the collection (will be modified based on provider/model)
+        provider: Embedding provider for collection naming
+        model: Embedding model for collection naming (auto-resolved from provider if not set)
 
     Example:
-        >>> config = CollectionConfig(provider="mistral")
+        >>> config = CollectionConfig(provider="ollama")
         >>> config.collection_name
-        'legal_code_mistral'
+        'legal_code_ollama_embeddinggemma'
 
         >>> config = CollectionConfig(collection_name="custom", provider="ollama")
         >>> config.collection_name
-        'custom_ollama'
+        'custom_ollama_embeddinggemma'
     """
 
     persist_directory: str | Path = "data/chroma_db"
     collection_name: str = "legal_code_all"
     provider: str | None = None
+    model: str | None = None
 
     def __post_init__(self):
         """Validate and normalize collection configuration."""
@@ -243,14 +246,19 @@ class CollectionConfig:
                 f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
             )
 
-        # Auto-append provider suffix to collection name
+        # Auto-resolve model from provider config when provider is set but model is not
+        if self.provider and not self.model:
+            self.model = EMBEDDING_PROVIDER_CONFIG[self.provider]["model"]
+
+        # Auto-append provider_model suffix to collection name
         if self.provider:
+            suffix = f"{self.provider}_{self.model}"
             if self.collection_name == "legal_code_all":
-                # Default collection name - make provider-specific
-                self.collection_name = f"legal_code_{self.provider}"
-            elif not self.collection_name.endswith(f"_{self.provider}"):
-                # Custom collection name - append provider if not already present
-                self.collection_name = f"{self.collection_name}_{self.provider}"
+                # Default collection name - make provider/model-specific
+                self.collection_name = f"legal_code_{suffix}"
+            elif not self.collection_name.endswith(f"_{suffix}"):
+                # Custom collection name - append suffix if not already present
+                self.collection_name = f"{self.collection_name}_{suffix}"
 
 
 def _detect_embedding_provider(client) -> str:
@@ -417,6 +425,7 @@ def _get_default_provider() -> str:
 
 EMBEDDING_PROVIDER_CONFIG = _build_embedding_provider_config()
 EMBEDDING_PROVIDER = _get_default_provider()
+EMBEDDING_MODEL = EMBEDDING_PROVIDER_CONFIG[EMBEDDING_PROVIDER]["model"]
 
 
 def get_embeddings(
@@ -1047,15 +1056,24 @@ def create_and_persist_embeddings(
     if pers_config.provider is None and emb_config.provider:
         pers_config.provider = emb_config.provider
 
-    # Generate provider-specific collection name if provider is set
+    # Set model in persistence config if not already set
+    if pers_config.model is None and emb_config.model:
+        pers_config.model = emb_config.model
+
+    # Auto-resolve model from provider config if still unset
+    if pers_config.provider and not pers_config.model:
+        pers_config.model = EMBEDDING_PROVIDER_CONFIG[pers_config.provider]["model"]
+
+    # Generate provider/model-specific collection name if provider is set
     collection_name = pers_config.collection_name
     if pers_config.provider:
+        suffix = f"{pers_config.provider}_{pers_config.model}"
         if pers_config.collection_name == "legal_code_all":
-            # Default collection name - make provider-specific
-            collection_name = f"legal_code_{pers_config.provider}"
-        elif not pers_config.collection_name.endswith(f"_{pers_config.provider}"):
-            # Custom collection name - append provider if not already present
-            collection_name = f"{pers_config.collection_name}_{pers_config.provider}"
+            # Default collection name - make provider/model-specific
+            collection_name = f"legal_code_{suffix}"
+        elif not pers_config.collection_name.endswith(f"_{suffix}"):
+            # Custom collection name - append suffix if not already present
+            collection_name = f"{pers_config.collection_name}_{suffix}"
 
     logger.info("Starting unified embeddings creation and persistence workflow")
 

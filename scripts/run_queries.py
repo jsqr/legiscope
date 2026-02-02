@@ -27,6 +27,7 @@ src_path = Path(__file__).parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.llm_config import Config
 from legiscope.models import CodeRef, JurisdictionRef
 from legiscope.query import BatchQuerySettings, load_queries, run_queries
@@ -53,7 +54,10 @@ Examples:
     )
     parser.add_argument(
         "--collection-name",
-        default=os.getenv("LEGISCOPE_COLLECTION_NAME", "legal_code_all"),
+        default=os.getenv(
+            "LEGISCOPE_COLLECTION_NAME",
+            CollectionConfig(provider=EMBEDDING_PROVIDER).collection_name,
+        ),
         help="ChromaDB collection name",
     )
     parser.add_argument(

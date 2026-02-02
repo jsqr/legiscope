@@ -75,7 +75,7 @@ jurisdiction = JurisdictionRef(state="IL", locality="WindyCity")
 code_ref = CodeRef(jurisdiction=jurisdiction, code_slug="municipal-code")
 
 chroma_client = chromadb.PersistentClient(path="./data/chroma_db")
-collection = chroma_client.get_collection("legal_code_all")
+collection = chroma_client.get_collection("legal_code_ollama_embeddinggemma")
 
 # Example 1: Retrieve sections with settings
 retrieval_settings = SectionRetrievalSettings(
