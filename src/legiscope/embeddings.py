@@ -371,25 +371,51 @@ def _generate_embeddings_ollama(
     return embeddings_list
 
 
-# Embedding provider configuration: maps provider names to their settings
-# Note: Defined here after the embedding functions so we can reference them
-EMBEDDING_PROVIDER_CONFIG = {
-    "ollama": {
-        "model": "embeddinggemma",
-        "client_factory": get_ollama_client,
-        "batch_size": None,  # Ollama processes individually, no batching
-        "embedding_function": _generate_embeddings_ollama,
-    },
-    "mistral": {
-        "model": "mistral-embed",
-        "client_factory": get_mistral_client,
-        "batch_size": 100,  # Mistral supports batch processing
-        "embedding_function": _generate_embeddings_mistral,
-    },
-}
+# ---------------------------------------------------------------------------
+# Build embedding provider config from params.yaml
+# ---------------------------------------------------------------------------
 
-# Default embedding provider
-EMBEDDING_PROVIDER = "ollama"
+def _build_embedding_provider_config() -> dict:
+    """Build EMBEDDING_PROVIDER_CONFIG from params.yaml."""
+    from legiscope.params import load_params
+
+    p = load_params()
+    emb = p.get("embeddings", {})
+    providers_yaml = emb.get("providers", {})
+
+    client_factories = {
+        "ollama": get_ollama_client,
+        "mistral": get_mistral_client,
+    }
+    embedding_functions = {
+        "ollama": _generate_embeddings_ollama,
+        "mistral": _generate_embeddings_mistral,
+    }
+
+    config: dict = {}
+    for name, settings in providers_yaml.items():
+        config[name] = {
+            "model": settings.get("model", ""),
+            "client_factory": client_factories.get(name, get_ollama_client),
+            "batch_size": settings.get("batch_size"),
+            "embedding_function": embedding_functions.get(
+                name, _generate_embeddings_ollama
+            ),
+        }
+
+    return config
+
+
+def _get_default_provider() -> str:
+    """Read default embedding provider from params.yaml."""
+    from legiscope.params import load_params
+
+    p = load_params()
+    return p.get("embeddings", {}).get("default_provider", "ollama")
+
+
+EMBEDDING_PROVIDER_CONFIG = _build_embedding_provider_config()
+EMBEDDING_PROVIDER = _get_default_provider()
 
 
 def get_embeddings(

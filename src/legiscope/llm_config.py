@@ -2,50 +2,57 @@
 Configuration module for legiscope package.
 
 Simplified model configuration using instructor's provider abstraction.
+All hyperparameters (provider, model names, temperature, etc.) are read
+from ``params.yaml``; no environment-variable overrides for those values.
 """
 
-import os
 import instructor
 from instructor import Instructor
 from loguru import logger
 
+from legiscope.params import load_params
 
-# Provider configuration: maps provider names to their settings
-PROVIDER_CONFIG = {
-    "openai": {
-        "fast_model": "gpt-4.1-mini",
-        "powerful_model": "gpt-4.1",
-        "mode": instructor.Mode.RESPONSES_TOOLS,
-    },
-    "mistral": {
-        "fast_model": "mistral-small-2506",
-        "powerful_model": "mistral-large-2512",
-        "mode": instructor.Mode.MISTRAL_TOOLS,
-    },
-    "ollama": {
-        "fast_model": "qwen3:8b",
-        "powerful_model": "qwen3:30b",
-        "mode": None,  # Ollama auto-configures the best mode
-    },
-}
+
+def _provider_config() -> dict:
+    """Build PROVIDER_CONFIG from params.yaml, enriched with instructor modes."""
+    p = load_params()
+    providers = p.get("llm", {}).get("providers", {})
+
+    mode_map = {
+        "openai": instructor.Mode.RESPONSES_TOOLS,
+        "mistral": instructor.Mode.MISTRAL_TOOLS,
+        "ollama": None,  # auto-configures
+    }
+
+    config: dict = {}
+    for name, models in providers.items():
+        config[name] = {
+            "fast_model": models.get("fast", ""),
+            "powerful_model": models.get("powerful", ""),
+            "mode": mode_map.get(name),
+            "num_ctx": models.get("num_ctx"),
+        }
+
+    return config
+
+
+# Eagerly build once; tests that need to override can monkeypatch or
+# reload params before importing.
+PROVIDER_CONFIG = _provider_config()
 
 
 class Config:
     """Global configuration for legiscope."""
 
-    DEFAULT_TEMPERATURE = 0.0
-    DEFAULT_MAX_RETRIES = 3
-
     @classmethod
     def get_llm_provider(cls) -> str:
-        """Get LLM provider from environment variable or use default."""
-        return os.getenv("LEGISCOPE_LLM_PROVIDER", "mistral")
+        """Get LLM provider from params.yaml."""
+        p = load_params()
+        return p.get("llm", {}).get("default_provider", "mistral")
 
     @classmethod
     def get_fast_client(cls) -> Instructor:
-        """
-        Get fast client for most LLM tasks based on current provider.
-        """
+        """Get fast client for most LLM tasks based on current provider."""
         provider = cls.get_llm_provider()
 
         if provider not in PROVIDER_CONFIG:
@@ -58,7 +65,6 @@ class Config:
         fast_model = cls.get_fast_model()
         provider_string = f"{provider}/{fast_model}"
 
-        # Create client with mode if specified, otherwise let instructor auto-configure
         if config["mode"] is not None:
             return instructor.from_provider(provider_string, mode=config["mode"])
         else:
@@ -66,9 +72,7 @@ class Config:
 
     @classmethod
     def get_powerful_client(cls) -> Instructor:
-        """
-        Get powerful client for complex reasoning tasks based on current provider.
-        """
+        """Get powerful client for complex reasoning tasks based on current provider."""
         provider = cls.get_llm_provider()
 
         if provider not in PROVIDER_CONFIG:
@@ -81,7 +85,6 @@ class Config:
         powerful_model = cls.get_powerful_model()
         provider_string = f"{provider}/{powerful_model}"
 
-        # Create client with mode if specified, otherwise let instructor auto-configure
         if config["mode"] is not None:
             return instructor.from_provider(provider_string, mode=config["mode"])
         else:
@@ -90,68 +93,46 @@ class Config:
     @classmethod
     def get_fast_model(cls) -> str:
         """Get model name for fast/cheap LLM tasks based on current provider."""
-        # Check environment variable first
-        env_model = os.getenv("LEGISCOPE_FAST_MODEL")
-        if env_model:
-            return env_model
-
-        # Fall back to provider-specific defaults
         provider = cls.get_llm_provider()
         if provider not in PROVIDER_CONFIG:
             raise ValueError(
                 f"Unsupported LLM provider: {provider}. "
                 f"Supported providers: {', '.join(PROVIDER_CONFIG.keys())}"
             )
-
         return PROVIDER_CONFIG[provider]["fast_model"]
 
     @classmethod
     def get_powerful_model(cls) -> str:
         """Get model name for complex reasoning tasks based on current provider."""
-        # Check environment variable first
-        env_model = os.getenv("LEGISCOPE_POWERFUL_MODEL")
-        if env_model:
-            return env_model
-
-        # Fall back to provider-specific defaults
         provider = cls.get_llm_provider()
         if provider not in PROVIDER_CONFIG:
             raise ValueError(
                 f"Unsupported LLM provider: {provider}. "
                 f"Supported providers: {', '.join(PROVIDER_CONFIG.keys())}"
             )
-
         return PROVIDER_CONFIG[provider]["powerful_model"]
 
     @classmethod
     def get_llm_params(cls, **kwargs) -> dict:
         """Get default LLM parameters with optional overrides.
 
-        For Ollama provider, automatically adds extra_body with num_ctx
-        if LEGISCOPE_OLLAMA_NUM_CTX is set in environment.
+        Reads temperature, max_retries from params.yaml.
+        For Ollama provider, adds extra_body with num_ctx if configured.
         """
+        p = load_params()
+        llm = p.get("llm", {})
+
         params = {
-            "temperature": cls.DEFAULT_TEMPERATURE,
-            "max_retries": cls.DEFAULT_MAX_RETRIES,
+            "temperature": llm.get("temperature", 0.0),
+            "max_retries": llm.get("max_retries", 3),
         }
 
-        # Add Ollama-specific context limit if using Ollama provider
+        # Ollama-specific context limit from params.yaml
         if cls.get_llm_provider() == "ollama":
-            num_ctx = os.getenv("LEGISCOPE_OLLAMA_NUM_CTX")
-            if num_ctx:
-                try:
-                    params["extra_body"] = {"num_ctx": int(num_ctx)}
-                    logger.debug(f"Ollama num_ctx set to {num_ctx}")
-                except ValueError:
-                    logger.warning(f"Invalid LEGISCOPE_OLLAMA_NUM_CTX value: {num_ctx}")
+            num_ctx = PROVIDER_CONFIG.get("ollama", {}).get("num_ctx")
+            if num_ctx is not None:
+                params["extra_body"] = {"num_ctx": int(num_ctx)}
+                logger.debug(f"Ollama num_ctx set to {num_ctx}")
 
         params.update(kwargs)
         return params
-
-
-# Import instructor for backward compatibility
-try:
-    pass  # instructor is imported as needed in the methods
-except ImportError:
-    logger.error("instructor package not found. Install with: uv add instructor")
-    raise

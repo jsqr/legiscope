@@ -12,11 +12,25 @@ from pathlib import Path
 
 import polars as pl
 
+from legiscope import config as cfg
+
+
 # ---------------------------------------------------------------------------
-# Data directory root (relative to project root)
+# Data directory helpers (read from config.yaml at access time)
 # ---------------------------------------------------------------------------
-DATA_DIR = Path("data")
-LAWS_DIR = DATA_DIR / "laws"
+def _data_dir() -> Path:
+    return cfg.data_dir()
+
+
+def _laws_dir() -> Path:
+    return cfg.laws_dir()
+
+
+# Backward-compatible module-level properties.  These are evaluated once at
+# import time, so callers that need runtime ``LEGISCOPE_DATA_DIR`` support
+# should use ``_data_dir()`` / ``_laws_dir()`` (or ``cfg.data_dir()``) instead.
+DATA_DIR = _data_dir()
+LAWS_DIR = _laws_dir()
 
 # ---------------------------------------------------------------------------
 # Parquet schema constants
@@ -170,12 +184,50 @@ class CodeRef:
     @property
     def full_data_dir(self) -> Path:
         """Full relative path from project root to this code's directory."""
-        return LAWS_DIR / self.data_dir
+        return _laws_dir() / self.data_dir
+
+    @classmethod
+    def from_dvc_vars(
+        cls,
+        state: str | None = None,
+        municipality: str | None = None,
+        code_slug: str | None = None,
+    ) -> "CodeRef":
+        """Create a ``CodeRef`` from DVC pipeline variables.
+
+        DVC stages pass ``${item.state}``, ``${item.municipality}``, and
+        ``${item.code_slug}`` as CLI arguments.  This factory mirrors that
+        convention and raises :class:`ValueError` for any missing field.
+
+        Args:
+            state: Two-letter state abbreviation.
+            municipality: Municipality name (``None`` for state-level codes).
+            code_slug: URL-friendly code identifier.
+
+        Returns:
+            A fully initialised ``CodeRef``.
+        """
+        if not state:
+            raise ValueError("state is required")
+        if not code_slug:
+            raise ValueError("code_slug is required")
+        jurisdiction = JurisdictionRef(state=state, municipality=municipality)
+        return cls(jurisdiction=jurisdiction, code_slug=code_slug)
 
 
 # ---------------------------------------------------------------------------
-# Registry file paths
+# Registry file paths (dynamic to respect LEGISCOPE_DATA_DIR)
 # ---------------------------------------------------------------------------
 
-JURISDICTIONS_PARQUET = DATA_DIR / "jurisdictions.parquet"
-CODES_PARQUET = DATA_DIR / "codes.parquet"
+
+def jurisdictions_parquet() -> Path:
+    return _data_dir() / "jurisdictions.parquet"
+
+
+def codes_parquet() -> Path:
+    return _data_dir() / "codes.parquet"
+
+
+# Backward-compatible constants (evaluated at import time)
+JURISDICTIONS_PARQUET = _data_dir() / "jurisdictions.parquet"
+CODES_PARQUET = _data_dir() / "codes.parquet"

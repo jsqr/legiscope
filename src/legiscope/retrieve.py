@@ -9,13 +9,28 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from legiscope.embeddings import get_embedding_client, get_embeddings
+from legiscope.params import load_params
 from legiscope.utils import ask, resolve_model_default
 
-# Constants for retrieval and LLM operations
-DEFAULT_N_RESULTS = 10  # Default number of results to retrieve from embeddings
-DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal analysis
-DEFAULT_MAX_RETRIES = 3  # Maximum retry attempts for LLM calls
-DEFAULT_RELEVANCE_THRESHOLD = 0.5  # Minimum confidence for relevance filtering (0-1)
+
+def _retrieval_params() -> dict:
+    p = load_params()
+    return p.get("retrieval", {})
+
+
+def _llm_params() -> dict:
+    p = load_params()
+    return p.get("llm", {})
+
+
+# Constants for retrieval and LLM operations — read from params.yaml
+_rp = _retrieval_params()
+_lp = _llm_params()
+
+DEFAULT_N_RESULTS = _rp.get("n_results", 10)
+DEFAULT_TEMPERATURE = _lp.get("temperature", 0.0)
+DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
+DEFAULT_RELEVANCE_THRESHOLD = _rp.get("relevance", {}).get("threshold", 0.5)
 
 
 # ============================================================================

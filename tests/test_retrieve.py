@@ -83,11 +83,6 @@ class TestHydeRewriter:
 
     def test_hyde_rewriter_llm_success(self):
         """Test successful LLM rewrite."""
-        # Set environment variable for consistent testing
-        import os
-
-        os.environ["LEGISCOPE_LLM_PROVIDER"] = "openai"
-
         # Mock the ask function
         mock_result = HydeRewrite(
             rewritten_query="The following provisions regulate vehicle parking within municipal boundaries.",
@@ -115,7 +110,7 @@ class TestHydeRewriter:
             assert call_args[1]["client"] == mock_client
             assert "where can I park my car" in call_args[1]["prompt"]
             assert call_args[1]["response_model"] == HydeRewrite
-            assert call_args[1]["model"] == "gpt-4.1-mini"
+            assert call_args[1]["model"] == "mistral-small-2506"
 
     def test_hyde_rewriter_llm_custom_model(self):
         """Test LLM rewrite with custom model."""
@@ -260,11 +255,6 @@ class TestIsRelevant:
 
     def test_is_relevant_success(self):
         """Test successful relevance assessment."""
-        # Set environment variable for consistent testing
-        import os
-
-        os.environ["LEGISCOPE_LLM_PROVIDER"] = "openai"
-
         mock_result = RelevanceAssessment(
             is_relevant=True,
             relevance_score=0.85,
@@ -292,7 +282,7 @@ class TestIsRelevant:
             assert call_args[1]["client"] == mock_client
             assert "parking regulations" in call_args[1]["prompt"]
             assert call_args[1]["response_model"] == RelevanceAssessment
-            assert call_args[1]["model"] == "gpt-4.1-mini"
+            assert call_args[1]["model"] == "mistral-small-2506"
 
     def test_is_relevant_custom_model(self):
         """Test relevance assessment with custom model."""

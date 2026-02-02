@@ -23,15 +23,15 @@ uv pip install -e ".[dev]"
 
 ### LLM Provider Configuration
 
-The project supports both OpenAI and Mistral as LLM providers. The default provider is Mistral.
+The project supports OpenAI, Mistral, and Ollama as LLM providers. Configuration is managed via `params.yaml` (tracked by DVC) and `config.yaml` (infrastructure settings).
 
 #### Environment Variables
 
-- `LEGISCOPE_LLM_PROVIDER`: Set to "openai" or "mistral" (default) to select LLM provider
-- `LEGISCOPE_FAST_MODEL`: Override fast model selection
-- `LEGISCOPE_POWERFUL_MODEL`: Override powerful model selection
-- `OPENAI_API_KEY`: Required when using OpenAI provider
-- `MISTRAL_API_KEY`: Required when using Mistral provider
+- `OPENAI_API_KEY`: Required when using OpenAI provider (secret)
+- `MISTRAL_API_KEY`: Required when using Mistral provider (secret)
+- `LEGISCOPE_DATA_DIR`: Override the root data directory path (infrastructure)
+
+All hyperparameters (provider, model names, temperature, etc.) are configured in `params.yaml`.
 
 #### Code-based Configuration
 
@@ -137,17 +137,14 @@ results_df = run_queries(
 #### Example Setup
 
 ```bash
-# For OpenAI
-export LEGISCOPE_LLM_PROVIDER=openai
+# Set API keys as secrets (in .env or environment)
 export OPENAI_API_KEY=your_openai_key
-
-# For Mistral (default)
-export LEGISCOPE_LLM_PROVIDER=mistral
 export MISTRAL_API_KEY=your_mistral_key
 
-# For Ollama (local)
-export LEGISCOPE_LLM_PROVIDER=ollama
-# Requires Ollama server running: ollama serve
+# To change the default provider, edit params.yaml:
+#   llm.default_provider: "openai"  (or "mistral", "ollama")
+
+# For Ollama (local), ensure server is running: ollama serve
 ```
 
 ### Embedding Model Configuration
@@ -172,19 +169,13 @@ The project supports multiple embedding models for generating text embeddings. T
 
 #### Switching Between Embedding Models
 
-To switch between embedding providers:
+To switch between embedding providers, edit `params.yaml`:
+```yaml
+embeddings:
+  default_provider: "mistral"  # or "ollama"
+```
 
-1. Set your environment variables:
-   ```bash
-   # For Mistral (default)
-   export LEGISCOPE_EMBEDDING_PROVIDER=mistral
-   export MISTRAL_API_KEY=your_mistral_key
-
-   # For Ollama
-   export LEGISCOPE_EMBEDDING_PROVIDER=ollama
-   ```
-
-2. Use the embedding interface:
+Use the embedding interface:
    ```python
    from legiscope.embeddings import get_embedding_client, get_embeddings
 

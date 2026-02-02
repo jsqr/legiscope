@@ -694,10 +694,10 @@ class TestCreateAndSaveEmbeddings:
         output_dir = tmp_path / "data" / "laws" / "CA" / "TestCity" / "test-code"
         output_dir.mkdir(parents=True)
 
-        # Monkeypatch the LAWS_DIR so full_data_dir resolves to tmp_path
+        # Monkeypatch _laws_dir so full_data_dir resolves to tmp_path
         import legiscope.models as models_mod
 
-        monkeypatch.setattr(models_mod, "LAWS_DIR", tmp_path / "data" / "laws")
+        monkeypatch.setattr(models_mod, "_laws_dir", lambda: tmp_path / "data" / "laws")
 
         sections_df = pl.DataFrame(
             {
