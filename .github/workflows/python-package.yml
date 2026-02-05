@@ -33,7 +33,7 @@ jobs:
       run: uv sync
     
     - name: Run ruff
-      run: uv run ruff check /src /tests
+      run: uv run ruff check src tests
     
     - name: Run pytest
       run: uv run pytest
