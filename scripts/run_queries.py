@@ -30,8 +30,14 @@ if str(src_path) not in sys.path:
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.llm_config import Config
 from legiscope.models import CodeRef, JurisdictionRef
+from legiscope.params import load_params
 from legiscope.query import BatchQuerySettings, load_queries, run_queries
 from legiscope.utils import LLMConfig, str2bool
+
+# Read params.yaml once so CLI defaults match the config file
+_params = load_params()
+_ret = _params.get("retrieval", {})
+_query = _params.get("query", {})
 
 
 def main():
@@ -66,7 +72,7 @@ Examples:
     parser.add_argument(
         "--n-results",
         type=int,
-        default=10,
+        default=_ret.get("n_results", 10),
         help="Number of embedding segments to retrieve per query",
     )
     parser.add_argument(
@@ -74,30 +80,30 @@ Examples:
         type=str2bool,
         nargs="?",
         const=True,
-        default=False,
-        help="Enable HYDE query rewriting (default: False)",
+        default=_ret.get("hyde", {}).get("enabled", False),
+        help="Enable HYDE query rewriting",
     )
     parser.add_argument(
         "--filter-relevance",
         type=str2bool,
         nargs="?",
         const=True,
-        default=True,
-        help="Enable LLM-based relevance filtering (default: True)",
+        default=_ret.get("relevance_filter", {}).get("enabled", False),
+        help="Enable LLM-based relevance filtering",
     )
     parser.add_argument(
         "--relevance-threshold",
         type=float,
-        default=0.5,
-        help="Threshold for relevance filtering (0.0-1.0, default: 0.5)",
+        default=_ret.get("relevance_filter", {}).get("threshold", 0.5),
+        help="Threshold for relevance filtering (0.0-1.0)",
     )
     parser.add_argument(
         "--validate-supporting-passages",
         type=str2bool,
         nargs="?",
         const=True,
-        default=True,
-        help="Enable validation of supporting passages against retrieved text (default: True)",
+        default=_query.get("validation", {}).get("enabled", True),
+        help="Enable validation of supporting passages against retrieved text",
     )
 
     args = parser.parse_args()

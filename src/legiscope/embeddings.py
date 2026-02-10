@@ -214,6 +214,7 @@ class CollectionConfig:
         collection_name: Base name of the collection (will be modified based on provider/model)
         provider: Embedding provider for collection naming
         model: Embedding model for collection naming (auto-resolved from provider if not set)
+        distance_metric: Distance function for HNSW index (``"l2"``, ``"cosine"``, or ``"ip"``)
 
     Example:
         >>> config = CollectionConfig(provider="ollama")
@@ -229,6 +230,7 @@ class CollectionConfig:
     collection_name: str = "legal_code_all"
     provider: str | None = None
     model: str | None = None
+    distance_metric: str | None = None
 
     def __post_init__(self):
         """Validate and normalize collection configuration."""
@@ -646,7 +648,10 @@ def get_or_create_legal_collection(
         collection = client.get_collection(name=config.collection_name)
         logger.info(f"Using existing collection: {config.collection_name}")
     except Exception:
-        collection = client.create_collection(name=config.collection_name)
+        create_kwargs: dict[str, Any] = {"name": config.collection_name}
+        if config.distance_metric:
+            create_kwargs["metadata"] = {"hnsw:space": config.distance_metric}
+        collection = client.create_collection(**create_kwargs)
         logger.info(f"Created new collection: {config.collection_name}")
 
     return collection

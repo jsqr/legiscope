@@ -49,8 +49,19 @@ _rp = _retrieval_params()
 DEFAULT_TEMPERATURE = _lp.get("temperature", 0.0)
 DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
 DEFAULT_N_RESULTS = _rp.get("n_results", 10)
-DEFAULT_RELEVANCE_THRESHOLD = _qp.get("relevance_threshold", 0.5)
 DEFAULT_LLM_TIMEOUT_SECONDS = float(_lp.get("timeout", 300))
+
+# Retrieval-phase settings (single source of truth from retrieval section)
+DEFAULT_HYDE_ENABLED: bool = _rp.get("hyde", {}).get("enabled", False)
+DEFAULT_RELEVANCE_FILTER_ENABLED: bool = _rp.get("relevance_filter", {}).get(
+    "enabled", False
+)
+DEFAULT_RELEVANCE_THRESHOLD: float = _rp.get("relevance_filter", {}).get(
+    "threshold", 0.5
+)
+
+# Query-phase settings
+DEFAULT_VALIDATION_ENABLED: bool = _qp.get("validation", {}).get("enabled", True)
 DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
     "exact_match_threshold", 1.0
 )
@@ -101,12 +112,12 @@ class QuerySettings:
     llm: LLMConfig
 
     # Relevance filtering
-    filter_relevance: bool = False
+    filter_relevance: bool = DEFAULT_RELEVANCE_FILTER_ENABLED
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     filter_llm: LLMConfig | None = None
 
     # Validation
-    validate_supporting_passages: bool = True
+    validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
@@ -169,12 +180,12 @@ class BatchQuerySettings:
 
     # Retrieval settings
     n_results: int = DEFAULT_N_RESULTS
-    use_hyde: bool = False
+    use_hyde: bool = DEFAULT_HYDE_ENABLED
 
     # Query processing
-    filter_relevance: bool = False
+    filter_relevance: bool = DEFAULT_RELEVANCE_FILTER_ENABLED
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
-    validate_supporting_passages: bool = True
+    validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
@@ -186,10 +197,13 @@ class BatchQuerySettings:
                 f"relevance_threshold must be between 0 and 1, got {self.relevance_threshold}"
             )
 
-        # Set default LLM if not provided
+        # Set default LLM if not provided (query analysis uses powerful model)
         if self.llm is None:
-            self.llm = LLMConfig(client=Config.get_fast_client())
-            logger.debug("BatchQuerySettings: Using default fast client")
+            self.llm = LLMConfig(
+                client=Config.get_powerful_client(),
+                model=Config.get_powerful_model(),
+            )
+            logger.debug("BatchQuerySettings: Using default powerful client")
 
 
 def load_queries(

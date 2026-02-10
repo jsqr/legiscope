@@ -46,10 +46,13 @@ def main() -> None:
 
     emb_params = params.get("embeddings", {})
     provider = emb_params.get("default_provider", "mistral")
+    ret_params = params.get("retrieval", {})
+    distance_metric = ret_params.get("distance_metric")
 
     collection_config = CollectionConfig(
         persist_directory=chroma_db_path(),
         provider=provider,
+        distance_metric=distance_metric,
     )
     collection = get_or_create_legal_collection(collection_config)
 

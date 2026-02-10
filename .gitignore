@@ -185,3 +185,6 @@ Modelfile
 
 # Local macOS system files
 .DS_Store
+
+# Scratch / working notes
+scratch/

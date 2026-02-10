@@ -28,12 +28,13 @@ if str(src_path) not in sys.path:
 
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.llm_config import Config
+from legiscope.params import load_params
 from legiscope.utils import LLMConfig, str2bool
 from legiscope.query import BatchQuerySettings, run_queries, load_queries
 from legiscope.eval import (
-    Evaluator, 
-    load_and_filter_monqcle, 
-    melt_monqcle_to_long, 
+    Evaluator,
+    load_and_filter_monqcle,
+    melt_monqcle_to_long,
     jurisdiction_id_to_monqcle_name
 )
 
@@ -41,19 +42,24 @@ from legiscope.eval import (
 DEFAULT_MONQCLE_PATH = "data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
 DEFAULT_CHROMA_PATH = "./data/chroma_db"
 
+# Read params.yaml once so CLI defaults match the config file
+_params = load_params()
+_ret = _params.get("retrieval", {})
+_query = _params.get("query", {})
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Run benchmark evaluation pipeline against MonQcle ground truth"
     )
     parser.add_argument(
-        "--queries-path", 
-        required=True, 
+        "--queries-path",
+        required=True,
         help="Path to queries CSV with 'question' and 'variable_name' columns"
     )
     parser.add_argument(
-        "--jurisdiction-id", 
-        required=True, 
+        "--jurisdiction-id",
+        required=True,
         help="Jurisdiction ID (e.g., CA-LosAngeles)"
     )
     parser.add_argument(
@@ -62,19 +68,19 @@ def main():
         help="Path to MonQcle Standard Report CSV"
     )
     parser.add_argument(
-        "--output", 
-        default="data/output/benchmark_results.csv", 
+        "--output",
+        default="data/output/benchmark_results.csv",
         help="Path to save evaluation results"
     )
     parser.add_argument(
-        "--n-results", 
-        type=int, 
-        default=10, 
+        "--n-results",
+        type=int,
+        default=_ret.get("n_results", 10),
         help="Number of embedding segments to retrieve per query"
     )
     parser.add_argument(
-        "--test-limit", 
-        type=int, 
+        "--test-limit",
+        type=int,
         help="Limit number of queries for testing pipeline"
     )
     parser.add_argument(
@@ -87,30 +93,30 @@ def main():
         type=str2bool,
         nargs='?',
         const=True,
-        default=False,
-        help="Enable HYDE query rewriting (default: False). Can be passed as '--use-hyde True/False'"
+        default=_ret.get("hyde", {}).get("enabled", False),
+        help="Enable HYDE query rewriting"
     )
     parser.add_argument(
         "--filter-relevance",
         type=str2bool,
         nargs='?',
         const=True,
-        default=False,
-        help="Enable LLM-based relevance filtering (default: False). Can be passed as '--filter-relevance True/False'"
+        default=_ret.get("relevance_filter", {}).get("enabled", False),
+        help="Enable LLM-based relevance filtering"
     )
     parser.add_argument(
         "--relevance-threshold",
         type=float,
-        default=0.5,
-        help="Threshold for relevance filtering (0.0-1.0, default: 0.5)"
+        default=_ret.get("relevance_filter", {}).get("threshold", 0.5),
+        help="Threshold for relevance filtering (0.0-1.0)"
     )
     parser.add_argument(
         "--validate-supporting-passages",
         type=str2bool,
         nargs='?',
         const=True,
-        default=True,
-        help="Enable validation of supporting passages against retrieved text (default: True). Can be passed as '--validate-supporting-passages True/False'"
+        default=_query.get("validation", {}).get("enabled", True),
+        help="Enable validation of supporting passages against retrieved text"
     )
     parser.add_argument(
         "--debug",

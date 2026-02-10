@@ -49,22 +49,22 @@ segmentation:
   token_limit: 256
   words_per_token: 0.75
 
-# Retrieval settings
+# Retrieval: vector search and post-retrieval filtering
 retrieval:
   n_results: 10
+  distance_metric: l2
 
+  # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:
     enabled: false
 
-  relevance:
+  # Post-retrieval LLM relevance filter (uses fast model)
+  relevance_filter:
     enabled: false
     threshold: 0.5
 
-# Query settings
+# Query: LLM analysis of retrieved context (uses powerful model)
 query:
-  filter_relevance: false
-  relevance_threshold: 0.5
-
   validation:
     enabled: true
     exact_match_threshold: 1.0
