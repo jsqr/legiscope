@@ -666,16 +666,18 @@ class TestBatchQueryConfig:
     def test_minimal_config(self):
         """Test creating settings with defaults."""
         # Mock the API client creation to avoid needing API keys,
-        # but still test that __post_init__ creates default LLM config
-        with patch("legiscope.llm_config.Config.get_fast_client") as mock_get_client:
-            mock_get_client.return_value = Mock()
+        # but still test that __post_init__ creates default LLM config.
+        with patch("legiscope.llm_config.Config.get_powerful_client") as mock_client, \
+             patch("legiscope.llm_config.Config.get_powerful_model") as mock_model:
+            mock_client.return_value = Mock()
+            mock_model.return_value = "test-model"
 
             settings = BatchQuerySettings()
 
             assert settings.llm is not None  # Should be set by __post_init__
             assert settings.n_results == 10  # Default
             assert settings.use_hyde is False
-            mock_get_client.assert_called_once()  # Verify default behavior triggered
+            mock_client.assert_called_once()
 
     def test_with_custom_llm(self):
         """Test settings with custom LLM."""
@@ -930,9 +932,11 @@ class TestBatchQueryConfigBasics:
         sections_path = tmp_path / "sections.parquet"
         sections_path.write_text("")  # Create empty file
 
-        with patch("legiscope.llm_config.Config.get_fast_client") as mock_get_client:
+        with patch("legiscope.llm_config.Config.get_powerful_client") as mock_get_client, \
+             patch("legiscope.llm_config.Config.get_powerful_model") as mock_get_model:
             mock_client = Mock(spec=Instructor)
             mock_get_client.return_value = mock_client
+            mock_get_model.return_value = "test-model"
 
             settings = BatchQuerySettings()
             # No llm provided - should use default

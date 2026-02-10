@@ -31,7 +31,7 @@ The project supports OpenAI, Mistral, and Ollama as LLM providers. Configuration
 - `MISTRAL_API_KEY`: Required when using Mistral provider (secret)
 - `LEGISCOPE_DATA_DIR`: Override the root data directory path (infrastructure)
 
-All hyperparameters (provider, model names, temperature, etc.) are configured in `params.yaml`.
+All hyperparameters (provider, model names, temperature, retrieval/query settings, etc.) are configured in `params.yaml`.
 
 #### Code-based Configuration
 
@@ -173,6 +173,29 @@ To switch between embedding providers, edit `params.yaml`:
 ```yaml
 embeddings:
   default_provider: "ollama"  # or "mistral"
+```
+
+#### Retrieval & Query Configuration
+
+Retrieval settings (HYDE, relevance filtering) and query settings (model tier,
+passage validation) are all in `params.yaml`. CLI scripts (`run_queries.py`,
+`benchmark_pipeline.py`) read these as defaults; CLI flags override them.
+
+```yaml
+retrieval:
+  n_results: 10
+  distance_metric: l2        # ChromaDB HNSW distance (l2, cosine, ip)
+  hyde:
+    enabled: false            # uses fast model
+  relevance_filter:
+    enabled: false            # uses fast model
+    threshold: 0.5
+
+query:                        # uses powerful model
+  validation:
+    enabled: true
+    exact_match_threshold: 1.0
+    fuzzy_match_threshold: 0.9
 ```
 
 Use the embedding interface:

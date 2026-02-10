@@ -30,7 +30,9 @@ _lp = _llm_params()
 DEFAULT_N_RESULTS = _rp.get("n_results", 10)
 DEFAULT_TEMPERATURE = _lp.get("temperature", 0.0)
 DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
-DEFAULT_RELEVANCE_THRESHOLD = _rp.get("relevance", {}).get("threshold", 0.5)
+DEFAULT_HYDE_ENABLED = _rp.get("hyde", {}).get("enabled", False)
+DEFAULT_RELEVANCE_FILTER_ENABLED = _rp.get("relevance_filter", {}).get("enabled", False)
+DEFAULT_RELEVANCE_THRESHOLD = _rp.get("relevance_filter", {}).get("threshold", 0.5)
 
 
 # ============================================================================

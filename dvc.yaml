@@ -91,3 +91,4 @@ stages:
         params:
             - jurisdiction
             - embeddings.default_provider
+            - retrieval.distance_metric
