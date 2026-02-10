@@ -6,6 +6,7 @@ jurisdiction:
   state: IL
   locality: WindyCity
   code_slug: municipal-code
+  code_name: "WindyCity Municipal Code"
 
 # LLM configuration
 llm:

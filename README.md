@@ -14,6 +14,96 @@ from local codes for research purposes. It aims to:
    analysis; and
 4. enable tweaking and experimentation.
 
+## Quick Start
+
+The preprocessing pipeline uses [DVC](https://dvc.org/) to track parameters and
+manage reproducible stages. All settings live in `params.yaml`; edit it once and
+every command picks up the values.
+
+### Prerequisites
+
+- Python environment ready: `make env` (installs DVC and all dependencies)
+- API keys in `.env` (copy from `.env.example`)
+- Provider/model choices set in `params.yaml` (`llm.default_provider`,
+  `embeddings.default_provider`)
+- For Ollama: server running (`ollama serve`) and models pulled
+
+_See [Configuration Files](#configuration-files) for details._
+
+### Preprocess a New Jurisdiction
+
+1. **Configure `params.yaml`** with your jurisdiction:
+
+   ```yaml
+   jurisdiction:
+     state: CA
+     locality: LosAngeles
+     code_slug: municipal-code
+     code_name: "LA Municipal Code"
+   ```
+
+2. **Initialize** (one-time):
+
+   ```bash
+   # Reads jurisdiction from params.yaml
+   python -m legiscope.pipeline.init
+   ```
+
+3. **Place raw files** in `data/laws/CA/LosAngeles/municipal-code/raw/`
+   (DOCX, TXT, etc.). Convert DOCX first if needed: `scripts/convert_docx.sh path/to/file.docx`
+
+4. **Run the pipeline** (parse → segment → embed → index):
+
+   ```bash
+   ./scripts/dvc_repro.sh
+   ```
+
+| Stage   | Key outputs                                  |
+|---------|----------------------------------------------|
+| parse   | `code.md`, `headings.parquet`                |
+| segment | `sections.parquet`, `segments.parquet`, `relations.parquet` |
+| embed   | `embeddings.parquet`                         |
+| index   | ChromaDB collection (in `data/chroma_db/`)   |
+
+### Query
+
+Querying is **not** (yet) a DVC stage — for now run it directly:
+
+```bash
+uv run python scripts/run_queries.py \
+    --queries-path data/queries/my_queries.csv
+```
+
+_See [Running Queries](#running-queries) for all options._
+
+### Experiments
+
+`params.yaml` is the single source of truth for the current jurisdiction,
+retrieval, and query settings. All commands read from it by default. Edit it,
+then `dvc exp run` picks up the changes and reruns affected stages automatically.
+Use `-S` flags to create one-off overrides without editing the file.
+
+```bash
+# Run with current params.yaml settings
+dvc exp run
+
+# One-off override (does not modify params.yaml)
+dvc exp run \
+    -S retrieval.hyde.enabled=true \
+    -S retrieval.relevance_filter.enabled=true
+```
+
+Compare experiments with `dvc exp show` / `dvc exp diff <exp-name>`.
+
+### Storing and Sharing Results
+
+- `dvc push` / `dvc pull` — share processed artifacts via a configured remote.
+- Query output (`data/output/`) is not DVC-tracked by default; commit to git
+  or add to DVC as needed.
+- `dvc exp push` / `dvc exp pull` — share experiment state.
+
+_See [DVC Remote Storage](#dvc-remote-storage) for setup._
+
 ## Getting started
 
 Developed on MacOS and Linux. It's possible some changes would be needed to run
@@ -41,41 +131,14 @@ cd notebooks
 uv run marimo edit
 
 # Alternatively, activate the environment
-#source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+#source .venv/bin/activate
 ```
 
-### Model Configuration
+### Configuration Files
 
-Model and provider settings are managed in two YAML files tracked by DVC:
-
-- **`params.yaml`** — Hyperparameters: LLM provider, model names, temperature, embedding settings, etc.
-- **`config.yaml`** — Infrastructure settings: data directory path, ChromaDB location.
-
-Secrets (API keys) are kept in `.env` and are **not** tracked.
-
-#### Setup
-
-1. Copy the example environment file and add your API keys:
-
-   ```bash
-   cp .env.example .env
-   # Edit .env to set OPENAI_API_KEY and/or MISTRAL_API_KEY
-   ```
-
-2. Edit `params.yaml` to select your provider and models:
-
-   ```yaml
-   llm:
-     default_provider: "mistral"   # or "openai", "ollama"
-   embeddings:
-     default_provider: "ollama"    # or "mistral"
-   ```
-
-The main client types are:
-
-- **Fast Client** (`Config.get_fast_client()`): Uses configured fast model
-- **Powerful Client** (`Config.get_powerful_client()`): Uses configured powerful model
-- **Embedding Client** (`get_embedding_client()`): Uses configured embedding provider
+- **`params.yaml`** — All pipeline parameters: jurisdiction, LLM provider/models, embedding settings, retrieval/query tuning. Tracked by DVC.
+- **`config.yaml`** — Infrastructure: data directory path, ChromaDB location.
+- **`.env`** — API keys (`OPENAI_API_KEY`, `MISTRAL_API_KEY`). Not tracked. Copy from `.env.example`.
 
 ## Development
 
@@ -103,114 +166,48 @@ make fix
 
 ## Usage
 
-### Processing Local Codes
+All commands read jurisdiction and settings from `params.yaml`. Edit the file
+to switch jurisdictions or tune retrieval/query settings. For one-off DVC
+overrides use `-S` flags (see below).
 
-The preprocessing pipeline uses [DVC](https://dvc.org/) to manage reproducible stages:
-**parse → segment → embed → index**.
+### CLI Overrides
 
-#### Step 1: Initialize a jurisdiction (one-time setup)
-
-Initialization is not a DVC stage — run it directly:
-
-```bash
-python -m legiscope.pipeline.init \
-    --state CA --locality LosAngeles \
-    --code-slug municipal-code --name "LA Municipal Code"
-# Creates: data/laws/CA/LosAngeles/municipal-code/raw/
-```
-
-After initialization, place your raw files (DOCX, TXT, etc.) in the `raw/` directory.
-
-For state-level codes, use `--locality State` (or omit it):
+All scripts read jurisdiction and settings from `params.yaml`. Edit the file
+to change jurisdictions. For one-off DVC overrides, use `-S` flags directly:
 
 ```bash
-python -m legiscope.pipeline.init \
-    --state CA --code-slug penal-code --name "CA Penal Code"
-```
+# Run a single pipeline stage
+./scripts/dvc_repro.sh --stage segment
 
-#### Step 2: Run the preprocessing pipeline
-
-Use the wrapper script, which calls `dvc exp run` with the right `-S` flags:
-
-```bash
-./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code
-```
-
-Or call DVC directly:
-
-```bash
-dvc exp run \
-    -S jurisdiction.state=CA \
-    -S jurisdiction.locality=LosAngeles \
+# Override params for a DVC experiment (does not modify params.yaml)
+dvc exp run -S jurisdiction.state=CA -S jurisdiction.locality=LosAngeles \
     -S jurisdiction.code_slug=municipal-code
 ```
 
-Run a single stage:
-
-```bash
-./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code \
-    --stage segment
-```
+For state-level codes, set `locality` to `State` in `params.yaml`.
 
 ### Running Queries
 
-Run batch queries against processed legal codes using the query script:
-
 ```bash
-# Minimal example (using defaults)
 uv run python scripts/run_queries.py \
-    --queries-path "data/queries/test_queries.csv" \
-    --jurisdiction-id "CA-LosAngeles"
-
-# Full configuration example (maximum control)
-uv run python scripts/run_queries.py \
-    --queries-path "data/queries/test_queries.csv" \
-    --jurisdiction-id "CA-LosAngeles" \
-    --n-results 10 \
-    --use-hyde False \
-    --filter-relevance True \
-    --relevance-threshold 0.5 \
-    --validate-supporting-passages True \
-    --output "data/output/CA-LosAngeles/test_results.csv"
+    --queries-path "data/queries/test_queries.csv"
 ```
 
-**Script Arguments (run_queries.py):**
+Queries are a CSV with a `question` column. Results are saved to
+`data/output/{JURISDICTION}/query_results.csv` with answers, citations,
+confidence scores, and processing metrics.
+
+<details>
+<summary>Full query CLI options</summary>
 
 - `--queries-path`: Path to queries CSV file (required)
-- `--jurisdiction-id`: Target jurisdiction ID (e.g., "CA-LosAngeles") (required)
-- `--collection-name`: ChromaDB collection name (defaults to env var)
-- `--output`: Output CSV file path
-- `--n-results`: Number of results to retrieve per query (default: 10)
-- `--use-hyde`: Enable HYDE query rewriting (default: False)
-- `--filter-relevance`: Enable LLM-based relevance filtering (default: True)
-- `--relevance-threshold`: Confidence threshold for filtering (default: 0.5)
-- `--validate-supporting-passages`: Validate LLM citations against text (default: True)
+- `--output`: Output CSV file path (default: `data/output/{jurisdiction}/query_results.csv`)
+- `--collection-name`: ChromaDB collection name
 
-**Query File Format:**
+Jurisdiction and retrieval/query settings (HYDE, relevance filtering, etc.) are
+read from `params.yaml`.
 
-- CSV format with a "question" column
-- One query per row
-
-**Example queries file (queries.csv):**
-
-```csv
-question
-"Are there restrictions on selling drug paraphernalia in this jurisdiction?"
-"What are the parking regulations for residential areas?"
-"Do I need a permit to operate a home-based business?"
-```
-
-Query results are saved to `data/output/{JURISDICTION}/query_results.csv` and include:
-
-- Short answer to each query
-- Detailed legal reasoning
-- Citations and supporting passages
-- Confidence scores
-- Processing metrics
-
-> **Note:** Query execution is currently a standalone step, separate from the
-> DVC preprocessing pipeline. A dedicated query DVC pipeline may be added in
-> the future.
+</details>
 
 ## Scripts and Modules
 

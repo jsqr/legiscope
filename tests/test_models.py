@@ -1,6 +1,7 @@
 """Tests for legiscope.models — JurisdictionRef, CodeRef, and schema constants."""
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -168,6 +169,68 @@ class TestCodeRefFromDvcVars:
     def test_missing_code_slug_raises(self):
         with pytest.raises(ValueError, match="code_slug is required"):
             CodeRef.from_dvc_vars(state="CA", code_slug=None)
+
+
+class TestCodeRefFromParams:
+    def test_reads_from_params_dict(self):
+        params = {
+            "jurisdiction": {
+                "state": "CA",
+                "locality": "LosAngeles",
+                "code_slug": "municipal-code",
+            }
+        }
+        ref = CodeRef.from_params(params)
+        assert ref.jurisdiction.state == "CA"
+        assert ref.jurisdiction.locality == "LosAngeles"
+        assert ref.code_slug == "municipal-code"
+
+    def test_state_level(self):
+        params = {
+            "jurisdiction": {
+                "state": "CA",
+                "locality": "State",
+                "code_slug": "penal-code",
+            }
+        }
+        ref = CodeRef.from_params(params)
+        assert ref.jurisdiction.locality is None
+        assert ref.jurisdiction.level == "state"
+
+    def test_none_locality(self):
+        params = {
+            "jurisdiction": {
+                "state": "CA",
+                "code_slug": "penal-code",
+            }
+        }
+        ref = CodeRef.from_params(params)
+        assert ref.jurisdiction.locality is None
+        assert ref.jurisdiction.level == "state"
+
+    def test_missing_state_raises(self):
+        params = {"jurisdiction": {"code_slug": "mc"}}
+        with pytest.raises(ValueError, match="state is required"):
+            CodeRef.from_params(params)
+
+    def test_missing_code_slug_raises(self):
+        params = {"jurisdiction": {"state": "CA"}}
+        with pytest.raises(ValueError, match="code_slug is required"):
+            CodeRef.from_params(params)
+
+    def test_loads_params_when_none(self):
+        fake_params = {
+            "jurisdiction": {
+                "state": "TX",
+                "locality": "Austin",
+                "code_slug": "city-code",
+            }
+        }
+        with patch("legiscope.params.load_params", return_value=fake_params):
+            ref = CodeRef.from_params()
+        assert ref.jurisdiction.state == "TX"
+        assert ref.jurisdiction.locality == "Austin"
+        assert ref.code_slug == "city-code"
 
 
 # ---------------------------------------------------------------------------

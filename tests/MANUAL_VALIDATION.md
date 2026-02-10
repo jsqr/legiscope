@@ -5,10 +5,10 @@ Run them against a local or staging environment after all unit tests pass.
 
 ## MV-1: Full DVC Pipeline Run
 
-Run the complete pipeline on WindyCity:
+Run the complete pipeline on the jurisdiction configured in `params.yaml`:
 
 ```bash
-./scripts/dvc_repro.sh --state IL --locality WindyCity --code-slug municipal-code --force
+./scripts/dvc_repro.sh --force
 ```
 
 **Verify:**
@@ -81,17 +81,20 @@ dvc exp run -S segmentation.token_limit=128
 
 ## MV-6: Error Handling — Missing Raw Files
 
-Initialize a jurisdiction without raw files and attempt to parse:
+Temporarily set a throwaway jurisdiction in `params.yaml`, initialize it,
+then attempt to parse without placing raw files:
 
 ```bash
-python -m legiscope.pipeline.init \
-    --state TEST --locality TestCity \
-    --code-slug test-code --name "Test Code"
+# Edit params.yaml to set jurisdiction.state=TEST, locality=TestCity,
+# code_slug=test-code, code_name="Test Code", then:
+python -m legiscope.pipeline.init
 
 python -m legiscope.pipeline.parse \
-    --state TEST --locality TestCity \
-    --code-slug test-code
+    --state TEST --locality TestCity --code-slug test-code
 ```
+
+(The parse module still accepts `--state`/`--locality`/`--code-slug` because
+it is a DVC stage invoked by `dvc.yaml` template substitution.)
 
 **Verify:**
 - [ ] Parse step fails with a clear error message about missing raw files

@@ -24,18 +24,14 @@ Columns should include `question` and the `variable_name` from MonQcle.
 
 ## Running the Benchmark
 
-Run the pipeline script from the project root. You can customize the behavior using various command-line arguments.
+Run the pipeline script from the project root. Jurisdiction and retrieval/query
+settings (HYDE, relevance filtering, etc.) are read from `params.yaml`.
 
 ### Quick Start
 ```bash
 # Test run (limit to 5 queries)
 uv run python scripts/benchmark_pipeline.py \
 --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
---monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
---series-title DPL_2025_Consolidated \
---jurisdiction-id CA-LosAngeles \
---output data/output/CA-LosAngeles/benchmark_results.csv \
---n-results 10 \
 --test-limit 5
 ```
 
@@ -46,13 +42,8 @@ uv run python scripts/benchmark_pipeline.py \
 --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
 --monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
 --series-title DPL_2025_Consolidated \
---jurisdiction-id CA-LosAngeles \
 --output data/output/CA-LosAngeles/benchmark_results.csv \
---n-results 10 \
---use-hyde False \
---filter-relevance True \
---relevance-threshold 0.5 \
---validate-supporting-passages True \
+--test-limit 5 \
 --debug
 ```
 
@@ -61,17 +52,14 @@ uv run python scripts/benchmark_pipeline.py \
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `--queries-path` | Path to queries CSV (required) | - |
-| `--jurisdiction-id` | Jurisdiction ID (e.g., CA-LosAngeles) (required) | - |
 | `--monqcle-path` | Path to MonQcle CSV | `data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv` |
-| `--output` | Output file path | `data/output/benchmark_results.csv` |
-| `--n-results` | Number of segments to retrieve | `10` |
+| `--output` | Output file path | `data/output/{jurisdiction}/benchmark_results.csv` |
 | `--test-limit` | Limit number of queries (for testing) | None |
 | `--series-title` | MonQcle series title | `DPL_2025_Consolidated` |
-| `--use-hyde` | Enable HYDE query rewriting | `False` |
-| `--filter-relevance` | Enable LLM relevance filtering of results | `False` |
-| `--relevance-threshold` | Threshold for filtering (0.0-1.0) | `0.5` |
-| `--validate-supporting-passages` | Validate LLM citations against text | `True` |
 | `--debug` | Enable debug mode (saves intermediate CSVs) | `False` |
+
+Jurisdiction, retrieval settings (n_results, HYDE, relevance filtering), and
+query settings (passage validation) are all read from `params.yaml`.
 
 ## How it Works
 
