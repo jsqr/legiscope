@@ -21,8 +21,8 @@ llm:
       powerful: mistral-large-2512
 
     ollama:
-      fast: qwen3:8b
-      powerful: qwen3:30b
+      fast: gemma3:4b
+      powerful: gemma3:12b-8k
       num_ctx:
 
   temperature: 0.0
@@ -47,7 +47,7 @@ embeddings:
 # Segmentation settings
 segmentation:
   token_limit: 256
-  words_per_token: 0.75
+  words_per_token: 0.5
 
 # Retrieval: vector search and post-retrieval filtering
 retrieval:
