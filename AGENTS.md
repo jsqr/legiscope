@@ -178,8 +178,8 @@ embeddings:
 #### Retrieval & Query Configuration
 
 Retrieval settings (HYDE, relevance filtering) and query settings (model tier,
-passage validation) are all in `params.yaml`. CLI scripts (`run_queries.py`,
-`benchmark_pipeline.py`) read these as defaults; CLI flags override them.
+passage validation) are all in `params.yaml`. CLI scripts (`scripts/run_queries.py`,
+`coep/scripts/benchmark_pipeline.py`) read these as defaults; CLI flags override them.
 
 ```yaml
 retrieval:
@@ -329,13 +329,13 @@ dvc exp run \
 ### Benchmarking
 
 The project handles benchmarking against MonQcle data using an LLM-as-judge approach.
-See `BENCHMARKING.md` for full documentation.
+See `coep/docs/BENCHMARKING.md` for full documentation.
 
 ```bash
 # Run benchmarking pipeline
-uv run python scripts/benchmark_pipeline.py \
+uv run python coep/scripts/benchmark_pipeline.py \
     --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
-    --monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
+    --monqcle-path coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
     --series-title DPL_2025_Consolidated \
     --jurisdiction-id CA-LosAngeles \
     --output data/output/CA-LosAngeles/benchmark_results.csv \
@@ -388,12 +388,12 @@ uv run python scripts/run_queries.py \
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
 │       ├── segment.py       # Text segmentation utilities
 │       ├── query.py         # Legal query processing with structured responses
-│       └── eval.py          # Evaluation and benchmarking logic
+│       └── coep/
+│           └── eval.py      # COEP evaluation and benchmarking logic
 ├── tests/               # Test files
 ├── scripts/             # Utility scripts
 │   ├── dvc_repro.sh           # DVC pipeline wrapper (primary interface)
 │   ├── run_queries.py         # Batch query execution
-│   ├── benchmark_pipeline.py  # Benchmarking workflow
 │   ├── pipeline_init.sh       # (deprecated) Initialize jurisdiction
 │   ├── pipeline_parse.sh      # (deprecated) Parse raw files to Markdown
 │   ├── pipeline_process.sh    # (deprecated) Create embeddings and index
@@ -404,6 +404,13 @@ uv run python scripts/run_queries.py \
 │   ├── create_embeddings.py   # (deprecated) Generate embeddings
 │   ├── build_chroma_index.py  # (deprecated) Build ChromaDB index
 │   └── ...
+├── coep/
+│   ├── scripts/
+│   │   └── benchmark_pipeline.py  # COEP benchmarking workflow
+│   ├── docs/
+│   │   └── BENCHMARKING.md        # COEP benchmark docs
+│   └── data/
+│       └── monqcle_data/          # COEP MonQcle data
 ├── data/                # Data directory (not tracked by git)
 │   ├── jurisdictions.parquet  # Registry of all jurisdictions
 │   ├── codes.parquet          # Registry of all legal codes

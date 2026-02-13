@@ -29,9 +29,9 @@ Run the pipeline script from the project root. You can customize the behavior us
 ### Quick Start
 ```bash
 # Test run (limit to 5 queries)
-uv run python scripts/benchmark_pipeline.py \
+uv run python coep/scripts/benchmark_pipeline.py \
 --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
---monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
+--monqcle-path coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
 --series-title DPL_2025_Consolidated \
 --jurisdiction-id CA-LosAngeles \
 --output data/output/CA-LosAngeles/benchmark_results.csv \
@@ -42,9 +42,9 @@ uv run python scripts/benchmark_pipeline.py \
 ### Full Configuration
 ```bash
 # Full run with all options explicitly set
-uv run python scripts/benchmark_pipeline.py \
+uv run python coep/scripts/benchmark_pipeline.py \
 --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
---monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
+--monqcle-path coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
 --series-title DPL_2025_Consolidated \
 --jurisdiction-id CA-LosAngeles \
 --output data/output/CA-LosAngeles/benchmark_results.csv \
@@ -62,7 +62,7 @@ uv run python scripts/benchmark_pipeline.py \
 |----------|-------------|---------|
 | `--queries-path` | Path to queries CSV (required) | - |
 | `--jurisdiction-id` | Jurisdiction ID (e.g., CA-LosAngeles) (required) | - |
-| `--monqcle-path` | Path to MonQcle CSV | `data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv` |
+| `--monqcle-path` | Path to MonQcle CSV | `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv` |
 | `--output` | Output file path | `data/output/benchmark_results.csv` |
 | `--n-results` | Number of segments to retrieve | `10` |
 | `--test-limit` | Limit number of queries (for testing) | None |
@@ -92,5 +92,5 @@ uv run python scripts/benchmark_pipeline.py \
 
 ## Code Structure
 
--   `src/legiscope/eval.py`: Contains the `Evaluator` class and the `EvaluationResult` schema (using Instructor).
--   `scripts/benchmark_pipeline.py`: The executable workflow script.
+-   `src/legiscope/coep/eval.py`: Contains the `Evaluator` class and the `EvaluationResult` schema (using Instructor).
+-   `coep/scripts/benchmark_pipeline.py`: The executable workflow script.

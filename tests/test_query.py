@@ -126,13 +126,12 @@ class TestLoadQueries:
         finally:
             os.unlink(temp_path)
 
-    def test_load_queries_dataset_adjustment(self):
-        """Test dataset specific adjustments for drug paraphernalia."""
-        # Case 1: Trigger context addition
+    def test_load_queries_custom_adjuster(self):
+        """Test caller-provided query adjuster hook."""
         df = pl.DataFrame(
             {
-                "question": ["Is drug paraphernalia allowed?", "Other question"],
-                "variable_name": ["q1", "q2"],
+                "question": ["Question 1", "Question 2"],
+                "variable_name": ["var1", "var2"],
             }
         )
 
@@ -140,32 +139,19 @@ class TestLoadQueries:
             df.write_csv(f.name)
             temp_path = f.name
 
-        try:
-            queries = load_queries(temp_path, adjust_for_dataset=True)
-            # Should have prepended context
-            assert "ordinance that prohibits drug paraphernalia" in queries[0].question
-            assert "ordinance that prohibits drug paraphernalia" in queries[1].question
-        finally:
-            os.unlink(temp_path)
-
-    def test_load_queries_exclusions(self):
-        """Test exclusion of specific variable names."""
-        df = pl.DataFrame(
-            {
-                "question": ["drug paraphernalia Q1", "Q2", "Q3", "Q4"],
-                "variable_name": ["normal", "dp_database", "dp_url", "dp_note"],
-            }
-        )
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            df.write_csv(f.name)
-            temp_path = f.name
+        def _adjuster(input_df: pl.DataFrame) -> pl.DataFrame:
+            return input_df.with_columns(
+                (pl.lit("PREFIX: ") + pl.col("question")).alias("question")
+            )
 
         try:
-            queries = load_queries(temp_path, adjust_for_dataset=True)
-            # Should filter out the 3 specific vars
-            assert len(queries) == 1
-            assert queries[0].variable_name == "normal"
+            queries = load_queries(
+                temp_path,
+                adjust_for_dataset=True,
+                query_adjuster=_adjuster,
+            )
+            assert queries[0].question == "PREFIX: Question 1"
+            assert queries[1].question == "PREFIX: Question 2"
         finally:
             os.unlink(temp_path)
 

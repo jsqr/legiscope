@@ -22,7 +22,7 @@ from loguru import logger
 import csv
 
 # Add src to path
-src_path = Path(__file__).parent.parent / "src"
+src_path = Path(__file__).resolve().parents[2] / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
@@ -31,15 +31,18 @@ from legiscope.llm_config import Config
 from legiscope.params import load_params
 from legiscope.utils import LLMConfig, str2bool
 from legiscope.query import BatchQuerySettings, run_queries, load_queries
-from legiscope.eval import (
+from legiscope.coep.eval import (
     Evaluator,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
-    jurisdiction_id_to_monqcle_name
+    jurisdiction_id_to_monqcle_name,
 )
+from legiscope.coep.query import adjust_drug_paraphernalia_queries
 
 # Default paths - can be overridden via CLI
-DEFAULT_MONQCLE_PATH = "data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+DEFAULT_MONQCLE_PATH = (
+    "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+)
 DEFAULT_CHROMA_PATH = "./data/chroma_db"
 
 # Read params.yaml once so CLI defaults match the config file
@@ -131,7 +134,11 @@ def main():
     # Step 1: Load Queries
     # =========================================================================
     # Uses shared query loading logic (returns list[QueryInput])
-    query_inputs = load_queries(args.queries_path)
+    query_inputs = load_queries(
+        args.queries_path,
+        adjust_for_dataset=True,
+        query_adjuster=adjust_drug_paraphernalia_queries,
+    )
 
     if args.debug:
         debug_dir = Path(f"data/output/{args.jurisdiction_id}/debug")

@@ -232,7 +232,7 @@ Query results are saved to `data/output/{JURISDICTION}/query_results.csv` and in
 
 - `scripts/dvc_repro.sh` — Wrapper around `dvc exp run` for running the pipeline
 - `scripts/run_queries.py` — Run batch queries against legal code database
-- `scripts/benchmark_pipeline.py` — Benchmarking workflow
+- `coep/scripts/benchmark_pipeline.py` — COEP benchmarking workflow
 - `scripts/convert_docx.sh` — Convert DOCX files to plain text using pandoc
 - `scripts/pipeline_init.sh` — *(deprecated: use `legiscope.pipeline.init`)*
 - `scripts/pipeline_parse.sh` — *(deprecated: use `dvc_repro.sh`)*
@@ -280,7 +280,7 @@ data/
 ├── output/                         # LLM query output
 │   └── {STATE}-{Locality}/
 │       └── query_results.csv
-└── monqcle_data/                   # Human-annotated MonQcle data
+└── ...
 ```
 
 ### DVC Remote Storage
@@ -328,13 +328,20 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
 │       ├── segment.py       # Text segmentation utilities
 │       ├── query.py         # Legal query processing with structured responses
-│       └── eval.py          # Evaluation and benchmarking logic
+│       └── coep/
+│           └── eval.py      # COEP-specific evaluation and benchmarking logic
 ├── tests/                   # Test files
 ├── scripts/                 # Utility scripts
 │   ├── dvc_repro.sh             # DVC pipeline wrapper
-│   ├── benchmark_pipeline.py    # Benchmarking workflow
 │   ├── run_queries.py           # Batch query execution
 │   └── ...
+├── coep/
+│   ├── scripts/
+│   │   └── benchmark_pipeline.py # COEP benchmarking workflow
+│   ├── docs/
+│   │   └── BENCHMARKING.md      # COEP benchmarking guide
+│   └── data/
+│       └── monqcle_data/        # COEP MonQcle data
 ├── notebooks/               # Interactive notebooks
 ├── docs/                    # Documentation
 ├── config.yaml              # Infrastructure settings (data dir, ChromaDB path)
@@ -351,7 +358,7 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 
 Additional documentation is available in the `docs/` directory:
 
-- [Benchmarking Workflow](docs/BENCHMARKING.md) - Guide to running the RAG evaluation pipeline against MonQcle data
+- [COEP Benchmarking Workflow](coep/docs/BENCHMARKING.md) - Guide to running the COEP RAG evaluation pipeline against MonQcle data
 - [Supporting Passages Validation](docs/VALIDATION_EXAMPLE.md) - Guide to automatic validation of LLM-generated supporting passages
 
 ## Contributing

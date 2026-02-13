@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import Mock, patch
 import polars as pl
 
-from legiscope.eval import (
+from legiscope.coep.eval import (
     Evaluator,
     EvaluationResult,
     jurisdiction_id_to_monqcle_name,
@@ -135,7 +135,7 @@ class TestEvaluator:
 
         # Create evaluator with mock client
         # We need to mock Config.get_powerful_client if we don't pass llm_config
-        with patch("legiscope.eval.Config") as mock_config:
+        with patch("legiscope.coep.eval.Config") as mock_config:
             mock_config.get_powerful_client.return_value = mock_client
             mock_config.get_powerful_model.return_value = "mock_model"
 
@@ -158,7 +158,7 @@ class TestEvaluator:
         """Test batch evaluation."""
         mock_client = Mock()
 
-        with patch("legiscope.eval.Config") as mock_config:
+        with patch("legiscope.coep.eval.Config") as mock_config:
             mock_config.get_powerful_client.return_value = mock_client
             mock_config.get_powerful_model.return_value = "mock_model"
 

@@ -5,7 +5,7 @@ Query processing module for the legiscope package.
 from dataclasses import dataclass, field
 from rapidfuzz import fuzz
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Callable, cast
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from pydantic import ValidationError
@@ -207,17 +207,19 @@ class BatchQuerySettings:
 
 
 def load_queries(
-    file_path: str | Path, adjust_for_dataset: bool = True
+    file_path: str | Path,
+    adjust_for_dataset: bool = False,
+    query_adjuster: Callable[[pl.DataFrame], pl.DataFrame] | None = None,
 ) -> list[QueryInput]:
     """Read queries from CSV file and return as list of QueryInput objects.
 
     This handles reading the 'question' and 'variable_name' columns, and optionally
-    applying dataset-specific adjustments (like prepending context regarding drug paraphernalia
-    laws based on content detection).
+    applying caller-provided dataset adjustments.
 
     Args:
         file_path: Path to the CSV file containing queries
-        adjust_for_dataset: Whether to apply dataset-specific cleaning/context logic (default True)
+        adjust_for_dataset: Whether to apply caller-provided dataset adjustment logic
+        query_adjuster: Optional callable that receives and returns a Polars DataFrame
 
     Returns:
         List of structured QueryInput objects
@@ -238,21 +240,8 @@ def load_queries(
         pl.col("question").is_not_null() & (pl.col("question").str.strip_chars() != "")
     )
 
-    # Dataset-specific logic (ported from scripts/run_queries.py)
-    if adjust_for_dataset and not df.is_empty():
-        first_query = str(df["question"][0]).lower()
-        if "drug paraphernalia" in first_query:
-            context = "This query is about ordinance that prohibits drug paraphernalia-related activities."
-            df = df.with_columns(
-                (pl.lit(context) + " " + pl.col("question").cast(pl.String)).alias(
-                    "question"
-                )
-            )
-
-            # Exclude irrelevant queries if variable_name exists
-            if "variable_name" in df.columns:
-                rows_to_exclude = ["dp_database", "dp_url", "dp_note"]
-                df = df.filter(~pl.col("variable_name").is_in(rows_to_exclude))
+    if adjust_for_dataset and query_adjuster is not None and not df.is_empty():
+        df = query_adjuster(df)
 
     # helper to convert row to QueryInput
     def _row_to_input(row):
