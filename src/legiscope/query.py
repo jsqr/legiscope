@@ -240,7 +240,19 @@ def load_queries(
         pl.col("question").is_not_null() & (pl.col("question").str.strip_chars() != "")
     )
 
-    if adjust_for_dataset and query_adjuster is not None and not df.is_empty():
+    # Validate consistency between adjust_for_dataset and query_adjuster
+    if adjust_for_dataset and query_adjuster is None:
+        raise ValueError(
+            "adjust_for_dataset is True, but no query_adjuster was provided. "
+            "Provide a query_adjuster callable or set adjust_for_dataset=False."
+        )
+    if query_adjuster is not None and not adjust_for_dataset:
+        raise ValueError(
+            "query_adjuster was provided, but adjust_for_dataset is False. "
+            "Set adjust_for_dataset=True to enable query adjustment."
+        )
+
+    if adjust_for_dataset and not df.is_empty():
         df = query_adjuster(df)
 
     # helper to convert row to QueryInput
