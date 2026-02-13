@@ -20,6 +20,11 @@ EXP_NAME=""
 FORCE=false
 VERBOSE=false
 
+# Project root (script works even if invoked from another directory)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "$PROJECT_ROOT"
+
 # ── Usage ─────────────────────────────────────────────────────────
 usage() {
     cat <<EOF
@@ -107,14 +112,26 @@ if [[ ! -d "${CODE_DIR}/raw" ]] || [[ -z "$(ls -A "${CODE_DIR}/raw" 2>/dev/null)
     echo "Place source files there before running the pipeline." >&2
 fi
 
+# Normalize interpreter resolution for stage commands.
+# If project venv exists, ensure its python/dvc are first on PATH.
+if [[ -x ".venv/bin/python" ]]; then
+    export PATH=".venv/bin:${PATH}"
+    PYTHON_BIN=".venv/bin/python"
+else
+    PYTHON_BIN="python"
+fi
+
+# Ensure source tree is importable for this process and child stage commands.
+export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 # Ensure the active Python can import the project package.
-if ! python -c "import legiscope" >/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -c "import legiscope" >/dev/null 2>&1; then
     echo "Error: current Python environment cannot import 'legiscope'." >&2
     echo "" >&2
     echo "Fix options:" >&2
     echo "  1) Run: make env" >&2
     echo "  2) Activate env: source .venv/bin/activate" >&2
-    echo "  3) Or run this command via uv: uv run ./scripts/dvc_repro.sh ..." >&2
+    echo "  3) Install package: uv pip install ." >&2
     exit 1
 fi
 
