@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 import pytest
 from instructor import Instructor
 
+from legiscope.llm_config import Config
 from legiscope.retrieve import (
     HydeRewrite,
     RelevanceAssessment,
@@ -110,7 +111,7 @@ class TestHydeRewriter:
             assert call_args[1]["client"] == mock_client
             assert "where can I park my car" in call_args[1]["prompt"]
             assert call_args[1]["response_model"] == HydeRewrite
-            assert call_args[1]["model"] == "mistral-small-2506"
+            assert call_args[1]["model"] == Config.get_fast_model()
 
     def test_hyde_rewriter_llm_custom_model(self):
         """Test LLM rewrite with custom model."""
@@ -282,7 +283,7 @@ class TestIsRelevant:
             assert call_args[1]["client"] == mock_client
             assert "parking regulations" in call_args[1]["prompt"]
             assert call_args[1]["response_model"] == RelevanceAssessment
-            assert call_args[1]["model"] == "mistral-small-2506"
+            assert call_args[1]["model"] == Config.get_fast_model()
 
     def test_is_relevant_custom_model(self):
         """Test relevance assessment with custom model."""

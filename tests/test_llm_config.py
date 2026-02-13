@@ -57,11 +57,14 @@ class TestDefaultProviderAndModels:
 
     def test_default_fast_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
-            assert Config.get_fast_model() == "mistral-small-2506"
+            assert Config.get_fast_model() == PROVIDER_CONFIG["mistral"]["fast_model"]
 
     def test_default_powerful_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
-            assert Config.get_powerful_model() == "mistral-large-2512"
+            assert (
+                Config.get_powerful_model()
+                == PROVIDER_CONFIG["mistral"]["powerful_model"]
+            )
 
 
 class TestProviderSwitch:
@@ -71,15 +74,21 @@ class TestProviderSwitch:
         p = _params_with(**{"llm.default_provider": "openai"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "openai"
-            assert Config.get_fast_model() == "gpt-4.1-mini"
-            assert Config.get_powerful_model() == "gpt-4.1"
+            assert Config.get_fast_model() == PROVIDER_CONFIG["openai"]["fast_model"]
+            assert (
+                Config.get_powerful_model()
+                == PROVIDER_CONFIG["openai"]["powerful_model"]
+            )
 
     def test_ollama_provider_models(self):
         p = _params_with(**{"llm.default_provider": "ollama"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "ollama"
-            assert Config.get_fast_model() == "qwen3:8b"
-            assert Config.get_powerful_model() == "qwen3:30b"
+            assert Config.get_fast_model() == PROVIDER_CONFIG["ollama"]["fast_model"]
+            assert (
+                Config.get_powerful_model()
+                == PROVIDER_CONFIG["ollama"]["powerful_model"]
+            )
 
 
 class TestUnsupportedProvider:

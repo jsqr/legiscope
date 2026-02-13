@@ -119,13 +119,19 @@ python -m legiscope.pipeline.init \
 # Creates: data/laws/CA/LosAngeles/municipal-code/raw/
 ```
 
-After initialization, place your raw files (DOCX, TXT, etc.) in the `raw/` directory.
-
 For state-level codes, use `--locality State` (or omit it):
 
 ```bash
 python -m legiscope.pipeline.init \
     --state CA --code-slug penal-code --name "CA Penal Code"
+```
+
+After initialization, place your raw files (DOCX, TXT, etc.) in the `raw/` directory.
+
+If the raw file is DOCX, run conversion script to generate TXT file:
+
+```bash
+uv run scripts/convert_docx.sh "data/laws/CA/LosAngeles/municipal-code/raw"
 ```
 
 #### Step 2: Run the preprocessing pipeline

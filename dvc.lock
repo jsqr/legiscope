@@ -1,8 +1,8 @@
 schema: '2.0'
 stages:
   parse:
-    cmd: python -m legiscope.pipeline.parse --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: PYTHONPATH=src python -m legiscope.pipeline.parse --state IL --locality
+      WindyCity --code-slug municipal-code
     deps:
     - path: data/laws/IL/WindyCity/municipal-code/raw
       hash: md5
@@ -42,28 +42,32 @@ stages:
     outs:
     - path: data/laws/IL/WindyCity/municipal-code/code.md
       hash: md5
-      md5: 10ed071c2bc11107283aee203863ea66
-      size: 564069
+      md5: dae4664c86787d430755567d19fb3860
+      size: 564067
     - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
       hash: md5
-      md5: 702c7f0f44ff1ff6669e44707992eb05
-      size: 52250
+      md5: a849cfb481f93f4f406ece6cab2779ca
+      size: 52255
   segment:
-    cmd: python -m legiscope.pipeline.segment --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: PYTHONPATH=src python -m legiscope.pipeline.segment --state IL 
+      --locality WindyCity --code-slug municipal-code
     deps:
     - path: data/laws/IL/WindyCity/municipal-code/code.md
       hash: md5
-      md5: 8ff2aa78df3d23a6e42a7e0b1bf528b9
-      size: 565348
+      md5: dae4664c86787d430755567d19fb3860
+      size: 564067
+    - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
+      hash: md5
+      md5: a849cfb481f93f4f406ece6cab2779ca
+      size: 52255
     - path: src/legiscope/pipeline/segment.py
       hash: md5
       md5: c00bfe56c91730d145f2a0ba592702e7
       size: 1590
     - path: src/legiscope/segment.py
       hash: md5
-      md5: 7ca3823d51d7f6c395071c7cb653b7a4
-      size: 34374
+      md5: a98e2fa01cc2e02a5891cac274a389dd
+      size: 37532
     params:
       params.yaml:
         jurisdiction:
@@ -71,7 +75,7 @@ stages:
           locality: WindyCity
           code_slug: municipal-code
         segmentation:
-          token_limit: 256
+          token_limit: 128
           words_per_token: 0.75
     outs:
     - path: data/laws/IL/WindyCity/municipal-code/external_references.parquet
@@ -84,28 +88,28 @@ stages:
       size: 913
     - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
       hash: md5
-      md5: 6718992ad9c81ffd358b545d0f4a2446
-      size: 179441
+      md5: 3fd471acb42970678b5a104691897303
+      size: 165961
     - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
       hash: md5
-      md5: 90f760753f000ff5c9ce22fcb4e719c1
-      size: 160092
+      md5: a2730f57ef787861bb153be1e9dfb70c
+      size: 146313
   embed:
-    cmd: python -m legiscope.pipeline.embed --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: PYTHONPATH=src python -m legiscope.pipeline.embed --state IL --locality
+      WindyCity --code-slug municipal-code
     deps:
     - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
       hash: md5
-      md5: 6718992ad9c81ffd358b545d0f4a2446
-      size: 179441
+      md5: 3fd471acb42970678b5a104691897303
+      size: 165961
     - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
       hash: md5
-      md5: 90f760753f000ff5c9ce22fcb4e719c1
-      size: 160092
+      md5: a2730f57ef787861bb153be1e9dfb70c
+      size: 146313
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: c4a2941aefdb00697015a97784bf038d
-      size: 40980
+      md5: 18fbeaa68a022001acc5a40a3550d097
+      size: 41290
     - path: src/legiscope/pipeline/embed.py
       hash: md5
       md5: 5a147848706b051a8e2de23b8be44277
@@ -129,24 +133,24 @@ stages:
     outs:
     - path: data/laws/IL/WindyCity/municipal-code/embeddings.parquet
       hash: md5
-      md5: 286b96dd5840f87b45d120d1cb5ac237
-      size: 3177264
+      md5: 14046e31f0a7b5ab79d5f86309fa9586
+      size: 6427938
   index:
-    cmd: python -m legiscope.pipeline.index --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: PYTHONPATH=src python -m legiscope.pipeline.index --state IL --locality
+      WindyCity --code-slug municipal-code
     deps:
     - path: data/laws/IL/WindyCity/municipal-code/embeddings.parquet
       hash: md5
-      md5: 286b96dd5840f87b45d120d1cb5ac237
-      size: 3177264
+      md5: 14046e31f0a7b5ab79d5f86309fa9586
+      size: 6427938
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: c4a2941aefdb00697015a97784bf038d
-      size: 40980
+      md5: 18fbeaa68a022001acc5a40a3550d097
+      size: 41290
     - path: src/legiscope/pipeline/index.py
       hash: md5
-      md5: 2a4d837b3513d8b6c10c95336f75ea9c
-      size: 2441
+      md5: c697397da9c6b1b45bb1a3aed5b67c82
+      size: 2583
     params:
       params.yaml:
         embeddings.default_provider: ollama
@@ -154,3 +158,4 @@ stages:
           state: IL
           locality: WindyCity
           code_slug: municipal-code
+        retrieval.distance_metric: l2

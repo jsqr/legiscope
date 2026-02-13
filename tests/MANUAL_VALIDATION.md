@@ -3,6 +3,24 @@
 These steps require real LLM/embedding service calls and cannot be automated in unit tests.
 Run them against a local or staging environment after all unit tests pass.
 
+## MV-0: Set-up
+1. Create the jurisdiction data folders:
+
+```bash
+uv run python -m legiscope.pipeline.init \
+    --state IL --locality WindyCity \
+    --code-slug municipal-code --name "IL-WindyCity Municipal Code"
+```
+
+2. Paste the Chicago municipal code .docx file into the data/laws/IL/WindyCity/municipal-code/raw folder
+
+3. Convert .docx to .txt file:
+
+```bash
+uv run scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
+```
+
+
 ## MV-1: Full DVC Pipeline Run
 
 Run the complete pipeline on WindyCity:
