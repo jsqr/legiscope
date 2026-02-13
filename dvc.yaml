@@ -26,7 +26,7 @@
 stages:
     parse:
         cmd: >-
-            python -m legiscope.pipeline.parse
+            PYTHONPATH=src python -m legiscope.pipeline.parse
             --state ${jurisdiction.state}
             --locality ${jurisdiction.locality}
             --code-slug ${jurisdiction.code_slug}
@@ -43,7 +43,7 @@ stages:
 
     segment:
         cmd: >-
-            python -m legiscope.pipeline.segment
+            PYTHONPATH=src python -m legiscope.pipeline.segment
             --state ${jurisdiction.state}
             --locality ${jurisdiction.locality}
             --code-slug ${jurisdiction.code_slug}
@@ -63,7 +63,7 @@ stages:
 
     embed:
         cmd: >-
-            python -m legiscope.pipeline.embed
+            PYTHONPATH=src python -m legiscope.pipeline.embed
             --state ${jurisdiction.state}
             --locality ${jurisdiction.locality}
             --code-slug ${jurisdiction.code_slug}
@@ -80,7 +80,7 @@ stages:
 
     index:
         cmd: >-
-            python -m legiscope.pipeline.index
+            PYTHONPATH=src python -m legiscope.pipeline.index
             --state ${jurisdiction.state}
             --locality ${jurisdiction.locality}
             --code-slug ${jurisdiction.code_slug}

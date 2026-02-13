@@ -108,7 +108,13 @@ if [[ ! -d "${CODE_DIR}/raw" ]] || [[ -z "$(ls -A "${CODE_DIR}/raw" 2>/dev/null)
 fi
 
 # ── Build DVC command ─────────────────────────────────────────────
-CMD=(dvc exp run)
+if [[ -x ".venv/bin/dvc" ]]; then
+    DVC_BIN=".venv/bin/dvc"
+else
+    DVC_BIN="dvc"
+fi
+
+CMD=("$DVC_BIN" exp run)
 CMD+=(-S "jurisdiction.state=${STATE}")
 CMD+=(-S "jurisdiction.locality=${LOCALITY}")
 CMD+=(-S "jurisdiction.code_slug=${CODE_SLUG}")
