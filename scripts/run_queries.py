@@ -3,12 +3,12 @@
 Run multiple queries against legal code database.
 
 Usage:
-    python scripts/run_queries.py --state CA --locality LosAngeles --code-slug municipal-code --queries-path queries.csv
-    python scripts/run_queries.py --state CA --code-slug penal-code --queries-path queries.csv
+    python scripts/run_queries.py
+
+Jurisdiction and retrieval/query settings are read from params.yaml.
+Paths are resolved from config.yaml.
 """
 
-import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -27,113 +27,26 @@ src_path = Path(__file__).parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+from legiscope import config
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
-from legiscope.llm_config import Config
-from legiscope.models import CodeRef, JurisdictionRef
-from legiscope.params import load_params
+from legiscope.models import CodeRef
 from legiscope.query import BatchQuerySettings, load_queries, run_queries
-from legiscope.utils import LLMConfig, str2bool
-
-# Read params.yaml once so CLI defaults match the config file
-_params = load_params()
-_ret = _params.get("retrieval", {})
-_query = _params.get("query", {})
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Run batch queries against legal code",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s --state CA --locality LosAngeles --code-slug municipal-code --queries-path queries.csv
-  %(prog)s --state CA --code-slug penal-code --queries-path queries.csv
-        """,
-    )
-    parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
-    parser.add_argument(
-        "--locality", default=None, help="Locality name (omit for state-level)"
-    )
-    parser.add_argument("--code-slug", required=True, help="Code slug identifier")
-    parser.add_argument(
-        "--queries-path", required=True, help="Path to queries CSV file"
-    )
-    parser.add_argument(
-        "--collection-name",
-        default=os.getenv(
-            "LEGISCOPE_COLLECTION_NAME",
-            CollectionConfig(provider=EMBEDDING_PROVIDER).collection_name,
-        ),
-        help="ChromaDB collection name",
-    )
-    parser.add_argument(
-        "--output", default="data/output/query_results.csv", help="Output file path"
-    )
-    parser.add_argument(
-        "--n-results",
-        type=int,
-        default=_ret.get("n_results", 10),
-        help="Number of embedding segments to retrieve per query",
-    )
-    parser.add_argument(
-        "--use-hyde",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=_ret.get("hyde", {}).get("enabled", False),
-        help="Enable HYDE query rewriting",
-    )
-    parser.add_argument(
-        "--filter-relevance",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=_ret.get("relevance_filter", {}).get("enabled", False),
-        help="Enable LLM-based relevance filtering",
-    )
-    parser.add_argument(
-        "--relevance-threshold",
-        type=float,
-        default=_ret.get("relevance_filter", {}).get("threshold", 0.5),
-        help="Threshold for relevance filtering (0.0-1.0)",
-    )
-    parser.add_argument(
-        "--validate-supporting-passages",
-        type=str2bool,
-        nargs="?",
-        const=True,
-        default=_query.get("validation", {}).get("enabled", True),
-        help="Enable validation of supporting passages against retrieved text",
-    )
+    code_ref = CodeRef.from_params()
 
-    args = parser.parse_args()
-
-    jurisdiction = JurisdictionRef(state=args.state, locality=args.locality)
-    code_ref = CodeRef(jurisdiction=jurisdiction, code_slug=args.code_slug)
-
-    # Load queries using shared library function
-    queries = load_queries(args.queries_path)
-    print(f"Loaded {len(queries)} queries from {args.queries_path}")
+    queries_path = config.default_queries_path()
+    queries = load_queries(str(queries_path))
+    print(f"Loaded {len(queries)} queries from {queries_path}")
 
     sections_parquet_path = code_ref.full_data_dir / "sections.parquet"
-    chromadb_path = "./data/chroma_db"
 
-    chroma_client = chromadb.PersistentClient(path=chromadb_path)
-    collection = chroma_client.get_collection(args.collection_name)
+    chroma_client = chromadb.PersistentClient(path=str(config.chroma_db_path()))
+    collection_cfg = CollectionConfig(provider=EMBEDDING_PROVIDER)
+    collection = chroma_client.get_collection(collection_cfg.collection_name)
 
-    # Create LLM config and settings
-    llm_config = LLMConfig(
-        client=Config.get_powerful_client(),
-        model=Config.get_powerful_model(),
-    )
-    settings = BatchQuerySettings(
-        llm=llm_config,
-        n_results=args.n_results,
-        use_hyde=args.use_hyde,
-        filter_relevance=args.filter_relevance,
-        relevance_threshold=args.relevance_threshold,
-        validate_supporting_passages=args.validate_supporting_passages,
-    )
+    settings = BatchQuerySettings()
 
     # Run queries
     results_df = run_queries(
@@ -145,11 +58,11 @@ Examples:
     )
 
     # Ensure output directory exists
-    output_path = Path(args.output)
+    output_path = config.output_dir() / code_ref.jurisdiction_id / "query_results.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    results_df.write_csv(args.output)
-    print(f"Results saved to {args.output}")
+    results_df.write_csv(str(output_path))
+    print(f"Results saved to {output_path}")
     print(f"Average confidence: {results_df['confidence'].mean():.2f}")
 
 

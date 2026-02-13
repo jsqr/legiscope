@@ -1,20 +1,18 @@
 #!/usr/bin/env bash
 #
-# dvc_repro.sh -- Run the DVC pipeline for a specific jurisdiction.
+# dvc_repro.sh -- Run the DVC pipeline.
 #
-# Wraps `dvc exp run -S` so callers don't have to remember the full syntax.
+# Jurisdiction and all other settings are read from params.yaml.
+# Use `dvc exp run -S key=value` directly for one-off overrides.
 #
 # Usage:
-#   ./scripts/dvc_repro.sh --state IL --locality WindyCity --code-slug municipal-code
-#   ./scripts/dvc_repro.sh --state CA --locality State --code-slug penal-code
-#   ./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug mc --stage segment
+#   ./scripts/dvc_repro.sh
+#   ./scripts/dvc_repro.sh --stage segment
+#   ./scripts/dvc_repro.sh --force --verbose
 #
 set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────
-STATE=""
-LOCALITY=""
-CODE_SLUG=""
 STAGE=""
 EXP_NAME=""
 FORCE=false
@@ -23,18 +21,12 @@ VERBOSE=false
 # ── Usage ─────────────────────────────────────────────────────────
 usage() {
     cat <<EOF
-Usage: $(basename "$0") --state STATE --locality LOCALITY --code-slug SLUG [OPTIONS]
+Usage: $(basename "$0") [OPTIONS]
 
-Run the legiscope DVC pipeline for a single jurisdiction / legal code.
+Run the legiscope DVC pipeline. Jurisdiction and all settings are read
+from params.yaml. Use \`dvc exp run -S key=value\` for one-off overrides.
 
-Required:
-  --state STATE              Two-letter state abbreviation (e.g. IL, CA)
-  --locality LOCALITY
-                             Locality name in PascalCase, or "State" for
-                             state-level codes
-  --code-slug SLUG           Code slug identifier (e.g. municipal-code)
-
-Optional:
+Options:
   --stage STAGE              Run only up to this stage (parse|segment|embed|index)
   --name NAME                Name the DVC experiment
   --force                    Force-rerun even if nothing changed
@@ -42,20 +34,15 @@ Optional:
   -h, --help                 Show this help message
 
 Examples:
-  # Full pipeline for a municipal code
-  $(basename "$0") --state IL --locality WindyCity --code-slug municipal-code
-
-  # State-level code
-  $(basename "$0") --state CA --locality State --code-slug penal-code
+  # Run full pipeline (params.yaml has jurisdiction)
+  $(basename "$0")
 
   # Only run through segment stage
-  $(basename "$0") --state IL --locality WindyCity --code-slug municipal-code \\
-      --stage segment --name "test-segmentation"
+  $(basename "$0") --stage segment --name "test-segmentation"
 
 Prerequisite:
   The jurisdiction must be initialised first:
-    python -m legiscope.pipeline.init --state STATE [--locality MUN] \\
-        --code-slug SLUG --name "Display Name"
+    python -m legiscope.pipeline.init
   and raw files placed in data/laws/STATE/LOCALITY/SLUG/raw/
 
 EOF
@@ -65,9 +52,6 @@ EOF
 # ── Argument parsing ──────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --state)         STATE="$2";        shift 2 ;;
-        --locality)  LOCALITY="$2"; shift 2 ;;
-        --code-slug)     CODE_SLUG="$2";    shift 2 ;;
         --stage)         STAGE="$2";        shift 2 ;;
         --name)          EXP_NAME="$2";     shift 2 ;;
         --force)         FORCE=true;        shift   ;;
@@ -77,10 +61,26 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# ── Validation ────────────────────────────────────────────────────
-if [[ -z "$STATE" || -z "$LOCALITY" || -z "$CODE_SLUG" ]]; then
-    echo "Error: --state, --locality, and --code-slug are all required." >&2
-    usage 1
+# ── Read jurisdiction from params.yaml (for display + validation) ─
+_info=$(python3 -c "
+import yaml, pathlib
+p = yaml.safe_load(pathlib.Path('params.yaml').read_text())
+j = p.get('jurisdiction', {})
+print(j.get('state', ''))
+print(j.get('locality', ''))
+print(j.get('code_slug', ''))
+" 2>/dev/null) || true
+
+STATE=""
+LOCALITY=""
+CODE_SLUG=""
+if [[ -n "$_info" ]]; then
+    IFS=$'\n' read -r STATE LOCALITY CODE_SLUG <<< "$_info"
+fi
+
+if [[ -z "$STATE" || -z "$CODE_SLUG" ]]; then
+    echo "Error: jurisdiction.state and jurisdiction.code_slug must be set in params.yaml." >&2
+    exit 1
 fi
 
 if [[ -n "$STAGE" ]]; then
@@ -90,15 +90,18 @@ if [[ -n "$STAGE" ]]; then
     esac
 fi
 
-CODE_DIR="data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}"
+# Build the data directory path for validation
+if [[ -n "$LOCALITY" ]]; then
+    CODE_DIR="data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}"
+else
+    CODE_DIR="data/laws/${STATE}/State/${CODE_SLUG}"
+fi
 
 if [[ ! -d "$CODE_DIR" ]]; then
     echo "Error: directory does not exist: ${CODE_DIR}" >&2
     echo "" >&2
     echo "Initialise the jurisdiction first:" >&2
-    echo "  python -m legiscope.pipeline.init \\" >&2
-    echo "    --state ${STATE} --locality ${LOCALITY} \\" >&2
-    echo "    --code-slug ${CODE_SLUG} --name \"<Display Name>\"" >&2
+    echo "  python -m legiscope.pipeline.init" >&2
     exit 1
 fi
 
@@ -109,9 +112,6 @@ fi
 
 # ── Build DVC command ─────────────────────────────────────────────
 CMD=(dvc exp run)
-CMD+=(-S "jurisdiction.state=${STATE}")
-CMD+=(-S "jurisdiction.locality=${LOCALITY}")
-CMD+=(-S "jurisdiction.code_slug=${CODE_SLUG}")
 
 [[ -n "$STAGE" ]]       && CMD+=(--targets "$STAGE")
 [[ -n "$EXP_NAME" ]]    && CMD+=(--name "$EXP_NAME")
@@ -119,8 +119,9 @@ CMD+=(-S "jurisdiction.code_slug=${CODE_SLUG}")
 [[ "$VERBOSE" == true ]] && CMD+=(--verbose)
 
 # ── Execute ───────────────────────────────────────────────────────
+DISPLAY_LOC="${LOCALITY:-State}"
 echo "=== Legiscope DVC Pipeline ==="
-echo "Jurisdiction : ${STATE} / ${LOCALITY}"
+echo "Jurisdiction : ${STATE} / ${DISPLAY_LOC}"
 echo "Code slug    : ${CODE_SLUG}"
 echo "Data dir     : ${CODE_DIR}"
 [[ -n "$STAGE" ]]    && echo "Target stage : ${STAGE}"

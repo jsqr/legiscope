@@ -6,6 +6,7 @@ jurisdiction:
   state: IL
   locality: WindyCity
   code_slug: municipal-code
+  code_name: "WindyCity Municipal Code"
 
 # LLM configuration
 llm:
@@ -62,6 +63,10 @@ retrieval:
   relevance_filter:
     enabled: false
     threshold: 0.5
+
+# Benchmark evaluation settings
+benchmark:
+  series_title: "DPL_2025_Consolidated"
 
 # Query: LLM analysis of retrieved context (uses powerful model)
 query:

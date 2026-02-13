@@ -223,6 +223,28 @@ class CodeRef:
         jurisdiction = JurisdictionRef(state=state, locality=locality)
         return cls(jurisdiction=jurisdiction, code_slug=code_slug)
 
+    @classmethod
+    def from_params(cls, params: dict | None = None) -> "CodeRef":
+        """Create a ``CodeRef`` from ``params.yaml`` jurisdiction settings.
+
+        Args:
+            params: Pre-loaded params dict.  When *None*, calls
+                :func:`legiscope.params.load_params` automatically.
+
+        Returns:
+            A fully initialised ``CodeRef``.
+        """
+        if params is None:
+            from legiscope.params import load_params
+
+            params = load_params()
+        jur = params.get("jurisdiction", {})
+        return cls.from_dvc_vars(
+            state=jur.get("state"),
+            locality=jur.get("locality"),
+            code_slug=jur.get("code_slug"),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Registry file paths (dynamic to respect LEGISCOPE_DATA_DIR)

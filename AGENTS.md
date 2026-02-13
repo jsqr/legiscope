@@ -179,7 +179,7 @@ embeddings:
 
 Retrieval settings (HYDE, relevance filtering) and query settings (model tier,
 passage validation) are all in `params.yaml`. CLI scripts (`run_queries.py`,
-`benchmark_pipeline.py`) read these as defaults; CLI flags override them.
+`benchmark_pipeline.py`) read these automatically.
 
 ```yaml
 retrieval:
@@ -296,31 +296,31 @@ The pipeline is managed by DVC with four stages: **parse → segment → embed �
 
 #### Initialize a jurisdiction (one-time, not a DVC stage)
 
-```bash
-python -m legiscope.pipeline.init \
-    --state CA --locality LosAngeles \
-    --code-slug municipal-code --name "LA Municipal Code"
+Reads jurisdiction from `params.yaml`:
 
-# For state-level codes:
-python -m legiscope.pipeline.init \
-    --state CA --code-slug penal-code --name "CA Penal Code"
+```bash
+# Uses jurisdiction.state/locality/code_slug/code_name from params.yaml
+python -m legiscope.pipeline.init
+
+# Override code type or jurisdiction display name
+python -m legiscope.pipeline.init --code-type zoning
+python -m legiscope.pipeline.init --jurisdiction-name "City of LA"
 ```
 
 #### Run the pipeline
 
 ```bash
-# Using the wrapper script (recommended):
-./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code
+# Using the wrapper script (recommended) — reads params.yaml:
+./scripts/dvc_repro.sh
 
-# Or calling DVC directly:
+# Run a single stage:
+./scripts/dvc_repro.sh --stage segment
+
+# Or calling DVC directly with one-off overrides:
 dvc exp run \
     -S jurisdiction.state=CA \
     -S jurisdiction.locality=LosAngeles \
     -S jurisdiction.code_slug=municipal-code
-
-# Run a single stage:
-./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code \
-    --stage segment
 ```
 
 > **Note:** The legacy `make init/parse/process/query` targets still work but are
@@ -331,39 +331,24 @@ dvc exp run \
 The project handles benchmarking against MonQcle data using an LLM-as-judge approach.
 See `BENCHMARKING.md` for full documentation.
 
+All paths and settings are resolved from `params.yaml` and `config.yaml`:
+
 ```bash
-# Run benchmarking pipeline
-uv run python scripts/benchmark_pipeline.py \
-    --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
-    --monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
-    --series-title DPL_2025_Consolidated \
-    --jurisdiction-id CA-LosAngeles \
-    --output data/output/CA-LosAngeles/benchmark_results.csv \
-    --n-results 10 \
-    --use-hyde False \
-    --filter-relevance False \
-    --relevance-threshold 0.5 \
-    --validate-supporting-passages False \
-    --test-limit 5 \
-    --debug
+# Normal run — zero args needed
+uv run python scripts/benchmark_pipeline.py
+
+# Dev/debug run with limited queries
+uv run python scripts/benchmark_pipeline.py --test-limit 5 --debug
 ```
 
 ### Advanced Query Execution
 
-For granular control over query execution (HYDE, Relevance Filtering), run the script directly:
+All settings (jurisdiction, retrieval, query, paths) are read from
+`params.yaml` and `config.yaml`:
 
 ```bash
-uv run python scripts/run_queries.py \
-    --state CA \
-    --locality LosAngeles \
-    --code-slug municipal-code \
-    --queries-path "data/queries/test_queries.csv" \
-    --n-results 10 \
-    --use-hyde False \
-    --filter-relevance False \
-    --relevance-threshold 0.5 \
-    --validate-supporting-passages False \
-    --output "data/output/test_results.csv"
+# Zero args — paths resolved from config.yaml, settings from params.yaml
+uv run python scripts/run_queries.py
 ```
 
 ## Project Structure

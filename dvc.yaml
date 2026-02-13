@@ -18,9 +18,7 @@
 #
 # Prerequisites:
 #   1. Initialise the jurisdiction (not a DVC stage):
-#        python -m legiscope.pipeline.init \
-#          --state CA --locality LosAngeles \
-#          --code-slug municipal-code --name "LA Municipal Code"
+#        python -m legiscope.pipeline.init
 #   2. Place raw source files in data/laws/{state}/{locality}/{code_slug}/raw/
 
 stages:
