@@ -235,11 +235,6 @@ def load_queries(
             f"CSV file must contain a 'question' column. Columns found: {df.columns}"
         )
 
-    # Filter out empty questions
-    df = df.filter(
-        pl.col("question").is_not_null() & (pl.col("question").str.strip_chars() != "")
-    )
-
     # Validate consistency between adjust_for_dataset and query_adjuster
     if adjust_for_dataset and query_adjuster is None:
         raise ValueError(
@@ -254,6 +249,11 @@ def load_queries(
 
     if adjust_for_dataset and not df.is_empty():
         df = query_adjuster(df)
+
+    # Filter out empty questions (after query_adjuster to catch any introduced empties)
+    df = df.filter(
+        pl.col("question").is_not_null() & (pl.col("question").str.strip_chars() != "")
+    )
 
     # helper to convert row to QueryInput
     def _row_to_input(row):
