@@ -113,7 +113,7 @@ CMD+=(-S "jurisdiction.state=${STATE}")
 CMD+=(-S "jurisdiction.locality=${LOCALITY}")
 CMD+=(-S "jurisdiction.code_slug=${CODE_SLUG}")
 
-[[ -n "$STAGE" ]]       && CMD+=(--targets "$STAGE")
+[[ -n "$STAGE" ]]       && CMD+=("$STAGE")
 [[ -n "$EXP_NAME" ]]    && CMD+=(--name "$EXP_NAME")
 [[ "$FORCE" == true ]]   && CMD+=(--force)
 [[ "$VERBOSE" == true ]] && CMD+=(--verbose)
