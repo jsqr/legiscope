@@ -113,7 +113,7 @@ The preprocessing pipeline uses [DVC](https://dvc.org/) to manage reproducible s
 Initialization is not a DVC stage — run it directly:
 
 ```bash
-python -m legiscope.pipeline.init \
+uv run python -m legiscope.pipeline.init \
     --state CA --locality LosAngeles \
     --code-slug municipal-code --name "LA Municipal Code"
 # Creates: data/laws/CA/LosAngeles/municipal-code/raw/
@@ -122,7 +122,7 @@ python -m legiscope.pipeline.init \
 For state-level codes, use `--locality State` (or omit it):
 
 ```bash
-python -m legiscope.pipeline.init \
+uv run python -m legiscope.pipeline.init \
     --state CA --code-slug penal-code --name "CA Penal Code"
 ```
 
@@ -139,13 +139,13 @@ uv run scripts/convert_docx.sh "data/laws/CA/LosAngeles/municipal-code/raw"
 Use the wrapper script, which calls `dvc exp run` with the right `-S` flags:
 
 ```bash
-./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code
+uv run ./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code
 ```
 
 Or call DVC directly:
 
 ```bash
-dvc exp run \
+uv run dvc exp run \
     -S jurisdiction.state=CA \
     -S jurisdiction.locality=LosAngeles \
     -S jurisdiction.code_slug=municipal-code
@@ -154,7 +154,7 @@ dvc exp run \
 Run a single stage:
 
 ```bash
-./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code \
+uv run ./scripts/dvc_repro.sh --state CA --locality LosAngeles --code-slug municipal-code \
     --stage segment
 ```
 

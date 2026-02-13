@@ -26,7 +26,7 @@ uv run scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
 Run the complete pipeline on WindyCity:
 
 ```bash
-./scripts/dvc_repro.sh --state IL --locality WindyCity --code-slug municipal-code --force
+uv run ./scripts/dvc_repro.sh --state IL --locality WindyCity --code-slug municipal-code --force
 ```
 
 **Verify:**
@@ -41,7 +41,7 @@ Delete ChromaDB and rebuild from embeddings:
 
 ```bash
 rm -rf data/chroma_db
-python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
+uv run python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -54,7 +54,7 @@ python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug m
 Run index again without deleting ChromaDB:
 
 ```bash
-python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
+uv run python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -76,7 +76,7 @@ EOF
 Run segmentation:
 
 ```bash
-python -m legiscope.pipeline.segment --state IL --locality WindyCity --code-slug municipal-code
+uv run python -m legiscope.pipeline.segment --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -89,7 +89,7 @@ python -m legiscope.pipeline.segment --state IL --locality WindyCity --code-slug
 Override a parameter via DVC experiment:
 
 ```bash
-dvc exp run -S segmentation.token_limit=128
+uv run dvc exp run -S segmentation.token_limit=128
 ```
 
 **Verify:**
@@ -102,11 +102,11 @@ dvc exp run -S segmentation.token_limit=128
 Initialize a jurisdiction without raw files and attempt to parse:
 
 ```bash
-python -m legiscope.pipeline.init \
+uv run python -m legiscope.pipeline.init \
     --state TEST --locality TestCity \
     --code-slug test-code --name "Test Code"
 
-python -m legiscope.pipeline.parse \
+uv run python -m legiscope.pipeline.parse \
     --state TEST --locality TestCity \
     --code-slug test-code
 ```

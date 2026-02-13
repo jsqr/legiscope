@@ -107,6 +107,17 @@ if [[ ! -d "${CODE_DIR}/raw" ]] || [[ -z "$(ls -A "${CODE_DIR}/raw" 2>/dev/null)
     echo "Place source files there before running the pipeline." >&2
 fi
 
+# Ensure the active Python can import the project package.
+if ! python -c "import legiscope" >/dev/null 2>&1; then
+    echo "Error: current Python environment cannot import 'legiscope'." >&2
+    echo "" >&2
+    echo "Fix options:" >&2
+    echo "  1) Run: make env" >&2
+    echo "  2) Activate env: source .venv/bin/activate" >&2
+    echo "  3) Or run this command via uv: uv run ./scripts/dvc_repro.sh ..." >&2
+    exit 1
+fi
+
 # ── Build DVC command ─────────────────────────────────────────────
 if [[ -x ".venv/bin/dvc" ]]; then
     DVC_BIN=".venv/bin/dvc"
