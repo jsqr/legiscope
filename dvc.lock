@@ -42,24 +42,24 @@ stages:
     outs:
     - path: data/laws/IL/WindyCity/municipal-code/code.md
       hash: md5
-      md5: 67c1b19bbd844ea6bc0f63193cef7ce4
-      size: 564069
+      md5: 70b7cd4deaac1d23fc37c3033ea25f19
+      size: 564067
     - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
       hash: md5
-      md5: 702c7f0f44ff1ff6669e44707992eb05
-      size: 52250
+      md5: a849cfb481f93f4f406ece6cab2779ca
+      size: 52255
   segment:
     cmd: python -m legiscope.pipeline.segment --state IL --locality WindyCity 
       --code-slug municipal-code
     deps:
     - path: data/laws/IL/WindyCity/municipal-code/code.md
       hash: md5
-      md5: 67c1b19bbd844ea6bc0f63193cef7ce4
-      size: 564069
+      md5: 70b7cd4deaac1d23fc37c3033ea25f19
+      size: 564067
     - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
       hash: md5
-      md5: 702c7f0f44ff1ff6669e44707992eb05
-      size: 52250
+      md5: a849cfb481f93f4f406ece6cab2779ca
+      size: 52255
     - path: src/legiscope/pipeline/segment.py
       hash: md5
       md5: c00bfe56c91730d145f2a0ba592702e7
@@ -88,24 +88,24 @@ stages:
       size: 913
     - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
       hash: md5
-      md5: 34f37575502dac122265f047f5b28f1b
-      size: 165956
+      md5: 3fd471acb42970678b5a104691897303
+      size: 165961
     - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
       hash: md5
-      md5: 3d30307a3a726939dad361a0d3b14ac7
-      size: 140150
+      md5: 28d104d1290752c17f27c4a1ed43e11e
+      size: 140155
   embed:
     cmd: python -m legiscope.pipeline.embed --state IL --locality WindyCity 
       --code-slug municipal-code
     deps:
     - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
       hash: md5
-      md5: 34f37575502dac122265f047f5b28f1b
-      size: 165956
+      md5: 3fd471acb42970678b5a104691897303
+      size: 165961
     - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
       hash: md5
-      md5: 3d30307a3a726939dad361a0d3b14ac7
-      size: 140150
+      md5: 28d104d1290752c17f27c4a1ed43e11e
+      size: 140155
     - path: src/legiscope/embeddings.py
       hash: md5
       md5: 18fbeaa68a022001acc5a40a3550d097
