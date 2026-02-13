@@ -10,6 +10,8 @@ paths:
   chroma_db_dir: "chroma_db"
   queries_dir: "queries"
   output_dir: "output"
+  default_queries_file: "drug_paraphernalia_queries_clean.csv"
+  monqcle_report: "monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
 
 database:
   chromadb:

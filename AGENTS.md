@@ -331,33 +331,24 @@ dvc exp run \
 The project handles benchmarking against MonQcle data using an LLM-as-judge approach.
 See `BENCHMARKING.md` for full documentation.
 
-```bash
-# Minimal — jurisdiction and settings from params.yaml
-uv run python scripts/benchmark_pipeline.py \
-    --queries-path data/queries/drug_paraphernalia_queries_clean.csv
+All paths and settings are resolved from `params.yaml` and `config.yaml`:
 
-# Full configuration example
-uv run python scripts/benchmark_pipeline.py \
-    --queries-path data/queries/drug_paraphernalia_queries_clean.csv \
-    --monqcle-path data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
-    --series-title DPL_2025_Consolidated \
-    --output data/output/CA-LosAngeles/benchmark_results.csv \
-    --test-limit 5 \
-    --debug
+```bash
+# Normal run — zero args needed
+uv run python scripts/benchmark_pipeline.py
+
+# Dev/debug run with limited queries
+uv run python scripts/benchmark_pipeline.py --test-limit 5 --debug
 ```
 
 ### Advanced Query Execution
 
-Jurisdiction and retrieval/query settings are read from `params.yaml`.
+All settings (jurisdiction, retrieval, query, paths) are read from
+`params.yaml` and `config.yaml`:
 
 ```bash
-uv run python scripts/run_queries.py \
-    --queries-path "data/queries/test_queries.csv"
-
-# Override output path
-uv run python scripts/run_queries.py \
-    --queries-path "data/queries/test_queries.csv" \
-    --output "data/output/test_results.csv"
+# Zero args — paths resolved from config.yaml, settings from params.yaml
+uv run python scripts/run_queries.py
 ```
 
 ## Project Structure

@@ -3,13 +3,12 @@
 Run multiple queries against legal code database.
 
 Usage:
-    python scripts/run_queries.py --queries-path queries.csv
+    python scripts/run_queries.py
 
 Jurisdiction and retrieval/query settings are read from params.yaml.
+Paths are resolved from config.yaml.
 """
 
-import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -28,6 +27,7 @@ src_path = Path(__file__).parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+from legiscope import config
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.models import CodeRef
 from legiscope.query import BatchQuerySettings, load_queries, run_queries
@@ -36,44 +36,15 @@ from legiscope.query import BatchQuerySettings, load_queries, run_queries
 def main():
     code_ref = CodeRef.from_params()
 
-    parser = argparse.ArgumentParser(
-        description="Run batch queries against legal code",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  %(prog)s --queries-path queries.csv
-
-Jurisdiction and retrieval/query settings are read from params.yaml.
-        """,
-    )
-    parser.add_argument(
-        "--queries-path", required=True, help="Path to queries CSV file"
-    )
-    parser.add_argument(
-        "--collection-name",
-        default=os.getenv(
-            "LEGISCOPE_COLLECTION_NAME",
-            CollectionConfig(provider=EMBEDDING_PROVIDER).collection_name,
-        ),
-        help="ChromaDB collection name",
-    )
-    parser.add_argument(
-        "--output",
-        default=f"data/output/{code_ref.jurisdiction_id}/query_results.csv",
-        help="Output file path",
-    )
-
-    args = parser.parse_args()
-
-    # Load queries using shared library function
-    queries = load_queries(args.queries_path)
-    print(f"Loaded {len(queries)} queries from {args.queries_path}")
+    queries_path = config.default_queries_path()
+    queries = load_queries(str(queries_path))
+    print(f"Loaded {len(queries)} queries from {queries_path}")
 
     sections_parquet_path = code_ref.full_data_dir / "sections.parquet"
-    chromadb_path = "./data/chroma_db"
 
-    chroma_client = chromadb.PersistentClient(path=chromadb_path)
-    collection = chroma_client.get_collection(args.collection_name)
+    chroma_client = chromadb.PersistentClient(path=str(config.chroma_db_path()))
+    collection_cfg = CollectionConfig(provider=EMBEDDING_PROVIDER)
+    collection = chroma_client.get_collection(collection_cfg.collection_name)
 
     settings = BatchQuerySettings()
 
@@ -87,11 +58,11 @@ Jurisdiction and retrieval/query settings are read from params.yaml.
     )
 
     # Ensure output directory exists
-    output_path = Path(args.output)
+    output_path = config.output_dir() / code_ref.jurisdiction_id / "query_results.csv"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    results_df.write_csv(args.output)
-    print(f"Results saved to {args.output}")
+    results_df.write_csv(str(output_path))
+    print(f"Results saved to {output_path}")
     print(f"Average confidence: {results_df['confidence'].mean():.2f}")
 
 

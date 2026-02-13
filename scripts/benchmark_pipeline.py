@@ -11,11 +11,15 @@ Implements workflow as described in BENCHMARKING.md:
 6. Output detailed results with scores and metrics
 
 Jurisdiction and retrieval/query settings are read from params.yaml.
+Paths are resolved from config.yaml.
+
+Usage:
+    python scripts/benchmark_pipeline.py
+    python scripts/benchmark_pipeline.py --test-limit 5 --debug
 """
 
 import argparse
 import csv
-import os
 import sys
 from pathlib import Path
 
@@ -28,6 +32,7 @@ src_path = Path(__file__).parent.parent / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+from legiscope import config
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.eval import (
     Evaluator,
@@ -36,44 +41,22 @@ from legiscope.eval import (
     melt_monqcle_to_long,
 )
 from legiscope.models import CodeRef
+from legiscope.params import load_params
 from legiscope.query import BatchQuerySettings, load_queries, run_queries
-
-# Default paths - can be overridden via CLI
-DEFAULT_MONQCLE_PATH = "data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
-DEFAULT_CHROMA_PATH = "./data/chroma_db"
 
 
 def main():
     code_ref = CodeRef.from_params()
     jurisdiction_id = code_ref.jurisdiction_id
+    params = load_params()
 
     parser = argparse.ArgumentParser(
         description="Run benchmark evaluation pipeline against MonQcle ground truth"
     )
     parser.add_argument(
-        "--queries-path",
-        required=True,
-        help="Path to queries CSV with 'question' and 'variable_name' columns",
-    )
-    parser.add_argument(
-        "--monqcle-path",
-        default=DEFAULT_MONQCLE_PATH,
-        help="Path to MonQcle Standard Report CSV",
-    )
-    parser.add_argument(
-        "--output",
-        default=f"data/output/{jurisdiction_id}/benchmark_results.csv",
-        help="Path to save evaluation results",
-    )
-    parser.add_argument(
         "--test-limit",
         type=int,
         help="Limit number of queries for testing pipeline",
-    )
-    parser.add_argument(
-        "--series-title",
-        default="DPL_2025_Consolidated",
-        help="MonQcle series title to use for ground truth",
     )
     parser.add_argument(
         "--debug",
@@ -84,20 +67,28 @@ def main():
 
     args = parser.parse_args()
 
+    # Resolve paths and settings from config/params
+    queries_path = config.default_queries_path()
+    monqcle_path = config.monqcle_report_path()
+    output_path = config.output_dir() / jurisdiction_id / "benchmark_results.csv"
+    series_title = params.get("benchmark", {}).get(
+        "series_title", "DPL_2025_Consolidated"
+    )
+
     # =========================================================================
     # Step 1: Load Queries
     # =========================================================================
     # Uses shared query loading logic (returns list[QueryInput])
-    query_inputs = load_queries(args.queries_path)
+    query_inputs = load_queries(str(queries_path))
 
     if args.debug:
         debug_dir = Path(f"data/output/{jurisdiction_id}/debug")
         debug_dir.mkdir(parents=True, exist_ok=True)
-        queries_path = debug_dir / "loaded_queries.csv"
-        with open(queries_path, "w", newline="") as file:
+        debug_queries_path = debug_dir / "loaded_queries.csv"
+        with open(debug_queries_path, "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(query_inputs)
-        logger.info(f"Debug: Saved loaded queries to {queries_path}")
+        logger.info(f"Debug: Saved loaded queries to {debug_queries_path}")
 
     if args.test_limit:
         query_inputs = query_inputs[: args.test_limit]
@@ -108,7 +99,7 @@ def main():
     # =========================================================================
     monqcle_name = jurisdiction_id_to_monqcle_name(jurisdiction_id)
     monqcle_row = load_and_filter_monqcle(
-        args.monqcle_path, monqcle_name, args.series_title
+        str(monqcle_path), monqcle_name, series_title
     )
 
     # Get variable names from query inputs for filtering ground truth
@@ -158,12 +149,9 @@ def main():
     # =========================================================================
     # Step 3: Initialize Resources
     # =========================================================================
-    chroma_client = chromadb.PersistentClient(path=DEFAULT_CHROMA_PATH)
-    collection_name = os.getenv(
-        "LEGISCOPE_COLLECTION_NAME",
-        CollectionConfig(provider=EMBEDDING_PROVIDER).collection_name,
-    )
-    collection = chroma_client.get_collection(collection_name)
+    chroma_client = chromadb.PersistentClient(path=str(config.chroma_db_path()))
+    collection_cfg = CollectionConfig(provider=EMBEDDING_PROVIDER)
+    collection = chroma_client.get_collection(collection_cfg.collection_name)
 
     # Construct path to sections parquet using CodeRef
     parquet_path = code_ref.full_data_dir / "sections.parquet"
@@ -286,15 +274,14 @@ def main():
     # =========================================================================
     # Step 9: Save Results
     # =========================================================================
-    output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if args.output.endswith(".parquet"):
-        eval_df.write_parquet(args.output)
+    if str(output_path).endswith(".parquet"):
+        eval_df.write_parquet(str(output_path))
     else:
-        eval_df.write_csv(args.output)
+        eval_df.write_csv(str(output_path))
 
-    logger.info(f"Detailed results saved to {args.output}")
+    logger.info(f"Detailed results saved to {output_path}")
 
 
 if __name__ == "__main__":
