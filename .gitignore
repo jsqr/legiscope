@@ -188,3 +188,6 @@ Modelfile
 
 # Scratch / working notes
 scratch/
+
+# DVC validation stage artifacts
+tmp/validate_import.ok

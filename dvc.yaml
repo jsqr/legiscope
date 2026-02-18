@@ -27,6 +27,16 @@
 
 
 stages:
+    validate:
+        cmd: >-
+            bash -c 'set -eo pipefail; if [[ -x ".venv/bin/python" ]]; then PYTHON_BIN=".venv/bin/python"; else PYTHON_BIN="python"; fi; export PYTHONPATH="$PWD/src:$PYTHONPATH"; "$PYTHON_BIN" -c "import legiscope; print(f\"Package import works: {legiscope.__file__}\")"; mkdir -p tmp; echo ok > tmp/validate_import.ok'
+        deps:
+            - src/legiscope/__init__.py
+            - pyproject.toml
+        outs:
+            - tmp/validate_import.ok:
+                cache: false
+
     parse:
         cmd: >-
             python -m legiscope.pipeline.parse
@@ -34,6 +44,7 @@ stages:
             --locality ${jurisdiction.locality}
             --code-slug ${jurisdiction.code_slug}
         deps:
+            - tmp/validate_import.ok
             - src/legiscope/pipeline/parse.py
             - src/legiscope/convert.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/raw
