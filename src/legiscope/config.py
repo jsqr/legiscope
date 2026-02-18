@@ -92,3 +92,26 @@ def laws_dir() -> Path:
 def chroma_db_path() -> Path:
     """Return the ChromaDB persistence directory."""
     return data_dir() / get("paths.chroma_db_dir", "chroma_db")
+
+
+def queries_dir() -> Path:
+    """Return the queries subdirectory under :func:`data_dir`."""
+    return data_dir() / get("paths.queries_dir", "queries")
+
+
+def output_dir() -> Path:
+    """Return the output subdirectory under :func:`data_dir`."""
+    return data_dir() / get("paths.output_dir", "output")
+
+
+def default_queries_path() -> Path:
+    """Return the default queries CSV path."""
+    return queries_dir() / get("paths.default_queries_file", "queries.csv")
+
+
+def monqcle_report_path() -> Path:
+    """Return the path to the MonQcle Standard Report CSV."""
+    return data_dir() / get(
+        "paths.monqcle_report",
+        "monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
+    )

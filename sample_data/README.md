@@ -12,12 +12,11 @@ a DVC remote.
 cp -r sample_data/IL data/laws/
 ```
 
-2. Initialize the jurisdiction (if not already registered):
+2. Initialize the jurisdiction (if not already registered).
+   The default `params.yaml` already targets IL/WindyCity/municipal-code:
 
 ```bash
-python -m legiscope.pipeline.init \
-    --state IL --locality WindyCity \
-    --code-slug municipal-code --name "WindyCity Municipal Code"
+python -m legiscope.pipeline.init
 ```
 
 3. Run the pipeline:

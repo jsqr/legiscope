@@ -64,6 +64,30 @@ class TestProperties:
     def test_chroma_db_path(self):
         assert cfg.chroma_db_path() == Path("data/chroma_db")
 
+    def test_queries_dir(self):
+        assert cfg.queries_dir() == Path("data/queries")
+
+    def test_output_dir(self):
+        assert cfg.output_dir() == Path("data/output")
+
+    def test_default_queries_path(self):
+        assert cfg.default_queries_path() == Path(
+            "data/queries/drug_paraphernalia_queries_clean.csv"
+        )
+
+    def test_monqcle_report_path(self):
+        assert cfg.monqcle_report_path() == Path(
+            "data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+        )
+
+    def test_queries_dir_follows_data_dir(self):
+        with patch.dict(os.environ, {"LEGISCOPE_DATA_DIR": "/tmp/custom_data"}):
+            assert cfg.queries_dir() == Path("/tmp/custom_data/queries")
+
+    def test_output_dir_follows_data_dir(self):
+        with patch.dict(os.environ, {"LEGISCOPE_DATA_DIR": "/tmp/custom_data"}):
+            assert cfg.output_dir() == Path("/tmp/custom_data/output")
+
 
 class TestMissingFile:
     def test_missing_config_raises(self, tmp_path, monkeypatch):

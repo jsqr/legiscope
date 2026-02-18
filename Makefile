@@ -87,17 +87,10 @@ install:
 
 # DVC pipeline (preferred interface)
 dvc-repro:
-	@echo "Run the DVC pipeline with:"
+	@echo "Configure jurisdiction in params.yaml, then:"
 	@echo ""
-	@echo "  ./scripts/dvc_repro.sh --state STATE --locality LOCALITY --code-slug SLUG"
-	@echo ""
-	@echo "Or call DVC directly:"
-	@echo ""
-	@echo "  dvc exp run -S jurisdiction.state=STATE -S jurisdiction.locality=LOCALITY -S jurisdiction.code_slug=SLUG"
-	@echo ""
-	@echo "Initialize a new jurisdiction first:"
-	@echo ""
-	@echo "  python -m legiscope.pipeline.init --state STATE --locality LOCALITY --code-slug SLUG --name 'Display Name'"
+	@echo "  python -m legiscope.pipeline.init   # one-time setup"
+	@echo "  ./scripts/dvc_repro.sh              # run pipeline"
 	@echo ""
 	@echo "See ./scripts/dvc_repro.sh --help for full options."
 

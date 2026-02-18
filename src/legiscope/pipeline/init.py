@@ -2,9 +2,11 @@
 
 Usage::
 
-    python -m legiscope.pipeline.init \\
-        --state CA --locality LosAngeles \\
-        --code-slug municipal-code --name "Los Angeles Municipal Code"
+    # All defaults from params.yaml
+    python -m legiscope.pipeline.init
+
+    # Override code type or jurisdiction display name
+    python -m legiscope.pipeline.init --code-type zoning
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ from legiscope.models import (
     CodeRef,
     JurisdictionRef,
 )
+from legiscope.params import load_params
 from legiscope.utils import create_code_structure
 
 # ------------------------------------------------------------------
@@ -102,15 +105,19 @@ def _append_code(code_ref: CodeRef, name: str, code_type: str) -> None:
 
 def main() -> None:
     """Create jurisdiction/code directory structure and update registries."""
+    params = load_params()
+    jur = params.get("jurisdiction", {})
+
+    code_name = jur.get("code_name")
+    if not code_name:
+        raise SystemExit("Error: jurisdiction.code_name must be set in params.yaml")
+
+    code_ref = CodeRef.from_params(params)
+
     parser = argparse.ArgumentParser(
         description="Initialize directory structure for a legal code",
+        epilog="Jurisdiction is read from params.yaml.",
     )
-    parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
-    parser.add_argument(
-        "--locality", default=None, help="Locality name (omit for state-level)"
-    )
-    parser.add_argument("--code-slug", required=True, help="Code slug identifier")
-    parser.add_argument("--name", required=True, help="Display name for the code")
     parser.add_argument(
         "--code-type", default="municipal", help="Code type (default: municipal)"
     )
@@ -119,14 +126,7 @@ def main() -> None:
         default=None,
         help="Display name for jurisdiction (auto-generated if omitted)",
     )
-
     args = parser.parse_args()
-
-    code_ref = CodeRef.from_dvc_vars(
-        state=args.state,
-        locality=args.locality,
-        code_slug=args.code_slug,
-    )
 
     jurisdiction_name = args.jurisdiction_name
     if jurisdiction_name is None:
@@ -137,7 +137,7 @@ def main() -> None:
 
     code_dir = create_code_structure(code_ref)
     _append_jurisdiction(code_ref.jurisdiction, jurisdiction_name)
-    _append_code(code_ref, args.name, args.code_type)
+    _append_code(code_ref, code_name, args.code_type)
 
     logger.info(f"Created structure: {code_dir}")
 

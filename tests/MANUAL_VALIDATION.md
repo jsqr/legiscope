@@ -7,9 +7,9 @@ Run them against a local or staging environment after all unit tests pass.
 1. Create the jurisdiction data folders:
 
 ```bash
-uv run python -m legiscope.pipeline.init \
-    --state IL --locality WindyCity \
-    --code-slug municipal-code --name "IL-WindyCity Municipal Code"
+# Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
+# code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
+uv run python -m legiscope.pipeline.init
 ```
 
 2. Paste the Chicago municipal code .docx file into the data/laws/IL/WindyCity/municipal-code/raw folder
@@ -23,10 +23,12 @@ uv run scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
 
 ## MV-1: Full DVC Pipeline Run
 
-Run the complete pipeline on WindyCity:
+Run the complete pipeline on the jurisdiction configured in `params.yaml`:
 
 ```bash
-uv run ./scripts/dvc_repro.sh --state IL --locality WindyCity --code-slug municipal-code --force
+# Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
+# code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
+uv run ./scripts/dvc_repro.sh --force
 ```
 
 **Verify:**
@@ -99,16 +101,15 @@ uv run dvc exp run -S segmentation.token_limit=128
 
 ## MV-6: Error Handling — Missing Raw Files
 
-Initialize a jurisdiction without raw files and attempt to parse:
+Temporarily set a throwaway jurisdiction in `params.yaml`, initialize it,
+then attempt to parse without placing raw files:
 
 ```bash
-uv run python -m legiscope.pipeline.init \
-    --state TEST --locality TestCity \
-    --code-slug test-code --name "Test Code"
+# Edit params.yaml to set jurisdiction.state=TEST, locality=TestCity,
+# code_slug=test-code, code_name="Test Code", then:
+uv run python -m legiscope.pipeline.init
 
-uv run python -m legiscope.pipeline.parse \
-    --state TEST --locality TestCity \
-    --code-slug test-code
+uv run ./scripts/dvc_repro.sh --stage parse --force
 ```
 
 **Verify:**

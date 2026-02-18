@@ -25,7 +25,6 @@
 #   3. If source file is DOCX, run conversion script to produce TXT:
 #        uv run scripts/convert_docx.sh "data/laws/CA/LosAngeles/municipal-code/raw"
 
-
 stages:
     validate:
         cmd: >-
