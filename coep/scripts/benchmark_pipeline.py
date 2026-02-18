@@ -21,8 +21,12 @@ import chromadb
 from loguru import logger
 import csv
 
-# Add src to path
-src_path = Path(__file__).resolve().parents[2] / "src"
+# Add project root and src to path
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
@@ -31,13 +35,13 @@ from legiscope.llm_config import Config
 from legiscope.params import load_params
 from legiscope.utils import LLMConfig, str2bool
 from legiscope.query import BatchQuerySettings, run_queries, load_queries
-from legiscope.coep.eval import (
+from coep.src.eval import (
     Evaluator,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
     jurisdiction_id_to_monqcle_name,
 )
-from legiscope.coep.query import adjust_drug_paraphernalia_queries
+from coep.src.query import adjust_drug_paraphernalia_queries
 
 # Default paths - can be overridden via CLI
 DEFAULT_MONQCLE_PATH = (

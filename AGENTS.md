@@ -387,9 +387,7 @@ uv run python scripts/run_queries.py \
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
 │       ├── segment.py       # Text segmentation utilities
-│       ├── query.py         # Legal query processing with structured responses
-│       └── coep/
-│           └── eval.py      # COEP evaluation and benchmarking logic
+│       └── query.py         # Legal query processing with structured responses
 ├── tests/               # Test files
 ├── scripts/             # Utility scripts
 │   ├── dvc_repro.sh           # DVC pipeline wrapper (primary interface)
@@ -405,6 +403,13 @@ uv run python scripts/run_queries.py \
 │   ├── build_chroma_index.py  # (deprecated) Build ChromaDB index
 │   └── ...
 ├── coep/
+│   ├── __init__.py
+│   ├── src/
+│   │   ├── eval.py            # COEP evaluation logic
+│   │   └── query.py           # COEP query preprocessing
+│   ├── tests/
+│   │   ├── test_eval.py
+│   │   └── test_query_adjustments.py
 │   ├── scripts/
 │   │   └── benchmark_pipeline.py  # COEP benchmarking workflow
 │   ├── docs/

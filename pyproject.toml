@@ -56,7 +56,7 @@ Homepage = "https://github.com/jsqr/legiscope"
 packages = ["src/legiscope"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 filterwarnings = [
     "ignore::pyparsing.exceptions.PyparsingDeprecationWarning",
 ]

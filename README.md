@@ -327,15 +327,20 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
 │       ├── segment.py       # Text segmentation utilities
-│       ├── query.py         # Legal query processing with structured responses
-│       └── coep/
-│           └── eval.py      # COEP-specific evaluation and benchmarking logic
+│       └── query.py         # Legal query processing with structured responses
 ├── tests/                   # Test files
 ├── scripts/                 # Utility scripts
 │   ├── dvc_repro.sh             # DVC pipeline wrapper
 │   ├── run_queries.py           # Batch query execution
 │   └── ...
 ├── coep/
+│   ├── __init__.py
+│   ├── src/
+│   │   ├── eval.py              # COEP-specific evaluation logic
+│   │   └── query.py             # COEP-specific query preprocessing
+│   ├── tests/
+│   │   ├── test_eval.py
+│   │   └── test_query_adjustments.py
 │   ├── scripts/
 │   │   └── benchmark_pipeline.py # COEP benchmarking workflow
 │   ├── docs/
@@ -356,7 +361,7 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 
 ## Documentation
 
-Additional documentation is available in the `docs/` directory:
+Additional documentation is available in `docs/` and `coep/docs/`:
 
 - [COEP Benchmarking Workflow](coep/docs/BENCHMARKING.md) - Guide to running the COEP RAG evaluation pipeline against MonQcle data
 - [Supporting Passages Validation](docs/VALIDATION_EXAMPLE.md) - Guide to automatic validation of LLM-generated supporting passages

@@ -47,21 +47,21 @@ test-cov:
 # Code quality
 lint:
 	@echo "Running linting checks..."
-	@uv run ruff check src/ tests/
+	@uv run ruff check src/ tests/ coep/
 	@echo "Checking formatting..."
-	@uv run ruff format --check src/ tests/
+	@uv run ruff format --check src/ tests/ coep/
 
 typecheck:
 	@echo "Running type checks..."
-	@uv run basedpyright src/
+	@uv run basedpyright src/ coep/
 
 format:
 	@echo "Formatting code..."
-	@uv run ruff format src/ tests/
+	@uv run ruff format src/ tests/ coep/
 
 fix:
 	@echo "Fixing linting issues..."
-	@uv run ruff check --fix src/ tests/
+	@uv run ruff check --fix src/ tests/ coep/
 
 # Utilities
 list:

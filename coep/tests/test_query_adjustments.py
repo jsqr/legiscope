@@ -5,7 +5,7 @@ import tempfile
 
 import polars as pl
 
-from legiscope.coep.query import adjust_drug_paraphernalia_queries
+from coep.src.query import adjust_drug_paraphernalia_queries
 from legiscope.query import load_queries
 
 

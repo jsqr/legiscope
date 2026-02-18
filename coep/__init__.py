@@ -1,13 +1,13 @@
 """COEP-specific benchmarking and query helpers."""
 
-from legiscope.coep.eval import (
+from .src.eval import (
     EvaluationResult,
     Evaluator,
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
 )
-from legiscope.coep.query import adjust_drug_paraphernalia_queries
+from .src.query import adjust_drug_paraphernalia_queries
 
 __all__ = [
     "EvaluationResult",

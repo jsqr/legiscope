@@ -92,5 +92,5 @@ uv run python coep/scripts/benchmark_pipeline.py \
 
 ## Code Structure
 
--   `src/legiscope/coep/eval.py`: Contains the `Evaluator` class and the `EvaluationResult` schema (using Instructor).
+-   `coep/src/eval.py`: Contains the `Evaluator` class and the `EvaluationResult` schema (using Instructor).
 -   `coep/scripts/benchmark_pipeline.py`: The executable workflow script.
