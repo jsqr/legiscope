@@ -76,8 +76,13 @@ done
 if [[ -x ".venv/bin/python" ]]; then
     export PATH=".venv/bin:${PATH}"
     PYTHON_BIN=".venv/bin/python"
-else
+elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+elif command -v python3 >/dev/null 2>&1; then
     PYTHON_BIN="python3"
+else
+    echo "Error: No suitable Python interpreter found. Tried .venv/bin/python, python, python3." >&2
+    exit 1
 fi
 
 # ── Read jurisdiction from params.yaml (for display + validation) ─
