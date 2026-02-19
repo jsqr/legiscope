@@ -17,6 +17,6 @@ else
     PYTHON_BIN="python3"
 fi
 
-export PYTHONPATH="$PWD/src:$PYTHONPATH"
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 
 "$PYTHON_BIN" "$@"
