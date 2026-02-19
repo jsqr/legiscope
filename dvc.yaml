@@ -28,8 +28,9 @@
 stages:
     validate:
         cmd: >-
-            bash -c 'set -eo pipefail; if [[ -x ".venv/bin/python" ]]; then PYTHON_BIN=".venv/bin/python"; else PYTHON_BIN="python"; fi; export PYTHONPATH="$PWD/src:$PYTHONPATH"; "$PYTHON_BIN" -c "import legiscope; print(f\"Package import works: {legiscope.__file__}\")"; mkdir -p tmp; echo ok > tmp/validate_import.ok'
+            bash -c 'bash scripts/dvc_python.sh -c "import legiscope; print(f\"Package import works: {legiscope.__file__}\")" && mkdir -p tmp && echo ok > tmp/validate_import.ok'
         deps:
+            - scripts/dvc_python.sh
             - src/legiscope/__init__.py
             - pyproject.toml
         outs:
@@ -38,11 +39,9 @@ stages:
 
     parse:
         cmd: >-
-            python -m legiscope.pipeline.parse
-            --state ${jurisdiction.state}
-            --locality ${jurisdiction.locality}
-            --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh -m legiscope.pipeline.parse --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
+            - scripts/dvc_python.sh
             - tmp/validate_import.ok
             - src/legiscope/pipeline/parse.py
             - src/legiscope/convert.py
@@ -56,11 +55,9 @@ stages:
 
     segment:
         cmd: >-
-            python -m legiscope.pipeline.segment
-            --state ${jurisdiction.state}
-            --locality ${jurisdiction.locality}
-            --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh -m legiscope.pipeline.segment --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
+            - scripts/dvc_python.sh
             - src/legiscope/pipeline/segment.py
             - src/legiscope/segment.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
@@ -76,11 +73,9 @@ stages:
 
     embed:
         cmd: >-
-            python -m legiscope.pipeline.embed
-            --state ${jurisdiction.state}
-            --locality ${jurisdiction.locality}
-            --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh -m legiscope.pipeline.embed --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
+            - scripts/dvc_python.sh
             - src/legiscope/pipeline/embed.py
             - src/legiscope/embeddings.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
@@ -93,11 +88,9 @@ stages:
 
     index:
         cmd: >-
-            python -m legiscope.pipeline.index
-            --state ${jurisdiction.state}
-            --locality ${jurisdiction.locality}
-            --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh -m legiscope.pipeline.index --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
+            - scripts/dvc_python.sh
             - src/legiscope/pipeline/index.py
             - src/legiscope/embeddings.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/embeddings.parquet

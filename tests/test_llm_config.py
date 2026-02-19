@@ -43,6 +43,30 @@ def _params_with(**overrides):
     return p
 
 
+def _provider_config_from_params(params: dict) -> dict:
+    """Build llm_config.PROVIDER_CONFIG-like mapping from test params."""
+    providers = params.get("llm", {}).get("providers", {})
+    return {
+        name: {
+            "fast_model": models.get("fast", ""),
+            "powerful_model": models.get("powerful", ""),
+            "mode": None,
+            "num_ctx": models.get("num_ctx"),
+        }
+        for name, models in providers.items()
+    }
+
+
+@pytest.fixture(autouse=True)
+def _patch_provider_config():
+    """Keep tests hermetic from real params.yaml import-time state."""
+    with patch(
+        "legiscope.llm_config.PROVIDER_CONFIG",
+        _provider_config_from_params(_BASE_PARAMS),
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
