@@ -126,13 +126,12 @@ class TestLoadQueries:
         finally:
             os.unlink(temp_path)
 
-    def test_load_queries_dataset_adjustment(self):
-        """Test dataset specific adjustments for drug paraphernalia."""
-        # Case 1: Trigger context addition
+    def test_load_queries_custom_adjuster(self):
+        """Test caller-provided query adjuster hook."""
         df = pl.DataFrame(
             {
-                "question": ["Is drug paraphernalia allowed?", "Other question"],
-                "variable_name": ["q1", "q2"],
+                "question": ["Question 1", "Question 2"],
+                "variable_name": ["var1", "var2"],
             }
         )
 
@@ -140,32 +139,19 @@ class TestLoadQueries:
             df.write_csv(f.name)
             temp_path = f.name
 
-        try:
-            queries = load_queries(temp_path, adjust_for_dataset=True)
-            # Should have prepended context
-            assert "ordinance that prohibits drug paraphernalia" in queries[0].question
-            assert "ordinance that prohibits drug paraphernalia" in queries[1].question
-        finally:
-            os.unlink(temp_path)
-
-    def test_load_queries_exclusions(self):
-        """Test exclusion of specific variable names."""
-        df = pl.DataFrame(
-            {
-                "question": ["drug paraphernalia Q1", "Q2", "Q3", "Q4"],
-                "variable_name": ["normal", "dp_database", "dp_url", "dp_note"],
-            }
-        )
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
-            df.write_csv(f.name)
-            temp_path = f.name
+        def _adjuster(input_df: pl.DataFrame) -> pl.DataFrame:
+            return input_df.with_columns(
+                (pl.lit("PREFIX: ") + pl.col("question")).alias("question")
+            )
 
         try:
-            queries = load_queries(temp_path, adjust_for_dataset=True)
-            # Should filter out the 3 specific vars
-            assert len(queries) == 1
-            assert queries[0].variable_name == "normal"
+            queries = load_queries(
+                temp_path,
+                adjust_for_dataset=True,
+                query_adjuster=_adjuster,
+            )
+            assert queries[0].question == "PREFIX: Question 1"
+            assert queries[1].question == "PREFIX: Question 2"
         finally:
             os.unlink(temp_path)
 
@@ -667,8 +653,10 @@ class TestBatchQueryConfig:
         """Test creating settings with defaults."""
         # Mock the API client creation to avoid needing API keys,
         # but still test that __post_init__ creates default LLM config.
-        with patch("legiscope.llm_config.Config.get_powerful_client") as mock_client, \
-             patch("legiscope.llm_config.Config.get_powerful_model") as mock_model:
+        with (
+            patch("legiscope.llm_config.Config.get_powerful_client") as mock_client,
+            patch("legiscope.llm_config.Config.get_powerful_model") as mock_model,
+        ):
             mock_client.return_value = Mock()
             mock_model.return_value = "test-model"
 
@@ -932,8 +920,10 @@ class TestBatchQueryConfigBasics:
         sections_path = tmp_path / "sections.parquet"
         sections_path.write_text("")  # Create empty file
 
-        with patch("legiscope.llm_config.Config.get_powerful_client") as mock_get_client, \
-             patch("legiscope.llm_config.Config.get_powerful_model") as mock_get_model:
+        with (
+            patch("legiscope.llm_config.Config.get_powerful_client") as mock_get_client,
+            patch("legiscope.llm_config.Config.get_powerful_model") as mock_get_model,
+        ):
             mock_client = Mock(spec=Instructor)
             mock_get_client.return_value = mock_client
             mock_get_model.return_value = "test-model"

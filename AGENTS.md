@@ -178,8 +178,9 @@ embeddings:
 #### Retrieval & Query Configuration
 
 Retrieval settings (HYDE, relevance filtering) and query settings (model tier,
-passage validation) are all in `params.yaml`. CLI scripts (`run_queries.py`,
-`benchmark_pipeline.py`) read these automatically.
+passage validation) are all in `params.yaml`. CLI scripts (`scripts/run_queries.py`,
+`coep/scripts/benchmark_pipeline.py`) read these settings from `params.yaml`
+and path settings from `config.yaml`.
 
 ```yaml
 retrieval:
@@ -329,16 +330,16 @@ dvc exp run \
 ### Benchmarking
 
 The project handles benchmarking against MonQcle data using an LLM-as-judge approach.
-See `BENCHMARKING.md` for full documentation.
+See `coep/docs/BENCHMARKING.md` for full documentation.
 
 All paths and settings are resolved from `params.yaml` and `config.yaml`:
 
 ```bash
 # Normal run — zero args needed
-uv run python scripts/benchmark_pipeline.py
+uv run python coep/scripts/benchmark_pipeline.py
 
 # Dev/debug run with limited queries
-uv run python scripts/benchmark_pipeline.py --test-limit 5 --debug
+uv run python coep/scripts/benchmark_pipeline.py --test-limit 5 --debug
 ```
 
 ### Advanced Query Execution
@@ -372,13 +373,11 @@ uv run python scripts/run_queries.py
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
 │       ├── segment.py       # Text segmentation utilities
-│       ├── query.py         # Legal query processing with structured responses
-│       └── eval.py          # Evaluation and benchmarking logic
+│       └── query.py         # Legal query processing with structured responses
 ├── tests/               # Test files
 ├── scripts/             # Utility scripts
 │   ├── dvc_repro.sh           # DVC pipeline wrapper (primary interface)
 │   ├── run_queries.py         # Batch query execution
-│   ├── benchmark_pipeline.py  # Benchmarking workflow
 │   ├── pipeline_init.sh       # (deprecated) Initialize jurisdiction
 │   ├── pipeline_parse.sh      # (deprecated) Parse raw files to Markdown
 │   ├── pipeline_process.sh    # (deprecated) Create embeddings and index
@@ -389,6 +388,20 @@ uv run python scripts/run_queries.py
 │   ├── create_embeddings.py   # (deprecated) Generate embeddings
 │   ├── build_chroma_index.py  # (deprecated) Build ChromaDB index
 │   └── ...
+├── coep/
+│   ├── __init__.py
+│   ├── src/
+│   │   ├── eval.py            # COEP evaluation logic
+│   │   └── query.py           # COEP query preprocessing
+│   ├── tests/
+│   │   ├── test_eval.py
+│   │   └── test_query_adjustments.py
+│   ├── scripts/
+│   │   └── benchmark_pipeline.py  # COEP benchmarking workflow
+│   ├── docs/
+│   │   └── BENCHMARKING.md        # COEP benchmark docs
+│   └── data/
+│       └── monqcle_data/          # COEP MonQcle data
 ├── data/                # Data directory (not tracked by git)
 │   ├── jurisdictions.parquet  # Registry of all jurisdictions
 │   ├── codes.parquet          # Registry of all legal codes

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Benchmark pipeline script for evaluating RAG performance against a human-labeled dataset.
 
@@ -27,22 +28,27 @@ import chromadb
 import polars as pl
 from loguru import logger
 
-# Add src to path
-src_path = Path(__file__).parent.parent / "src"
+# Add project root and src to path
+project_root = Path(__file__).resolve().parents[2]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
+src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 from legiscope import config
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
-from legiscope.eval import (
+from legiscope.models import CodeRef
+from legiscope.params import load_params
+from legiscope.query import BatchQuerySettings, load_queries, run_queries
+from coep.src.eval import (
     Evaluator,
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
 )
-from legiscope.models import CodeRef
-from legiscope.params import load_params
-from legiscope.query import BatchQuerySettings, load_queries, run_queries
+from coep.src.query import adjust_drug_paraphernalia_queries
 
 
 def main():
@@ -79,7 +85,11 @@ def main():
     # Step 1: Load Queries
     # =========================================================================
     # Uses shared query loading logic (returns list[QueryInput])
-    query_inputs = load_queries(str(queries_path))
+    query_inputs = load_queries(
+        str(queries_path),
+        adjust_for_dataset=True,
+        query_adjuster=adjust_drug_paraphernalia_queries,
+    )
 
     if args.debug:
         debug_dir = Path(f"data/output/{jurisdiction_id}/debug")
@@ -98,9 +108,7 @@ def main():
     # Step 2: Load and Filter MonQcle Ground Truth
     # =========================================================================
     monqcle_name = jurisdiction_id_to_monqcle_name(jurisdiction_id)
-    monqcle_row = load_and_filter_monqcle(
-        str(monqcle_path), monqcle_name, series_title
-    )
+    monqcle_row = load_and_filter_monqcle(str(monqcle_path), monqcle_name, series_title)
 
     # Get variable names from query inputs for filtering ground truth
     variable_names = [q.variable_name for q in query_inputs if q.variable_name]
@@ -245,18 +253,14 @@ def main():
     )
 
     # Add jurisdiction metadata
-    eval_df = eval_df.with_columns(
-        pl.lit(jurisdiction_id).alias("jurisdiction_id")
-    )
+    eval_df = eval_df.with_columns(pl.lit(jurisdiction_id).alias("jurisdiction_id"))
 
     # =========================================================================
     # Step 8: Compute Summary Metrics
     # =========================================================================
     avg_score = eval_df["eval_score"].mean()
     correct_count = eval_df.filter(pl.col("eval_label") == "Correct").height
-    partial_count = eval_df.filter(
-        pl.col("eval_label") == "Partially Correct"
-    ).height
+    partial_count = eval_df.filter(pl.col("eval_label") == "Partially Correct").height
     incorrect_count = eval_df.filter(pl.col("eval_label") == "Incorrect").height
     total_count = eval_df.height
     accuracy_rate = (correct_count / total_count) * 100 if total_count > 0 else 0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import stat
 import subprocess
 from pathlib import Path
@@ -10,6 +11,13 @@ import yaml
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
+SRC_PATH = PROJECT_ROOT / "src"
+PYTHONPATH_ENV = {
+    **os.environ,
+    "PYTHONPATH": os.pathsep.join(
+        [str(SRC_PATH), os.environ.get("PYTHONPATH", "")]
+    ).strip(os.pathsep),
+}
 
 PIPELINE_MODULES = ["parse", "segment", "embed", "index"]
 
@@ -165,6 +173,7 @@ class TestDvcPipelineCli:
                 capture_output=True,
                 text=True,
                 cwd=PROJECT_ROOT,
+                env=PYTHONPATH_ENV,
             )
             assert result.returncode == 0, (
                 f"python -m legiscope.pipeline.{module} --help failed "
@@ -178,6 +187,7 @@ class TestDvcPipelineCli:
             capture_output=True,
             text=True,
             cwd=PROJECT_ROOT,
+            env=PYTHONPATH_ENV,
         )
         assert result.returncode == 0, (
             f"python -m legiscope.pipeline.init --help failed "

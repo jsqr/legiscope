@@ -3,12 +3,32 @@
 These steps require real LLM/embedding service calls and cannot be automated in unit tests.
 Run them against a local or staging environment after all unit tests pass.
 
+## MV-0: Set-up
+1. Create the jurisdiction data folders:
+
+```bash
+# Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
+# code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
+uv run python -m legiscope.pipeline.init
+```
+
+2. Paste the Chicago municipal code .docx file into the data/laws/IL/WindyCity/municipal-code/raw folder
+
+3. Convert .docx to .txt file:
+
+```bash
+uv run scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
+```
+
+
 ## MV-1: Full DVC Pipeline Run
 
 Run the complete pipeline on the jurisdiction configured in `params.yaml`:
 
 ```bash
-./scripts/dvc_repro.sh --force
+# Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
+# code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
+uv run ./scripts/dvc_repro.sh --force
 ```
 
 **Verify:**
@@ -23,7 +43,7 @@ Delete ChromaDB and rebuild from embeddings:
 
 ```bash
 rm -rf data/chroma_db
-python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
+uv run python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -36,7 +56,7 @@ python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug m
 Run index again without deleting ChromaDB:
 
 ```bash
-python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
+uv run python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -58,7 +78,7 @@ EOF
 Run segmentation:
 
 ```bash
-python -m legiscope.pipeline.segment --state IL --locality WindyCity --code-slug municipal-code
+uv run python -m legiscope.pipeline.segment --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -71,7 +91,7 @@ python -m legiscope.pipeline.segment --state IL --locality WindyCity --code-slug
 Override a parameter via DVC experiment:
 
 ```bash
-dvc exp run -S segmentation.token_limit=128
+uv run dvc exp run -S segmentation.token_limit=128
 ```
 
 **Verify:**
@@ -87,14 +107,10 @@ then attempt to parse without placing raw files:
 ```bash
 # Edit params.yaml to set jurisdiction.state=TEST, locality=TestCity,
 # code_slug=test-code, code_name="Test Code", then:
-python -m legiscope.pipeline.init
+uv run python -m legiscope.pipeline.init
 
-python -m legiscope.pipeline.parse \
-    --state TEST --locality TestCity --code-slug test-code
+uv run ./scripts/dvc_repro.sh --stage parse --force
 ```
-
-(The parse module still accepts `--state`/`--locality`/`--code-slug` because
-it is a DVC stage invoked by `dvc.yaml` template substitution.)
 
 **Verify:**
 - [ ] Parse step fails with a clear error message about missing raw files

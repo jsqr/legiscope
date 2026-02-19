@@ -324,9 +324,7 @@ class TestMain:
 
         with (
             patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
-            patch.object(
-                pipeline_init, "CODES_PARQUET", tmp_path / "c.parquet"
-            ),
+            patch.object(pipeline_init, "CODES_PARQUET", tmp_path / "c.parquet"),
             patch(
                 "legiscope.pipeline.init.create_code_structure", return_value=tmp_path
             ),

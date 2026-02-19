@@ -70,8 +70,7 @@ _See [Configuration Files](#configuration-files) for details._
 Querying is **not** (yet) a DVC stage — for now run it directly:
 
 ```bash
-uv run python scripts/run_queries.py \
-    --queries-path data/queries/my_queries.csv
+uv run python scripts/run_queries.py
 ```
 
 _See [Running Queries](#running-queries) for all options._
@@ -177,10 +176,10 @@ to change jurisdictions. For one-off DVC overrides, use `-S` flags directly:
 
 ```bash
 # Run a single pipeline stage
-./scripts/dvc_repro.sh --stage segment
+uv run ./scripts/dvc_repro.sh --stage segment
 
 # Override params for a DVC experiment (does not modify params.yaml)
-dvc exp run -S jurisdiction.state=CA -S jurisdiction.locality=LosAngeles \
+uv run dvc exp run -S jurisdiction.state=CA -S jurisdiction.locality=LosAngeles \
     -S jurisdiction.code_slug=municipal-code
 ```
 
@@ -189,23 +188,22 @@ For state-level codes, set `locality` to `State` in `params.yaml`.
 ### Running Queries
 
 ```bash
-uv run python scripts/run_queries.py \
-    --queries-path "data/queries/test_queries.csv"
+uv run python scripts/run_queries.py
 ```
 
-Queries are a CSV with a `question` column. Results are saved to
+Queries are read from the default path configured in `config.yaml`
+(`paths.default_queries_file`) and expected to include a `question` column.
+Results are saved to
 `data/output/{JURISDICTION}/query_results.csv` with answers, citations,
 confidence scores, and processing metrics.
 
 <details>
 <summary>Full query CLI options</summary>
 
-- `--queries-path`: Path to queries CSV file (required)
-- `--output`: Output CSV file path (default: `data/output/{jurisdiction}/query_results.csv`)
-- `--collection-name`: ChromaDB collection name
+This script currently takes no command-line arguments.
 
 Jurisdiction and retrieval/query settings (HYDE, relevance filtering, etc.) are
-read from `params.yaml`.
+read from `params.yaml`; paths are read from `config.yaml`.
 
 </details>
 
@@ -223,7 +221,7 @@ read from `params.yaml`.
 
 - `scripts/dvc_repro.sh` — Wrapper around `dvc exp run` for running the pipeline
 - `scripts/run_queries.py` — Run batch queries against legal code database
-- `scripts/benchmark_pipeline.py` — Benchmarking workflow
+- `coep/scripts/benchmark_pipeline.py` — COEP benchmarking workflow
 - `scripts/convert_docx.sh` — Convert DOCX files to plain text using pandoc
 - `scripts/pipeline_init.sh` — *(deprecated: use `legiscope.pipeline.init`)*
 - `scripts/pipeline_parse.sh` — *(deprecated: use `dvc_repro.sh`)*
@@ -271,7 +269,7 @@ data/
 ├── output/                         # LLM query output
 │   └── {STATE}-{Locality}/
 │       └── query_results.csv
-└── monqcle_data/                   # Human-annotated MonQcle data
+└── ...
 ```
 
 ### DVC Remote Storage
@@ -318,14 +316,26 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
 │       ├── segment.py       # Text segmentation utilities
-│       ├── query.py         # Legal query processing with structured responses
-│       └── eval.py          # Evaluation and benchmarking logic
+│       └── query.py         # Legal query processing with structured responses
 ├── tests/                   # Test files
 ├── scripts/                 # Utility scripts
 │   ├── dvc_repro.sh             # DVC pipeline wrapper
-│   ├── benchmark_pipeline.py    # Benchmarking workflow
 │   ├── run_queries.py           # Batch query execution
 │   └── ...
+├── coep/
+│   ├── __init__.py
+│   ├── src/
+│   │   ├── eval.py              # COEP-specific evaluation logic
+│   │   └── query.py             # COEP-specific query preprocessing
+│   ├── tests/
+│   │   ├── test_eval.py
+│   │   └── test_query_adjustments.py
+│   ├── scripts/
+│   │   └── benchmark_pipeline.py # COEP benchmarking workflow
+│   ├── docs/
+│   │   └── BENCHMARKING.md      # COEP benchmarking guide
+│   └── data/
+│       └── monqcle_data/        # COEP MonQcle data
 ├── notebooks/               # Interactive notebooks
 ├── docs/                    # Documentation
 ├── config.yaml              # Infrastructure settings (data dir, ChromaDB path)
@@ -340,9 +350,9 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 
 ## Documentation
 
-Additional documentation is available in the `docs/` directory:
+Additional documentation is available in `docs/` and `coep/docs/`:
 
-- [Benchmarking Workflow](docs/BENCHMARKING.md) - Guide to running the RAG evaluation pipeline against MonQcle data
+- [COEP Benchmarking Workflow](coep/docs/BENCHMARKING.md) - Guide to running the COEP RAG evaluation pipeline against MonQcle data
 - [Supporting Passages Validation](docs/VALIDATION_EXAMPLE.md) - Guide to automatic validation of LLM-generated supporting passages
 
 ## Contributing

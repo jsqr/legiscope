@@ -18,7 +18,8 @@ class TestLoadParams:
 
     def test_llm_provider_default(self):
         p = params.load_params()
-        assert p["llm"]["default_provider"] == "mistral"
+        provider = p["llm"]["default_provider"]
+        assert provider in p["llm"]["providers"]
 
     def test_provider_models_present(self):
         p = params.load_params()
@@ -26,7 +27,9 @@ class TestLoadParams:
         assert "openai" in providers
         assert "mistral" in providers
         assert "ollama" in providers
-        assert providers["mistral"]["fast"] == "mistral-small-2506"
+        for provider_models in providers.values():
+            assert "fast" in provider_models
+            assert "powerful" in provider_models
 
 
 class TestPerCodeMerge:

@@ -1,5 +1,6 @@
 # Data files
 /data
+/coep/data
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -188,3 +189,6 @@ Modelfile
 
 # Scratch / working notes
 scratch/
+
+# DVC validation stage artifacts
+tmp/validate_import.ok

@@ -110,9 +110,7 @@ def main() -> None:
 
     code_name = jur.get("code_name")
     if not code_name:
-        raise SystemExit(
-            "Error: jurisdiction.code_name must be set in params.yaml"
-        )
+        raise SystemExit("Error: jurisdiction.code_name must be set in params.yaml")
 
     code_ref = CodeRef.from_params(params)
 
