@@ -39,7 +39,7 @@ dependencies = [
     "pydantic>=2",
     "pyzmq>=27.1.0",
     "rapidfuzz>=3.0.0",
-    "dvc>=3",
+    "dvc[gs]>=3",
 ]
 
 [dependency-groups]
@@ -56,7 +56,7 @@ Homepage = "https://github.com/jsqr/legiscope"
 packages = ["src/legiscope"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src", "."]
+pythonpath = ["src"]
 filterwarnings = [
     "ignore::pyparsing.exceptions.PyparsingDeprecationWarning",
 ]
