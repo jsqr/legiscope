@@ -924,7 +924,7 @@ Short conclusion paragraph."""
 
     def test_dense_numeric_text_respects_token_budget(self):
         """Dense numeric/punctuation text should still be split under token budget."""
-        text = " ".join(f"{600+i} 14401 Friar St. Van Nuys" for i in range(120))
+        text = " ".join(f"{600 + i} 14401 Friar St. Van Nuys" for i in range(120))
 
         segments = segment_text(text, token_limit=64, words_per_token=0.5)
 
@@ -1517,8 +1517,8 @@ Third paragraph content."""
         assert "ancestor_path" in result.columns
 
         # Validate propagated parent chain for one segment from each section
-        one_per_section = result.group_by("section_ordinal").first().sort(
-            "section_ordinal"
+        one_per_section = (
+            result.group_by("section_ordinal").first().sort("section_ordinal")
         )
         assert one_per_section["parent"].to_list() == [None, 0, 1]
         assert one_per_section["depth"].to_list() == [0, 1, 2]

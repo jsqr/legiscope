@@ -1017,19 +1017,23 @@ def segment_legal_code(
     headings_path = code_dir / "headings.parquet"
     if headings_path.exists():
         headings_df = pl.read_parquet(headings_path)
-        sections_df = sections_df.join(
-            headings_df.select(
-                "line_number", "heading_level", "section_type", "section_number"
-            ).rename({"heading_level": "true_heading_level"}),
-            on="line_number",
-            how="left",
-        ).with_columns(
-            # Prefer true structural level from headings.parquet, but fall back to
-            # parsed markdown heading level when a line does not match.
-            pl.coalesce([pl.col("true_heading_level"), pl.col("heading_level")])
-            .cast(pl.Int64)
-            .alias("heading_level")
-        ).drop("true_heading_level")
+        sections_df = (
+            sections_df.join(
+                headings_df.select(
+                    "line_number", "heading_level", "section_type", "section_number"
+                ).rename({"heading_level": "true_heading_level"}),
+                on="line_number",
+                how="left",
+            )
+            .with_columns(
+                # Prefer true structural level from headings.parquet, but fall back to
+                # parsed markdown heading level when a line does not match.
+                pl.coalesce([pl.col("true_heading_level"), pl.col("heading_level")])
+                .cast(pl.Int64)
+                .alias("heading_level")
+            )
+            .drop("true_heading_level")
+        )
     else:
         # Backward compat: no headings.parquet, keep #-count as level
         sections_df = sections_df.with_columns(
