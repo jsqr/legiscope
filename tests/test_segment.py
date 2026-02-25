@@ -5,6 +5,7 @@ import pytest
 
 from legiscope.models import CodeRef, JurisdictionRef
 from legiscope.segment import (
+    _estimate_token_count,
     add_parent_relationships,
     add_segments_to_sections,
     create_segments_df,
@@ -321,6 +322,22 @@ Content here."""
         assert result["body_text"][1] is None
         assert result["body_text"][2] == "Content here."
 
+    def test_unicode_line_separators_do_not_bloat_heading(self):
+        """U+2028 line separators should be treated as real newlines during parsing."""
+        markdown_text = (
+            "#### 601   14401 Friar St.   Van Nuys\u2028"
+            "602   11320 Chandler Blvd.   North Hollywood\u2028"
+            "603   14521 Friar St.   Van Nuys\n\n"
+            "B. Installation of Regulatory Signs."
+        )
+
+        result = divide_into_sections(markdown_text)
+
+        assert len(result) == 1
+        assert result["heading_text"][0] == "#### 601   14401 Friar St.   Van Nuys"
+        assert "602   11320 Chandler Blvd." in (result["body_text"][0] or "")
+        assert "603   14521 Friar St." in (result["body_text"][0] or "")
+
 
 class TestAddParentRelationships:
     """Test cases for add_parent_relationships function."""
@@ -617,6 +634,23 @@ Content."""
         assert parents[0] is None  # H1
         assert all(p == 0 for p in parents[1:])  # All H2 sections
 
+    def test_handles_missing_heading_level_with_heading_text_fallback(self):
+        """If heading_level is null, derive it from heading_text markers."""
+        df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1, 2],
+                "heading_level": [None, None, 3],
+                "heading_text": ["# Root", "## Child", "### Grandchild"],
+                "body_text": ["a", "b", "c"],
+                "line_number": [1, 2, 3],
+            }
+        )
+
+        result = add_parent_relationships(df)
+
+        assert result["parent"].to_list() == [None, 0, 1]
+        assert result["heading_level"].to_list() == [1, 2, 3]
+
 
 class TestSegmentText:
     """Test cases for segment_text function."""
@@ -887,6 +921,26 @@ Short conclusion paragraph."""
         assert "First paragraph" in segments[0]
         assert "Second paragraph" in segments[1]
         assert "Third paragraph" in segments[2]
+
+    def test_dense_numeric_text_respects_token_budget(self):
+        """Dense numeric/punctuation text should still be split under token budget."""
+        text = " ".join(f"{600+i} 14401 Friar St. Van Nuys" for i in range(120))
+
+        segments = segment_text(text, token_limit=64, words_per_token=0.5)
+
+        assert len(segments) > 1
+        for segment in segments:
+            assert _estimate_token_count(segment) <= 64
+
+    def test_single_unbroken_alphanumeric_blob_is_split(self):
+        """A single very long blob (no whitespace) should not remain one huge segment."""
+        blob = "60114401FriarStVanNuys" * 80
+
+        segments = segment_text(blob, token_limit=32, words_per_token=0.75)
+
+        assert len(segments) > 1
+        for segment in segments:
+            assert _estimate_token_count(segment) <= 32
 
 
 class TestAddSegmentsToSections:
@@ -1456,10 +1510,42 @@ Third paragraph content."""
         # Should have segments from all sections
         assert len(result) >= 3
 
-        # Check that section context is preserved including parent info
-        # (parent info is not directly in segments but section_ref allows lookup)
+        # Parent/context metadata should be propagated to segments
+        assert "parent" in result.columns
+        assert "children" in result.columns
+        assert "depth" in result.columns
+        assert "ancestor_path" in result.columns
+
+        # Validate propagated parent chain for one segment from each section
+        one_per_section = result.group_by("section_ordinal").first().sort(
+            "section_ordinal"
+        )
+        assert one_per_section["parent"].to_list() == [None, 0, 1]
+        assert one_per_section["depth"].to_list() == [0, 1, 2]
+        assert one_per_section["ancestor_path"].to_list() == ["0", "0/1", "0/1/2"]
+
+        # Check that section references are still preserved
         section_refs = result["section_ordinal"].to_list()
         assert set(section_refs) == {0, 1, 2}
+
+    def test_propagates_enriched_section_ids(self):
+        """Segment rows retain globally unique section/code identifiers."""
+        sections = add_parent_relationships(
+            divide_into_sections("# Main\n\nIntro\n\n## Child\n\nBody")
+        )
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="CA", locality="LosAngeles"),
+            code_slug="municipal-code",
+        )
+        enriched = enrich_sections(sections, code_ref)
+
+        result = create_segments_df(enriched)
+
+        assert "code_id" in result.columns
+        assert "section_id" in result.columns
+        assert "parent_id" in result.columns
+        assert result["code_id"].n_unique() == 1
+        assert result["section_id"].n_unique() >= 2
 
 
 class TestEnrichSections:

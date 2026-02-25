@@ -26,6 +26,59 @@ if TYPE_CHECKING:
 DEFAULT_TOKEN_LIMIT = 256  # Maximum approximate tokens per segment
 DEFAULT_WORDS_PER_TOKEN = 0.75  # Approximate words per token ratio for embedding models
 
+# Conservative token approximation that better handles number/punctuation-heavy text.
+_TOKEN_UNIT_PATTERN = re.compile(r"\d+|[A-Za-z]+(?:[-'][A-Za-z]+)*|[^\w\s]", re.UNICODE)
+
+
+def _normalize_segmentation_text(text: str) -> str:
+    """Normalize non-standard whitespace and line separators before chunking."""
+    normalized = (
+        text.replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\u2028", "\n")
+        .replace("\u2029", "\n")
+        .replace("\xa0", " ")
+    )
+    return normalized
+
+
+def _estimate_token_count(text: str) -> int:
+    """Estimate token count with a conservative regex-based heuristic."""
+    if not text or not text.strip():
+        return 0
+    return len(_TOKEN_UNIT_PATTERN.findall(text))
+
+
+def _split_by_token_budget(text: str, token_limit: int) -> list[str]:
+    """Hard fallback splitter that guarantees chunks stay under token_limit.
+
+    This is intentionally formatting-agnostic and is only used when standard
+    paragraph/sentence splitting cannot satisfy model context constraints.
+    """
+    units = _TOKEN_UNIT_PATTERN.findall(text)
+    if not units:
+        return [text.strip()] if text.strip() else []
+
+    chunks: list[str] = []
+    current: list[str] = []
+
+    for unit in units:
+        # Every unit contributes ~1 token with this estimator.
+        if len(current) >= token_limit and current:
+            chunk = " ".join(current).strip()
+            if chunk:
+                chunks.append(chunk)
+            current = [unit]
+        else:
+            current.append(unit)
+
+    if current:
+        chunk = " ".join(current).strip()
+        if chunk:
+            chunks.append(chunk)
+
+    return chunks
+
 
 def divide_into_sections(markdown_text: str) -> pl.DataFrame:
     """
@@ -78,6 +131,12 @@ def divide_into_sections(markdown_text: str) -> pl.DataFrame:
                 "line_number": pl.Int64,
             }
         )
+
+    # Normalize non-standard separators before heading parsing.
+    # This is critical for source text where visual line breaks are encoded as
+    # Unicode line separators (U+2028/U+2029), which would otherwise cause an
+    # entire table/list to be captured as one giant heading line.
+    markdown_text = _normalize_segmentation_text(markdown_text)
 
     # Regex pattern to match markdown headings
     heading_pattern = re.compile(r"^(#{1,6})\s+(.+)$", re.MULTILINE)
@@ -227,6 +286,13 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
 
     for section in sections:
         current_level = section["heading_level"]
+        if current_level is None:
+            # Defensive fallback for partial metadata joins: derive level from
+            # markdown heading markers when available.
+            heading_text = section.get("heading_text") or ""
+            m = re.match(r"^(#{1,6})\s+", heading_text)
+            current_level = len(m.group(1)) if m else 1
+            section["heading_level"] = current_level
         current_idx = section["section_ordinal"]
 
         # Clear stack of levels that are deeper than or equal to current level
@@ -418,7 +484,9 @@ def segment_text(
     if not text.strip():
         return []
 
-    word_limit = int(token_limit * words_per_token)
+    text = _normalize_segmentation_text(text)
+
+    word_limit = max(1, int(token_limit * words_per_token))
 
     paragraphs = re.split(r"\n\s*\n", text.strip())
 
@@ -482,7 +550,23 @@ def segment_text(
     final_segments = []
     for segment in segments:
         words = segment.split()
-        if len(words) > word_limit:
+        est_tokens = _estimate_token_count(segment)
+
+        if est_tokens > token_limit:
+            # Last-resort token-based fallback for dense numeric/punctuation text
+            # or malformed whitespace where word-based splitting is insufficient.
+            for chunk in _split_by_token_budget(segment, token_limit):
+                if not chunk.strip():
+                    continue
+                chunk_words = chunk.split()
+                if len(chunk_words) > word_limit:
+                    for i in range(0, len(chunk_words), word_limit):
+                        word_chunk = " ".join(chunk_words[i : i + word_limit]).strip()
+                        if word_chunk:
+                            final_segments.append(word_chunk)
+                else:
+                    final_segments.append(chunk.strip())
+        elif len(words) > word_limit:
             # Split this segment into smaller chunks
             for i in range(0, len(words), word_limit):
                 chunk = " ".join(words[i : i + word_limit])
@@ -745,10 +829,24 @@ def create_segments_df(
             f"Column '{text_column}' not found in DataFrame. Available columns: {df.columns}"
         )
 
-    # Detect optional metadata columns
-    has_section_type = "section_type" in df.columns
-    has_section_number = "section_number" in df.columns
-    has_line_number = "line_number" in df.columns
+    # Propagate known section metadata columns into every segment row so
+    # split segments retain parent/context identifiers.
+    propagated_metadata_columns = [
+        col
+        for col in [
+            "section_type",
+            "section_number",
+            "line_number",
+            "parent",
+            "children",
+            "depth",
+            "ancestor_path",
+            "code_id",
+            "section_id",
+            "parent_id",
+        ]
+        if col in df.columns
+    ]
 
     # Process each section to create segments
     all_segments = []
@@ -780,14 +878,9 @@ def create_segments_df(
 
         # Validate that no segment exceeds the adjusted token limit
         for segment in segments:
-            assert len(segment.split()) <= adjusted_token_limit * words_per_token, (
-                f"Segment exceeds token limit: {segment}"
+            assert _estimate_token_count(segment) <= adjusted_token_limit, (
+                f"Segment exceeds adjusted token limit ({adjusted_token_limit}): {segment}"
             )
-
-        # Check for optional metadata columns
-        section_type = row.get("section_type")
-        section_number = row.get("section_number")
-        line_number = row.get("line_number")
 
         # Create a row for each segment
         for segment_position, segment_content in enumerate(segments):
@@ -803,13 +896,9 @@ def create_segments_df(
                 "word_count": word_count,
             }
 
-            # Propagate optional metadata columns when present
-            if has_section_type:
-                segment_row["section_type"] = section_type
-            if has_section_number:
-                segment_row["section_number"] = section_number
-            if has_line_number:
-                segment_row["line_number"] = line_number
+            # Propagate section-level metadata when present
+            for col in propagated_metadata_columns:
+                segment_row[col] = row.get(col)
 
             all_segments.append(segment_row)
             global_segment_idx += 1
@@ -824,12 +913,8 @@ def create_segments_df(
         "segment_text": pl.String,
         "word_count": pl.Int64,
     }
-    if has_section_type:
-        base_schema["section_type"] = pl.String
-    if has_section_number:
-        base_schema["section_number"] = pl.String
-    if has_line_number:
-        base_schema["line_number"] = pl.Int64
+    for col in propagated_metadata_columns:
+        base_schema[col] = df.schema[col]
 
     # Create flattened DataFrame
     if all_segments:
@@ -932,13 +1017,19 @@ def segment_legal_code(
     headings_path = code_dir / "headings.parquet"
     if headings_path.exists():
         headings_df = pl.read_parquet(headings_path)
-        sections_df = sections_df.drop("heading_level").join(
+        sections_df = sections_df.join(
             headings_df.select(
                 "line_number", "heading_level", "section_type", "section_number"
-            ),
+            ).rename({"heading_level": "true_heading_level"}),
             on="line_number",
             how="left",
-        )
+        ).with_columns(
+            # Prefer true structural level from headings.parquet, but fall back to
+            # parsed markdown heading level when a line does not match.
+            pl.coalesce([pl.col("true_heading_level"), pl.col("heading_level")])
+            .cast(pl.Int64)
+            .alias("heading_level")
+        ).drop("true_heading_level")
     else:
         # Backward compat: no headings.parquet, keep #-count as level
         sections_df = sections_df.with_columns(
