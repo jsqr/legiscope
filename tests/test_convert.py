@@ -7,10 +7,10 @@ from unittest.mock import Mock
 import yaml
 from pydantic import BaseModel
 
-from legiscope.convert import text2md
-from legiscope.find_code_start import ScanResult
-from legiscope.headings import BooleanResult, HeadingLevel, HeadingStructure
-from legiscope.scan import scan_legal_text
+from legiscope.parse.convert import text2md
+from legiscope.parse.find_code_start import ScanResult
+from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructure
+from legiscope.parse.scan import scan_legal_text
 from legiscope.utils import ask
 
 

@@ -9,7 +9,7 @@ Run them against a local or staging environment after all unit tests pass.
 ```bash
 # Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
 # code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
-uv run python -m legiscope.pipeline.init
+uv run python scripts/init.py
 ```
 
 2. Paste the Chicago municipal code .docx file into the data/laws/IL/WindyCity/municipal-code/raw folder
@@ -43,7 +43,7 @@ Delete ChromaDB and rebuild from embeddings:
 
 ```bash
 rm -rf data/chroma_db
-uv run python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
+uv run python scripts/index.py --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -56,7 +56,7 @@ uv run python -m legiscope.pipeline.index --state IL --locality WindyCity --code
 Run index again without deleting ChromaDB:
 
 ```bash
-uv run python -m legiscope.pipeline.index --state IL --locality WindyCity --code-slug municipal-code
+uv run python scripts/index.py --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -78,7 +78,7 @@ EOF
 Run segmentation:
 
 ```bash
-uv run python -m legiscope.pipeline.segment --state IL --locality WindyCity --code-slug municipal-code
+uv run python scripts/segment.py --state IL --locality WindyCity --code-slug municipal-code
 ```
 
 **Verify:**
@@ -107,7 +107,7 @@ then attempt to parse without placing raw files:
 ```bash
 # Edit params.yaml to set jurisdiction.state=TEST, locality=TestCity,
 # code_slug=test-code, code_name="Test Code", then:
-uv run python -m legiscope.pipeline.init
+uv run python scripts/init.py
 
 uv run ./scripts/dvc_repro.sh --stage parse --force
 ```
