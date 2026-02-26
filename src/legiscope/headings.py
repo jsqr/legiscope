@@ -13,7 +13,8 @@ from pydantic import BaseModel, Field, model_validator
 
 # Schema for headings.parquet
 HEADINGS_SCHEMA = {
-    "line_number": pl.Int64,
+    "element_id": pl.Int64,      # source element in original text
+    "line_number": pl.Int64,     # output line in code.md (for segment.py compat)
     "heading_level": pl.Int64,
     "markdown_level": pl.Int64,
     "section_type": pl.String,
@@ -84,7 +85,12 @@ def _compile_heading_patterns(structure: HeadingStructure) -> list:
     compiled_patterns = []
 
     for heading_level in structure.levels:
+        # Skip inferred levels — they have no regex patterns to match
+        if heading_level.inferred:
+            continue
         pattern = heading_level.regex_pattern
+        if not pattern:
+            continue
         level = heading_level.level
         try:
             # Use IGNORECASE to handle consistent casing (ARTICLE vs Article)
@@ -100,19 +106,30 @@ def _compile_heading_patterns(structure: HeadingStructure) -> list:
     return compiled_patterns
 
 
-def _is_heading_line(line: str, compiled_patterns: list) -> tuple[bool, int | None]:
-    """
-    Check if a line matches any heading pattern.
+def _is_heading_element(
+    element_text: str,
+    compiled_patterns: list,
+) -> tuple[bool, int | None]:
+    """Check if an element matches any heading pattern.
+
+    Tests the first line against compiled patterns.  For multiline heading
+    levels the full element text (joined lines) is also tested.
 
     Args:
-        line: Line to check (stripped)
-        compiled_patterns: List of (level, compiled_regex) tuples
+        element_text: Full text of the element (may contain newlines).
+        compiled_patterns: List of ``(level, compiled_regex)`` tuples.
 
     Returns:
-        Tuple of (is_heading, heading_level)
+        Tuple of ``(is_heading, heading_level)``.
     """
+    first_line = element_text.split("\n")[0].strip()
     for level, pattern in compiled_patterns:
-        if pattern.match(line.strip()):
+        if pattern.match(first_line):
+            return True, level
+    # Also try the full text (joined) for multiline patterns
+    joined = " ".join(element_text.split())
+    for level, pattern in compiled_patterns:
+        if pattern.match(joined):
             return True, level
     return False, None
 
@@ -137,25 +154,31 @@ def _extract_section_number(
     return m.group(0) if m else None
 
 
-# ── detect_headings ───────────────────────────────────────────────────
+# ── detect_headings_from_elements ─────────────────────────────────────
 
 
-def detect_headings(
-    lines: list[str], structure: HeadingStructure
+def detect_headings_from_elements(
+    elements_df: pl.DataFrame, structure: HeadingStructure
 ) -> list[dict[str, Any]]:
-    """Detect all headings in full text, return list of heading metadata dicts."""
+    """Detect headings from an elements DataFrame.
+
+    Returns a list of dicts matching ``HEADINGS_SCHEMA`` **without**
+    ``line_number`` (that is filled in later by ``convert.py`` during
+    markdown generation).
+    """
     compiled = _compile_heading_patterns(structure)
-    results = []
-    for i, raw_line in enumerate(lines):
-        stripped = raw_line.rstrip("\n\r")
-        is_h, level = _is_heading_line(stripped, compiled)
+    results: list[dict[str, Any]] = []
+    for row in elements_df.to_dicts():
+        text = row["text"]
+        is_h, level = _is_heading_element(text, compiled)
         if is_h and level is not None:
             hl_obj = _get_heading_level_obj(level, structure)
+            first_line = text.split("\n")[0].strip()
             results.append({
-                "line_number": i,
+                "element_id": row["element_id"],
                 "heading_level": level,
                 "section_type": hl_obj.type_label if hl_obj else "",
-                "section_number": _extract_section_number(stripped, hl_obj),
-                "heading_text": stripped.strip(),
+                "section_number": _extract_section_number(first_line, hl_obj),
+                "heading_text": first_line,
             })
     return results

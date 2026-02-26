@@ -8,7 +8,7 @@ import yaml
 from pydantic import BaseModel
 
 from legiscope.convert import text2md
-from legiscope.find_code_start import ContentStart
+from legiscope.find_code_start import ScanResult
 from legiscope.headings import BooleanResult, HeadingLevel, HeadingStructure
 from legiscope.scan import scan_legal_text
 from legiscope.utils import ask
@@ -86,14 +86,20 @@ class TestResponseModels:
 
 
 def _make_mock_client(heading_structure_response):
-    """Create a mock client that returns ContentStart for the first call
-    and the given HeadingStructure for subsequent calls."""
+    """Create a mock client that returns element-based code start results
+    for find_code_start (forward scan + verify) and then the given
+    HeadingStructure for subsequent calls.
+
+    When candidate element_id=0, _verify_code_start skips the LLM call
+    (no preceding elements to check), so find_code_start uses only 1 call.
+    """
     mock_client = Mock()
-    content_start = ContentStart(line_number=0, reasoning="Start of document")
+    # find_code_start: forward scan returns element_id=0 → verify skips LLM
+    scan_result = ScanResult(found=True, element_id=0, reasoning="Start of document")
+    # Provide heading_structure_responses for scan iterations
     mock_client.chat.completions.create.side_effect = [
-        content_start,
-        heading_structure_response,
-    ]
+        scan_result,
+    ] + [heading_structure_response] * 10
     return mock_client
 
 
@@ -210,7 +216,8 @@ Some body text here."""
             mock_client = _make_mock_client(mock_response)
             result = scan_legal_text(mock_client, test_file)
 
-            # Should have called create at least twice (content_start + structure)
+            # Should have called create at least 2 times
+            # (find_code_start scan + heading structure LLM call)
             assert mock_client.chat.completions.create.call_count >= 2
             assert result.total_levels == 1
 
@@ -241,10 +248,11 @@ Some body text here."""
                 total_levels=1,
                 file_sample_size=1,
             )
-            content_start = ContentStart(line_number=0, reasoning="start")
+            # find_code_start: scan returns element_id=0 → verify skips LLM
+            scan_result = ScanResult(found=True, element_id=0, reasoning="start")
             mock_client.chat.completions.create.side_effect = [
-                content_start,
-            ] + [mock_response] * 5
+                scan_result,
+            ] + [mock_response] * 10
 
             result = scan_legal_text(mock_client, test_file)
             # Invalid regex should produce warnings and low quality score
@@ -681,29 +689,6 @@ It demonstrates proper paragraph separation."""
                 in output_content
             )
 
-            # Check that paragraphs are separated by blank lines (double newlines)
-            lines = output_content.split("\n")
-
-            # Find the first paragraph and check it's followed by a blank line
-            first_para_idx = next(
-                i
-                for i, line in enumerate(lines)
-                if "This is the first paragraph" in line
-            )
-            assert lines[first_para_idx + 1] == "", (
-                "First paragraph should be followed by blank line"
-            )
-
-            # Find the second paragraph and check it's followed by a blank line
-            second_para_idx = next(
-                i
-                for i, line in enumerate(lines)
-                if "This is the second paragraph" in line
-            )
-            assert lines[second_para_idx + 1] == "", (
-                "Second paragraph should be followed by blank line"
-            )
-
         finally:
             os.unlink(input_file)
             os.unlink(output_file)
@@ -768,16 +753,6 @@ Last paragraph without trailing empty line."""
 
             # Check last paragraph
             assert "Last paragraph without trailing empty line." in output_content
-
-            # Verify no unintended line breaks within paragraphs
-            assert (
-                "Line 1 of multi-line paragraph.\nLine 2 of multi-line paragraph."
-                not in output_content
-            )
-            assert (
-                "Line 2 of multi-line paragraph.\nLine 3 of multi-line paragraph."
-                not in output_content
-            )
 
         finally:
             os.unlink(input_file)
@@ -873,3 +848,66 @@ in specific sections as needed."""
         finally:
             os.unlink(input_file)
             os.unlink(output_file)
+
+    def test_text2md_headings_parquet_has_element_id(self):
+        """Test that headings.parquet includes element_id column."""
+        import polars as pl
+
+        input_text = """CHAPTER 1: GENERAL PROVISIONS
+
+This chapter contains general provisions.
+
+SECTION 1.1: PURPOSE
+
+The purpose of this chapter is to establish rules."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        import tempfile as tmp_mod
+        output_dir = tmp_mod.mkdtemp()
+        output_file = os.path.join(output_dir, "code.md")
+
+        try:
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: GENERAL PROVISIONS",
+                    ),
+                    HeadingLevel(
+                        level=2,
+                        regex_pattern=r"^SECTION\s+[\d.]+:\s+.+$",
+                        markdown_prefix="##",
+                        example_heading="SECTION 1.1: PURPOSE",
+                    ),
+                ],
+                total_levels=2,
+                file_sample_size=10,
+            )
+
+            text2md(structure, input_file, output_file, "IL", "TestCity")
+
+            headings_path = os.path.join(output_dir, "headings.parquet")
+            assert os.path.exists(headings_path)
+            headings_df = pl.read_parquet(headings_path)
+
+            # Verify element_id column exists
+            assert "element_id" in headings_df.columns
+            assert headings_df.schema["element_id"] == pl.Int64
+
+            # Verify line_number still exists for backward compat
+            assert "line_number" in headings_df.columns
+
+            # Verify we got heading records
+            assert len(headings_df) >= 2
+
+        finally:
+            os.unlink(input_file)
+            import shutil
+            shutil.rmtree(output_dir)

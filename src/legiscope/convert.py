@@ -10,13 +10,14 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import yaml
 
+from legiscope.elements import split_elements
 from legiscope.headings import (
     HEADINGS_SCHEMA,
     HeadingStructure,
     _compile_heading_patterns,
     _extract_section_number,
     _get_heading_level_obj,
-    _is_heading_line,
+    _is_heading_element,
 )
 from legiscope.scan import DEFAULT_SCAN_MAX_LINES, scan_legal_text
 
@@ -166,146 +167,69 @@ def _convert_heading_to_markdown(
         return f"{'#' * level} {line.strip()}"
 
 
-def _collect_paragraph_lines(
-    lines: list[str], start_idx: int, compiled_patterns: list
-) -> tuple[list[str], int]:
-    """
-    Collect consecutive non-empty, non-heading lines as a paragraph.
-
-    Args:
-        lines: All lines in the document
-        start_idx: Starting index
-        compiled_patterns: List of heading patterns
-
-    Returns:
-        Tuple of (paragraph_lines, next_index)
-    """
-    paragraph_lines = []
-    i = start_idx
-
-    while i < len(lines):
-        current_line = lines[i]
-        current_stripped = current_line.rstrip("\n\r")
-
-        # Check if current line is a heading
-        is_heading, _ = _is_heading_line(current_stripped, compiled_patterns)
-
-        if is_heading:
-            break  # Hit a heading, stop collecting paragraph lines
-
-        if current_stripped.strip() == "":
-            break  # Empty line - end of paragraph
-
-        paragraph_lines.append(current_stripped.strip())
-        i += 1
-
-    return paragraph_lines, i
-
-
-def _is_multiline_heading(level: int, structure: HeadingStructure) -> bool:
-    """Check if a heading level is configured as multiline."""
-    for hl in structure.levels:
-        if hl.level == level:
-            return hl.multiline
-    return False
-
-
-def _process_markdown_lines(
-    lines: list[str], compiled_patterns: list, structure: HeadingStructure
+def _process_markdown_elements(
+    elements_df: pl.DataFrame,
+    compiled_patterns: list,
+    structure: HeadingStructure,
 ) -> tuple[list[str], list[dict[str, Any]]]:
-    """Process lines and convert headings to Markdown format with proper paragraph handling.
+    """Process elements and convert headings to Markdown format.
 
     Returns:
-        Tuple of (converted_lines, heading_records) where heading_records is a list
-        of dicts with keys: output_line_number, heading_level, markdown_level,
-        section_type, section_number, heading_text.
+        Tuple of (converted_lines, heading_records) where heading_records
+        include element_id and output_line_number.
     """
     from loguru import logger
 
     converted_lines: list[str] = []
     heading_records: list[dict[str, Any]] = []
-    heading_lines_processed: set[int] = set()
-    i = 0
 
-    while i < len(lines):
-        # Skip lines already processed as headings (to avoid duplicate processing)
-        if i in heading_lines_processed:
-            i += 1
-            continue
+    for row in elements_df.to_dicts():
+        eid = row["element_id"]
+        text = row["text"]
 
-        line = lines[i]
-        line_stripped = line.rstrip("\n\r")
+        # Check if this element matches a heading pattern
+        is_heading, heading_level = _is_heading_element(text, compiled_patterns)
 
-        # Check if this line matches any heading pattern
-        is_heading, heading_level = _is_heading_line(line_stripped, compiled_patterns)
+        if is_heading and heading_level is not None:
+            # For multiline headings, join all lines
+            hl_obj = _get_heading_level_obj(heading_level, structure)
+            if hl_obj and hl_obj.multiline and "\n" in text:
+                heading_text = " ".join(text.split())
+            else:
+                heading_text = text.split("\n")[0].strip()
 
-        if is_heading:
-            heading_text = line_stripped
-
-            # Handle two-line (multiline) headings: peek at next non-empty line
-            if _is_multiline_heading(heading_level, structure):
-                j = i + 1
-                while j < len(lines) and lines[j].strip() == "":
-                    j += 1
-                if j < len(lines):
-                    next_line = lines[j].rstrip("\n\r")
-                    next_is_heading, _ = _is_heading_line(next_line, compiled_patterns)
-                    if not next_is_heading:
-                        heading_text = heading_text.strip() + " " + next_line.strip()
-                        heading_lines_processed.add(j)
-
-            # Convert to Markdown format
             markdown_heading = _convert_heading_to_markdown(
                 heading_text, heading_level, structure
             )
             converted_lines.append(markdown_heading + "\n")
-            heading_lines_processed.add(i)
 
             # Record heading metadata
-            # output_line_number is 1-based, counting lines written so far
             output_line_number = len(converted_lines)
-            hl_obj = _get_heading_level_obj(heading_level, structure)
             markdown_level = min(heading_level, 4)
-            heading_records.append(
-                {
-                    "output_line_number": output_line_number,
-                    "heading_level": heading_level,
-                    "markdown_level": markdown_level,
-                    "section_type": hl_obj.type_label if hl_obj else None,
-                    "section_number": _extract_section_number(heading_text, hl_obj),
-                    "heading_text": heading_text.strip(),
-                }
-            )
+            heading_records.append({
+                "element_id": eid,
+                "output_line_number": output_line_number,
+                "heading_level": heading_level,
+                "markdown_level": markdown_level,
+                "section_type": hl_obj.type_label if hl_obj else None,
+                "section_number": _extract_section_number(heading_text, hl_obj),
+                "heading_text": heading_text.strip(),
+            })
 
-            i += 1
-            if (len(heading_lines_processed) % 50) == 0:
+            if (len(heading_records) % 50) == 0:
                 logger.debug(
-                    f"Line {i} (heading # {len(heading_lines_processed)}): Converted to level {heading_level} heading"
+                    f"Element {eid} (heading #{len(heading_records)}): "
+                    f"Converted to level {heading_level} heading"
                 )
-            continue
-
-        # Not a heading - process as paragraph content
-        if line_stripped.strip() == "":
-            # Empty line - add as paragraph break
-            converted_lines.append("\n")
-            i += 1
         else:
-            # Start of a paragraph - collect consecutive non-empty lines
-            paragraph_lines, next_i = _collect_paragraph_lines(
-                lines, i, compiled_patterns
-            )
-
-            # Join paragraph lines with spaces and add as single paragraph
-            if paragraph_lines:
-                paragraph_text = " ".join(paragraph_lines)
+            # Body element — write as paragraph text
+            lines = text.split("\n")
+            paragraph_text = " ".join(line.strip() for line in lines if line.strip())
+            if paragraph_text:
                 converted_lines.append(paragraph_text + "\n")
 
-                # Check if we stopped at an empty line and add paragraph break if needed
-                if next_i < len(lines) and lines[next_i].rstrip("\n\r").strip() == "":
-                    converted_lines.append("\n")
-                    next_i += 1
-
-            i = next_i
+        # Add blank line after each element for paragraph separation
+        converted_lines.append("\n")
 
     return converted_lines, heading_records
 
@@ -344,7 +268,7 @@ def text2md(
     Include YAML frontmatter with jurisdiction metadata and heading patterns.
 
     Writes ``headings.parquet`` alongside ``code.md`` with structured heading
-    metadata (line numbers, true levels, type labels, section numbers).
+    metadata (element_id, line numbers, true levels, type labels, section numbers).
 
     Args:
         structure: HeadingStructure from scan_legal_text analysis
@@ -367,9 +291,12 @@ def text2md(
     """
     _validate_conversion_inputs(structure, input_path, output_path, state, locality)
     compiled_patterns = _compile_heading_patterns(structure)
-    lines = _read_source_file(input_path)
-    converted_lines, heading_records = _process_markdown_lines(
-        lines, compiled_patterns, structure
+
+    # Split input into elements
+    elements_df = split_elements(input_path)
+
+    converted_lines, heading_records = _process_markdown_elements(
+        elements_df, compiled_patterns, structure
     )
     frontmatter = _generate_frontmatter(structure, state, locality)
 
@@ -386,6 +313,7 @@ def text2md(
         headings_df = pl.DataFrame(
             [
                 {
+                    "element_id": rec["element_id"],
                     "line_number": rec["output_line_number"] + frontmatter_line_count,
                     "heading_level": rec["heading_level"],
                     "markdown_level": rec["markdown_level"],
