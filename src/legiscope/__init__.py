@@ -9,14 +9,10 @@ This package provides tools for:
 """
 
 # Core functionality
-from legiscope.convert import (
-    BooleanResult,
-    HeadingLevel,
-    HeadingStructure,
-    ask,
-    scan_legal_text,
-    text2md,
-)
+from legiscope.convert import text2md
+from legiscope.headings import BooleanResult, HeadingLevel, HeadingStructure
+from legiscope.scan import scan_legal_text
+from legiscope.utils import ask
 from legiscope.embeddings import (
     EmbeddingIndexConfig,
     add_jurisdiction_embeddings,

@@ -2,19 +2,16 @@
 
 import os
 import tempfile
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import yaml
 from pydantic import BaseModel
 
-from legiscope.convert import (
-    BooleanResult,
-    HeadingLevel,
-    HeadingStructure,
-    ask,
-    scan_legal_text,
-    text2md,
-)
+from legiscope.convert import text2md
+from legiscope.find_code_start import ContentStart
+from legiscope.headings import BooleanResult, HeadingLevel, HeadingStructure
+from legiscope.scan import scan_legal_text
+from legiscope.utils import ask
 
 
 class MockResponseModel(BaseModel):
@@ -29,12 +26,10 @@ class TestConvertModule:
 
     def test_ask_function_import(self):
         """Test that ask function is properly imported from utils."""
-        # Test that we can import ask from convert module
-        from legiscope.convert import ask as convert_ask
         from legiscope.utils import ask as utils_ask
 
-        # Both should be same function
-        assert utils_ask is convert_ask
+        # Module-level import should be the same function
+        assert utils_ask is ask
 
     def test_ask_function_backward_compatibility(self):
         """Test that ask function works as expected when imported from convert."""
@@ -90,12 +85,23 @@ class TestResponseModels:
         )
 
 
+def _make_mock_client(heading_structure_response):
+    """Create a mock client that returns ContentStart for the first call
+    and the given HeadingStructure for subsequent calls."""
+    mock_client = Mock()
+    content_start = ContentStart(line_number=0, reasoning="Start of document")
+    mock_client.chat.completions.create.side_effect = [
+        content_start,
+        heading_structure_response,
+    ]
+    return mock_client
+
+
 class TestScanLegalText:
     """Test cases for scan_legal_text function."""
 
     def test_scan_legal_text_success(self):
         """Test successful analysis of legal text with mock LLM response."""
-        # Sample legal text
         sample_text = """CHAPTER 1: GENERAL PROVISIONS
 
 This chapter contains general provisions.
@@ -108,7 +114,6 @@ ARTICLE 2: ADMINISTRATION
 
 Administrative procedures are outlined here."""
 
-        # Create temporary file
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as f:
@@ -116,10 +121,6 @@ Administrative procedures are outlined here."""
             test_file = f.name
 
         try:
-            # Create mock client
-            mock_client = Mock()
-
-            # Create mock response
             mock_response = HeadingStructure(
                 levels=[
                     HeadingLevel(
@@ -130,7 +131,7 @@ Administrative procedures are outlined here."""
                     ),
                     HeadingLevel(
                         level=2,
-                        regex_pattern=r"^(SECTION|ARTICLE)\s+[\d.]+:\s+.+$",
+                        regex_pattern=r"^(?:SECTION|ARTICLE)\s+[\d.]+:\s+.+$",
                         markdown_prefix="##",
                         example_heading="SECTION 1.1: PURPOSE",
                     ),
@@ -139,26 +140,18 @@ Administrative procedures are outlined here."""
                 file_sample_size=10,
             )
 
-            mock_client.chat.completions.create.return_value = mock_response
-
-            # Test function
+            mock_client = _make_mock_client(mock_response)
             result = scan_legal_text(mock_client, test_file, max_lines=10)
 
-            # Verify results
             assert result.total_levels == 2
             assert len(result.levels) == 2
-            assert result.file_sample_size == 10
-
-            # Check heading levels
             assert result.levels[0].level == 1
             assert result.levels[0].markdown_prefix == "#"
             assert "CHAPTER" in result.levels[0].regex_pattern
-
             assert result.levels[1].level == 2
             assert result.levels[1].markdown_prefix == "##"
 
         finally:
-            # Clean up
             os.unlink(test_file)
 
     def test_scan_legal_text_file_not_found(self):
@@ -173,7 +166,6 @@ Administrative procedures are outlined here."""
 
     def test_scan_legal_text_empty_file(self):
         """Test error handling when file is empty."""
-        # Create empty temporary file
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as f:
@@ -189,80 +181,44 @@ Administrative procedures are outlined here."""
         finally:
             os.unlink(test_file)
 
-    def test_scan_legal_text_skips_preamble(self):
-        """Test that scan_legal_text skips the first 20 lines for long files."""
-        # Create file with 30 lines
-        lines = [f"Line {i}\n" for i in range(1, 40)]
-        content = "".join(lines)
+    def test_scan_legal_text_delegates_to_scan_headings(self):
+        """Test that scan_legal_text delegates to scan_headings."""
+        sample_text = """CHAPTER 1: TEST
+
+Some body text here."""
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as f:
-            f.write(content)
+            f.write(sample_text)
             test_file = f.name
 
         try:
-            mock_client = Mock()
-            # Setup mock response
             mock_response = HeadingStructure(
-                levels=[],
-                total_levels=0,
-                file_sample_size=100,
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: TEST",
+                    ),
+                ],
+                total_levels=1,
+                file_sample_size=3,
             )
-            mock_client.chat.completions.create.return_value = mock_response
 
-            # Call with max_lines=5
-            scan_legal_text(mock_client, test_file, max_lines=5)
+            mock_client = _make_mock_client(mock_response)
+            result = scan_legal_text(mock_client, test_file)
 
-            # Get the call args
-            call_args = mock_client.chat.completions.create.call_args
-            kwargs = call_args.kwargs
-            messages = kwargs["messages"]
-            prompt_content = messages[1]["content"]
-
-            # Should skip first 20 lines (Line 1 to Line 20)
-            # Should assume Lines 21-25 are present
-            assert "Line 21" in prompt_content
-            # Should NOT contain Line 1
-            assert "Line 1\n" not in prompt_content
+            # Should have called create at least twice (content_start + structure)
+            assert mock_client.chat.completions.create.call_count >= 2
+            assert result.total_levels == 1
 
         finally:
             os.unlink(test_file)
 
-    def test_scan_legal_text_uses_powerful_model(self):
-        """Test that scan_legal_text defaults to use_fast=False (powerful model)."""
-        # Create minimal file
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        ) as f:
-            f.write("Some text")
-            test_file = f.name
-
-        try:
-            mock_client = Mock()
-            mock_response = HeadingStructure(
-                levels=[], total_levels=0, file_sample_size=10
-            )
-            mock_client.chat.completions.create.return_value = mock_response
-
-            # We need to patch resolve_model_default to verify it's called with use_fast=False
-            with patch("legiscope.convert.resolve_model_default") as mock_resolve:
-                mock_resolve.return_value = "mock-powerful-model"
-
-                scan_legal_text(mock_client, test_file)
-
-                # Check resolve_model_default was called with use_fast=False
-                mock_resolve.assert_called_with(None, use_fast=False)
-
-                # Check client was called with the resolved model
-                call_args = mock_client.chat.completions.create.call_args
-                assert call_args.kwargs["model"] == "mock-powerful-model"
-
-        finally:
-            os.unlink(test_file)
-
-    def test_scan_legal_text_invalid_regex(self):
-        """Test error handling when LLM returns invalid regex pattern."""
+    def test_scan_legal_text_invalid_regex_produces_warnings(self):
+        """Test that invalid regex patterns produce warnings and low quality score."""
         sample_text = "CHAPTER 1: TEST"
 
         with tempfile.NamedTemporaryFile(
@@ -273,13 +229,11 @@ Administrative procedures are outlined here."""
 
         try:
             mock_client = Mock()
-
-            # Create response with invalid regex
             mock_response = HeadingStructure(
                 levels=[
                     HeadingLevel(
                         level=1,
-                        regex_pattern=r"[invalid regex(",  # Invalid regex
+                        regex_pattern=r"[invalid regex(",
                         markdown_prefix="#",
                         example_heading="CHAPTER 1: TEST",
                     )
@@ -287,13 +241,15 @@ Administrative procedures are outlined here."""
                 total_levels=1,
                 file_sample_size=1,
             )
+            content_start = ContentStart(line_number=0, reasoning="start")
+            mock_client.chat.completions.create.side_effect = [
+                content_start,
+            ] + [mock_response] * 5
 
-            mock_client.chat.completions.create.return_value = mock_response
-
-            scan_legal_text(mock_client, test_file)
-            assert False, "Should have raised ValueError for invalid regex"
-        except ValueError as e:
-            assert "Invalid regex pattern" in str(e)
+            result = scan_legal_text(mock_client, test_file)
+            # Invalid regex should produce warnings and low quality score
+            assert result.quality_score < 0.7
+            assert any("invalid regex" in w.lower() for w in result.outline_warnings)
         finally:
             os.unlink(test_file)
 
