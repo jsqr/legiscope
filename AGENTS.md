@@ -71,7 +71,7 @@ from legiscope.llm_config import Config
 import chromadb
 
 # Setup
-jurisdiction = JurisdictionRef(state="IL", locality="WindyCity")
+jurisdiction = JurisdictionRef(state="IL", locality="TestChicago")
 code_ref = CodeRef(jurisdiction=jurisdiction, code_slug="municipal-code")
 
 chroma_client = chromadb.PersistentClient(path="./data/chroma_db")

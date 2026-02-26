@@ -275,7 +275,7 @@ def text2md(
         input_path: Path to source .txt file containing legal text
         output_path: Path where Markdown file should be written
         state: Two-letter state abbreviation (e.g., "IL", "CA")
-        locality: Locality name (e.g., "WindyCity", "LosAngeles")
+        locality: Locality name (e.g., "TestChicago", "LosAngeles")
 
     Raises:
         FileNotFoundError: If input file does not exist
@@ -286,7 +286,7 @@ def text2md(
         >>> from legiscope.llm_config import Config
         >>> client = Config.get_fast_client()
         >>> structure = scan_legal_text(client, "municipal_code.txt")
-        >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "WindyCity")
+        >>> text2md(structure, "municipal_code.txt", "municipal_code.md", "IL", "TestChicago")
         >>> print("Conversion completed")
     """
     _validate_conversion_inputs(structure, input_path, output_path, state, locality)

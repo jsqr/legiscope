@@ -170,7 +170,7 @@ class BatchQuerySettings:
         ...     collection=chroma_collection,
         ...     sections_parquet_path="./data/sections.parquet",
         ...     queries=["Query 1", "Query 2"],
-        ...     jurisdiction_id="IL-WindyCity",
+        ...     jurisdiction_id="IL-TestChicago",
         ...     settings=settings
         ... )
     """

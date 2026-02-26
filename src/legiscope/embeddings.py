@@ -707,7 +707,7 @@ class EmbeddingIndexConfig:
         text_col: Name of column containing text content
         embedding_col: Name of column containing embedding vectors
         metadata_cols: List of additional columns to include as metadata. If None, uses all non-ID/text/embedding columns
-        jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-WindyCity')
+        jurisdiction_id: Unique identifier for jurisdiction (e.g., 'IL-TestChicago')
     """
 
     df: pl.DataFrame
@@ -736,7 +736,7 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
         config = EmbeddingIndexConfig(
             df=embedded_df,
             persist_directory="./chroma_db",
-            jurisdiction_id="IL-WindyCity",
+            jurisdiction_id="IL-TestChicago",
         )
         collection = create_embedding_index(config)
     """
@@ -849,7 +849,7 @@ def add_jurisdiction_embeddings(
     Args:
         collection: Existing ChromaDB collection (required infrastructure)
         embeddings_df: DataFrame with embeddings data (required input)
-        jurisdiction_id: Unique identifier for jurisdiction (required input, e.g., 'IL-WindyCity')
+        jurisdiction_id: Unique identifier for jurisdiction (required input, e.g., 'IL-TestChicago')
         config: Configuration for embedding index (optional, uses defaults if None)
 
     Raises:
@@ -857,17 +857,17 @@ def add_jurisdiction_embeddings(
 
     Example:
         # Using defaults
-        add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity")
+        add_jurisdiction_embeddings(collection, embeddings_df, "IL-TestChicago")
 
         # Using custom config
         config = EmbeddingIndexConfig(
             df=embeddings_df,
             collection_name=collection.name,
-            jurisdiction_id="IL-WindyCity",
+            jurisdiction_id="IL-TestChicago",
             id_col="custom_id",
             metadata_cols=["state", "locality"]
         )
-        add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity", config)
+        add_jurisdiction_embeddings(collection, embeddings_df, "IL-TestChicago", config)
     """
     logger.info(
         f"Adding {len(embeddings_df)} embeddings for jurisdiction: {jurisdiction_id}"
@@ -1048,7 +1048,7 @@ def create_and_persist_embeddings(
             segments_df,
             client=get_embedding_client(),
             jurisdiction_config=JurisdictionConfig(
-                jurisdiction_id="IL-WindyCity"
+                jurisdiction_id="IL-TestChicago"
             )
         )
     """

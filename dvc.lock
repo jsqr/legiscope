@@ -1,10 +1,10 @@
 schema: '2.0'
 stages:
   parse:
-    cmd: python -m legiscope.pipeline.parse --state IL --locality WindyCity 
+    cmd: python -m legiscope.pipeline.parse --state IL --locality TestChicago 
       --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/raw
+    - path: data/laws/IL/TestChicago/municipal-code/raw
       hash: md5
       md5: 634c549fb8f1d6ac8e45bb5eccda3e73.dir
       size: 217516
@@ -21,7 +21,7 @@ stages:
       params.yaml:
         jurisdiction:
           state: IL
-          locality: WindyCity
+          locality: TestChicago
           code_slug: municipal-code
         llm:
           default_provider: ollama
@@ -40,23 +40,23 @@ stages:
           max_retries: 3
           timeout: 300
     outs:
-    - path: data/laws/IL/WindyCity/municipal-code/code.md
+    - path: data/laws/IL/TestChicago/municipal-code/code.md
       hash: md5
       md5: 67c1b19bbd844ea6bc0f63193cef7ce4
       size: 564069
-    - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/headings.parquet
       hash: md5
       md5: 702c7f0f44ff1ff6669e44707992eb05
       size: 52250
   segment:
-    cmd: python -m legiscope.pipeline.segment --state IL --locality WindyCity 
+    cmd: python -m legiscope.pipeline.segment --state IL --locality TestChicago 
       --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/code.md
+    - path: data/laws/IL/TestChicago/municipal-code/code.md
       hash: md5
       md5: 67c1b19bbd844ea6bc0f63193cef7ce4
       size: 564069
-    - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/headings.parquet
       hash: md5
       md5: 702c7f0f44ff1ff6669e44707992eb05
       size: 52250
@@ -72,37 +72,37 @@ stages:
       params.yaml:
         jurisdiction:
           state: IL
-          locality: WindyCity
+          locality: TestChicago
           code_slug: municipal-code
         segmentation:
           token_limit: 256
           words_per_token: 0.75
     outs:
-    - path: data/laws/IL/WindyCity/municipal-code/external_references.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/external_references.parquet
       hash: md5
       md5: 61a94b29211d82d0d4dd0bbba2d8735e
       size: 1146
-    - path: data/laws/IL/WindyCity/municipal-code/relations.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/relations.parquet
       hash: md5
       md5: 8438cdbe094beef79e1782de826157c0
       size: 913
-    - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/sections.parquet
       hash: md5
       md5: 34f37575502dac122265f047f5b28f1b
       size: 165956
-    - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/segments.parquet
       hash: md5
       md5: 3d30307a3a726939dad361a0d3b14ac7
       size: 140150
   embed:
-    cmd: python -m legiscope.pipeline.embed --state IL --locality WindyCity 
+    cmd: python -m legiscope.pipeline.embed --state IL --locality TestChicago 
       --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/sections.parquet
       hash: md5
       md5: 34f37575502dac122265f047f5b28f1b
       size: 165956
-    - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/segments.parquet
       hash: md5
       md5: 3d30307a3a726939dad361a0d3b14ac7
       size: 140150
@@ -128,18 +128,18 @@ stages:
           dtype: float32
         jurisdiction:
           state: IL
-          locality: WindyCity
+          locality: TestChicago
           code_slug: municipal-code
     outs:
-    - path: data/laws/IL/WindyCity/municipal-code/embeddings.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/embeddings.parquet
       hash: md5
       md5: db457e81b6a3015d53c65237e0614acd
       size: 3275157
   index:
-    cmd: python -m legiscope.pipeline.index --state IL --locality WindyCity 
+    cmd: python -m legiscope.pipeline.index --state IL --locality TestChicago 
       --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/embeddings.parquet
+    - path: data/laws/IL/TestChicago/municipal-code/embeddings.parquet
       hash: md5
       md5: db457e81b6a3015d53c65237e0614acd
       size: 3275157
@@ -156,6 +156,6 @@ stages:
         embeddings.default_provider: ollama
         jurisdiction:
           state: IL
-          locality: WindyCity
+          locality: TestChicago
           code_slug: municipal-code
         retrieval.distance_metric: l2

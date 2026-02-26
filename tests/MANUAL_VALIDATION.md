@@ -7,17 +7,17 @@ Run them against a local or staging environment after all unit tests pass.
 1. Create the jurisdiction data folders:
 
 ```bash
-# Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
-# code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
+# Edit params.yaml to set jurisdiction.state=IL, locality=TestChicago,
+# code_slug=municipal-code, code_name="IL-TestChicago Municipal Code", then:
 uv run python scripts/init.py
 ```
 
-2. Paste the Chicago municipal code .docx file into the data/laws/IL/WindyCity/municipal-code/raw folder
+2. Paste the Chicago municipal code .docx file into the data/laws/IL/TestChicago/municipal-code/raw folder
 
 3. Convert .docx to .txt file:
 
 ```bash
-uv run scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
+uv run scripts/convert_docx.sh "data/laws/IL/TestChicago/municipal-code/raw"
 ```
 
 
@@ -26,14 +26,14 @@ uv run scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
 Run the complete pipeline on the jurisdiction configured in `params.yaml`:
 
 ```bash
-# Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
-# code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
+# Edit params.yaml to set jurisdiction.state=IL, locality=TestChicago,
+# code_slug=municipal-code, code_name="IL-TestChicago Municipal Code", then:
 uv run ./scripts/dvc_repro.sh --force
 ```
 
 **Verify:**
 - [ ] All 4 stages complete without error (parse, segment, embed, index)
-- [ ] `data/laws/IL/WindyCity/municipal-code/code.md` is generated
+- [ ] `data/laws/IL/TestChicago/municipal-code/code.md` is generated
 - [ ] `sections.parquet`, `segments.parquet`, `embeddings.parquet` exist
 - [ ] Log output shows segment/embedding counts
 
@@ -43,7 +43,7 @@ Delete ChromaDB and rebuild from embeddings:
 
 ```bash
 rm -rf data/chroma_db
-uv run python scripts/index.py --state IL --locality WindyCity --code-slug municipal-code
+uv run python scripts/index.py --state IL --locality TestChicago --code-slug municipal-code
 ```
 
 **Verify:**
@@ -56,12 +56,12 @@ uv run python scripts/index.py --state IL --locality WindyCity --code-slug munic
 Run index again without deleting ChromaDB:
 
 ```bash
-uv run python scripts/index.py --state IL --locality WindyCity --code-slug municipal-code
+uv run python scripts/index.py --state IL --locality TestChicago --code-slug municipal-code
 ```
 
 **Verify:**
 - [ ] No new segments added
-- [ ] Log says "All N segments from IL:WindyCity:municipal-code already indexed"
+- [ ] Log says "All N segments from IL:TestChicago:municipal-code already indexed"
 - [ ] ChromaDB count unchanged
 
 ## MV-4: Per-Code Parameter Override
@@ -69,7 +69,7 @@ uv run python scripts/index.py --state IL --locality WindyCity --code-slug munic
 Create a per-code params.yaml with a smaller token limit:
 
 ```bash
-cat > data/laws/IL/WindyCity/municipal-code/params.yaml << 'EOF'
+cat > data/laws/IL/TestChicago/municipal-code/params.yaml << 'EOF'
 segmentation:
   token_limit: 128
 EOF
@@ -78,13 +78,13 @@ EOF
 Run segmentation:
 
 ```bash
-uv run python scripts/segment.py --state IL --locality WindyCity --code-slug municipal-code
+uv run python scripts/segment.py --state IL --locality TestChicago --code-slug municipal-code
 ```
 
 **Verify:**
 - [ ] More segments produced compared to default `token_limit: 256`
 - [ ] Log confirms the smaller token_limit was used
-- [ ] Clean up: `rm data/laws/IL/WindyCity/municipal-code/params.yaml`
+- [ ] Clean up: `rm data/laws/IL/TestChicago/municipal-code/params.yaml`
 
 ## MV-5: DVC Experiment with `-S` Flag
 
@@ -131,7 +131,7 @@ collection = client.get_collection("legal_code_embeddinggemma")
 results = collection.query(
     query_texts=["lead paint regulations"],
     n_results=5,
-    where={"jurisdiction_id": "IL-WindyCity"},
+    where={"jurisdiction_id": "IL-TestChicago"},
 )
 print(f"Single jurisdiction: {len(results['ids'][0])} results")
 
@@ -141,7 +141,7 @@ results = collection.query(
     n_results=5,
     where={
         "$or": [
-            {"jurisdiction_id": "IL-WindyCity"},
+            {"jurisdiction_id": "IL-TestChicago"},
             {"jurisdiction_id": "IL"},
         ]
     },

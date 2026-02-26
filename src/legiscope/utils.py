@@ -215,7 +215,7 @@ def create_jurisdiction_structure(state: str, locality: str) -> str:
 
     Args:
         state: Two-letter state abbreviation (e.g., "IL", "CA", "NY")
-        locality: Locality name (e.g., "WindyCity", "LosAngeles", "NewYork")
+        locality: Locality name (e.g., "TestChicago", "LosAngeles", "NewYork")
 
     Returns:
         str: The base path to the created jurisdiction directory

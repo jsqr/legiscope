@@ -4,7 +4,7 @@
 #
 # Usage examples:
 #   bash scripts/dvc_python.sh -c "import legiscope"
-#   bash scripts/dvc_python.sh scripts/parse.py --state IL --locality WindyCity --code-slug municipal-code
+#   bash scripts/dvc_python.sh scripts/parse.py --state IL --locality TestChicago --code-slug municipal-code
 
 set -eo pipefail
 

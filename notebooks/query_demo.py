@@ -61,7 +61,7 @@ def _(mo):
 def _(project_root):
     # --- Jurisdiction / code to query ---
     code_ref = CodeRef(
-        jurisdiction=JurisdictionRef(state="IL", locality="WindyCity"),
+        jurisdiction=JurisdictionRef(state="IL", locality="TestChicago"),
         code_slug="municipal-code",
     )
 

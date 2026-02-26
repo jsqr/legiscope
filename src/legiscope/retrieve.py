@@ -146,7 +146,7 @@ class RetrievalSettings:
 
     Attributes:
         n_results: Number of results to return
-        jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-WindyCity')
+        jurisdiction_id: Filter by specific jurisdiction (e.g., 'IL-TestChicago')
         where: Additional metadata filters (combined with jurisdiction filters)
         where_document: Document content filters
         use_hyde: Whether to apply HYDE query rewriting
@@ -161,7 +161,7 @@ class RetrievalSettings:
         >>> # Basic retrieval settings
         >>> settings = RetrievalSettings(
         ...     n_results=10,
-        ...     jurisdiction_id="IL-WindyCity"
+        ...     jurisdiction_id="IL-TestChicago"
         ... )
         >>>
         >>> # With HYDE rewriting
@@ -213,7 +213,7 @@ class SectionRetrievalSettings(RetrievalSettings):
 
     Example:
         >>> settings = SectionRetrievalSettings(
-        ...     jurisdiction_id="IL-WindyCity",
+        ...     jurisdiction_id="IL-TestChicago",
         ...     n_results=10,
         ...     use_hyde=True
         ... )
@@ -502,7 +502,7 @@ def retrieve_segments(
         >>>
         >>> # With custom settings
         >>> settings = RetrievalSettings(
-        ...     jurisdiction_id="IL-WindyCity",
+        ...     jurisdiction_id="IL-TestChicago",
         ...     n_results=20
         ... )
         >>> results = retrieve_segments(chroma_collection, "parking regulations", settings)
@@ -718,7 +718,7 @@ def retrieve_sections(
         >>>
         >>> # With custom settings
         >>> settings = SectionRetrievalSettings(
-        ...     jurisdiction_id="IL-WindyCity",
+        ...     jurisdiction_id="IL-TestChicago",
         ...     n_results=10
         ... )
         >>> results = retrieve_sections(

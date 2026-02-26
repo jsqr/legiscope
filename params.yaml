@@ -4,9 +4,9 @@
 # Jurisdiction targeting (override via: dvc exp run -S jurisdiction.state=CA ...)
 jurisdiction:
   state: IL
-  locality: WindyCity
+  locality: TestChicago
   code_slug: municipal-code
-  code_name: "WindyCity Municipal Code"
+  code_name: "TestChicago Municipal Code"
 
 # LLM configuration
 llm:
