@@ -1,13 +1,15 @@
-"""Outline extraction, heading heuristics, iterative LLM scanning, verification & scoring."""
+"""Raw-element LLM scanning, verification & scoring."""
 
 from __future__ import annotations
 
 import os
 import re
 
+import polars as pl
 from instructor import Instructor
 
-from legiscope.find_code_start import find_content_start
+from legiscope.elements import split_elements
+from legiscope.find_code_start import find_code_start
 from legiscope.headings import HeadingStructure
 
 
@@ -67,154 +69,45 @@ def is_heading_like(line: str) -> bool:
     return False
 
 
-# ── TOC detection ──────────────────────────────────────────────────────
-
-_DOT_LEADER_PAT = re.compile(r"\.{3,}|·{3,}")
-_TRAILING_PAGE_PAT = re.compile(r"\s+\d{1,5}\s*$")
+# ── Raw element formatting ─────────────────────────────────────────────
 
 
-def _is_toc_line(stripped: str) -> bool:
-    if _DOT_LEADER_PAT.search(stripped):
-        return True
-    if _TRAILING_PAGE_PAT.search(stripped) and len(stripped) < 120:
-        return True
-    return False
-
-
-def _build_entries(scan_lines: list[str], heading_lines: set[int]) -> list[dict]:
-    entries: list[dict] = []
-    body_start: int | None = None
-
-    def _flush_body(end: int) -> None:
-        nonlocal body_start
-        if body_start is not None:
-            count = end - body_start
-            entries.append({
-                "type": "body",
-                "start": body_start,
-                "end": end - 1,
-                "count": count,
-            })
-            body_start = None
-
-    for i, raw_line in enumerate(scan_lines):
-        stripped = raw_line.strip()
-        if not stripped:
-            if body_start is None:
-                body_start = i
-            continue
-
-        if i in heading_lines:
-            _flush_body(i)
-            paren_m = _PAREN_LABEL_PAT.match(stripped)
-            entries.append({
-                "type": "heading",
-                "line": i,
-                "text": stripped,
-                "inline": bool(paren_m and len(stripped) > paren_m.end() + 1),
-                "toc": _is_toc_line(stripped),
-            })
+def _format_raw_elements(elements_df: pl.DataFrame) -> str:
+    """Format elements as numbered text for LLM consumption."""
+    parts = []
+    for row in elements_df.to_dicts():
+        eid = row["element_id"]
+        first_line = row["text"].split("\n")[0].strip()
+        n = row["n_lines"]
+        if n > 1:
+            parts.append(f"E{eid}: {first_line}  [{n} lines]")
         else:
-            if body_start is None:
-                body_start = i
-
-    _flush_body(len(scan_lines))
-    return entries
-
-
-def _detect_toc_regions(entries: list[dict]) -> list[tuple[int, int]]:
-    toc_ranges: list[tuple[int, int]] = []
-    heading_entries = [e for e in entries if e["type"] == "heading"]
-    if not heading_entries:
-        return toc_ranges
-
-    window = 8
-    for wi in range(len(heading_entries) - window + 1):
-        cluster = heading_entries[wi : wi + window]
-        toc_count = sum(1 for h in cluster if h["toc"])
-        line_span = cluster[-1]["line"] - cluster[0]["line"] + 1
-        if toc_count >= 3 and line_span <= window * 4:
-            start_line = cluster[0]["line"]
-            end_line = cluster[-1]["line"] + 1
-            if toc_ranges and toc_ranges[-1][1] >= start_line:
-                toc_ranges[-1] = (toc_ranges[-1][0], max(toc_ranges[-1][1], end_line))
-            else:
-                toc_ranges.append((start_line, end_line))
-
-    return toc_ranges
-
-
-def _format_outline(
-    entries: list[dict], toc_ranges: list[tuple[int, int]]
-) -> str:
-    parts: list[str] = []
-    toc_active = False
-
-    for entry in entries:
-        if entry["type"] == "body":
-            s, e = entry["start"], entry["end"]
-            if s == e:
-                parts.append(f"L{s}: [body: 1 line]")
-            else:
-                parts.append(f"L{s}-L{e}: [body: {entry['count']} lines]")
-        else:
-            line_num = entry["line"]
-            in_toc = any(s <= line_num < e for s, e in toc_ranges)
-            if in_toc and not toc_active:
-                toc_start = next(s for s, e in toc_ranges if s <= line_num < e)
-                toc_end = next(e for s, e in toc_ranges if s <= line_num < e)
-                parts.append(f"[TOC: L{toc_start}-L{toc_end - 1}]")
-                toc_active = True
-            elif not in_toc and toc_active:
-                parts.append("[end TOC]")
-                toc_active = False
-
-            if entry.get("inline"):
-                parts.append(
-                    f"L{line_num}: {entry['text'][:80]} [inline heading, body continues]"
-                )
-            else:
-                parts.append(f"L{line_num}: {entry['text']}")
-
-    if toc_active:
-        parts.append("[end TOC]")
-
+            parts.append(f"E{eid}: {first_line}")
     return "\n".join(parts)
 
 
-def extract_outline(
-    lines: list[str],
-    heading_lines: set[int],
-    max_scan_lines: int = 2000,
-) -> tuple[str, list[tuple[int, int]]]:
-    """Extract a compressed outline from legal text lines."""
-    scan_lines = lines[:max_scan_lines]
-    entries = _build_entries(scan_lines, heading_lines)
-    toc_ranges = _detect_toc_regions(entries)
-    outline_text = _format_outline(entries, toc_ranges)
-    return outline_text, toc_ranges
-
-
-# ── Outline-aware system prompt ────────────────────────────────────────
+# ── System prompt ──────────────────────────────────────────────────────
 
 SCAN_SYSTEM_PROMPT = """\
-You are a legal text analyst. You receive a compressed OUTLINE of a legal document
+You are a legal text analyst. You receive raw ELEMENTS from a legal document
 and must identify the heading hierarchy.
 
-OUTLINE FORMAT:
-- `L{n}: text` — a heading-like line at source line n
-- `[body: N lines]` — collapsed body text (not headings)
-- `[TOC: L{a}-L{b}]` / `[end TOC]` — table-of-contents region
-- `[inline heading, body continues]` — paragraph-style heading sharing a line with body
+ELEMENT FORMAT:
+- `E{id}: text` — an element (first line shown)
+- `E{id}: text  [N lines]` — multi-line element (N total lines)
 
-TASK: Group the heading-like lines by hierarchical level and define regex patterns.
+Most elements are body text (paragraphs, clauses, definitions). Your job is to
+identify which elements are HEADINGS and group them by hierarchical level.
+
+TASK: Identify heading elements, group by hierarchical level, and define regex patterns.
 
 RULES:
 
 1. HIERARCHY: level 1 = most general (title/part), increasing = more specific.
    Each level number used exactly once. Up to 8 levels maximum.
 
-2. TOC ENTRIES duplicate body headings — use them to confirm patterns, not as
+2. TOC ENTRIES: Legal documents often have a Table of Contents near the start.
+   TOC entries duplicate body headings — use them to confirm patterns, not as
    separate levels. Format variants (Ch./CHAPTER, Sec./SECTION) belong in one
    level's `regex_patterns` list.
 
@@ -229,12 +122,12 @@ RULES:
    - Handle case/format variants in one level's list
    - End with `.*$` or `(?:\\s+.*)?$` as appropriate
 
-5. OUTLINE_LINE_NUMBERS: for each level, list which `L{n}` line numbers belong to
-   it (from the outline). This enables verification.
+5. OUTLINE_LINE_NUMBERS: for each level, list which `E{id}` element ids belong to
+   it (from the elements). This enables verification.
 
 6. MARKDOWN PREFIX: literal "# ", "## ", "### ", or "#### ". Levels 5-8 all use "#### ".
 
-7. EXAMPLE_HEADING: complete verbatim text from the outline (not abbreviated).
+7. EXAMPLE_HEADING: complete verbatim text from the elements (not abbreviated).
 
 8. TYPE_LABEL: short lowercase label ("title", "chapter", "section", etc.).
 
@@ -242,11 +135,10 @@ RULES:
 
 10. MULTILINE: true if heading keyword is on one line and title on the next.
 
-11. INLINE HEADINGS: Lines marked `[inline heading, body continues]` contain
-    a heading label (e.g. `(a)`, `(1)`, `§ 12.04`) followed immediately by
-    body text on the same line. These ARE headings — assign each to its
-    correct level. The regex pattern should match the heading label prefix
-    (the body text that follows will be separated during later processing).
+11. BODY TEXT: Most elements are NOT headings. Do not assign body paragraphs,
+    enumerated clauses like `(a)`, `(1)`, or `(i)`, or definitions to heading levels.
+    Only structural division markers (titles, chapters, articles, sections, parts, etc.)
+    are headings.
 
 OUTPUT: valid JSON matching HeadingStructure schema. No commentary."""
 
@@ -272,45 +164,38 @@ def _verify_compile_patterns(
 
 
 def _check_completeness(
-    lines: list[str],
+    elements_df: pl.DataFrame,
     compiled: list[tuple[int, "re.Pattern[str]", str]],
-    toc_indices: set[int],
 ) -> list[str]:
+    """Check elements for ambiguous pattern matches."""
     warnings: list[str] = []
-    unmatched = 0
     ambiguous = 0
-    for i, raw_line in enumerate(lines):
-        if i in toc_indices:
-            continue
-        stripped = raw_line.strip()
-        if not stripped or not is_heading_like(stripped):
+    for row in elements_df.to_dicts():
+        eid = row["element_id"]
+        first_line = row["text"].split("\n")[0].strip()
+        if not first_line:
             continue
         matching_levels = [
-            lvl for lvl, pat, _ in compiled if pat.match(stripped)
+            lvl for lvl, pat, _ in compiled if pat.match(first_line)
         ]
-        if len(matching_levels) == 0:
-            if unmatched < 10:
-                warnings.append(f"Unmatched heading-like line L{i}: {stripped[:80]}")
-            unmatched += 1
-        elif len(matching_levels) > 1:
+        if len(matching_levels) > 1:
             if ambiguous < 10:
                 warnings.append(
-                    f"Ambiguous match L{i}: levels {matching_levels}: {stripped[:60]}"
+                    f"Ambiguous match E{eid}: levels {matching_levels}: {first_line[:60]}"
                 )
             ambiguous += 1
 
-    if unmatched > 10:
-        warnings.append(f"... and {unmatched - 10} more unmatched lines")
     if ambiguous > 10:
-        warnings.append(f"... and {ambiguous - 10} more ambiguous lines")
+        warnings.append(f"... and {ambiguous - 10} more ambiguous elements")
     return warnings
 
 
 def _check_parent_child(
     structure: HeadingStructure,
     compiled: list[tuple[int, "re.Pattern[str]", str]],
-    lines: list[str],
+    elements_df: pl.DataFrame,
 ) -> list[str]:
+    """Check parent-child ID relationships in element texts."""
     warnings: list[str] = []
     sep_pat = re.compile(r"\b(\d+)([.\-])(\d+)")
     separator = None
@@ -325,6 +210,9 @@ def _check_parent_child(
     if not separator:
         return warnings
 
+    # Collect IDs per level from element texts
+    element_texts = [row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()]
+
     level_ids: dict[int, list[str]] = {}
     for level in structure.levels:
         if level.inferred or not level.number_regex:
@@ -337,10 +225,9 @@ def _check_parent_child(
         for _lvl, pat, _ in compiled:
             if _lvl != level.level:
                 continue
-            for raw_line in lines:
-                stripped = raw_line.strip()
-                if pat.match(stripped):
-                    nm = num_pat.search(stripped)
+            for text in element_texts:
+                if pat.match(text):
+                    nm = num_pat.search(text)
                     if nm:
                         ids.append(nm.group(0))
         level_ids[level.level] = ids
@@ -369,9 +256,12 @@ def _check_parent_child(
 def _check_sibling_ordering(
     structure: HeadingStructure,
     compiled: list[tuple[int, "re.Pattern[str]", str]],
-    lines: list[str],
+    elements_df: pl.DataFrame,
 ) -> list[str]:
+    """Check sibling ordering across element texts."""
     warnings: list[str] = []
+    element_texts = [row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()]
+
     for level in structure.levels:
         if level.inferred or not level.number_regex:
             continue
@@ -380,15 +270,14 @@ def _check_sibling_ordering(
         except re.error:
             continue
         prev_id: str | None = None
-        for raw_line in lines:
-            stripped = raw_line.strip()
+        for text in element_texts:
             matched_this_level = any(
-                _lvl == level.level and pat.match(stripped)
+                _lvl == level.level and pat.match(text)
                 for _lvl, pat, _ in compiled
             )
             if not matched_this_level:
                 continue
-            nm = num_pat.search(stripped)
+            nm = num_pat.search(text)
             if not nm:
                 continue
             current_id = nm.group(0)
@@ -411,21 +300,16 @@ def _check_sibling_ordering(
 
 def verify_structure(
     structure: HeadingStructure,
-    lines: list[str],
-    toc_ranges: list[tuple[int, int]],
+    elements_df: pl.DataFrame,
 ) -> list[str]:
-    """Verify the LLM's heading structure against the full text."""
+    """Verify the LLM's heading structure against elements."""
     compiled, warnings = _verify_compile_patterns(structure)
 
-    toc_indices: set[int] = set()
-    for s, e in toc_ranges:
-        toc_indices.update(range(s, e))
+    warnings.extend(_check_completeness(elements_df, compiled))
+    warnings.extend(_check_parent_child(structure, compiled, elements_df))
+    warnings.extend(_check_sibling_ordering(structure, compiled, elements_df))
 
-    warnings.extend(_check_completeness(lines, compiled, toc_indices))
-    warnings.extend(_check_parent_child(structure, compiled, lines))
-    warnings.extend(_check_sibling_ordering(structure, compiled, lines))
-
-    all_text = "".join(lines)
+    all_text = "\n".join(elements_df["text"].to_list())
     for _lvl, pat, pat_str in compiled:
         if len(pat.findall(all_text)) == 0:
             warnings.append(f"Pattern has 0 matches in full text: {pat_str[:70]}")
@@ -437,40 +321,36 @@ def verify_structure(
 
 
 def score_structure(
-    lines: list[str],
+    elements_df: pl.DataFrame,
     structure: HeadingStructure,
-    toc_ranges: list[tuple[int, int]],
 ) -> tuple[float, list[str]]:
     """Compute a 0.0-1.0 quality score and return error messages."""
     compiled, compile_warnings = _verify_compile_patterns(structure)
     errors = list(compile_warnings)
 
-    toc_indices: set[int] = set()
-    for s, e in toc_ranges:
-        toc_indices.update(range(s, e))
+    # If all patterns failed to compile, score is 0
+    if compile_warnings and not compiled:
+        return 0.0, errors
 
-    # Count heading-like lines outside TOC
-    heading_like_total = 0
+    # Count elements matched by patterns — focus on precision (no ambiguity)
     matched_count = 0
     ambiguous_count = 0
-    for i, raw_line in enumerate(lines):
-        if i in toc_indices:
+    for row in elements_df.to_dicts():
+        first_line = row["text"].split("\n")[0].strip()
+        if not first_line:
             continue
-        stripped = raw_line.strip()
-        if not stripped or not is_heading_like(stripped):
-            continue
-        heading_like_total += 1
-        matching = [lvl for lvl, pat, _ in compiled if pat.match(stripped)]
+        matching = [lvl for lvl, pat, _ in compiled if pat.match(first_line)]
         if len(matching) >= 1:
             matched_count += 1
         if len(matching) > 1:
             ambiguous_count += 1
 
-    # Coverage (0.4)
-    coverage = matched_count / heading_like_total if heading_like_total > 0 else 1.0
+    # Coverage (0.4) — precision: matched exactly once / total matched
+    exactly_one = matched_count - ambiguous_count
+    coverage = exactly_one / matched_count if matched_count > 0 else 1.0
 
-    # Pattern validity (0.2) — fraction of non-inferred patterns matching ≥1 line
-    all_text = "".join(lines)
+    # Pattern validity (0.2) — fraction of non-inferred patterns matching >= 1 element
+    all_text = "\n".join(elements_df["text"].to_list())
     valid_patterns = 0
     total_patterns = 0
     for _lvl, pat, pat_str in compiled:
@@ -482,25 +362,24 @@ def score_structure(
     pattern_validity = valid_patterns / total_patterns if total_patterns > 0 else 1.0
 
     # Sibling ordering (0.2)
-    sibling_warnings = _check_sibling_ordering(structure, compiled, lines)
+    sibling_warnings = _check_sibling_ordering(structure, compiled, elements_df)
     out_of_order = len(sibling_warnings)
     errors.extend(sibling_warnings)
-    # Estimate total sibling pairs
     total_sibling_pairs = max(1, matched_count - len(structure.levels))
     sibling_score = max(0.0, 1.0 - out_of_order / total_sibling_pairs)
 
     # No ambiguity (0.1)
     ambiguity_score = (
-        1.0 - ambiguous_count / heading_like_total if heading_like_total > 0 else 1.0
+        1.0 - ambiguous_count / matched_count if matched_count > 0 else 1.0
     )
 
     # Parent-child (0.1)
-    pc_warnings = _check_parent_child(structure, compiled, lines)
+    pc_warnings = _check_parent_child(structure, compiled, elements_df)
     errors.extend(pc_warnings)
     pc_score = 0.0 if pc_warnings else 1.0
 
     # Completeness warnings for error feedback
-    completeness_warnings = _check_completeness(lines, compiled, toc_indices)
+    completeness_warnings = _check_completeness(elements_df, compiled)
     errors.extend(completeness_warnings)
 
     score = (
@@ -533,40 +412,37 @@ def scan_headings(
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
 
-    with open(file_path, "r", encoding="utf-8") as f:
-        all_lines = f.readlines()
-
-    if not all_lines:
+    # Split file into elements
+    elements_df = split_elements(file_path)
+    if elements_df.height == 0:
         raise ValueError(f"File is empty: {file_path}")
 
-    # Find content start
-    content_start = find_content_start(client, all_lines)
-    logger.info(f"Content starts at line {content_start}")
-    lines = all_lines[content_start:]
+    # Find code start using element-based scanner
+    code_start = find_code_start(client, elements_df)
+    logger.info(f"Code starts at element {code_start.element_id}")
+    code_elements = elements_df.filter(pl.col("element_id") >= code_start.element_id)
 
-    sample_size = 400
+    sample_count = 200
     error_feedback: list[str] = []
     best_structure: HeadingStructure | None = None
     best_score = 0.0
 
     for iteration in range(1, max_iterations + 1):
-        logger.info(f"Iteration {iteration}/{max_iterations}, sample_size={sample_size}")
+        logger.info(f"Iteration {iteration}/{max_iterations}, sample_count={sample_count}")
 
-        # Phase 1: Extract outline
-        scan_count = min(sample_size, len(lines))
-        heading_set = {
-            i for i, ln in enumerate(lines[:scan_count]) if is_heading_like(ln)
-        }
-        outline_text, toc_ranges = extract_outline(lines, heading_set, scan_count)
+        # Phase 1: Format raw elements for LLM
+        scan_count = min(sample_count, code_elements.height)
+        sample_elements = code_elements.head(scan_count)
+        raw_text = _format_raw_elements(sample_elements)
 
         # Phase 2: LLM call
         user_prompt = (
-            f"Analyze the heading structure in this legal text outline:\n\n"
-            f"{outline_text}\n\n"
-            f"The outline covers {scan_count} lines of the source document "
-            f"({len(lines)} total).\n"
-            f"Identify all heading levels, create regex patterns, and assign "
-            f"outline_line_numbers.\n"
+            f"Analyze the heading structure in these legal text elements:\n\n"
+            f"{raw_text}\n\n"
+            f"These are {scan_count} elements from the start of the document "
+            f"({code_elements.height} total).\n"
+            f"Identify which elements are headings, group by level, create regex "
+            f"patterns, and list element ids in outline_line_numbers.\n"
         )
         if error_feedback:
             feedback_text = "\n".join(f"- {e}" for e in error_feedback[:20])
@@ -584,31 +460,31 @@ def scan_headings(
             max_retries=3,
         )
 
-        # Phase 3: Evaluate on full text
-        score, errors = score_structure(lines, structure, toc_ranges)
+        # Phase 3: Evaluate on full code elements
+        score, errors = score_structure(code_elements, structure)
         logger.info(f"Iteration {iteration}: score={score:.3f}, errors={len(errors)}")
 
-        if score > best_score:
+        if score > best_score or best_structure is None:
             best_score = score
             best_structure = structure
-            best_structure.toc_line_ranges = toc_ranges
+            best_structure.toc_line_ranges = []
 
         if score >= score_threshold:
             break
 
         error_feedback = errors
-        sample_size += 200
+        sample_count += 100
 
     assert best_structure is not None
 
     # Finalize
-    verification_warnings = verify_structure(best_structure, lines, best_structure.toc_line_ranges)
+    verification_warnings = verify_structure(best_structure, code_elements)
     best_structure.outline_warnings = verification_warnings
     best_structure.quality_score = best_score
     best_structure.iterations = iteration  # type: ignore[possibly-undefined]
     if best_structure.total_levels != len(best_structure.levels):
         best_structure.total_levels = len(best_structure.levels)
-    best_structure.file_sample_size = len(lines)
+    best_structure.file_sample_size = code_elements.height
 
     return best_structure, best_score, iteration  # type: ignore[possibly-undefined]
 
