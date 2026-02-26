@@ -1,10 +1,10 @@
-"""Tests for legiscope.pipeline.parse — thin wrapper delegation."""
+"""Tests for scripts/parse.py — thin wrapper delegation."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from legiscope.pipeline import parse as pipeline_parse
+import parse as pipeline_parse
 
 
 class TestParseMain:
@@ -24,10 +24,10 @@ class TestParseMain:
 
         with (
             patch(
-                "legiscope.pipeline.parse.CodeRef.from_dvc_vars",
+                "parse.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.parse.convert_to_markdown", mock_convert),
+            patch("parse.convert_to_markdown", mock_convert),
         ):
             pipeline_parse.main()
 
@@ -47,8 +47,8 @@ class TestParseMain:
         mock_from_dvc = MagicMock()
 
         with (
-            patch("legiscope.pipeline.parse.CodeRef.from_dvc_vars", mock_from_dvc),
-            patch("legiscope.pipeline.parse.convert_to_markdown", mock_convert),
+            patch("parse.CodeRef.from_dvc_vars", mock_from_dvc),
+            patch("parse.convert_to_markdown", mock_convert),
         ):
             pipeline_parse.main()
 
@@ -71,8 +71,8 @@ class TestParseMain:
         mock_from_dvc = MagicMock()
 
         with (
-            patch("legiscope.pipeline.parse.CodeRef.from_dvc_vars", mock_from_dvc),
-            patch("legiscope.pipeline.parse.convert_to_markdown", mock_convert),
+            patch("parse.CodeRef.from_dvc_vars", mock_from_dvc),
+            patch("parse.convert_to_markdown", mock_convert),
         ):
             pipeline_parse.main()
 

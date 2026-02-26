@@ -8,9 +8,9 @@ import re
 import polars as pl
 from instructor import Instructor
 
-from legiscope.elements import split_elements
-from legiscope.find_code_start import find_code_start
-from legiscope.headings import HeadingStructure
+from legiscope.parse.elements import split_elements
+from legiscope.parse.find_code_start import find_code_start
+from legiscope.parse.headings import HeadingStructure
 
 
 # ── Constants ──────────────────────────────────────────────────────────

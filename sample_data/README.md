@@ -16,7 +16,7 @@ cp -r sample_data/IL data/laws/
    The default `params.yaml` already targets IL/WindyCity/municipal-code:
 
 ```bash
-python -m legiscope.pipeline.init
+python scripts/init.py
 ```
 
 3. Run the pipeline:

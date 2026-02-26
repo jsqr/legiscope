@@ -1,4 +1,4 @@
-"""Tests for legiscope.pipeline.index — incremental ChromaDB indexing."""
+"""Tests for scripts/index.py — incremental ChromaDB indexing."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from legiscope.pipeline import index as pipeline_index
+import index as pipeline_index
 
 
 # ---------------------------------------------------------------------------
@@ -67,19 +67,19 @@ class TestIncrementalIndexing:
 
         with (
             patch(
-                "legiscope.pipeline.index.load_params",
+                "index.load_params",
                 return_value={"embeddings": {"default_provider": "mistral"}},
             ),
             patch(
-                "legiscope.pipeline.index.chroma_db_path",
+                "index.chroma_db_path",
                 return_value=tmp_path / "chroma_db",
             ),
             patch(
-                "legiscope.pipeline.index.get_or_create_legal_collection",
+                "index.get_or_create_legal_collection",
                 return_value=collection,
             ),
-            patch("legiscope.pipeline.index.add_jurisdiction_embeddings", mock_add),
-            patch("legiscope.pipeline.index.CodeRef.from_dvc_vars") as mock_from_dvc,
+            patch("index.add_jurisdiction_embeddings", mock_add),
+            patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
         ):
             mock_from_dvc.return_value = sample_code_ref
             # Point full_data_dir at tmp_path
@@ -117,19 +117,19 @@ class TestIncrementalIndexing:
 
         with (
             patch(
-                "legiscope.pipeline.index.load_params",
+                "index.load_params",
                 return_value={"embeddings": {"default_provider": "mistral"}},
             ),
             patch(
-                "legiscope.pipeline.index.chroma_db_path",
+                "index.chroma_db_path",
                 return_value=tmp_path / "chroma_db",
             ),
             patch(
-                "legiscope.pipeline.index.get_or_create_legal_collection",
+                "index.get_or_create_legal_collection",
                 return_value=collection,
             ),
-            patch("legiscope.pipeline.index.add_jurisdiction_embeddings", mock_add),
-            patch("legiscope.pipeline.index.CodeRef.from_dvc_vars") as mock_from_dvc,
+            patch("index.add_jurisdiction_embeddings", mock_add),
+            patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
         ):
             mock_from_dvc.return_value = sample_code_ref
             type(sample_code_ref).full_data_dir = property(lambda self: tmp_path)
@@ -168,19 +168,19 @@ class TestIncrementalIndexing:
 
         with (
             patch(
-                "legiscope.pipeline.index.load_params",
+                "index.load_params",
                 return_value={"embeddings": {"default_provider": "mistral"}},
             ),
             patch(
-                "legiscope.pipeline.index.chroma_db_path",
+                "index.chroma_db_path",
                 return_value=tmp_path / "chroma_db",
             ),
             patch(
-                "legiscope.pipeline.index.get_or_create_legal_collection",
+                "index.get_or_create_legal_collection",
                 return_value=collection,
             ),
-            patch("legiscope.pipeline.index.add_jurisdiction_embeddings", mock_add),
-            patch("legiscope.pipeline.index.CodeRef.from_dvc_vars") as mock_from_dvc,
+            patch("index.add_jurisdiction_embeddings", mock_add),
+            patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
         ):
             mock_from_dvc.return_value = sample_code_ref
             type(sample_code_ref).full_data_dir = property(lambda self: tmp_path)
@@ -209,18 +209,18 @@ class TestIncrementalIndexing:
 
         with (
             patch(
-                "legiscope.pipeline.index.load_params",
+                "index.load_params",
                 return_value={"embeddings": {"default_provider": "mistral"}},
             ),
             patch(
-                "legiscope.pipeline.index.chroma_db_path",
+                "index.chroma_db_path",
                 return_value=tmp_path / "chroma_db",
             ),
             patch(
-                "legiscope.pipeline.index.get_or_create_legal_collection",
+                "index.get_or_create_legal_collection",
                 return_value=collection,
             ),
-            patch("legiscope.pipeline.index.CodeRef.from_dvc_vars") as mock_from_dvc,
+            patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
         ):
             mock_from_dvc.return_value = sample_code_ref
             type(sample_code_ref).full_data_dir = property(lambda self: tmp_path)

@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import polars as pl
 import pytest
 
 from legiscope.models import CodeRef, JurisdictionRef
+
+# Make scripts/ importable so tests can `import parse`, `import segment`, etc.
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent.parent / "scripts")
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures" / "windytown"

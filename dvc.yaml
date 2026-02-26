@@ -18,7 +18,7 @@
 #
 # Prerequisites:
 #   1. Initialise the jurisdiction (not a DVC stage):
-#        python -m legiscope.pipeline.init \
+#        python scripts/init.py \
 #          --state CA --locality LosAngeles \
 #          --code-slug municipal-code --name "LA Municipal Code"
 #   2. Place raw source files (DOCX, TXT) in data/laws/{state}/{locality}/{code_slug}/raw/
@@ -39,12 +39,12 @@ stages:
 
     parse:
         cmd: >-
-            bash scripts/dvc_python.sh -m legiscope.pipeline.parse --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh scripts/parse.py --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
             - scripts/dvc_python.sh
+            - scripts/parse.py
             - tmp/validate_import.ok
-            - src/legiscope/pipeline/parse.py
-            - src/legiscope/convert.py
+            - src/legiscope/parse
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/raw
         params:
             - jurisdiction
@@ -55,10 +55,10 @@ stages:
 
     segment:
         cmd: >-
-            bash scripts/dvc_python.sh -m legiscope.pipeline.segment --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh scripts/segment.py --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
             - scripts/dvc_python.sh
-            - src/legiscope/pipeline/segment.py
+            - scripts/segment.py
             - src/legiscope/segment.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/headings.parquet
@@ -73,10 +73,10 @@ stages:
 
     embed:
         cmd: >-
-            bash scripts/dvc_python.sh -m legiscope.pipeline.embed --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh scripts/embed.py --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
             - scripts/dvc_python.sh
-            - src/legiscope/pipeline/embed.py
+            - scripts/embed.py
             - src/legiscope/embeddings.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/segments.parquet
@@ -88,10 +88,10 @@ stages:
 
     index:
         cmd: >-
-            bash scripts/dvc_python.sh -m legiscope.pipeline.index --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
+            bash scripts/dvc_python.sh scripts/index.py --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
         deps:
             - scripts/dvc_python.sh
-            - src/legiscope/pipeline/index.py
+            - scripts/index.py
             - src/legiscope/embeddings.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/embeddings.parquet
         params:

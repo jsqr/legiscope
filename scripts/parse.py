@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m legiscope.pipeline.parse \\
+    python scripts/parse.py \\
         --state CA --locality LosAngeles --code-slug municipal-code
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import argparse
 
-from legiscope.convert import convert_to_markdown
+from legiscope.parse.convert import convert_to_markdown
 from legiscope.models import CodeRef
 
 

@@ -9,9 +9,9 @@ This package provides tools for:
 """
 
 # Core functionality
-from legiscope.convert import text2md
-from legiscope.headings import BooleanResult, HeadingLevel, HeadingStructure
-from legiscope.scan import scan_legal_text
+from legiscope.parse.convert import text2md
+from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructure
+from legiscope.parse.scan import scan_legal_text
 from legiscope.utils import ask
 from legiscope.embeddings import (
     EmbeddingIndexConfig,
