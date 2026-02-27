@@ -41,6 +41,7 @@ dependencies = [
     "rapidfuzz>=3.0.0",
     "dvc[gs]>=3",
     "pydantic-ai>=1.63.0",
+    "pandas>=3.0.1",
 ]
 
 [dependency-groups]

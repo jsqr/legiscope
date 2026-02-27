@@ -19,9 +19,9 @@ stages:
       size: 1047
     - path: src/legiscope/parse
       hash: md5
-      md5: 652dfc1d690f133413333cca828b1dc2.dir
-      size: 130635
-      nfiles: 12
+      md5: 1aa83a555a515a2287de49cf15587f17.dir
+      size: 201855
+      nfiles: 14
     - path: tmp/validate_import.ok
       hash: md5
       md5: eff5bc1ef8ec9d03e640fc4370f5eacd
@@ -50,14 +50,22 @@ stages:
           max_retries: 3
           timeout: 300
     outs:
+    - path: data/laws/IL/TestChicago/municipal-code/classified_elements.parquet
+      hash: md5
+      md5: ac6d154fce7a2414da1cf87fb3ede7f6
+      size: 113259
     - path: data/laws/IL/TestChicago/municipal-code/code.md
       hash: md5
-      md5: c66a81d48b8dc7cd381aad19f550a8e2
-      size: 560180
+      md5: 72c2eec0f965dce9638f90374628923c
+      size: 560027
     - path: data/laws/IL/TestChicago/municipal-code/headings.parquet
       hash: md5
-      md5: 8be70186512c72b5615c0863d423f5fc
-      size: 21870
+      md5: 647e6eeb98c638c838387850394607d1
+      size: 19737
+    - path: data/laws/IL/TestChicago/municipal-code/parse_diagnostics.json
+      hash: md5
+      md5: 84334da8b9a219df99a9c7240653fccd
+      size: 3778
   segment:
     cmd: python -m legiscope.pipeline.segment --state IL --locality TestChicago 
       --code-slug municipal-code
@@ -175,8 +183,8 @@ stages:
     deps:
     - path: pyproject.toml
       hash: md5
-      md5: 281105843535089764191cf36093417b
-      size: 1269
+      md5: 9f8dc415a1aae85b5da8dcdf1dc698bc
+      size: 1317
     - path: scripts/dvc_python.sh
       hash: md5
       md5: 3103089a29a967b2f0e74c718f925843

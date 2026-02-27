@@ -11,11 +11,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import yaml
 
-from legiscope.parse.display import (
-    format_score_breakdown,
-    format_structure,
-    make_batch_entry,
-)
+from legiscope.parse.display import make_batch_entry
 from legiscope.parse.elements import split_elements
 from legiscope.parse.find_code_start import find_code_start
 from legiscope.parse.headings import (
@@ -26,7 +22,13 @@ from legiscope.parse.headings import (
     _get_heading_level_obj,
     _is_heading_element,
 )
-from legiscope.parse.scan import DEFAULT_SCAN_MAX_LINES, scan_legal_text, score_structure_detailed
+from legiscope.parse.scan import (
+    DEFAULT_SCAN_MAX_LINES,
+    _per_level_quality,
+    _verify_compile_patterns,
+    scan_legal_text,
+    score_structure_detailed,
+)
 
 if TYPE_CHECKING:
     from legiscope.models import CodeRef
@@ -343,10 +345,11 @@ def _save_diagnostics(
     structure: HeadingStructure,
     input_path: str,
 ) -> None:
-    """Save parse diagnostics to ``parse_diagnostics.json`` in *code_dir*.
+    """Save parse diagnostics to ``parse_diagnostics.json`` and
+    ``classified_elements.parquet`` in *code_dir*.
 
-    Computes score breakdown, batch entry, and formatted text from the
-    already-determined *structure*.  The only LLM call is a cheap
+    Computes score breakdown, per-level quality, batch entry, and a
+    per-element classification table.  The only LLM call is a cheap
     ``find_code_start`` via the fast client.
     """
     from loguru import logger
@@ -362,20 +365,70 @@ def _save_diagnostics(
     breakdown = score_structure_detailed(elements_df, structure)
     jurisdiction_label = "/".join(code_dir.parts[-3:])
     entry = make_batch_entry(jurisdiction_label, structure, elements_df)
-    struct_text = format_structure(structure)
-    breakdown_text = format_score_breakdown(elements_df, structure)
+
+    compiled, _ = _verify_compile_patterns(structure)
+    plq = _per_level_quality(elements_df, structure, compiled)
+
+    # Serialize per_level_quality with string keys for JSON
+    plq_serializable = {str(k): v for k, v in plq.items()}
 
     diagnostics = {
         "structure": structure.model_dump(by_alias=True),
         "score_breakdown": breakdown,
         "batch_entry": entry,
-        "format_structure": struct_text,
-        "format_score_breakdown": breakdown_text,
+        "per_level_quality": plq_serializable,
     }
 
     diag_path = code_dir / "parse_diagnostics.json"
     diag_path.write_text(json.dumps(diagnostics, indent=2, default=str))
     logger.info(f"Saved parse diagnostics to {diag_path}")
+
+    # Build classified elements table
+    # Use _compile_heading_patterns for 2-tuple format used by _is_heading_element
+    compiled_for_classify = _compile_heading_patterns(structure)
+    type_label_map = {hl.level: hl.type_label for hl in structure.levels}
+
+    classified_rows: list[dict[str, Any]] = []
+    for row in elements_df.to_dicts():
+        text = row["text"]
+        is_heading, heading_level = _is_heading_element(text, compiled_for_classify)
+
+        # Check ambiguity: matched by more than one level's pattern
+        first_line = text.split("\n")[0].strip()
+        matching_levels = [lvl for lvl, pat, _ in compiled if pat.match(first_line)]
+        is_ambiguous = len(matching_levels) > 1
+
+        classification = "body"
+        if is_heading and heading_level is not None:
+            classification = type_label_map.get(heading_level, f"Level {heading_level}")
+
+        classified_rows.append({
+            "element_id": row["element_id"],
+            "start_line": row["start_line"],
+            "end_line": row["end_line"],
+            "n_lines": row["n_lines"],
+            "text": text[:200],
+            "classification": classification,
+            "heading_level": heading_level if is_heading else None,
+            "is_ambiguous": is_ambiguous,
+        })
+
+    classified_df = pl.DataFrame(
+        classified_rows,
+        schema={
+            "element_id": pl.Int64,
+            "start_line": pl.Int64,
+            "end_line": pl.Int64,
+            "n_lines": pl.Int64,
+            "text": pl.Utf8,
+            "classification": pl.Utf8,
+            "heading_level": pl.Int64,
+            "is_ambiguous": pl.Boolean,
+        },
+    )
+    parquet_path = code_dir / "classified_elements.parquet"
+    classified_df.write_parquet(parquet_path)
+    logger.info(f"Saved classified elements to {parquet_path}")
 
 
 def convert_to_markdown(code_ref: CodeRef) -> Path:
