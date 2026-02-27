@@ -40,6 +40,7 @@ dependencies = [
     "pyzmq>=27.1.0",
     "rapidfuzz>=3.0.0",
     "dvc[gs]>=3",
+    "pydantic-ai>=1.63.0",
 ]
 
 [dependency-groups]

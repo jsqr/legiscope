@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +11,13 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import yaml
 
+from legiscope.parse.display import (
+    format_score_breakdown,
+    format_structure,
+    make_batch_entry,
+)
 from legiscope.parse.elements import split_elements
+from legiscope.parse.find_code_start import find_code_start
 from legiscope.parse.headings import (
     HEADINGS_SCHEMA,
     HeadingStructure,
@@ -19,7 +26,7 @@ from legiscope.parse.headings import (
     _get_heading_level_obj,
     _is_heading_element,
 )
-from legiscope.parse.scan import DEFAULT_SCAN_MAX_LINES, scan_legal_text
+from legiscope.parse.scan import DEFAULT_SCAN_MAX_LINES, scan_legal_text, score_structure_detailed
 
 if TYPE_CHECKING:
     from legiscope.models import CodeRef
@@ -331,6 +338,46 @@ def text2md(
     headings_df.write_parquet(headings_path)
 
 
+def _save_diagnostics(
+    code_dir: Path,
+    structure: HeadingStructure,
+    input_path: str,
+) -> None:
+    """Save parse diagnostics to ``parse_diagnostics.json`` in *code_dir*.
+
+    Computes score breakdown, batch entry, and formatted text from the
+    already-determined *structure*.  The only LLM call is a cheap
+    ``find_code_start`` via the fast client.
+    """
+    from loguru import logger
+
+    from legiscope.llm_config import Config
+
+    elements_df = split_elements(input_path)
+    code_start = find_code_start(Config.get_fast_client(), elements_df)
+    elements_df = elements_df.filter(
+        pl.col("element_id") >= code_start.element_id
+    )
+
+    breakdown = score_structure_detailed(elements_df, structure)
+    jurisdiction_label = "/".join(code_dir.parts[-3:])
+    entry = make_batch_entry(jurisdiction_label, structure, elements_df)
+    struct_text = format_structure(structure)
+    breakdown_text = format_score_breakdown(elements_df, structure)
+
+    diagnostics = {
+        "structure": structure.model_dump(by_alias=True),
+        "score_breakdown": breakdown,
+        "batch_entry": entry,
+        "format_structure": struct_text,
+        "format_score_breakdown": breakdown_text,
+    }
+
+    diag_path = code_dir / "parse_diagnostics.json"
+    diag_path.write_text(json.dumps(diagnostics, indent=2, default=str))
+    logger.info(f"Saved parse diagnostics to {diag_path}")
+
+
 def convert_to_markdown(code_ref: CodeRef) -> Path:
     """Convert a legal code's raw text to structured Markdown.
 
@@ -398,6 +445,9 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
         state=code_ref.jurisdiction.state,
         locality=code_ref.jurisdiction.locality or "",
     )
+
+    # Save parse diagnostics alongside code.md
+    _save_diagnostics(code_dir, structure, str(input_path))
 
     logger.info(f"Converted {code_ref.code_id}: {input_path} -> {output_path}")
     return output_path

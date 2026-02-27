@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections import Counter
+from typing import TypedDict
 
 import polars as pl
 from instructor import Instructor
@@ -13,6 +14,22 @@ from pydantic import BaseModel
 from legiscope.parse.elements import split_elements
 from legiscope.parse.find_code_start import find_code_start
 from legiscope.parse.headings import HeadingStructure
+
+
+class ScoreBreakdown(TypedDict):
+    """Detailed breakdown of heading structure quality score components."""
+
+    coverage: float
+    pattern_validity: float
+    sibling_ordering: float
+    ambiguity: float
+    parent_child: float
+    density: float
+    total: float
+    matched_count: int
+    ambiguous_count: int
+    total_elements: int
+    errors: list[str]
 
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -450,17 +467,32 @@ def _is_literal_pattern(pat_str: str) -> bool:
     return not any(c in meta_chars for c in s)
 
 
-def score_structure(
+def score_structure_detailed(
     elements_df: pl.DataFrame,
     structure: HeadingStructure,
-) -> tuple[float, list[str]]:
-    """Compute a 0.0-1.0 quality score and return error messages."""
+) -> ScoreBreakdown:
+    """Compute a detailed quality score breakdown for a heading structure.
+
+    Returns a ScoreBreakdown with individual component scores, counts, and errors.
+    """
     compiled, compile_warnings = _verify_compile_patterns(structure)
     errors = list(compile_warnings)
 
     # If all patterns failed to compile, score is 0
     if compile_warnings and not compiled:
-        return 0.0, errors
+        return ScoreBreakdown(
+            coverage=0.0,
+            pattern_validity=0.0,
+            sibling_ordering=0.0,
+            ambiguity=0.0,
+            parent_child=0.0,
+            density=0.0,
+            total=0.0,
+            matched_count=0,
+            ambiguous_count=0,
+            total_elements=0,
+            errors=errors,
+        )
 
     # Check 5a: Duplicate level numbers
     level_numbers = [hl.level for hl in structure.levels]
@@ -612,7 +644,7 @@ def score_structure(
     completeness_warnings = _check_completeness(elements_df, compiled)
     errors.extend(completeness_warnings)
 
-    score = (
+    total = (
         0.35 * coverage
         + 0.20 * pattern_validity
         + 0.15 * sibling_score
@@ -621,7 +653,28 @@ def score_structure(
         + 0.10 * density_score
     )
 
-    return score, errors
+    return ScoreBreakdown(
+        coverage=coverage,
+        pattern_validity=pattern_validity,
+        sibling_ordering=sibling_score,
+        ambiguity=ambiguity_score,
+        parent_child=pc_score,
+        density=density_score,
+        total=total,
+        matched_count=matched_count,
+        ambiguous_count=ambiguous_count,
+        total_elements=total_elements,
+        errors=errors,
+    )
+
+
+def score_structure(
+    elements_df: pl.DataFrame,
+    structure: HeadingStructure,
+) -> tuple[float, list[str]]:
+    """Compute a 0.0-1.0 quality score and return error messages."""
+    breakdown = score_structure_detailed(elements_df, structure)
+    return breakdown["total"], breakdown["errors"]
 
 
 # ── Error prioritization ──────────────────────────────────────────────
