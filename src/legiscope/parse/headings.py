@@ -74,6 +74,18 @@ class HeadingStructure(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+    @model_validator(mode="after")
+    def _validate_unique_levels(self) -> "HeadingStructure":
+        seen: dict[int, int] = {}
+        for hl in self.levels:
+            if hl.level in seen:
+                raise ValueError(
+                    f"Duplicate level number {hl.level}. "
+                    f"Each level number must be used exactly once."
+                )
+            seen[hl.level] = 1
+        return self
+
 
 # ── Heading pattern helpers ────────────────────────────────────────────
 
