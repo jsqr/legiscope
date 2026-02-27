@@ -27,13 +27,13 @@ if [ ! -d "$raw_dir" ]; then
 fi
 
 # Extract jurisdiction info from path for logging
-# Format: data/laws/STATE/LOCALITY/CODE_SLUG/raw
-path_parts=(${raw_dir//\// })
-state=${path_parts[2]}
-locality=${path_parts[3]}
-code_slug=${path_parts[4]}
+# Works with any path ending in .../STATE/LOCALITY/CODE_SLUG/raw
+code_dir_tmp=$(dirname "$raw_dir")
+code_slug=$(basename "$code_dir_tmp")
+locality=$(basename "$(dirname "$code_dir_tmp")")
+state=$(basename "$(dirname "$(dirname "$code_dir_tmp")")")
 
-echo "Converting DOCX files for $state-$locality ($code_slug)"
+echo "Converting DOCX files for $state/$locality ($code_slug)"
 
 # Output file goes in the code directory (parent of raw)
 code_dir=$(dirname "$raw_dir")

@@ -20,7 +20,7 @@
 #   1. Initialise the jurisdiction (not a DVC stage):
 #        python scripts/init.py \
 #          --state CA --locality LosAngeles \
-#          --code-slug municipal-code --name "LA Municipal Code"
+#          --code-slug municipal-code --code-name "LA Municipal Code"
 #   2. Place raw source files (DOCX, TXT) in data/laws/{state}/{locality}/{code_slug}/raw/
 #   3. If source file is DOCX, run conversion script to produce TXT:
 #        uv run scripts/convert_docx.sh "data/laws/CA/LosAngeles/municipal-code/raw"

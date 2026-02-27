@@ -5,6 +5,10 @@ Usage::
     # All defaults from params.yaml
     python scripts/init.py
 
+    # Override jurisdiction and code name
+    python scripts/init.py --state CA --locality LosAngeles \\
+        --code-slug municipal-code --code-name "LA Municipal Code"
+
     # Override code type or jurisdiction display name
     python scripts/init.py --code-type zoning
 """
@@ -105,19 +109,15 @@ def _append_code(code_ref: CodeRef, name: str, code_type: str) -> None:
 
 def main() -> None:
     """Create jurisdiction/code directory structure and update registries."""
-    params = load_params()
-    jur = params.get("jurisdiction", {})
-
-    code_name = jur.get("code_name")
-    if not code_name:
-        raise SystemExit("Error: jurisdiction.code_name must be set in params.yaml")
-
-    code_ref = CodeRef.from_params(params)
-
     parser = argparse.ArgumentParser(
         description="Initialize directory structure for a legal code",
-        epilog="Jurisdiction is read from params.yaml.",
+        epilog="Jurisdiction defaults are read from params.yaml; "
+        "use --state/--locality/--code-slug/--code-name to override.",
     )
+    parser.add_argument("--state", default=None, help="State abbreviation (e.g. IL)")
+    parser.add_argument("--locality", default=None, help="Locality name (e.g. TestChicago)")
+    parser.add_argument("--code-slug", default=None, help="Code slug (e.g. municipal-code)")
+    parser.add_argument("--code-name", default=None, help="Code display name")
     parser.add_argument(
         "--code-type", default="municipal", help="Code type (default: municipal)"
     )
@@ -127,6 +127,28 @@ def main() -> None:
         help="Display name for jurisdiction (auto-generated if omitted)",
     )
     args = parser.parse_args()
+
+    params = load_params()
+    jur = params.get("jurisdiction", {})
+
+    # CLI args override params.yaml values
+    if args.state is not None:
+        jur["state"] = args.state
+    if args.locality is not None:
+        jur["locality"] = args.locality
+    if args.code_slug is not None:
+        jur["code_slug"] = args.code_slug
+    if args.code_name is not None:
+        jur["code_name"] = args.code_name
+
+    code_name = jur.get("code_name")
+    if not code_name:
+        raise SystemExit(
+            "Error: code_name must be set via --code-name or jurisdiction.code_name in params.yaml"
+        )
+
+    params["jurisdiction"] = jur
+    code_ref = CodeRef.from_params(params)
 
     jurisdiction_name = args.jurisdiction_name
     if jurisdiction_name is None:
