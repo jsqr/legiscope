@@ -1,12 +1,15 @@
 # Pipeline parameters tracked by DVC
 # Changes here trigger pipeline reruns
 
+# DOCX-to-TXT conversion
+converter: pandoc          # textutil (fast, macOS-only) | pandoc (better formatting)
+
 # Jurisdiction targeting (override via: dvc exp run -S jurisdiction.state=CA ...)
 jurisdiction:
   state: IL
   locality: TestChicago
   code_slug: municipal-code
-  code_name: "TestChicago Municipal Code"
+  code_name: TestChicago Municipal Code
 
 # LLM configuration
 llm:
@@ -66,7 +69,7 @@ retrieval:
 
 # Benchmark evaluation settings
 benchmark:
-  series_title: "DPL_2025_Consolidated"
+  series_title: DPL_2025_Consolidated
 
 # Query: LLM analysis of retrieved context (uses powerful model)
 query:

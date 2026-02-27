@@ -1,30 +1,40 @@
 schema: '2.0'
 stages:
   parse:
-    cmd: python -m legiscope.pipeline.parse --state IL --locality TestChicago 
-      --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/parse.py --state IL --locality 
+      TestChicago --code-slug municipal-code
     deps:
     - path: data/laws/IL/TestChicago/municipal-code/raw
       hash: md5
       md5: 634c549fb8f1d6ac8e45bb5eccda3e73.dir
       size: 217516
       nfiles: 1
-    - path: src/legiscope/convert.py
+    - path: scripts/dvc_python.sh
       hash: md5
-      md5: 509bc521bb07d859ed8748ec0225caf6
-      size: 28742
-    - path: src/legiscope/pipeline/parse.py
+      md5: 3103089a29a967b2f0e74c718f925843
+      size: 585
+    - path: scripts/parse.py
       hash: md5
-      md5: bdfbb14ba68c43126adffe4f4e27d359
-      size: 1052
+      md5: 6c5baa80273e070d13f422f75218f21e
+      size: 1047
+    - path: src/legiscope/parse
+      hash: md5
+      md5: 8fd5200d07186e6d71bd18bdfa50d4b1.dir
+      size: 114193
+      nfiles: 12
+    - path: tmp/validate_import.ok
+      hash: md5
+      md5: eff5bc1ef8ec9d03e640fc4370f5eacd
+      size: 3
     params:
       params.yaml:
         jurisdiction:
           state: IL
           locality: TestChicago
           code_slug: municipal-code
+          code_name: TestChicago Municipal Code
         llm:
-          default_provider: ollama
+          default_provider: mistral
           providers:
             openai:
               fast: gpt-4.1-mini
@@ -33,8 +43,8 @@ stages:
               fast: mistral-small-2506
               powerful: mistral-large-2512
             ollama:
-              fast: gemma3:4b
-              powerful: gemma3:12b-8k
+              fast: qwen3:8b
+              powerful: qwen3:30b
               num_ctx:
           temperature: 0.0
           max_retries: 3
@@ -42,12 +52,12 @@ stages:
     outs:
     - path: data/laws/IL/TestChicago/municipal-code/code.md
       hash: md5
-      md5: 67c1b19bbd844ea6bc0f63193cef7ce4
-      size: 564069
+      md5: baa6e62ba385f11e9cf592d66e860b81
+      size: 28811
     - path: data/laws/IL/TestChicago/municipal-code/headings.parquet
       hash: md5
-      md5: 702c7f0f44ff1ff6669e44707992eb05
-      size: 52250
+      md5: ed90299df9e1ff1ac7dc2a98a603b316
+      size: 15414
   segment:
     cmd: python -m legiscope.pipeline.segment --state IL --locality TestChicago 
       --code-slug municipal-code
@@ -159,3 +169,24 @@ stages:
           locality: TestChicago
           code_slug: municipal-code
         retrieval.distance_metric: l2
+  validate:
+    cmd: "bash -c 'bash scripts/dvc_python.sh -c \"import legiscope; print(f\\\"Package
+      import works: {legiscope.__file__}\\\")\" && mkdir -p tmp && echo ok > tmp/validate_import.ok'"
+    deps:
+    - path: pyproject.toml
+      hash: md5
+      md5: 281105843535089764191cf36093417b
+      size: 1269
+    - path: scripts/dvc_python.sh
+      hash: md5
+      md5: 3103089a29a967b2f0e74c718f925843
+      size: 585
+    - path: src/legiscope/__init__.py
+      hash: md5
+      md5: bf4d66646135a66911a38c3c6f21f58c
+      size: 2445
+    outs:
+    - path: tmp/validate_import.ok
+      hash: md5
+      md5: eff5bc1ef8ec9d03e640fc4370f5eacd
+      size: 3

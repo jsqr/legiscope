@@ -1,23 +1,50 @@
 #!/bin/bash
 
-# Detect best available converter (textutil on macOS is ~100x faster than pandoc)
-if command -v textutil &> /dev/null; then
-    CONVERTER="textutil"
-    echo "Using textutil (macOS native) for fast conversion"
-elif command -v pandoc &> /dev/null; then
-    CONVERTER="pandoc"
-    echo "Using pandoc for conversion (slower for large files)"
+# Parse optional --converter flag
+CONVERTER=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --converter)
+            CONVERTER="$2"
+            shift 2
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
+
+# If --converter was given, validate it; otherwise auto-detect
+if [[ -n "$CONVERTER" ]]; then
+    case "$CONVERTER" in
+        textutil|pandoc) ;;
+        *) echo "Error: unknown converter '$CONVERTER' (expected textutil or pandoc)" >&2; exit 1 ;;
+    esac
+    if ! command -v "$CONVERTER" &> /dev/null; then
+        echo "Error: $CONVERTER is not installed" >&2
+        exit 1
+    fi
+    echo "Using $CONVERTER (requested via --converter)"
 else
-    echo "No DOCX converter found. Install pandoc: brew install pandoc"
-    exit 1
+    # Auto-detect best available converter (textutil on macOS is ~100x faster than pandoc)
+    if command -v textutil &> /dev/null; then
+        CONVERTER="textutil"
+        echo "Using textutil (macOS native) for fast conversion"
+    elif command -v pandoc &> /dev/null; then
+        CONVERTER="pandoc"
+        echo "Using pandoc for conversion (slower for large files)"
+    else
+        echo "No DOCX converter found. Install pandoc: brew install pandoc"
+        exit 1
+    fi
 fi
 
 # New format: expect full path to raw directory
 raw_dir=$1
 
 if [ -z "$raw_dir" ]; then
-    echo "Usage: $0 <raw_directory_path>"
-    echo "Example: $0 data/laws/IL/Springfield/municipal-code/raw"
+    echo "Usage: $0 [--converter textutil|pandoc] <raw_directory_path>"
+    echo "Example: $0 --converter pandoc data/laws/IL/Springfield/municipal-code/raw"
     exit 1
 fi
 

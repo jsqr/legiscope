@@ -50,6 +50,13 @@ fi
 
 export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+# Read converter preference from params.yaml (if set)
+CONVERTER=$("$PYTHON_BIN" -c "
+import yaml, pathlib
+p = yaml.safe_load(pathlib.Path('params.yaml').read_text())
+print(p.get('converter', ''))
+" 2>/dev/null)
+
 passed=0
 failed=0
 failed_list=()
@@ -78,7 +85,7 @@ for raw_dir in sample_data/*//*/*/raw; do
 
     if [[ "$DRY_RUN" == true ]]; then
         echo "  [dry-run] Would copy sample_data/${state}/ -> data/laws/${state}/"
-        echo "  [dry-run] Would convert DOCX in ${data_dir}/raw/"
+        echo "  [dry-run] Would convert DOCX in ${data_dir}/raw/ (converter=${CONVERTER:-auto})"
         echo "  [dry-run] Would init jurisdiction"
         echo "  [dry-run] Would run: dvc exp run -S ... parse"
         continue
@@ -91,7 +98,7 @@ for raw_dir in sample_data/*//*/*/raw; do
 
     # 2. Convert DOCX -> code.txt
     echo "→ Converting DOCX files"
-    bash scripts/convert_docx.sh "${data_dir}/raw"
+    bash scripts/convert_docx.sh ${CONVERTER:+--converter "$CONVERTER"} "${data_dir}/raw"
 
     # 3. Initialize jurisdiction
     echo "→ Initializing jurisdiction"
