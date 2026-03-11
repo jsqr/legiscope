@@ -6,7 +6,7 @@ from pathlib import Path
 
 import polars as pl
 
-from legiscope.convert import HEADINGS_SCHEMA
+from legiscope.headings import HEADINGS_SCHEMA
 from legiscope.models import CodeRef, JurisdictionRef
 from legiscope.segment import (
     add_parent_relationships,

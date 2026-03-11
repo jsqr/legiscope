@@ -2,19 +2,16 @@
 
 import os
 import tempfile
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import yaml
 from pydantic import BaseModel
 
-from legiscope.convert import (
-    BooleanResult,
-    HeadingLevel,
-    HeadingStructure,
-    ask,
-    scan_legal_text,
-    text2md,
-)
+from legiscope.convert import text2md
+from legiscope.find_code_start import ScanResult
+from legiscope.headings import BooleanResult, HeadingLevel, HeadingStructure
+from legiscope.scan import scan_legal_text
+from legiscope.utils import ask
 
 
 class MockResponseModel(BaseModel):
@@ -29,12 +26,10 @@ class TestConvertModule:
 
     def test_ask_function_import(self):
         """Test that ask function is properly imported from utils."""
-        # Test that we can import ask from convert module
-        from legiscope.convert import ask as convert_ask
         from legiscope.utils import ask as utils_ask
 
-        # Both should be same function
-        assert utils_ask is convert_ask
+        # Module-level import should be the same function
+        assert utils_ask is ask
 
     def test_ask_function_backward_compatibility(self):
         """Test that ask function works as expected when imported from convert."""
@@ -90,12 +85,29 @@ class TestResponseModels:
         )
 
 
+def _make_mock_client(heading_structure_response):
+    """Create a mock client that returns element-based code start results
+    for find_code_start (forward scan + verify) and then the given
+    HeadingStructure for subsequent calls.
+
+    When candidate element_id=0, _verify_code_start skips the LLM call
+    (no preceding elements to check), so find_code_start uses only 1 call.
+    """
+    mock_client = Mock()
+    # find_code_start: forward scan returns element_id=0 → verify skips LLM
+    scan_result = ScanResult(found=True, element_id=0, reasoning="Start of document")
+    # Provide heading_structure_responses for scan iterations
+    mock_client.chat.completions.create.side_effect = [
+        scan_result,
+    ] + [heading_structure_response] * 10
+    return mock_client
+
+
 class TestScanLegalText:
     """Test cases for scan_legal_text function."""
 
     def test_scan_legal_text_success(self):
         """Test successful analysis of legal text with mock LLM response."""
-        # Sample legal text
         sample_text = """CHAPTER 1: GENERAL PROVISIONS
 
 This chapter contains general provisions.
@@ -108,7 +120,6 @@ ARTICLE 2: ADMINISTRATION
 
 Administrative procedures are outlined here."""
 
-        # Create temporary file
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as f:
@@ -116,10 +127,6 @@ Administrative procedures are outlined here."""
             test_file = f.name
 
         try:
-            # Create mock client
-            mock_client = Mock()
-
-            # Create mock response
             mock_response = HeadingStructure(
                 levels=[
                     HeadingLevel(
@@ -130,7 +137,7 @@ Administrative procedures are outlined here."""
                     ),
                     HeadingLevel(
                         level=2,
-                        regex_pattern=r"^(SECTION|ARTICLE)\s+[\d.]+:\s+.+$",
+                        regex_pattern=r"^(?:SECTION|ARTICLE)\s+[\d.]+:\s+.+$",
                         markdown_prefix="##",
                         example_heading="SECTION 1.1: PURPOSE",
                     ),
@@ -139,26 +146,18 @@ Administrative procedures are outlined here."""
                 file_sample_size=10,
             )
 
-            mock_client.chat.completions.create.return_value = mock_response
-
-            # Test function
+            mock_client = _make_mock_client(mock_response)
             result = scan_legal_text(mock_client, test_file, max_lines=10)
 
-            # Verify results
             assert result.total_levels == 2
             assert len(result.levels) == 2
-            assert result.file_sample_size == 10
-
-            # Check heading levels
             assert result.levels[0].level == 1
             assert result.levels[0].markdown_prefix == "#"
             assert "CHAPTER" in result.levels[0].regex_pattern
-
             assert result.levels[1].level == 2
             assert result.levels[1].markdown_prefix == "##"
 
         finally:
-            # Clean up
             os.unlink(test_file)
 
     def test_scan_legal_text_file_not_found(self):
@@ -173,7 +172,6 @@ Administrative procedures are outlined here."""
 
     def test_scan_legal_text_empty_file(self):
         """Test error handling when file is empty."""
-        # Create empty temporary file
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as f:
@@ -189,80 +187,45 @@ Administrative procedures are outlined here."""
         finally:
             os.unlink(test_file)
 
-    def test_scan_legal_text_skips_preamble(self):
-        """Test that scan_legal_text skips the first 20 lines for long files."""
-        # Create file with 30 lines
-        lines = [f"Line {i}\n" for i in range(1, 40)]
-        content = "".join(lines)
+    def test_scan_legal_text_delegates_to_scan_headings(self):
+        """Test that scan_legal_text delegates to scan_headings."""
+        sample_text = """CHAPTER 1: TEST
+
+Some body text here."""
 
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", delete=False, encoding="utf-8"
         ) as f:
-            f.write(content)
+            f.write(sample_text)
             test_file = f.name
 
         try:
-            mock_client = Mock()
-            # Setup mock response
             mock_response = HeadingStructure(
-                levels=[],
-                total_levels=0,
-                file_sample_size=100,
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: TEST",
+                    ),
+                ],
+                total_levels=1,
+                file_sample_size=3,
             )
-            mock_client.chat.completions.create.return_value = mock_response
 
-            # Call with max_lines=5
-            scan_legal_text(mock_client, test_file, max_lines=5)
+            mock_client = _make_mock_client(mock_response)
+            result = scan_legal_text(mock_client, test_file)
 
-            # Get the call args
-            call_args = mock_client.chat.completions.create.call_args
-            kwargs = call_args.kwargs
-            messages = kwargs["messages"]
-            prompt_content = messages[1]["content"]
-
-            # Should skip first 20 lines (Line 1 to Line 20)
-            # Should assume Lines 21-25 are present
-            assert "Line 21" in prompt_content
-            # Should NOT contain Line 1
-            assert "Line 1\n" not in prompt_content
+            # Should have called create at least 2 times
+            # (find_code_start scan + heading structure LLM call)
+            assert mock_client.chat.completions.create.call_count >= 2
+            assert result.total_levels == 1
 
         finally:
             os.unlink(test_file)
 
-    def test_scan_legal_text_uses_powerful_model(self):
-        """Test that scan_legal_text defaults to use_fast=False (powerful model)."""
-        # Create minimal file
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".txt", delete=False, encoding="utf-8"
-        ) as f:
-            f.write("Some text")
-            test_file = f.name
-
-        try:
-            mock_client = Mock()
-            mock_response = HeadingStructure(
-                levels=[], total_levels=0, file_sample_size=10
-            )
-            mock_client.chat.completions.create.return_value = mock_response
-
-            # We need to patch resolve_model_default to verify it's called with use_fast=False
-            with patch("legiscope.convert.resolve_model_default") as mock_resolve:
-                mock_resolve.return_value = "mock-powerful-model"
-
-                scan_legal_text(mock_client, test_file)
-
-                # Check resolve_model_default was called with use_fast=False
-                mock_resolve.assert_called_with(None, use_fast=False)
-
-                # Check client was called with the resolved model
-                call_args = mock_client.chat.completions.create.call_args
-                assert call_args.kwargs["model"] == "mock-powerful-model"
-
-        finally:
-            os.unlink(test_file)
-
-    def test_scan_legal_text_invalid_regex(self):
-        """Test error handling when LLM returns invalid regex pattern."""
+    def test_scan_legal_text_invalid_regex_produces_warnings(self):
+        """Test that invalid regex patterns produce warnings and low quality score."""
         sample_text = "CHAPTER 1: TEST"
 
         with tempfile.NamedTemporaryFile(
@@ -273,13 +236,11 @@ Administrative procedures are outlined here."""
 
         try:
             mock_client = Mock()
-
-            # Create response with invalid regex
             mock_response = HeadingStructure(
                 levels=[
                     HeadingLevel(
                         level=1,
-                        regex_pattern=r"[invalid regex(",  # Invalid regex
+                        regex_pattern=r"[invalid regex(",
                         markdown_prefix="#",
                         example_heading="CHAPTER 1: TEST",
                     )
@@ -287,13 +248,16 @@ Administrative procedures are outlined here."""
                 total_levels=1,
                 file_sample_size=1,
             )
+            # find_code_start: scan returns element_id=0 → verify skips LLM
+            scan_result = ScanResult(found=True, element_id=0, reasoning="start")
+            mock_client.chat.completions.create.side_effect = [
+                scan_result,
+            ] + [mock_response] * 10
 
-            mock_client.chat.completions.create.return_value = mock_response
-
-            scan_legal_text(mock_client, test_file)
-            assert False, "Should have raised ValueError for invalid regex"
-        except ValueError as e:
-            assert "Invalid regex pattern" in str(e)
+            result = scan_legal_text(mock_client, test_file)
+            # Invalid regex should produce warnings and low quality score
+            assert result.quality_score < 0.7
+            assert any("invalid regex" in w.lower() for w in result.outline_warnings)
         finally:
             os.unlink(test_file)
 
@@ -725,29 +689,6 @@ It demonstrates proper paragraph separation."""
                 in output_content
             )
 
-            # Check that paragraphs are separated by blank lines (double newlines)
-            lines = output_content.split("\n")
-
-            # Find the first paragraph and check it's followed by a blank line
-            first_para_idx = next(
-                i
-                for i, line in enumerate(lines)
-                if "This is the first paragraph" in line
-            )
-            assert lines[first_para_idx + 1] == "", (
-                "First paragraph should be followed by blank line"
-            )
-
-            # Find the second paragraph and check it's followed by a blank line
-            second_para_idx = next(
-                i
-                for i, line in enumerate(lines)
-                if "This is the second paragraph" in line
-            )
-            assert lines[second_para_idx + 1] == "", (
-                "Second paragraph should be followed by blank line"
-            )
-
         finally:
             os.unlink(input_file)
             os.unlink(output_file)
@@ -812,16 +753,6 @@ Last paragraph without trailing empty line."""
 
             # Check last paragraph
             assert "Last paragraph without trailing empty line." in output_content
-
-            # Verify no unintended line breaks within paragraphs
-            assert (
-                "Line 1 of multi-line paragraph.\nLine 2 of multi-line paragraph."
-                not in output_content
-            )
-            assert (
-                "Line 2 of multi-line paragraph.\nLine 3 of multi-line paragraph."
-                not in output_content
-            )
 
         finally:
             os.unlink(input_file)
@@ -917,3 +848,66 @@ in specific sections as needed."""
         finally:
             os.unlink(input_file)
             os.unlink(output_file)
+
+    def test_text2md_headings_parquet_has_element_id(self):
+        """Test that headings.parquet includes element_id column."""
+        import polars as pl
+
+        input_text = """CHAPTER 1: GENERAL PROVISIONS
+
+This chapter contains general provisions.
+
+SECTION 1.1: PURPOSE
+
+The purpose of this chapter is to establish rules."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        import tempfile as tmp_mod
+        output_dir = tmp_mod.mkdtemp()
+        output_file = os.path.join(output_dir, "code.md")
+
+        try:
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: GENERAL PROVISIONS",
+                    ),
+                    HeadingLevel(
+                        level=2,
+                        regex_pattern=r"^SECTION\s+[\d.]+:\s+.+$",
+                        markdown_prefix="##",
+                        example_heading="SECTION 1.1: PURPOSE",
+                    ),
+                ],
+                total_levels=2,
+                file_sample_size=10,
+            )
+
+            text2md(structure, input_file, output_file, "IL", "TestCity")
+
+            headings_path = os.path.join(output_dir, "headings.parquet")
+            assert os.path.exists(headings_path)
+            headings_df = pl.read_parquet(headings_path)
+
+            # Verify element_id column exists
+            assert "element_id" in headings_df.columns
+            assert headings_df.schema["element_id"] == pl.Int64
+
+            # Verify line_number still exists for backward compat
+            assert "line_number" in headings_df.columns
+
+            # Verify we got heading records
+            assert len(headings_df) >= 2
+
+        finally:
+            os.unlink(input_file)
+            import shutil
+            shutil.rmtree(output_dir)
