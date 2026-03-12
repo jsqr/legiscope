@@ -2,7 +2,7 @@
 
 Usage::
 
-    python -m legiscope.pipeline.embed \\
+    python scripts/embed.py \\
         --state CA --locality LosAngeles --code-slug municipal-code
 """
 

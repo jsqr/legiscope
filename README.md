@@ -46,7 +46,7 @@ _See [Configuration Files](#configuration-files) for details._
 
    ```bash
    # Reads jurisdiction from params.yaml
-   python -m legiscope.pipeline.init
+   python scripts/init.py
    ```
 
 3. **Place raw files** in `data/laws/CA/LosAngeles/municipal-code/raw/`
@@ -209,24 +209,20 @@ read from `params.yaml`; paths are read from `config.yaml`.
 
 ## Scripts and Modules
 
-### Pipeline Package (DVC stages)
+### DVC Stage Scripts
 
-- `legiscope.pipeline.init` — Initialize jurisdiction (not a DVC stage; run directly)
-- `legiscope.pipeline.parse` — Convert raw files to structured Markdown
-- `legiscope.pipeline.segment` — Segment Markdown into sections and segments
-- `legiscope.pipeline.embed` — Generate embedding vectors
-- `legiscope.pipeline.index` — Build ChromaDB search index
+- `scripts/init.py` — Initialize jurisdiction (not a DVC stage; run directly)
+- `scripts/parse.py` — Convert raw files to structured Markdown
+- `scripts/segment.py` — Segment Markdown into sections and segments
+- `scripts/embed.py` — Generate embedding vectors
+- `scripts/index.py` — Build ChromaDB search index
 
-### Scripts
+### Other Scripts
 
 - `scripts/dvc_repro.sh` — Wrapper around `dvc exp run` for running the pipeline
 - `scripts/run_queries.py` — Run batch queries against legal code database
 - `coep/scripts/benchmark_pipeline.py` — COEP benchmarking workflow
 - `scripts/convert_docx.sh` — Convert DOCX files to plain text using pandoc
-- `scripts/pipeline_init.sh` — *(deprecated: use `legiscope.pipeline.init`)*
-- `scripts/pipeline_parse.sh` — *(deprecated: use `dvc_repro.sh`)*
-- `scripts/pipeline_process.sh` — *(deprecated: use `dvc_repro.sh`)*
-- `scripts/pipeline_query.sh` — *(deprecated: use `run_queries.py`)*
 
 ### Notebooks
 

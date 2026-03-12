@@ -301,11 +301,11 @@ Reads jurisdiction from `params.yaml`:
 
 ```bash
 # Uses jurisdiction.state/locality/code_slug/code_name from params.yaml
-python -m legiscope.pipeline.init
+python scripts/init.py
 
 # Override code type or jurisdiction display name
-python -m legiscope.pipeline.init --code-type zoning
-python -m legiscope.pipeline.init --jurisdiction-name "City of LA"
+python scripts/init.py --code-type zoning
+python scripts/init.py --jurisdiction-name "City of LA"
 ```
 
 #### Run the pipeline
@@ -358,36 +358,32 @@ uv run python scripts/run_queries.py
 .
 ├── src/
 │   └── legiscope/       # Main package source code
-│       ├── pipeline/        # DVC stage modules
-│       │   ├── init.py      # Initialize jurisdiction (not a DVC stage)
-│       │   ├── parse.py     # Parse raw files to Markdown
-│       │   ├── segment.py   # Segment Markdown into sections
-│       │   ├── embed.py     # Generate embedding vectors
-│       │   └── index.py     # Build ChromaDB search index
+│       ├── parse/           # Parse stage: raw text → structured Markdown
+│       │   ├── convert.py       # Markdown conversion and frontmatter
+│       │   ├── scan.py          # LLM heading scanning and verification
+│       │   ├── headings.py      # Heading models and pattern helpers
+│       │   ├── elements.py      # Raw text element splitting
+│       │   └── find_code_start.py  # Locate start of code proper
 │       ├── config.py        # Infrastructure configuration (config.yaml)
 │       ├── params.py        # DVC params.yaml loader
 │       ├── models.py        # Data models (JurisdictionRef, CodeRef, schema constants)
 │       ├── llm_config.py    # LLM configuration and client management
-│       ├── convert.py       # Conversion utilities and response models
 │       ├── utils.py         # Core utility functions
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
 │       ├── segment.py       # Text segmentation utilities
 │       └── query.py         # Legal query processing with structured responses
 ├── tests/               # Test files
-├── scripts/             # Utility scripts
+├── scripts/             # DVC stage entry-point scripts and utilities
 │   ├── dvc_repro.sh           # DVC pipeline wrapper (primary interface)
+│   ├── dvc_python.sh          # Shared Python runner for DVC stages
+│   ├── init.py                # Initialize jurisdiction (not a DVC stage)
+│   ├── parse.py               # Parse raw files to Markdown
+│   ├── segment.py             # Segment Markdown into sections
+│   ├── embed.py               # Generate embedding vectors
+│   ├── index.py               # Build ChromaDB search index
 │   ├── run_queries.py         # Batch query execution
-│   ├── pipeline_init.sh       # (deprecated) Initialize jurisdiction
-│   ├── pipeline_parse.sh      # (deprecated) Parse raw files to Markdown
-│   ├── pipeline_process.sh    # (deprecated) Create embeddings and index
-│   ├── pipeline_query.sh      # (deprecated) Run queries
-│   ├── create_jurisdiction.py # (deprecated) Register jurisdiction
-│   ├── convert_to_markdown.py # (deprecated) Convert raw text to Markdown
-│   ├── segment_legal_code.py  # (deprecated) Segment Markdown
-│   ├── create_embeddings.py   # (deprecated) Generate embeddings
-│   ├── build_chroma_index.py  # (deprecated) Build ChromaDB index
-│   └── ...
+│   └── convert_docx.sh        # Convert DOCX to TXT
 ├── coep/
 │   ├── __init__.py
 │   ├── src/

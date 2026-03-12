@@ -166,30 +166,30 @@ class TestDvcPipelineCli:
         assert "usage" in result.stdout.lower()
 
     def test_pipeline_modules_help(self):
-        """Each pipeline module accepts --help without error."""
+        """Each pipeline script accepts --help without error."""
         for module in PIPELINE_MODULES:
             result = subprocess.run(
-                ["python", "-m", f"legiscope.pipeline.{module}", "--help"],
+                ["python", f"scripts/{module}.py", "--help"],
                 capture_output=True,
                 text=True,
                 cwd=PROJECT_ROOT,
                 env=PYTHONPATH_ENV,
             )
             assert result.returncode == 0, (
-                f"python -m legiscope.pipeline.{module} --help failed "
+                f"python scripts/{module}.py --help failed "
                 f"(rc={result.returncode}):\nstderr: {result.stderr}"
             )
 
     def test_pipeline_init_module_help(self):
-        """The init module (not a DVC stage) also accepts --help."""
+        """The init script (not a DVC stage) also accepts --help."""
         result = subprocess.run(
-            ["python", "-m", "legiscope.pipeline.init", "--help"],
+            ["python", "scripts/init.py", "--help"],
             capture_output=True,
             text=True,
             cwd=PROJECT_ROOT,
             env=PYTHONPATH_ENV,
         )
         assert result.returncode == 0, (
-            f"python -m legiscope.pipeline.init --help failed "
+            f"python scripts/init.py --help failed "
             f"(rc={result.returncode}):\nstderr: {result.stderr}"
         )

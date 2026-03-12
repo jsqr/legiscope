@@ -3,10 +3,10 @@
 Usage::
 
     # All defaults from params.yaml
-    python -m legiscope.pipeline.init
+    python scripts/init.py
 
     # Override code type or jurisdiction display name
-    python -m legiscope.pipeline.init --code-type zoning
+    python scripts/init.py --code-type zoning
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Tests for legiscope.pipeline.embed — file checks and delegation."""
+"""Tests for scripts/embed.py — file checks and delegation."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import polars as pl
 import pytest
 
-from legiscope.pipeline import embed as pipeline_embed
+import embed as pipeline_embed
 
 
 class TestEmbedMain:
@@ -29,11 +29,11 @@ class TestEmbedMain:
 
         with (
             patch(
-                "legiscope.pipeline.embed.CodeRef.from_dvc_vars",
+                "embed.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
             patch(
-                "legiscope.pipeline.embed.load_params",
+                "embed.load_params",
                 return_value={"embeddings": {"default_provider": "mistral"}},
             ),
         ):
@@ -70,11 +70,11 @@ class TestEmbedMain:
 
         with (
             patch(
-                "legiscope.pipeline.embed.CodeRef.from_dvc_vars",
+                "embed.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
             patch(
-                "legiscope.pipeline.embed.load_params",
+                "embed.load_params",
                 return_value={"embeddings": {"default_provider": "mistral"}},
             ),
         ):
@@ -113,19 +113,19 @@ class TestEmbedMain:
 
         with (
             patch(
-                "legiscope.pipeline.embed.CodeRef.from_dvc_vars",
+                "embed.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.embed.load_params", return_value=params),
+            patch("embed.load_params", return_value=params),
             patch(
-                "legiscope.pipeline.embed.get_embedding_client",
+                "embed.get_embedding_client",
                 return_value=mock_client,
             ),
             patch(
-                "legiscope.pipeline.embed.get_default_model",
+                "embed.get_default_model",
                 return_value="embeddinggemma",
             ),
-            patch("legiscope.pipeline.embed.create_and_save_embeddings", mock_create),
+            patch("embed.create_and_save_embeddings", mock_create),
         ):
             type(sample_code_ref).full_data_dir = property(lambda self: tmp_path)
 
@@ -168,14 +168,14 @@ class TestEmbedMain:
 
         with (
             patch(
-                "legiscope.pipeline.embed.CodeRef.from_dvc_vars",
+                "embed.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.embed.load_params", return_value=params),
-            patch("legiscope.pipeline.embed.get_embedding_client", mock_get_client),
-            patch("legiscope.pipeline.embed.get_default_model", mock_get_model),
+            patch("embed.load_params", return_value=params),
+            patch("embed.get_embedding_client", mock_get_client),
+            patch("embed.get_default_model", mock_get_model),
             patch(
-                "legiscope.pipeline.embed.create_and_save_embeddings",
+                "embed.create_and_save_embeddings",
                 return_value=pl.DataFrame(),
             ),
         ):

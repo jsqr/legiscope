@@ -1,4 +1,4 @@
-"""Tests for legiscope.pipeline.init — jurisdiction/code registration."""
+"""Tests for scripts/init.py — jurisdiction/code registration."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ from legiscope.models import (
     CodeRef,
     JurisdictionRef,
 )
-from legiscope.pipeline import init as pipeline_init
+
+import init as pipeline_init
 
 
 # ---------------------------------------------------------------------------
@@ -182,9 +183,9 @@ class TestMain:
             patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
             patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch(
-                "legiscope.pipeline.init.create_code_structure", return_value=code_dir
+                "init.create_code_structure", return_value=code_dir
             ),
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
 
@@ -211,9 +212,9 @@ class TestMain:
             patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
             patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch(
-                "legiscope.pipeline.init.create_code_structure", return_value=tmp_path
+                "init.create_code_structure", return_value=tmp_path
             ),
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
 
@@ -238,9 +239,9 @@ class TestMain:
             patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
             patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch(
-                "legiscope.pipeline.init.create_code_structure", return_value=tmp_path
+                "init.create_code_structure", return_value=tmp_path
             ),
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
 
@@ -267,9 +268,9 @@ class TestMain:
             patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
             patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch(
-                "legiscope.pipeline.init.create_code_structure", return_value=tmp_path
+                "init.create_code_structure", return_value=tmp_path
             ),
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
 
@@ -299,9 +300,9 @@ class TestMain:
             ),
             patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch(
-                "legiscope.pipeline.init.create_code_structure", return_value=tmp_path
+                "init.create_code_structure", return_value=tmp_path
             ),
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
 
@@ -326,9 +327,9 @@ class TestMain:
             patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
             patch.object(pipeline_init, "CODES_PARQUET", tmp_path / "c.parquet"),
             patch(
-                "legiscope.pipeline.init.create_code_structure", return_value=tmp_path
+                "init.create_code_structure", return_value=tmp_path
             ),
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
 
@@ -347,7 +348,7 @@ class TestMain:
         }
 
         with (
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
             pytest.raises(SystemExit),
         ):
             pipeline_init.main()
@@ -364,7 +365,7 @@ class TestMain:
         }
 
         with (
-            patch("legiscope.pipeline.init.load_params", return_value=fake_params),
+            patch("init.load_params", return_value=fake_params),
             pytest.raises((SystemExit, ValueError)),
         ):
             pipeline_init.main()

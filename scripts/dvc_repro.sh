@@ -52,7 +52,7 @@ Examples:
 
 Prerequisite:
   The jurisdiction must be initialised first:
-    python -m legiscope.pipeline.init
+    python scripts/init.py
   and raw files placed in data/laws/STATE/LOCALITY/SLUG/raw/
 
 EOF
@@ -123,7 +123,7 @@ if [[ ! -d "$CODE_DIR" ]]; then
     echo "Error: directory does not exist: ${CODE_DIR}" >&2
     echo "" >&2
     echo "Initialise the jurisdiction first:" >&2
-    echo "  python -m legiscope.pipeline.init" >&2
+    echo "  python scripts/init.py" >&2
     exit 1
 fi
 

@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import yaml
 
-from legiscope.elements import split_elements
-from legiscope.headings import (
+from legiscope.parse.elements import split_elements
+from legiscope.parse.headings import (
     HEADINGS_SCHEMA,
     HeadingStructure,
     _compile_heading_patterns,
@@ -19,7 +19,7 @@ from legiscope.headings import (
     _get_heading_level_obj,
     _is_heading_element,
 )
-from legiscope.scan import DEFAULT_SCAN_MAX_LINES, scan_legal_text
+from legiscope.parse.scan import DEFAULT_SCAN_MAX_LINES, scan_legal_text
 
 if TYPE_CHECKING:
     from legiscope.models import CodeRef

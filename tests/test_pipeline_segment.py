@@ -1,4 +1,4 @@
-"""Tests for legiscope.pipeline.segment — params loading and delegation."""
+"""Tests for scripts/segment.py — params loading and delegation."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import polars as pl
 
-from legiscope.pipeline import segment as pipeline_segment
+import segment as pipeline_segment
 
 
 class TestSegmentMain:
@@ -26,11 +26,11 @@ class TestSegmentMain:
 
         with (
             patch(
-                "legiscope.pipeline.segment.CodeRef.from_dvc_vars",
+                "segment.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.segment.load_params", return_value={}),
-            patch("legiscope.pipeline.segment.segment_legal_code", mock_segment),
+            patch("segment.load_params", return_value={}),
+            patch("segment.segment_legal_code", mock_segment),
         ):
             pipeline_segment.main()
 
@@ -56,11 +56,11 @@ class TestSegmentMain:
 
         with (
             patch(
-                "legiscope.pipeline.segment.CodeRef.from_dvc_vars",
+                "segment.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.segment.load_params", return_value=params),
-            patch("legiscope.pipeline.segment.segment_legal_code", mock_segment),
+            patch("segment.load_params", return_value=params),
+            patch("segment.segment_legal_code", mock_segment),
         ):
             pipeline_segment.main()
 
@@ -85,11 +85,11 @@ class TestSegmentMain:
 
         with (
             patch(
-                "legiscope.pipeline.segment.CodeRef.from_dvc_vars",
+                "segment.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.segment.load_params", return_value=params),
-            patch("legiscope.pipeline.segment.segment_legal_code", mock_segment),
+            patch("segment.load_params", return_value=params),
+            patch("segment.segment_legal_code", mock_segment),
         ):
             pipeline_segment.main()
 
@@ -113,11 +113,11 @@ class TestSegmentMain:
 
         with (
             patch(
-                "legiscope.pipeline.segment.CodeRef.from_dvc_vars",
+                "segment.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.segment.load_params", return_value=params),
-            patch("legiscope.pipeline.segment.segment_legal_code", mock_segment),
+            patch("segment.load_params", return_value=params),
+            patch("segment.segment_legal_code", mock_segment),
         ):
             pipeline_segment.main()
 
@@ -141,11 +141,11 @@ class TestSegmentMain:
 
         with (
             patch(
-                "legiscope.pipeline.segment.CodeRef.from_dvc_vars",
+                "segment.CodeRef.from_dvc_vars",
                 return_value=sample_code_ref,
             ),
-            patch("legiscope.pipeline.segment.load_params", return_value={}),
-            patch("legiscope.pipeline.segment.segment_legal_code", mock_segment),
+            patch("segment.load_params", return_value={}),
+            patch("segment.segment_legal_code", mock_segment),
         ):
             pipeline_segment.main()
 
