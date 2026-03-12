@@ -1,5 +1,5 @@
-# ruff: noqa: E402
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Run multiple queries against legal code database.
 
