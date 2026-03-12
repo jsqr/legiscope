@@ -11,8 +11,6 @@ from legiscope.llm_config import Config
 from legiscope.retrieve import (
     HydeRewrite,
     RelevanceAssessment,
-    SegmentCollection,
-    filter_results,
     hyde_rewriter,
     is_relevant,
 )
@@ -338,234 +336,22 @@ class TestIsRelevant:
                 is_relevant(mock_client, "test query", "test text")
 
 
-class TestFilterResults:
-    """Test the filter_results function."""
-
-    def test_filter_results_basic(self):
-        """Test basic result filtering."""
-        # Mock relevance assessments
-        mock_assessments = [
-            RelevanceAssessment(
-                is_relevant=True,
-                relevance_score=0.85,
-                confidence=0.9,
-                reasoning="Relevant",
-            ),
-            RelevanceAssessment(
-                is_relevant=False,
-                relevance_score=0.2,
-                confidence=0.8,
-                reasoning="Not relevant",
-            ),
-            RelevanceAssessment(
-                is_relevant=True,
-                relevance_score=0.7,
-                confidence=0.7,
-                reasoning="Relevant",
-            ),
-        ]
-
-        # Mock input results using dataclass
-        input_results = SegmentCollection(
-            ids=[["1", "2", "3"]],
-            documents=[["doc1", "doc2", "doc3"]],
-            distances=[[0.1, 0.2, 0.3]],
-            metadatas=[[{"meta": "1"}, {"meta": "2"}, {"meta": "3"}]],
-        )
-
-        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
-            mock_client = Mock(spec=Instructor)
-
-            result = filter_results(
-                mock_client,
-                input_results,
-                "test query",
-                threshold=0.5,
-            )
-
-            # Verify structure using dataclass attributes
-            assert hasattr(result, "ids")
-            assert hasattr(result, "documents")
-            assert hasattr(result, "distances")
-            assert hasattr(result, "metadatas")
-            assert hasattr(result, "filtering_metadata")
-
-            # Verify filtering results
-            assert len(result.ids[0]) == 2  # Only relevant documents
-            assert result.ids[0] == ["1", "3"]
-            assert result.documents[0] == ["doc1", "doc3"]
-            assert result.distances[0] == [0.1, 0.3]
-            assert result.metadatas[0] == [{"meta": "1"}, {"meta": "3"}]
-
-            # Verify metadata
-            metadata = result.filtering_metadata
-            assert metadata.original_count == 3
-            assert metadata.filtered_count == 2
-            assert metadata.threshold == 0.5
-            assert len(metadata.assessments) == 3
-
-    def test_filter_results_with_threshold(self):
-        """Test filtering with confidence threshold."""
-        # Mock relevance assessments with varying confidence
-        mock_assessments = [
-            RelevanceAssessment(
-                is_relevant=True,
-                relevance_score=0.9,
-                confidence=0.9,
-                reasoning="High confidence",
-            ),
-            RelevanceAssessment(
-                is_relevant=True,
-                relevance_score=0.8,
-                confidence=0.3,
-                reasoning="Low confidence",
-            ),
-            RelevanceAssessment(
-                is_relevant=True,
-                relevance_score=0.75,
-                confidence=0.7,
-                reasoning="Medium confidence",
-            ),
-        ]
-
-        input_results = SegmentCollection(
-            ids=[["1", "2", "3"]],
-            documents=[["doc1", "doc2", "doc3"]],
-            distances=[[0.1, 0.2, 0.3]],
-            metadatas=[[None, None, None]],
-        )
-
-        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
-            mock_client = Mock(spec=Instructor)
-
-            result = filter_results(
-                mock_client,
-                input_results,
-                "test query",
-            )
-
-            # Only documents 1 and 3 should pass threshold
-            assert len(result.ids[0]) == 2
-            assert result.ids[0] == ["1", "3"]
-
-    def test_filter_results_no_client(self):
-        """Test that missing client raises ValueError."""
-        input_results = SegmentCollection(
-            ids=[["1"]],
-            documents=[["doc1"]],
-            distances=[[0.1]],
-        )
-
-        with pytest.raises(ValueError, match="client is required"):
-            filter_results(None, input_results, "query")  # type: ignore
-
-    def test_filter_results_invalid_structure(self):
-        """Test handling of invalid results structure."""
-        mock_client = Mock(spec=Instructor)
-
-        # Empty results
-        with pytest.raises(ValueError, match="results cannot be None"):
-            filter_results(mock_client, None, "query")  # type: ignore
-
-    def test_filter_results_empty_results(self):
-        """Test filtering with empty results."""
-        empty_results = SegmentCollection(
-            ids=[[]],
-            documents=[[]],
-            distances=[[]],
-        )
-
-        mock_client = Mock(spec=Instructor)
-
-        result = filter_results(mock_client, empty_results, "query")
-
-        assert result.filtering_metadata.original_count == 0
-        assert result.filtering_metadata.filtered_count == 0
-        assert len(result.filtering_metadata.assessments) == 0
-
-    def test_filter_results_assessment_failure(self):
-        """Test handling of assessment failures."""
-
-        def failing_assessment(client, query, text, model):
-            if text == "doc2":
-                raise Exception("Assessment failed")
-            return RelevanceAssessment(
-                is_relevant=True, relevance_score=0.85, confidence=0.9, reasoning="Good"
-            )
-
-        input_results = SegmentCollection(
-            ids=[["1", "2", "3"]],
-            documents=[["doc1", "doc2", "doc3"]],
-            distances=[[0.1, 0.2, 0.3]],
-            metadatas=[[None, None, None]],
-        )
-
-        with patch("legiscope.retrieve.is_relevant", side_effect=failing_assessment):
-            mock_client = Mock(spec=Instructor)
-
-            result = filter_results(mock_client, input_results, "query")
-
-            # Should still work, with failed assessment marked as not relevant
-            assert len(result.ids[0]) == 2  # doc1 and doc3
-            assert result.ids[0] == ["1", "3"]
-
-            # Check assessment metadata
-            assessments = result.filtering_metadata.assessments
-            assert len(assessments) == 3
-
-            # Find failed assessment
-            failed_assessment = next(a for a in assessments if a["index"] == 1)
-            assert failed_assessment["is_relevant"] is False
-            assert failed_assessment["confidence"] == 0.0
-            assert "Assessment failed" in failed_assessment["reasoning"]
-
-    def test_filter_results_no_metadatas(self):
-        """Test filtering when metadatas are missing."""
-        input_results = SegmentCollection(
-            ids=[["1", "2"]],
-            documents=[["doc1", "doc2"]],
-            distances=[[0.1, 0.2]],
-            metadatas=None,  # Explicitly None
-        )
-
-        mock_assessments = [
-            RelevanceAssessment(
-                is_relevant=True,
-                relevance_score=0.85,
-                confidence=0.9,
-                reasoning="Relevant",
-            ),
-            RelevanceAssessment(
-                is_relevant=False,
-                relevance_score=0.2,
-                confidence=0.8,
-                reasoning="Not relevant",
-            ),
-        ]
-
-        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
-            mock_client = Mock(spec=Instructor)
-
-            result = filter_results(mock_client, input_results, "query")
-
-            # Should work without metadatas
-            assert len(result.ids[0]) == 1
-            assert result.ids[0] == ["1"]
-            assert result.metadatas is None or result.metadatas == [[None]]
-
-
 class TestRetrievalConfig:
     """Test RetrievalSettings dataclass."""
 
     def test_minimal_config(self):
         """Test creating settings with defaults."""
-        from legiscope.retrieve import RetrievalSettings
+        from legiscope.retrieve import (
+            RetrievalSettings,
+            DEFAULT_N_RESULTS,
+            DEFAULT_HYDE_ENABLED,
+        )
 
         settings = RetrievalSettings()
 
-        assert settings.n_results == 10  # Default
+        assert settings.n_results == DEFAULT_N_RESULTS
         assert settings.jurisdiction_id is None
-        assert settings.use_hyde is False
+        assert settings.use_hyde == DEFAULT_HYDE_ENABLED
 
     def test_with_jurisdiction(self):
         """Test settings with jurisdiction filter."""
@@ -620,13 +406,17 @@ class TestSectionRetrievalConfig:
 
     def test_minimal_config(self):
         """Test creating settings with defaults."""
-        from legiscope.retrieve import SectionRetrievalSettings
+        from legiscope.retrieve import (
+            SectionRetrievalSettings,
+            DEFAULT_N_RESULTS,
+            DEFAULT_HYDE_ENABLED,
+        )
 
         settings = SectionRetrievalSettings()
 
         # All inherited from RetrievalSettings
-        assert settings.n_results == 10
-        assert settings.use_hyde is False
+        assert settings.n_results == DEFAULT_N_RESULTS
+        assert settings.use_hyde == DEFAULT_HYDE_ENABLED
 
     def test_missing_parquet_path_raises_error(self):
         """Test that sections_parquet_path is now a function parameter."""
