@@ -77,7 +77,7 @@ class TestProperties:
 
     def test_monqcle_report_path(self):
         assert cfg.monqcle_report_path() == Path(
-            "data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+            "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
         )
 
     def test_queries_dir_follows_data_dir(self):

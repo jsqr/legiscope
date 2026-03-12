@@ -22,6 +22,7 @@ Usage:
 import argparse
 import csv
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import chromadb
@@ -64,19 +65,24 @@ def main():
         type=int,
         help="Limit number of queries for testing pipeline",
     )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        default=False,
-        help="Enable debug mode to save intermediate results",
-    )
 
     args = parser.parse_args()
+
+    # Read debug flag from params.yaml (shared with run_queries.py)
+    debug_enabled = params.get("retrieval", {}).get("debug", False)
+    debug_dir = None
+    if debug_enabled:
+        debug_dir = config.output_dir() / jurisdiction_id / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Debug mode enabled, writing debug files to {debug_dir}")
 
     # Resolve paths and settings from config/params
     queries_path = config.default_queries_path()
     monqcle_path = config.monqcle_report_path()
-    output_path = config.output_dir() / jurisdiction_id / "benchmark_results.csv"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = (
+        config.output_dir() / jurisdiction_id / f"benchmark_results_{timestamp}.csv"
+    )
     series_title = params.get("benchmark", {}).get(
         "series_title", "DPL_2025_Consolidated"
     )
@@ -91,10 +97,8 @@ def main():
         query_adjuster=adjust_drug_paraphernalia_queries,
     )
 
-    if args.debug:
-        debug_dir = Path(f"data/output/{jurisdiction_id}/debug")
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        debug_queries_path = debug_dir / "loaded_queries.csv"
+    if debug_enabled and debug_dir:
+        debug_queries_path = debug_dir / f"loaded_queries_{timestamp}.csv"
         with open(debug_queries_path, "w", newline="") as file:
             writer = csv.writer(file)
             writer.writerow(query_inputs)
@@ -147,10 +151,8 @@ def main():
     # Melt to long format (now handles everything including combined vars)
     ground_truth_df = melt_monqcle_to_long(monqcle_row, variable_names)
 
-    if args.debug:
-        debug_dir = Path(f"data/output/{jurisdiction_id}/debug")
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        melted_path = debug_dir / "melted_monqcle.csv"
+    if debug_enabled and debug_dir:
+        melted_path = debug_dir / f"melted_monqcle_{timestamp}.csv"
         ground_truth_df.write_csv(melted_path)
         logger.info(f"Debug: Saved melted MonQcle data to {melted_path}")
 
@@ -170,7 +172,7 @@ def main():
     # =========================================================================
     # Step 4: Configure LLM Agents
     # =========================================================================
-    query_settings = BatchQuerySettings()
+    query_settings = BatchQuerySettings(debug_dir=debug_dir)
 
     # Evaluator Agent (Powerful model for judging)
     evaluator = Evaluator()
@@ -197,10 +199,8 @@ def main():
 
     joined_df = gen_results_df.join(ground_truth_df, on="variable_name", how="left")
 
-    if args.debug:
-        debug_dir = Path(f"data/output/{jurisdiction_id}/debug")
-        debug_dir.mkdir(parents=True, exist_ok=True)
-        debug_path = debug_dir / "queries_and_ground_truth.csv"
+    if debug_enabled and debug_dir:
+        debug_path = debug_dir / f"queries_and_ground_truth_{timestamp}.csv"
         joined_df.write_csv(debug_path)
         logger.info(f"Debug: Saved queries and ground truth to {debug_path}")
 

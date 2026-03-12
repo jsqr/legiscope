@@ -38,17 +38,18 @@ This script is now mostly **config-driven**:
 # Run with defaults from params.yaml + config.yaml
 uv run python coep/scripts/benchmark_pipeline.py
 
-# Debug run with limited query count
-uv run python coep/scripts/benchmark_pipeline.py --test-limit 5 --debug
+# Run with limited query count for quick testing
+uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
 ```
 
 ### Full Configuration
 ```bash
 # Example config-first workflow
-# 1) Set jurisdiction + benchmark options in params.yaml
+# 1) Set jurisdiction + benchmark options in params.yaml 
+#    (to get transparent debug files, set retrieval.debug to true)
 # 2) Set query/report/output paths in config.yaml
-# 3) Run:
-uv run python coep/scripts/benchmark_pipeline.py --debug
+# 4) Run:
+uv run python coep/scripts/benchmark_pipeline.py
 ```
 
 ### Arguments
@@ -56,7 +57,8 @@ uv run python coep/scripts/benchmark_pipeline.py --debug
 | Argument | Description | Default |
 |----------|-------------|---------|
 | `--test-limit` | Limit number of queries (for testing) | None |
-| `--debug` | Enable debug mode (saves intermediate CSVs) | `False` |
+
+> **Note on Debugging:** The `--debug` flag has been removed. Debug mode is now entirely controlled by setting `debug: true` under the `retrieval` section in `params.yaml`. This toggle produces debug files for retrieved sections, LLM relevance assessments, contextual prompts, imported CSVs, and joined pipeline states in `data/output/<jurisdiction_id>/debug`.
 
 ### Key Resolved Inputs (from config/params)
 
@@ -65,8 +67,7 @@ uv run python coep/scripts/benchmark_pipeline.py --debug
 - Output file: `config.output_dir() / {jurisdiction_id} / benchmark_results.csv`
 - Series title: `params["benchmark"]["series_title"]` (fallback: `DPL_2025_Consolidated`)
 
-Jurisdiction, retrieval settings (including HYDE/relevance filtering), and query
-validation settings are read from `params.yaml`.
+Jurisdiction, retrieval settings (including HYDE/relevance filtering and debug outputs), and query validation settings are read from `params.yaml`.
 
 ## How it Works
 

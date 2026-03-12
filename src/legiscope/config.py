@@ -111,7 +111,9 @@ def default_queries_path() -> Path:
 
 def monqcle_report_path() -> Path:
     """Return the path to the MonQcle Standard Report CSV."""
-    return data_dir() / get(
-        "paths.monqcle_report",
-        "monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
+    return Path(
+        get(
+            "paths.monqcle_report",
+            "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
+        )
     )
