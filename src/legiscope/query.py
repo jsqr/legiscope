@@ -452,6 +452,9 @@ def query_legal_documents(
         retrieval_results: Results from retrieve_sections() (required infrastructure)
         query: The user's legal question (required input)
         settings: Query processing settings (required configuration)
+        debug_dir: Optional directory where debug artifacts (e.g., prompts and responses)
+            for this query will be written if provided
+        query_index: Optional index of this query within a batch, used for naming debug files
 
     Returns:
         LegalQueryResponse: Structured response with answer, reasoning, citations, and evidence
