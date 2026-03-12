@@ -46,11 +46,15 @@ _See [Configuration Files](#configuration-files) for details._
 
    ```bash
    # Reads jurisdiction from params.yaml
-   python scripts/init.py
+   uv run python scripts/init.py
    ```
 
 3. **Place raw files** in `data/laws/CA/LosAngeles/municipal-code/raw/`
-   (DOCX, TXT, etc.). Convert DOCX first if needed: `scripts/convert_docx.sh path/to/file.docx`
+   (DOCX, TXT, etc.). Convert DOCX first if needed:
+
+   ```bash
+   ./scripts/convert_docx.sh path/to/file.docx
+   ```
 
 4. **Run the pipeline** (parse → segment → embed → index):
 
@@ -89,7 +93,8 @@ dvc exp run
 # One-off override (does not modify params.yaml)
 dvc exp run \
     -S retrieval.hyde.enabled=true \
-    -S retrieval.relevance_filter.enabled=true
+   -S retrieval.relevance_filter.enabled=true \
+   -S retrieval.debug=true
 ```
 
 Compare experiments with `dvc exp show` / `dvc exp diff <exp-name>`.
@@ -176,10 +181,10 @@ to change jurisdictions. For one-off DVC overrides, use `-S` flags directly:
 
 ```bash
 # Run a single pipeline stage
-uv run ./scripts/dvc_repro.sh --stage segment
+./scripts/dvc_repro.sh --stage segment
 
 # Override params for a DVC experiment (does not modify params.yaml)
-uv run dvc exp run -S jurisdiction.state=CA -S jurisdiction.locality=LosAngeles \
+dvc exp run -S jurisdiction.state=CA -S jurisdiction.locality=LosAngeles \
     -S jurisdiction.code_slug=municipal-code
 ```
 

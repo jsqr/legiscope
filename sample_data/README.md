@@ -16,11 +16,11 @@ cp -r sample_data/IL data/laws/
    The default `params.yaml` already targets IL/WindyCity/municipal-code:
 
 ```bash
-python scripts/init.py
+uv run python scripts/init.py
 ```
 
 3. Run the pipeline:
 
 ```bash
-dvc repro
+./scripts/dvc_repro.sh
 ```
