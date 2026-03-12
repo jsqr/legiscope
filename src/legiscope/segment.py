@@ -49,10 +49,12 @@ def _estimate_token_count(text: str) -> int:
     """Estimate token count with a BPE-aware heuristic.
 
     BPE tokenizers split multi-digit numbers into multiple tokens (e.g.
-    "14401" → 2-3 tokens).  The previous approach counted each digit
-    sequence as 1 token, which severely underestimates for number-heavy
-    text such as address tables.  We now count each digit sequence as
-    ``ceil(len / 3)`` tokens, which better matches observed BPE behaviour.
+    "14401" → 2–3 tokens). The previous approach counted each digit
+    sequence as 1 token, which severely underestimates for number‑heavy
+    text such as address tables. We now approximate each digit sequence
+    longer than two digits as roughly ``ceil(len / 2)`` tokens
+    (implemented as ``(len(token) + 1) // 2``), which better matches
+    observed BPE behaviour.
     """
     if not text or not text.strip():
         return 0
