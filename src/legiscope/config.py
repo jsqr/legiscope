@@ -13,10 +13,28 @@ relative values are resolved from the repository/config root instead.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+from loguru import logger
+
+
+# ---------------------------------------------------------------------------
+# Logging Configuration
+# ---------------------------------------------------------------------------
+def setup_logging() -> None:
+    """Configure loguru logging based on config.yaml."""
+    log_level = get("logging.level", "INFO").upper()
+
+    valid_levels = {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
+    if log_level not in valid_levels:
+        log_level = "INFO"
+
+    logger.remove()
+    logger.add(sys.stderr, level=log_level)
+
 
 # ---------------------------------------------------------------------------
 # Module-level cache

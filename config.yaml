@@ -22,5 +22,5 @@ database:
     model_suffix: true  # Append model name to collection (e.g., legal_code_mistral)
 
 logging:
-  level: "INFO"
-  batch_log_interval: 100
+  level: "DEBUG"
+  batch_log_interval: 1000

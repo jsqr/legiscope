@@ -15,12 +15,15 @@ from instructor import Instructor
 from loguru import logger
 from pydantic import BaseModel
 
+from legiscope.params import load_params
+
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)
 
 # Constants for LLM operations (imported from other modules when needed)
-DEFAULT_TEMPERATURE = 0.0
-DEFAULT_MAX_RETRIES = 3
+_params = load_params()
+DEFAULT_TEMPERATURE = _params.get("llm", {}).get("temperature", 0.0)
+DEFAULT_MAX_RETRIES = _params.get("llm", {}).get("max_retries", 3)
 
 
 @dataclass

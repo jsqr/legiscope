@@ -8,6 +8,7 @@ import re
 import polars as pl
 from instructor import Instructor
 
+from legiscope.params import load_params
 from legiscope.parse.elements import split_elements
 from legiscope.parse.find_code_start import find_code_start
 from legiscope.parse.headings import HeadingStructure
@@ -15,10 +16,11 @@ from legiscope.parse.headings import HeadingStructure
 
 # ── Constants ──────────────────────────────────────────────────────────
 
-DEFAULT_SCAN_MAX_LINES = (
-    200  # Maximum lines to analyze when scanning legal text structure
-)
-DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal text analysis
+_params = load_params()
+DEFAULT_SCAN_MAX_LINES = _params.get("convert", {}).get("scan_max_lines", 200)
+DEFAULT_TEMPERATURE = _params.get("llm", {}).get(
+    "temperature", 0.0
+)  # Low temperature for consistent legal text analysis
 
 
 # ── Heading-like line heuristics ───────────────────────────────────────
@@ -175,9 +177,7 @@ def _check_completeness(
         first_line = row["text"].split("\n")[0].strip()
         if not first_line:
             continue
-        matching_levels = [
-            lvl for lvl, pat, _ in compiled if pat.match(first_line)
-        ]
+        matching_levels = [lvl for lvl, pat, _ in compiled if pat.match(first_line)]
         if len(matching_levels) > 1:
             if ambiguous < 10:
                 warnings.append(
@@ -211,7 +211,9 @@ def _check_parent_child(
         return warnings
 
     # Collect IDs per level from element texts
-    element_texts = [row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()]
+    element_texts = [
+        row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()
+    ]
 
     level_ids: dict[int, list[str]] = {}
     for level in structure.levels:
@@ -260,7 +262,9 @@ def _check_sibling_ordering(
 ) -> list[str]:
     """Check sibling ordering across element texts."""
     warnings: list[str] = []
-    element_texts = [row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()]
+    element_texts = [
+        row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()
+    ]
 
     for level in structure.levels:
         if level.inferred or not level.number_regex:
@@ -272,8 +276,7 @@ def _check_sibling_ordering(
         prev_id: str | None = None
         for text in element_texts:
             matched_this_level = any(
-                _lvl == level.level and pat.match(text)
-                for _lvl, pat, _ in compiled
+                _lvl == level.level and pat.match(text) for _lvl, pat, _ in compiled
             )
             if not matched_this_level:
                 continue
@@ -407,6 +410,7 @@ def scan_headings(
 
     if client is None:
         from legiscope.llm_config import Config
+
         client = Config.get_powerful_client()
 
     if not os.path.exists(file_path):
@@ -428,7 +432,9 @@ def scan_headings(
     best_score = 0.0
 
     for iteration in range(1, max_iterations + 1):
-        logger.info(f"Iteration {iteration}/{max_iterations}, sample_count={sample_count}")
+        logger.info(
+            f"Iteration {iteration}/{max_iterations}, sample_count={sample_count}"
+        )
 
         # Phase 1: Format raw elements for LLM
         scan_count = min(sample_count, code_elements.height)
