@@ -48,7 +48,7 @@ uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
 # 1) Set jurisdiction + benchmark options in params.yaml 
 #    (to get transparent debug files, set retrieval.debug to true)
 # 2) Set query/report/output paths in config.yaml
-# 4) Run:
+# 3) Run:
 uv run python coep/scripts/benchmark_pipeline.py
 ```
 
