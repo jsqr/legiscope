@@ -109,18 +109,21 @@ class TestGetEmbeddings:
             get_embeddings(mock_client, ["text"], "test-model", "ollama")
 
     @patch("legiscope.embeddings.logger")
-    def test_get_embeddings_progress_logging(self, mock_logger):
-        """Test progress logging for large batches."""
+    def test_get_embeddings_no_per_segment_logging(self, mock_logger):
+        """Embedding functions should not log per-segment; progress is in _embed_with_fallback."""
         mock_client = Mock()
-        # Create sequential responses for 15 texts (Ollama processes sequentially)
         mock_client.embeddings.side_effect = [{"embedding": [0.1]} for _ in range(15)]
 
         texts = [f"text{i}" for i in range(15)]
         get_embeddings(mock_client, texts, "test-model", "ollama")
 
-        # Should log individual processing progress for Ollama
-        debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
-        assert any("Processed 15/15 texts" in call for call in debug_calls)
+        # No info or debug calls should reference individual segment progress
+        all_calls = [
+            call[0][0]
+            for call in mock_logger.info.call_args_list
+            + mock_logger.debug.call_args_list
+        ]
+        assert not any("Processed" in c for c in all_calls)
 
     def test_get_embeddings_mistral_provider(self):
         """Test embedding generation with Mistral provider."""
@@ -779,6 +782,213 @@ class TestCreateAndSaveEmbeddings:
         assert result.schema["segment_id"] == pl.String
         assert result.schema["embedding_text"] == pl.String
         assert result.schema["embedding"] == pl.List(pl.Float32)
+
+
+class TestFallbackSplittingOnContextError:
+    """Test that context-length errors on individual segments trigger splitting.
+
+    The fallback logic in ``_embed_with_fallback`` processes texts in the
+    provider's native chunk size (1 for Ollama, 100 for Mistral).  When a
+    segment fails, it is split and retried without discarding other work.
+    """
+
+    def _make_code_ref(self):
+        return CodeRef(
+            jurisdiction=JurisdictionRef(state="CA", locality="TestCity"),
+            code_slug="test-code",
+        )
+
+    def test_ollama_splits_failing_segment(self, tmp_path):
+        """Ollama (chunk_size=1): failing segment is split in place."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": ["Title", "Section 1"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        long_text = " ".join(["word"] * 300)
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0, 1],
+                "section_ordinal": [1, 1],
+                "section_heading": ["Section 1", "Section 1"],
+                "segment_text": ["Short.", long_text],
+            }
+        )
+
+        first_fail_done = False
+
+        def mock_get_embeddings(client, texts, model, provider):
+            import numpy as np
+
+            nonlocal first_fail_done
+            assert len(texts) == 1, "Ollama should process one text at a time"
+            # Fail the first time we see the full long text
+            if not first_fail_done and len(texts[0].split()) > 200:
+                first_fail_done = True
+                raise ValueError("input length exceeds the context length")
+            return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        with patch(
+            "legiscope.embeddings.get_embeddings", side_effect=mock_get_embeddings
+        ):
+            result = create_and_save_embeddings(
+                segments_df=segments_df,
+                sections_df=sections_df,
+                client=Mock(),
+                code_ref=code_ref,
+                embedding_config=config,
+                output_path=tmp_path / "embeddings.parquet",
+                token_limit=1024,
+            )
+
+        assert len(result) >= 2
+        assert "embedding" in result.columns
+
+    def test_mistral_batch_failure_falls_back(self, tmp_path):
+        """Mistral (chunk_size=100): batch failure retries per-segment in chunk."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": ["Title", "Section 1"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0, 1],
+                "section_ordinal": [1, 1],
+                "section_heading": ["Section 1", "Section 1"],
+                "segment_text": ["Good.", " ".join(["word"] * 300)],
+            }
+        )
+
+        calls: list[int] = []  # track len(texts) per call
+
+        def mock_get_embeddings(client, texts, model, provider):
+            import numpy as np
+
+            calls.append(len(texts))
+            # Multi-text batch call fails
+            if len(texts) > 1:
+                raise ValueError("input length exceeds the context length")
+            # Single-text calls succeed
+            return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+
+        config = EmbeddingConfig(model="test-model", provider="mistral")
+
+        # Patch the provider config so chunk_size=100 is used
+        patched_cfg = {
+            "mistral": {
+                "batch_size": 100,
+                "embedding_function": None,  # not used — get_embeddings is mocked
+                "model": "test-model",
+                "client_factory": None,
+            }
+        }
+
+        with (
+            patch(
+                "legiscope.embeddings.get_embeddings", side_effect=mock_get_embeddings
+            ),
+            patch("legiscope.embeddings.EMBEDDING_PROVIDER_CONFIG", patched_cfg),
+        ):
+            result = create_and_save_embeddings(
+                segments_df=segments_df,
+                sections_df=sections_df,
+                client=Mock(),
+                code_ref=code_ref,
+                embedding_config=config,
+                output_path=tmp_path / "embeddings.parquet",
+                token_limit=1024,
+            )
+
+        # First call was a batch (2 texts), then individual calls
+        assert calls[0] == 2
+        assert all(c == 1 for c in calls[1:])
+        assert len(result) >= 2
+        assert "embedding" in result.columns
+
+    def test_non_context_error_not_retried(self, tmp_path):
+        """Non-context errors are raised immediately, no retry."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Title"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "section_heading": ["Title"],
+                "segment_text": ["Body."],
+            }
+        )
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        with patch(
+            "legiscope.embeddings.get_embeddings",
+            side_effect=ValueError("some other error"),
+        ):
+            with pytest.raises(ValueError, match="some other error"):
+                create_and_save_embeddings(
+                    segments_df=segments_df,
+                    sections_df=sections_df,
+                    client=Mock(),
+                    code_ref=code_ref,
+                    embedding_config=config,
+                    output_path=tmp_path / "embeddings.parquet",
+                    token_limit=1024,
+                )
+
+    def test_max_retries_per_segment_exhausted(self, tmp_path):
+        """After max per-segment retries, raises even if it's a context error."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Title"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "section_heading": ["Title"],
+                "segment_text": ["Body."],
+            }
+        )
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        with patch(
+            "legiscope.embeddings.get_embeddings",
+            side_effect=ValueError("input length exceeds the context length"),
+        ):
+            with pytest.raises(ValueError, match="still exceeds context length"):
+                create_and_save_embeddings(
+                    segments_df=segments_df,
+                    sections_df=sections_df,
+                    client=Mock(),
+                    code_ref=code_ref,
+                    embedding_config=config,
+                    output_path=tmp_path / "embeddings.parquet",
+                    token_limit=1024,
+                )
 
 
 class TestChromaOperations:

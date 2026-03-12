@@ -22,9 +22,12 @@ import polars as pl
 if TYPE_CHECKING:
     from legiscope.models import CodeRef
 
-# Text segmentation constants
-DEFAULT_TOKEN_LIMIT = 256  # Maximum approximate tokens per segment
-DEFAULT_WORDS_PER_TOKEN = 0.75  # Approximate words per token ratio for embedding models
+from legiscope.params import load_params
+
+_p = load_params()
+_seg = _p.get("segmentation", {})
+DEFAULT_TOKEN_LIMIT = int(_seg.get("token_limit", 1024))
+DEFAULT_WORDS_PER_TOKEN = float(_seg.get("words_per_token", 0.75))
 
 # Conservative token approximation that better handles number/punctuation-heavy text.
 _TOKEN_UNIT_PATTERN = re.compile(r"\d+|[A-Za-z]+(?:[-'][A-Za-z]+)*|[^\w\s]", re.UNICODE)
@@ -43,10 +46,33 @@ def _normalize_segmentation_text(text: str) -> str:
 
 
 def _estimate_token_count(text: str) -> int:
-    """Estimate token count with a conservative regex-based heuristic."""
+    """Estimate token count with a BPE-aware heuristic.
+
+    BPE tokenizers split multi-digit numbers into multiple tokens (e.g.
+    "14401" → 2-3 tokens).  The previous approach counted each digit
+    sequence as 1 token, which severely underestimates for number-heavy
+    text such as address tables.  We now count each digit sequence as
+    ``ceil(len / 3)`` tokens, which better matches observed BPE behaviour.
+    """
     if not text or not text.strip():
         return 0
-    return len(_TOKEN_UNIT_PATTERN.findall(text))
+    count = 0
+    for match in _TOKEN_UNIT_PATTERN.finditer(text):
+        token = match.group()
+        if token.isdigit() and len(token) > 2:
+            # BPE tokenizers typically split long digit runs:
+            # 1-2 digits → 1 token, 3-4 → 2, 5-6 → 3, etc.
+            count += (len(token) + 1) // 2
+        else:
+            count += 1
+    return count
+
+
+def _unit_token_cost(unit: str) -> int:
+    """Return the estimated BPE token cost for a single regex-matched unit."""
+    if unit.isdigit() and len(unit) > 2:
+        return (len(unit) + 1) // 2
+    return 1
 
 
 def _split_by_token_budget(text: str, token_limit: int) -> list[str]:
@@ -61,16 +87,19 @@ def _split_by_token_budget(text: str, token_limit: int) -> list[str]:
 
     chunks: list[str] = []
     current: list[str] = []
+    current_cost = 0
 
     for unit in units:
-        # Every unit contributes ~1 token with this estimator.
-        if len(current) >= token_limit and current:
+        cost = _unit_token_cost(unit)
+        if current_cost + cost > token_limit and current:
             chunk = " ".join(current).strip()
             if chunk:
                 chunks.append(chunk)
             current = [unit]
+            current_cost = cost
         else:
             current.append(unit)
+            current_cost += cost
 
     if current:
         chunk = " ".join(current).strip()

@@ -14,14 +14,18 @@ import polars as pl
 from loguru import logger
 from numpy.typing import NDArray
 
+from legiscope import config as sys_config
+from legiscope.params import load_params
+
 # Embeddings are returned as NumPy ndarrays (no wrapper)
 # Centralized embedding dtype configuration (use these constants everywhere)
 EMBEDDING_DTYPE = np.float32
 POLARS_EMBEDDING_DTYPE = pl.List(pl.Float32)
 
+_p = load_params()
+
 # Batch processing constants
-CHROMA_BATCH_SIZE = 100  # Number of documents to add to ChromaDB per batch
-BATCH_LOG_INTERVAL = 100  # Log progress every N items for large datasets
+CHROMA_BATCH_SIZE = _p.get("embeddings", {}).get("chroma_batch_size", 100)
 
 
 def get_ollama_client():
@@ -318,9 +322,6 @@ def _generate_embeddings_mistral(
     """
     embeddings_list: list[list[float]] = []
     total_batches = (len(texts) + batch_size - 1) // batch_size
-    logger.info(
-        f"Processing {len(texts)} texts in {total_batches} batches of {batch_size} (Mistral)"
-    )
 
     # Mistral API format - batch processing
     for batch_num in range(total_batches):
@@ -334,11 +335,6 @@ def _generate_embeddings_mistral(
             raise ValueError(f"Failed to get embeddings for batch {batch_num + 1}")
         batch_embeddings = [list(item.embedding) for item in response.data]
         embeddings_list.extend(batch_embeddings)
-
-        # Log progress for larger datasets
-        logger.debug(
-            f"Processed batch {batch_num + 1}/{total_batches} ({len(batch_texts)} texts)"
-        )
 
     return embeddings_list
 
@@ -362,7 +358,6 @@ def _generate_embeddings_ollama(
         ValueError: If embedding generation fails
     """
     embeddings_list: list[list[float]] = []
-    logger.info(f"Processing {len(texts)} texts individually (Ollama)")
 
     for i, text in enumerate(texts):
         try:
@@ -371,12 +366,12 @@ def _generate_embeddings_ollama(
                 raise ValueError(f"Failed to get embedding for text: {text[:50]}...")
             embeddings_list.append(list(response["embedding"]))
         except Exception as e:
-            logger.error(f"Embedding error for segment {i}: {e}\n[Segment {i}] {text}")
+            logger.error(
+                f"Embedding error for segment {i} "
+                f"(chars={len(text)}, words={len(text.split())}): {e}\n"
+                f"[Segment {i}] {text[:500]}"
+            )
             raise ValueError(f"Embedding error for segment {i}: {e}") from e
-
-        # Log progress for larger datasets
-        if (i + 1) % BATCH_LOG_INTERVAL == 0 or i == len(texts) - 1:
-            logger.debug(f"Processed {i + 1}/{len(texts)} texts")
 
     return embeddings_list
 
@@ -463,10 +458,6 @@ def get_embeddings(
     if model is None:
         model = get_default_model(provider)
 
-    logger.info(
-        f"Generating embeddings for {len(texts)} texts using {provider} with model: {model}"
-    )
-
     # Validate provider is supported
     if provider not in EMBEDDING_PROVIDER_CONFIG:
         raise ValueError(
@@ -491,10 +482,6 @@ def get_embeddings(
 
     # Convert to NumPy array with the configured embedding dtype for consistent downstream consumption
     embeddings_array = np.asarray(embeddings_list, dtype=EMBEDDING_DTYPE)
-
-    logger.info(
-        f"Successfully generated {embeddings_array.shape[0]} embeddings of dim {embeddings_array.shape[1]} and dtype {embeddings_array.dtype}"
-    )
     return embeddings_array
 
 
@@ -927,7 +914,6 @@ def _build_embedding_text(
             for anc_ordinal in ancestor_ordinals:
                 anc_section = sections_by_ordinal.get(anc_ordinal)
                 if anc_section and anc_section.get("heading_text"):
-                    # Don't duplicate the immediate section heading if it's the last ancestor
                     parts.append(anc_section["heading_text"])
 
         if segment_text:
@@ -938,6 +924,298 @@ def _build_embedding_text(
     return texts
 
 
+# ---------------------------------------------------------------------------
+# Helpers: context-length error detection & segment splitting
+# ---------------------------------------------------------------------------
+
+
+def _is_context_length_error(exc: Exception) -> bool:
+    """Return True if *exc* looks like an embedding model context-length error."""
+    err = str(exc).lower()
+    return "context length" in err or "input length" in err
+
+
+def _split_segment_row(
+    row: dict,
+    sections_by_ordinal: dict[int, dict],
+    token_limit: int,
+    *,
+    halve_budget: bool = False,
+) -> tuple[list[dict], list[str]]:
+    """Core splitting logic for a single segment row.
+
+    Checks whether the row's assembled embedding text (ancestor headings +
+    segment body) exceeds *token_limit*.  If it does, splits the body text
+    into smaller chunks, preserving all other metadata via ``dict(row)``.
+
+    Args:
+        row: Segment row as a dict.
+        sections_by_ordinal: Section dicts keyed by ``section_ordinal``.
+        token_limit: Maximum estimated tokens for the assembled text.
+        halve_budget: If ``True``, halve the body-token budget before
+            splitting.  Used by the reactive fallback path when the
+            proactive pass already tried the full budget.
+
+    Returns:
+        ``(new_rows, embedding_texts)`` — parallel lists.  If no split is
+        needed, both are single-element lists wrapping the original row.
+    """
+    from legiscope.segment import _estimate_token_count, _split_by_token_budget
+
+    section_ordinal = row.get("section_ordinal")
+
+    # --- ancestor-heading lookup ---
+    heading_parts: list[str] = []
+    section = (
+        sections_by_ordinal.get(section_ordinal)
+        if section_ordinal is not None
+        else None
+    )
+    if section and section.get("ancestor_path"):
+        for anc in [int(x) for x in section["ancestor_path"].split("/")]:
+            anc_sec = sections_by_ordinal.get(anc)
+            if anc_sec and anc_sec.get("heading_text"):
+                heading_parts.append(anc_sec["heading_text"])
+
+    heading_text = "\n\n".join(heading_parts)
+    heading_tokens = _estimate_token_count(heading_text)
+
+    segment_text = row.get("segment_text") or ""
+    assembled = (heading_text + "\n\n" + segment_text) if segment_text else heading_text
+    total_est = _estimate_token_count(assembled)
+
+    # --- decide whether to split ---
+    needs_split = (total_est > token_limit and segment_text) or (
+        halve_budget and segment_text
+    )
+
+    if not needs_split:
+        parts = list(heading_parts)
+        if segment_text:
+            parts.append(segment_text)
+        return [dict(row)], ["\n\n".join(parts)]
+
+    # --- split body text ---
+    body_budget = max(20, token_limit - heading_tokens)
+    if halve_budget:
+        body_budget = max(20, body_budget // 2)
+
+    chunks = _split_by_token_budget(segment_text, body_budget)
+
+    new_rows: list[dict] = []
+    new_texts: list[str] = []
+    for chunk in chunks:
+        new_row = dict(row)
+        new_row["segment_text"] = chunk
+        new_row["word_count"] = len(chunk.split())
+        new_rows.append(new_row)
+
+        parts = list(heading_parts)
+        if chunk:
+            parts.append(chunk)
+        new_texts.append("\n\n".join(parts))
+
+    return new_rows, new_texts
+
+
+# ---------------------------------------------------------------------------
+# Embed with per-segment fallback
+# ---------------------------------------------------------------------------
+
+
+def _embed_with_fallback(
+    *,
+    client,
+    config: EmbeddingConfig,
+    segments_df: pl.DataFrame,
+    sections_df: pl.DataFrame,
+    embedding_texts: list[str],
+    token_limit: int,
+    max_retries_per_segment: int = 3,
+) -> tuple[NDArray[np.float32], pl.DataFrame, list[str]]:
+    """Generate embeddings with per-segment fallback on context-length errors.
+
+    Processes texts in the provider's native chunk size (e.g. 1 for Ollama,
+    100 for Mistral).  After each successful chunk the results are
+    checkpointed, so no work is lost.
+
+    If a chunk fails with a context-length error:
+
+    * **multi-text chunk** — falls back to one-at-a-time *within that
+      chunk only*.  Previously-embedded chunks are kept.
+    * **single text** — splits that segment via :func:`_split_segment_row`,
+      splices the new rows/texts into the working lists, and retries.
+
+    Returns:
+        (embeddings_array, updated_segments_df, updated_embedding_texts)
+    """
+    provider_cfg = EMBEDDING_PROVIDER_CONFIG.get(config.provider, {})
+    chunk_size: int = provider_cfg.get("batch_size") or 1
+    log_interval = sys_config.get("logging.batch_log_interval", 1000)
+
+    sections_by_ordinal: dict[int, dict] = {
+        r["section_ordinal"]: r for r in sections_df.to_dicts()
+    }
+
+    all_embeddings: list[list[float]] = []
+    texts = list(embedding_texts)
+    rows = segments_df.to_dicts()
+
+    i = 0
+    last_logged = 0
+    logger.info(f"Embedding {len(texts)} segments (chunk_size={chunk_size})...")
+
+    while i < len(texts):
+        if i - last_logged >= log_interval:
+            logger.info(f"Embedded {i}/{len(texts)} segments...")
+            last_logged = i
+
+        chunk_end = min(i + chunk_size, len(texts))
+        chunk = texts[i:chunk_end]
+
+        try:
+            vecs = get_embeddings(client, chunk, config.model, config.provider)
+            all_embeddings.extend(vecs.tolist())
+            i = chunk_end
+            continue
+        except Exception as e:
+            if not _is_context_length_error(e):
+                raise
+
+            if len(chunk) > 1:
+                # Multi-text chunk failed — retry each text individually
+                # within this chunk.  Previous chunks are safe.
+                logger.warning(
+                    f"Context error in batch of {len(chunk)} texts at index "
+                    f"{i}. Falling back to per-segment processing."
+                )
+            # For single-text chunks, fall straight through to per-segment.
+
+        # --- per-segment processing for this chunk ----------------------
+        while i < chunk_end:
+            retries = 0
+            while True:
+                try:
+                    vec = get_embeddings(
+                        client, [texts[i]], config.model, config.provider
+                    )
+                    all_embeddings.append(vec[0].tolist())
+                    break  # success — next segment in chunk
+                except Exception as exc:
+                    if not _is_context_length_error(exc):
+                        raise
+                    retries += 1
+                    if retries > max_retries_per_segment:
+                        raise ValueError(
+                            f"Segment {i} still exceeds context length after "
+                            f"{max_retries_per_segment} splits"
+                        ) from exc
+
+                    # Split this one segment and splice into working lists
+                    split_rows, split_texts = _split_segment_row(
+                        rows[i],
+                        sections_by_ordinal,
+                        token_limit,
+                        halve_budget=True,
+                    )
+
+                    logger.warning(
+                        f"Segment {i} exceeded context length (retry "
+                        f"{retries}/{max_retries_per_segment}). Split into "
+                        f"{len(split_rows)} sub-segments."
+                    )
+
+                    n_new = len(split_rows)
+                    rows[i : i + 1] = split_rows
+                    texts[i : i + 1] = split_texts
+                    chunk_end += n_new - 1  # adjust boundary
+
+            i += 1
+
+    logger.info(f"Embedded {len(texts)}/{len(texts)} segments — done.")
+
+    # Rebuild segments_df from the (possibly modified) rows
+    segments_df = pl.DataFrame(rows, schema=segments_df.schema)
+
+    # Renumber segment_ordinal and segment_position
+    segments_df = segments_df.with_columns(
+        pl.arange(0, len(segments_df), eager=True).alias("segment_ordinal")
+    )
+    pos_series: list[int] = []
+    section_pos: dict[int, int] = {}
+    for sec_ord in segments_df["section_ordinal"].to_list():
+        p = section_pos.get(sec_ord, 0)
+        pos_series.append(p)
+        section_pos[sec_ord] = p + 1
+    if "segment_position" in segments_df.columns:
+        segments_df = segments_df.with_columns(
+            pl.Series("segment_position", pos_series)
+        )
+
+    embeddings_array = np.asarray(all_embeddings, dtype=EMBEDDING_DTYPE)
+    return embeddings_array, segments_df, texts
+
+
+def _split_oversized_embedding_segments(
+    segments_df: pl.DataFrame,
+    sections_df: pl.DataFrame,
+    token_limit: int,
+) -> pl.DataFrame:
+    """Split segments whose assembled embedding text would exceed *token_limit*.
+
+    When ancestor headings are prepended to a segment's body text for
+    embedding, the total may exceed the embedding model's context window.
+    This function identifies such segments and splits their body text into
+    smaller pieces, creating new segment rows with **all** original metadata
+    preserved.
+
+    Delegates per-row splitting to :func:`_split_segment_row`.
+
+    Args:
+        segments_df: Segments DataFrame.
+        sections_df: Sections DataFrame with ``ancestor_path`` information.
+        token_limit: Maximum estimated tokens for the assembled embedding text
+            (ancestor headings + segment body).
+
+    Returns:
+        New :class:`pl.DataFrame` with the same schema as *segments_df*.
+        If no segments need splitting, the original DataFrame is returned
+        unchanged.
+    """
+    sections_by_ordinal: dict[int, dict] = {
+        row["section_ordinal"]: row for row in sections_df.to_dicts()
+    }
+
+    new_rows: list[dict] = []
+    split_count = 0
+
+    for row in segments_df.to_dicts():
+        split_rows, _ = _split_segment_row(row, sections_by_ordinal, token_limit)
+        if len(split_rows) > 1:
+            split_count += 1
+        new_rows.extend(split_rows)
+
+    if split_count == 0:
+        return segments_df
+
+    # Renumber segment_ordinal sequentially and segment_position within
+    # each section so positions are sequential after splitting.
+    section_position_counters: dict[int, int] = {}
+    for idx, new_row in enumerate(new_rows):
+        new_row["segment_ordinal"] = idx
+        sec_ord = new_row.get("section_ordinal", 0)
+        pos = section_position_counters.get(sec_ord, 0)
+        new_row["segment_position"] = pos
+        section_position_counters[sec_ord] = pos + 1
+
+    logger.info(
+        f"Split {split_count} oversized segments into {len(new_rows)} total "
+        f"(was {len(segments_df)}) to fit within token_limit={token_limit}"
+    )
+
+    return pl.DataFrame(new_rows, schema=segments_df.schema)
+
+
 def create_and_save_embeddings(
     segments_df: pl.DataFrame,
     sections_df: pl.DataFrame,
@@ -945,12 +1223,21 @@ def create_and_save_embeddings(
     code_ref: CodeRef,
     embedding_config: EmbeddingConfig | None = None,
     output_path: Path | None = None,
+    token_limit: int | None = None,
+    words_per_token: float | None = None,
 ) -> pl.DataFrame:
     """Create embeddings with full context and save as a self-describing Parquet file.
 
     This is the primary embedding workflow.  It assembles ``embedding_text`` from
     ancestor headings + segment text, generates embedding vectors, and writes a
     Parquet file containing all metadata needed for a downstream index rebuild.
+
+    Before generating embeddings, any segment whose assembled text (ancestor
+    headings + body) exceeds *token_limit* is split into smaller segments so
+    that **no text is lost**.  The split is performed in memory only — the
+    original ``segments.parquet`` is never modified (it is a tracked DVC
+    output of the ``segment`` stage).  Split segment text is captured in the
+    ``embeddings.parquet`` output.
 
     Args:
         segments_df: Segments DataFrame (from :func:`~legiscope.segment.create_segments_df`).
@@ -960,19 +1247,58 @@ def create_and_save_embeddings(
         embedding_config: Optional embedding configuration overrides.
         output_path: Where to write the Parquet file. Defaults to
             ``{code_ref.full_data_dir}/embeddings.parquet``.
+        token_limit: Maximum estimated tokens for assembled embedding text.
+            Read from ``params.yaml`` (``segmentation.token_limit``) when
+            ``None``.
+        words_per_token: Words-per-token ratio.  Read from ``params.yaml``
+            when ``None``.
 
     Returns:
         The embeddings DataFrame that was written.
     """
     config = embedding_config or EmbeddingConfig()
 
+    # --- resolve segmentation defaults from params.yaml -----------------
+    if token_limit is None or words_per_token is None:
+        from legiscope.params import load_params
+
+        p = load_params(code_ref.full_data_dir)
+        seg = p.get("segmentation", {})
+        if token_limit is None:
+            token_limit = int(seg.get("token_limit", 1024))
+        if words_per_token is None:
+            words_per_token = float(seg.get("words_per_token", 0.75))
+
     logger.info(f"Creating embeddings for {code_ref.code_id}")
 
-    # Assemble embedding_text
+    # --- split oversized segments so no text is lost --------------------
+    # Proactive pass: split any segments whose assembled embedding text
+    # exceeds the token limit.
+    original_len = len(segments_df)
+    segments_df = _split_oversized_embedding_segments(
+        segments_df, sections_df, token_limit
+    )
+
     embedding_texts = _build_embedding_text(segments_df, sections_df)
 
-    # Generate embedding vectors
-    embeddings = get_embeddings(client, embedding_texts, config.model, config.provider)
+    # --- generate embeddings with per-segment fallback ------------------
+    # Embed all texts.  If an individual text triggers a context-length
+    # error, split just that segment, update the DataFrame / texts list,
+    # embed the replacement chunks, and continue.
+    embeddings, segments_df, embedding_texts = _embed_with_fallback(
+        client=client,
+        config=config,
+        segments_df=segments_df,
+        sections_df=sections_df,
+        embedding_texts=embedding_texts,
+        token_limit=token_limit,
+    )
+
+    if len(segments_df) != original_len:
+        logger.info(
+            f"Segments split during embedding: {original_len} → "
+            f"{len(segments_df)} rows (splits captured in embeddings.parquet)"
+        )
 
     # Build the output DataFrame
     # Start with key columns from segments_df
