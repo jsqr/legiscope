@@ -206,15 +206,17 @@ def _process_markdown_elements(
             # Record heading metadata
             output_line_number = len(converted_lines)
             markdown_level = min(heading_level, 4)
-            heading_records.append({
-                "element_id": eid,
-                "output_line_number": output_line_number,
-                "heading_level": heading_level,
-                "markdown_level": markdown_level,
-                "section_type": hl_obj.type_label if hl_obj else None,
-                "section_number": _extract_section_number(heading_text, hl_obj),
-                "heading_text": heading_text.strip(),
-            })
+            heading_records.append(
+                {
+                    "element_id": eid,
+                    "output_line_number": output_line_number,
+                    "heading_level": heading_level,
+                    "markdown_level": markdown_level,
+                    "section_type": hl_obj.type_label if hl_obj else None,
+                    "section_number": _extract_section_number(heading_text, hl_obj),
+                    "heading_text": heading_text.strip(),
+                }
+            )
 
             if (len(heading_records) % 50) == 0:
                 logger.debug(
