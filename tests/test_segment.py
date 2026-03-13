@@ -6,8 +6,8 @@ import pytest
 from legiscope.models import CodeRef, JurisdictionRef
 from legiscope.segment import (
     _estimate_token_count,
+    _split_by_token_budget,
     add_parent_relationships,
-    add_segments_to_sections,
     create_segments_df,
     divide_into_sections,
     enrich_sections,
@@ -683,10 +683,9 @@ class TestSegmentText:
         segments = segment_text(text, token_limit=50)
 
         assert len(segments) > 1
-        # Each segment should be under the word limit
-        word_limit = int(50 * 0.75)  # Default words_per_token
+        # Each segment should be under the token limit
         for segment in segments:
-            assert len(segment.split()) <= word_limit
+            assert _estimate_token_count(segment) <= 50
 
     def test_sentence_boundary_preservation(self):
         """Test that sentence boundaries are preserved when possible."""
@@ -700,18 +699,6 @@ class TestSegmentText:
             if len(segment.split()) > 1:
                 assert segment.endswith((".", "!", "?"))
 
-    def test_custom_words_per_token(self):
-        """Test custom words per token ratio."""
-        text = "This is a test text with multiple sentences. It should be split according to the custom ratio."
-
-        # Use higher ratio (more words per token)
-        segments = segment_text(text, token_limit=20, words_per_token=1.0)
-
-        # Should create fewer segments with higher ratio
-        word_limit = int(20 * 1.0)
-        for segment in segments:
-            assert len(segment.split()) <= word_limit
-
     def test_very_long_sentence(self):
         """Test handling of very long sentences that exceed limit."""
         # Create a very long single sentence
@@ -722,7 +709,7 @@ class TestSegmentText:
         # Should split the long sentence
         assert len(segments) >= 1
         for segment in segments:
-            assert len(segment.split()) <= int(20 * 0.75)
+            assert _estimate_token_count(segment) <= 20
 
     def test_invalid_inputs(self):
         """Test error handling for invalid inputs."""
@@ -739,17 +726,6 @@ class TestSegmentText:
 
         with pytest.raises(ValueError, match="token_limit must be a positive number"):
             segment_text("text", token_limit=-5)
-
-        # Invalid words_per_token
-        with pytest.raises(
-            ValueError, match="words_per_token must be a positive number"
-        ):
-            segment_text("text", words_per_token=0)
-
-        with pytest.raises(
-            ValueError, match="words_per_token must be a positive number"
-        ):
-            segment_text("text", words_per_token=-1)
 
     def test_text_with_various_punctuation(self):
         """Test text with various punctuation and sentence endings."""
@@ -784,13 +760,11 @@ class TestSegmentText:
     def test_exact_token_limit_boundary(self):
         """Test text that exactly matches token limit."""
         # Create text that should exactly fit
-        target_words = int(
-            50 * 0.75
-        )  # word_limit for token_limit=50, words_per_token=0.75
+        target_words = int(50 * 0.75)  # word_limit for token_limit=50
         words = ["word"] * target_words
         text = " ".join(words)
 
-        segments = segment_text(text, token_limit=50, words_per_token=0.75)
+        segments = segment_text(text, token_limit=50)
 
         # Should create exactly one segment
         assert len(segments) == 1
@@ -880,10 +854,9 @@ Short conclusion paragraph."""
         # Should split the single paragraph into multiple segments
         assert len(segments) > 1
 
-        # All segments should be under word limit
-        word_limit = int(40 * 0.75)
+        # All segments should be under the token limit
         for segment in segments:
-            assert len(segment.split()) <= word_limit
+            assert _estimate_token_count(segment) <= 40
 
     def test_paragraph_with_various_whitespace(self):
         """Test paragraph handling with various whitespace patterns."""
@@ -926,7 +899,7 @@ Short conclusion paragraph."""
         """Dense numeric/punctuation text should still be split under token budget."""
         text = " ".join(f"{600 + i} 14401 Friar St. Van Nuys" for i in range(120))
 
-        segments = segment_text(text, token_limit=64, words_per_token=0.5)
+        segments = segment_text(text, token_limit=64)
 
         assert len(segments) > 1
         for segment in segments:
@@ -936,216 +909,22 @@ Short conclusion paragraph."""
         """A single very long blob (no whitespace) should not remain one huge segment."""
         blob = "60114401FriarStVanNuys" * 80
 
-        segments = segment_text(blob, token_limit=32, words_per_token=0.75)
+        segments = segment_text(blob, token_limit=32)
 
         assert len(segments) > 1
         for segment in segments:
             assert _estimate_token_count(segment) <= 32
 
+    def test_single_long_digit_run_is_split_under_budget(self):
+        """Fallback token-budget splitting should break oversized digit runs."""
+        digits = "1234567890" * 15
 
-class TestAddSegmentsToSections:
-    """Test cases for add_segments_to_sections function."""
+        chunks = _split_by_token_budget(digits, token_limit=16)
 
-    def test_basic_dataframe_integration(self):
-        """Test basic integration with sections DataFrame."""
-        # Create test DataFrame
-        # Create longer text that will definitely need multiple segments
-        long_content = "This is sentence one. " * 50  # 50 sentences
-        df = pl.DataFrame(
-            {
-                "section_ordinal": [0, 1],
-                "heading_level": [1, 2],
-                "heading_text": ["# Title", "## Section"],
-                "body_text": ["Short content.", long_content],
-            }
-        )
-
-        result = add_segments_to_sections(df, token_limit=50)
-
-        # Check new columns exist
-        assert "segments" in result.columns
-        assert "segment_count" in result.columns
-        assert "total_words" in result.columns
-
-        # Check segment counts
-        segment_counts = result["segment_count"].to_list()
-        assert segment_counts[0] == 1  # Short content = 1 segment
-        assert segment_counts[1] > 1  # Longer content = multiple segments
-
-    def test_empty_body_text(self):
-        """Test handling of empty body text."""
-        df = pl.DataFrame(
-            {
-                "section_ordinal": [0, 1],
-                "heading_level": [1, 2],
-                "heading_text": ["# Title", "## Section"],
-                "body_text": [None, ""],
-            }
-        )
-
-        result = add_segments_to_sections(df)
-
-        # Both should have 0 segments
-        segment_counts = result["segment_count"].to_list()
-        assert segment_counts == [0, 0]
-
-        # Segments should be empty lists
-        segments = result["segments"].to_list()
-        assert segments == [[], []]
-
-    def test_custom_text_column(self):
-        """Test with custom text column name."""
-        df = pl.DataFrame(
-            {
-                "section_ordinal": [0],
-                "heading_level": [1],
-                "heading_text": ["# Title"],
-                "custom_text": ["Content to be segmented."],
-            }
-        )
-
-        result = add_segments_to_sections(df, text_column="custom_text")
-
-        # Should process custom_text column
-        assert "segments" in result.columns
-        assert result["segment_count"][0] >= 1
-
-    def test_invalid_dataframe_input(self):
-        """Test error handling for invalid inputs."""
-        # Non-DataFrame input
-        with pytest.raises(TypeError, match="df must be a polars DataFrame"):
-            add_segments_to_sections("not a dataframe")
-
-        # Missing column
-        df = pl.DataFrame(
-            {
-                "section_ordinal": [0],
-                "heading_level": [1],
-                "heading_text": ["# Title"],
-                # Missing body_text
-            }
-        )
-
-        with pytest.raises(ValueError, match="Column 'body_text' not found"):
-            add_segments_to_sections(df)
-
-    def test_column_order_preservation(self):
-        """Test that original column order is preserved."""
-        df = pl.DataFrame(
-            {
-                "section_ordinal": [0],
-                "heading_level": [1],
-                "heading_text": ["# Title"],
-                "body_text": ["Content."],
-                "parent": [None],
-            }
-        )
-
-        result = add_segments_to_sections(df)
-
-        # Original columns should be preserved
-        original_columns = [
-            "section_ordinal",
-            "heading_level",
-            "heading_text",
-            "body_text",
-            "parent",
-        ]
-        new_columns = ["segments", "segment_count", "total_words"]
-        expected_columns = ["section_ordinal"] + original_columns[1:] + new_columns
-
-        assert result.columns == expected_columns
-
-    def test_integration_with_parent_relationships(self):
-        """Test integration with parent relationships."""
-        # Create sections with parent relationships
-        base_df = pl.DataFrame(
-            {
-                "section_ordinal": [0, 1, 2],
-                "heading_level": [1, 2, 3],
-                "heading_text": ["# Title", "## Section", "### Subsection"],
-                "body_text": [
-                    "Main content.",
-                    "Section content.",
-                    "Subsection content.",
-                ],
-            }
-        )
-
-        # Add parent relationships first
-        df_with_parents = add_parent_relationships(base_df)
-
-        # Then add segments
-        result = add_segments_to_sections(df_with_parents)
-
-        # Should have all columns (no line_number since base_df was manually created)
-        expected_columns = [
-            "section_ordinal",
-            "heading_level",
-            "heading_text",
-            "body_text",
-            "parent",
-            "children",
-            "depth",
-            "ancestor_path",
-            "segments",
-            "segment_count",
-            "total_words",
-        ]
-        assert result.columns == expected_columns
-
-        # Parent relationships should be preserved
-        parents = result["parent"].to_list()
-        assert parents == [None, 0, 1]
-
-    def test_large_text_processing(self):
-        """Test processing of large text content."""
-        # Create large text with many sentences
-        large_content = "This is sentence one. " * 200  # 200 sentences
-
-        df = pl.DataFrame(
-            {
-                "section_ordinal": [0],
-                "heading_level": [1],
-                "heading_text": ["# Large Section"],
-                "body_text": [large_content],
-            }
-        )
-
-        result = add_segments_to_sections(df, token_limit=50)
-
-        # Should create multiple segments
-        segment_count = result["segment_count"][0]
-        assert segment_count >= 5  # Should be several segments with 200 sentences
-
-        # Total word count should be correct
-        total_words = result["total_words"][0]
-        assert total_words == len(large_content.split())
-
-    def test_custom_parameters(self):
-        """Test with custom token limit and words per token."""
-        df = pl.DataFrame(
-            {
-                "section_ordinal": [0],
-                "heading_level": [1],
-                "heading_text": ["# Title"],
-                "body_text": [
-                    "Content with multiple sentences. More content here. Even more content."
-                ],
-            }
-        )
-
-        # Use custom parameters
-        result = add_segments_to_sections(df, token_limit=50, words_per_token=1.2)
-
-        # Should create segments based on custom parameters
-        assert result["segment_count"][0] >= 1
-
-        # Verify segments are under custom limit
-        segments = result["segments"][0]
-        word_limit = int(50 * 1.2)
-        for segment in segments:
-            assert len(segment.split()) <= word_limit
+        assert len(chunks) > 1
+        assert "".join(chunks) == digits
+        for chunk in chunks:
+            assert _estimate_token_count(chunk) <= 16
 
 
 class TestCreateSegmentsDf:
@@ -1207,21 +986,19 @@ class TestCreateSegmentsDf:
 
     def test_long_heading_adjustment(self):
         """Test token limit adjustment for long headings."""
-        # words_per_token = 0.75
         # min_tokens is hardcoded to 20 in implementation
 
         # Setup:
         # token_limit = 50
-        # Heading: 23 words (~30 tokens: int(23/0.75) = 30)
-        # Adjusted limit: max(20, 50 - 30) = 20
-        # 20 tokens * 0.75 = 15 words capacity
+        # Heading: 35 simple words -> _estimate_token_count = 35
+        # Adjusted limit: max(20, 50 - 35) = 20
+        #
+        # Body: 25 simple words -> _estimate_token_count = 25
+        # 25 > 20 -> Should split
+        # Without adjustment: 25 <= 50 -> would fit in 1 segment
 
-        # Body: 19 words (~25 tokens)
-        # 19 words > 15 words capacity -> Should split
-        # If no adjustment: 50 tokens * 0.75 = 37.5 words -> 19 words fits -> 1 segment
-
-        long_heading = " ".join(["Head"] * 23)
-        body_text = " ".join(["Body"] * 19)
+        long_heading = " ".join(["Head"] * 35)
+        body_text = " ".join(["Body"] * 25)
 
         df = pl.DataFrame(
             {
@@ -1232,10 +1009,51 @@ class TestCreateSegmentsDf:
             }
         )
 
-        result = create_segments_df(df, token_limit=50, words_per_token=0.75)
+        result = create_segments_df(df, token_limit=50)
 
         # Should be split due to reduced effective limit
         assert len(result) >= 2
+
+    def test_ancestor_heading_cost_accounted_for(self):
+        """When ancestor_path is present, full ancestor heading cost is subtracted."""
+        # Build a hierarchy: # Root (10 tokens) -> ## Child (10 tokens)
+        # token_limit = 50
+        # Ancestor heading cost for child = Root heading (10) + Child heading (10) = 20
+        # Adjusted body budget = 50 - 20 = 30
+        # Body text = 35 tokens -> should be split
+        #
+        # Without ancestor accounting (only immediate heading = 10 tokens):
+        # Adjusted body budget = 50 - 10 = 40
+        # Body text = 35 tokens -> would fit in 1 segment
+
+        root_heading = " ".join(["Root"] * 10)
+        child_heading = " ".join(["Child"] * 10)
+        body_text = " ".join(["Word"] * 35)
+
+        sections = add_parent_relationships(
+            pl.DataFrame(
+                {
+                    "section_ordinal": [0, 1],
+                    "heading_level": [1, 2],
+                    "heading_text": [f"# {root_heading}", f"## {child_heading}"],
+                    "body_text": [None, body_text],
+                }
+            )
+        )
+
+        result = create_segments_df(sections, token_limit=50)
+
+        # Body should be split because the full ancestor heading cost (20)
+        # leaves only 30 tokens of budget, and the body is 35 tokens
+        assert len(result) >= 2
+
+        # Verify all segments fit within the adjusted budget
+        ancestor_tokens = _estimate_token_count(
+            f"# {root_heading}"
+        ) + _estimate_token_count(f"## {child_heading}")
+        adjusted_limit = max(20, 50 - ancestor_tokens)
+        for row in result.to_dicts():
+            assert _estimate_token_count(row["segment_text"]) <= adjusted_limit
 
     def test_segment_position_tracking(self):
         """Test that segment_position is correctly tracked within sections."""
@@ -1321,10 +1139,9 @@ class TestCreateSegmentsDf:
         # Should have multiple segments from long content plus one from short content
         assert len(result) >= 3
 
-        # Check that all segments are under word limit
-        word_limit = int(50 * 0.75)
-        for word_count in result["word_count"].to_list():
-            assert word_count <= word_limit
+        # Check that all segments are under the token limit
+        for row in result.to_dicts():
+            assert _estimate_token_count(row["segment_text"]) <= 50
 
     def test_paragraph_preservation_in_flat_format(self):
         """Test that paragraph boundaries are preserved in flat format."""

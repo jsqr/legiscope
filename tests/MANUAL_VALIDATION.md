@@ -82,7 +82,7 @@ uv run python scripts/segment.py --state IL --locality WindyCity --code-slug mun
 ```
 
 **Verify:**
-- [ ] More segments produced compared to default `token_limit: 256`
+- [ ] More segments produced compared to default `token_limit: 1024`
 - [ ] Log confirms the smaller token_limit was used
 - [ ] Clean up: `rm data/laws/IL/WindyCity/municipal-code/params.yaml`
 
