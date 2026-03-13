@@ -21,6 +21,7 @@ DEFAULT_SCAN_MAX_LINES = _params.get("convert", {}).get("scan_max_lines", 200)
 DEFAULT_TEMPERATURE = _params.get("llm", {}).get(
     "temperature", 0.0
 )  # Low temperature for consistent legal text analysis
+DEFAULT_MAX_RETRIES = _params.get("llm", {}).get("max_retries", 3)
 
 
 # ── Heading-like line heuristics ───────────────────────────────────────
@@ -463,7 +464,7 @@ def scan_headings(
             ],
             response_model=HeadingStructure,
             temperature=DEFAULT_TEMPERATURE,
-            max_retries=3,
+            max_retries=DEFAULT_MAX_RETRIES,
         )
 
         # Phase 3: Evaluate on full code elements
