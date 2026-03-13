@@ -20,8 +20,42 @@ EMBEDDING_DTYPE = np.float32
 POLARS_EMBEDDING_DTYPE = pl.List(pl.Float32)
 
 # Batch processing constants
-CHROMA_BATCH_SIZE = 100  # Number of documents to add to ChromaDB per batch
-BATCH_LOG_INTERVAL = 100  # Log progress every N items for large datasets
+CHROMA_BATCH_SIZE = 100  # Fallback Chroma write batch size when params are unavailable
+BATCH_LOG_INTERVAL = 100  # Fallback log progress interval when params are unavailable
+
+
+def _get_batch_log_interval() -> int:
+    """Read embedding progress log interval from ``params.yaml`` with fallback."""
+    from legiscope.params import load_params
+
+    try:
+        params = load_params()
+    except FileNotFoundError:
+        return BATCH_LOG_INTERVAL
+
+    interval = params.get("embeddings", {}).get(
+        "batch_log_interval", BATCH_LOG_INTERVAL
+    )
+    if not isinstance(interval, int) or interval <= 0:
+        return BATCH_LOG_INTERVAL
+    return interval
+
+
+def _get_chroma_batch_size() -> int:
+    """Read Chroma write batch size from ``params.yaml`` with fallback."""
+    from legiscope.params import load_params
+
+    try:
+        params = load_params()
+    except FileNotFoundError:
+        return CHROMA_BATCH_SIZE
+
+    batch_size = params.get("embeddings", {}).get(
+        "chroma_batch_size", CHROMA_BATCH_SIZE
+    )
+    if not isinstance(batch_size, int) or batch_size <= 0:
+        return CHROMA_BATCH_SIZE
+    return batch_size
 
 
 def get_ollama_client():
@@ -318,6 +352,7 @@ def _generate_embeddings_mistral(
     """
     embeddings_list: list[list[float]] = []
     total_batches = (len(texts) + batch_size - 1) // batch_size
+    log_interval = _get_batch_log_interval()
     logger.info(
         f"Processing {len(texts)} texts in {total_batches} batches of {batch_size} (Mistral)"
     )
@@ -335,10 +370,14 @@ def _generate_embeddings_mistral(
         batch_embeddings = [list(item.embedding) for item in response.data]
         embeddings_list.extend(batch_embeddings)
 
-        # Log progress for larger datasets
-        logger.debug(
-            f"Processed batch {batch_num + 1}/{total_batches} ({len(batch_texts)} texts)"
-        )
+        # Log progress based on configured item interval
+        if (end_idx // log_interval) > (start_idx // log_interval) or end_idx == len(
+            texts
+        ):
+            logger.debug(
+                f"Processed {end_idx}/{len(texts)} texts "
+                f"(batch {batch_num + 1}/{total_batches})"
+            )
 
     return embeddings_list
 
@@ -362,6 +401,7 @@ def _generate_embeddings_ollama(
         ValueError: If embedding generation fails
     """
     embeddings_list: list[list[float]] = []
+    log_interval = _get_batch_log_interval()
     logger.info(f"Processing {len(texts)} texts individually (Ollama)")
 
     for i, text in enumerate(texts):
@@ -375,7 +415,7 @@ def _generate_embeddings_ollama(
             raise ValueError(f"Embedding error for segment {i}: {e}") from e
 
         # Log progress for larger datasets
-        if (i + 1) % BATCH_LOG_INTERVAL == 0 or i == len(texts) - 1:
+        if (i + 1) % log_interval == 0 or i == len(texts) - 1:
             logger.debug(f"Processed {i + 1}/{len(texts)} texts")
 
     return embeddings_list
@@ -673,18 +713,19 @@ def _add_documents_to_collection(
         embeddings: List of embedding vectors
         metadata_list: List of metadata dictionaries (or None)
     """
-    total_batches = (len(ids) + CHROMA_BATCH_SIZE - 1) // CHROMA_BATCH_SIZE
+    batch_size = _get_chroma_batch_size()
+    total_batches = (len(ids) + batch_size - 1) // batch_size
     logger.info(f"Adding {len(ids)} documents to collection in {total_batches} batches")
 
-    for i in range(0, len(ids), CHROMA_BATCH_SIZE):
-        end_idx = min(i + CHROMA_BATCH_SIZE, len(ids))
+    for i in range(0, len(ids), batch_size):
+        end_idx = min(i + batch_size, len(ids))
         batch_ids = ids[i:end_idx]
         batch_documents = documents[i:end_idx]
         batch_embeddings = embeddings[i:end_idx]
         batch_metadata = metadata_list[i:end_idx] if metadata_list else None
 
         logger.debug(
-            f"Adding batch {i // CHROMA_BATCH_SIZE + 1}/{total_batches} ({len(batch_ids)} documents)"
+            f"Adding batch {i // batch_size + 1}/{total_batches} ({len(batch_ids)} documents)"
         )
 
         collection.add(

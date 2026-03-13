@@ -33,6 +33,8 @@ llm:
 # Embedding configuration
 embeddings:
   default_provider: ollama
+  chroma_batch_size: 100
+  batch_log_interval: 100
 
   providers:
     mistral:
@@ -41,7 +43,7 @@ embeddings:
 
     ollama:
       model: embeddinggemma
-      batch_size:
+      batch_size: 1
 
   dtype: float32
 
