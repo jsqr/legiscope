@@ -4,8 +4,10 @@ Infrastructure configuration loader for legiscope.
 Loads ``config.yaml`` (deployment/environment-specific settings) and exposes
 a singleton ``Config`` accessor with dot-path key lookup.
 
-The only env-var override honoured here is ``LEGISCOPE_DATA_DIR``, which
-lets operators relocate the data root without editing the YAML file.
+Most path helpers are rooted at ``data_dir()`` and therefore follow the
+``LEGISCOPE_DATA_DIR`` override. ``monqcle_report_path()`` is the intentional
+exception: it points to a COEP-specific dataset outside the main data root, so
+relative values are resolved from the repository/config root instead.
 """
 
 from __future__ import annotations
@@ -110,10 +112,19 @@ def default_queries_path() -> Path:
 
 
 def monqcle_report_path() -> Path:
-    """Return the path to the MonQcle Standard Report CSV."""
-    return Path(
+    """Return the COEP MonQcle report path.
+
+    Unlike the other convenience path helpers, this location is intentionally
+    not nested under ``data_dir()`` because the benchmark fixture lives in the
+    repository's COEP data tree. Absolute config values are returned as-is;
+    relative values are resolved from the directory containing ``config.yaml``.
+    """
+    raw_path = Path(
         get(
             "paths.monqcle_report",
             "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
         )
     )
+    if raw_path.is_absolute():
+        return raw_path
+    return _find_config_path().parent / raw_path

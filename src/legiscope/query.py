@@ -42,6 +42,11 @@ def _retrieval_params() -> dict:
     return p.get("retrieval", {})
 
 
+def _debug_timestamp() -> str:
+    """Return a compact debug timestamp with minute-level precision."""
+    return datetime.now().strftime("%Y%m%d_%H%M")
+
+
 # Constants for query processing — read from params.yaml
 _qp = _query_params()
 _lp = _llm_params()
@@ -441,6 +446,7 @@ def query_legal_documents(
     settings: QuerySettings,
     debug_dir: Path | None = None,
     query_index: int = 0,
+    debug_timestamp: str | None = None,
 ) -> tuple[LegalQueryResponse, list[float]]:
     """
     Process a user query against retrieved legal documents using LLM analysis.
@@ -455,6 +461,8 @@ def query_legal_documents(
         debug_dir: Optional directory where debug artifacts (e.g., prompts and responses)
             for this query will be written if provided
         query_index: Optional index of this query within a batch, used for naming debug files
+        debug_timestamp: Optional shared timestamp for all debug files emitted for
+            this query; if omitted, one is created when needed
 
     Returns:
         LegalQueryResponse: Structured response with answer, reasoning, citations, and evidence
@@ -510,6 +518,8 @@ def query_legal_documents(
 
     logger.info(f"Found {len(sections)} relevant sections to analyze")
 
+    shared_debug_timestamp = debug_timestamp or _debug_timestamp()
+
     if settings.filter_relevance:
         # filter_llm is guaranteed to be set by __post_init__
         assert settings.filter_llm is not None
@@ -531,7 +541,6 @@ def query_legal_documents(
             if debug_dir and filtered_results.filtering_metadata:
                 try:
                     prefix = f"q{query_index:02d}"
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     assessments = filtered_results.filtering_metadata.assessments
                     if assessments:
                         records = []
@@ -549,7 +558,7 @@ def query_legal_documents(
                         pl.DataFrame(records).write_csv(
                             str(
                                 debug_dir
-                                / f"{prefix}_relevance_assessments_{timestamp}.csv"
+                                / f"{prefix}_relevance_assessments_{shared_debug_timestamp}.csv"
                             )
                         )
                 except Exception as e:
@@ -577,8 +586,7 @@ def query_legal_documents(
         try:
             debug_dir.mkdir(parents=True, exist_ok=True)
             prefix = f"q{query_index:02d}"
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            (debug_dir / f"{prefix}_context_{timestamp}.txt").write_text(
+            (debug_dir / f"{prefix}_context_{shared_debug_timestamp}.txt").write_text(
                 f"Query: {query}\n\nSections after filtering: {len(sections)}\n\n{full_context}"
             )
         except Exception as e:
@@ -916,6 +924,7 @@ def _process_single_query_with_error_handling(
     try:
         # llm is guaranteed to be set by BatchQuerySettings.__post_init__
         llm = cast(LLMConfig, settings.llm)
+        debug_timestamp = _debug_timestamp()
 
         # Build SectionRetrievalSettings for this query
         retrieval_settings = SectionRetrievalSettings(
@@ -938,7 +947,6 @@ def _process_single_query_with_error_handling(
             try:
                 debug_dir.mkdir(parents=True, exist_ok=True)
                 prefix = f"q{query_index:02d}"
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 records = []
                 for section in retrieval_results.sections:
                     records.append(
@@ -959,7 +967,10 @@ def _process_single_query_with_error_handling(
                     )
                 if records:
                     pl.DataFrame(records).write_csv(
-                        str(debug_dir / f"{prefix}_retrieved_sections_{timestamp}.csv")
+                        str(
+                            debug_dir
+                            / f"{prefix}_retrieved_sections_{debug_timestamp}.csv"
+                        )
                     )
             except Exception as e:
                 logger.warning(f"Failed to write debug retrieved sections: {e}")
@@ -982,6 +993,7 @@ def _process_single_query_with_error_handling(
             query_settings,
             debug_dir=debug_dir,
             query_index=query_index,
+            debug_timestamp=debug_timestamp,
         )
 
         processing_time = time.time() - start_time

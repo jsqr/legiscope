@@ -63,7 +63,7 @@ uv run python coep/scripts/benchmark_pipeline.py
 ### Key Resolved Inputs (from config/params)
 
 - Queries CSV: `config.default_queries_path()`
-- MonQcle report CSV: `config.monqcle_report_path()`
+- MonQcle report CSV: `config.monqcle_report_path()` (repo-root-relative by default, not under `data_dir`)
 - Output file: `config.output_dir() / {jurisdiction_id} / benchmark_results.csv`
 - Series title: `params["benchmark"]["series_title"]` (fallback: `DPL_2025_Consolidated`)
 
