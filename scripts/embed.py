@@ -66,7 +66,6 @@ def main() -> None:
 
     seg_params = params.get("segmentation", {})
     token_limit = seg_params.get("token_limit", 1024)
-    words_per_token = seg_params.get("words_per_token", 0.75)
 
     embeddings_df = create_and_save_embeddings(
         segments_df=segments_df,
@@ -75,7 +74,6 @@ def main() -> None:
         code_ref=code_ref,
         embedding_config=embedding_config,
         token_limit=token_limit,
-        words_per_token=words_per_token,
     )
 
     logger.info(f"Created {len(embeddings_df)} embeddings for {code_ref.code_id}")

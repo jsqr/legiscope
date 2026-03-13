@@ -25,7 +25,7 @@ POLARS_EMBEDDING_DTYPE = pl.List(pl.Float32)
 _p = load_params()
 
 # Batch processing constants
-CHROMA_BATCH_SIZE = _p.get("embeddings", {}).get("chroma_batch_size", 100)
+CHROMA_BATCH_SIZE = int(_p.get("embeddings", {}).get("chroma_batch_size", 100))
 
 
 def get_ollama_client():
@@ -126,85 +126,25 @@ def get_embedding_client(provider: str | None = None):
 
 @dataclass
 class EmbeddingConfig:
-    """Configuration for embedding operations."""
+    """Configuration for embedding model and provider.
+
+    This config controls *which* embedding model/provider to use.  Column
+    names for DataFrames are parameters on the individual functions that
+    need them (e.g. :func:`create_and_save_embeddings`).
+    """
 
     model: str | None = None  # Default model name (None means use provider default)
-    provider: str = "mistral"  # Embedding provider ("ollama" or "mistral")
-    heading_col: str = "section_heading"
-    text_col: str = "segment_text"
-    embedding_col: str = "embedding"
-    id_col: str = "segment_id"
+    provider: str = ""  # Resolved to EMBEDDING_PROVIDER in __post_init__
 
     def __post_init__(self):
-        """Validate configuration."""
+        """Resolve defaults and validate configuration."""
+        if not self.provider:
+            self.provider = EMBEDDING_PROVIDER
         if self.provider not in EMBEDDING_PROVIDER_CONFIG:
             raise ValueError(
                 f"Unsupported provider: {self.provider}. "
                 f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
             )
-        if not self.heading_col:
-            raise ValueError("heading_col cannot be empty")
-        if not self.text_col:
-            raise ValueError("text_col cannot be empty")
-        if not self.embedding_col:
-            raise ValueError("embedding_col cannot be empty")
-        if not self.id_col:
-            raise ValueError("id_col cannot be empty")
-
-
-@dataclass
-class PersistenceConfig:
-    """Configuration for persistence operations."""
-
-    persist_directory: str | Path = "data/chroma_db"
-    collection_name: str = "legal_code_all"
-    save_parquet: bool = True
-    parquet_path: str | Path | None = None
-    metadata_cols: list[str] | None = None
-    provider: str | None = None  # Embedding provider for collection naming
-    model: str | None = None  # Embedding model for collection naming
-
-    def __post_init__(self):
-        """Validate and normalize configuration."""
-        if not self.collection_name:
-            raise ValueError("collection_name cannot be empty")
-
-        # Convert string paths to Path objects
-        if isinstance(self.persist_directory, str):
-            self.persist_directory = Path(self.persist_directory)
-        if isinstance(self.parquet_path, str):
-            self.parquet_path = Path(self.parquet_path)
-
-        # Validate provider if specified
-        if self.provider and self.provider not in EMBEDDING_PROVIDER_CONFIG:
-            raise ValueError(
-                f"Unsupported provider: {self.provider}. "
-                f"Supported providers: {', '.join(EMBEDDING_PROVIDER_CONFIG.keys())}"
-            )
-
-
-@dataclass
-class JurisdictionConfig:
-    """Configuration for jurisdiction information."""
-
-    jurisdiction_id: str | None = None
-    state: str | None = None
-    locality: str | None = None
-
-    def __post_init__(self):
-        """Validate and derive jurisdiction information."""
-        # Auto-derive jurisdiction_id from state and locality if needed
-        if not self.jurisdiction_id and self.state and self.locality:
-            self.jurisdiction_id = f"{self.state}-{self.locality}"
-
-        # Parse state and locality from jurisdiction_id if not provided
-        if self.jurisdiction_id and "-" in self.jurisdiction_id:
-            if not self.state or not self.locality:
-                parsed_state, parsed_locality = self.jurisdiction_id.split("-", 1)
-                if not self.state:
-                    self.state = parsed_state
-                if not self.locality:
-                    self.locality = parsed_locality
 
 
 @dataclass
@@ -381,7 +321,7 @@ def _generate_embeddings_ollama(
 # ---------------------------------------------------------------------------
 
 
-def _build_embedding_provider_config() -> dict:
+def _build_embedding_provider_config() -> dict[str, dict[str, Any]]:
     """Build EMBEDDING_PROVIDER_CONFIG from params.yaml."""
     from legiscope.params import load_params
 
@@ -398,7 +338,7 @@ def _build_embedding_provider_config() -> dict:
         "mistral": _generate_embeddings_mistral,
     }
 
-    config: dict = {}
+    config: dict[str, dict[str, Any]] = {}
     for name, settings in providers_yaml.items():
         config[name] = {
             "model": settings.get("model", ""),
@@ -417,12 +357,11 @@ def _get_default_provider() -> str:
     from legiscope.params import load_params
 
     p = load_params()
-    return p.get("embeddings", {}).get("default_provider", "ollama")
+    return p.get("embeddings", {}).get("default_provider", "mistral")
 
 
 EMBEDDING_PROVIDER_CONFIG = _build_embedding_provider_config()
 EMBEDDING_PROVIDER = _get_default_provider()
-EMBEDDING_MODEL = EMBEDDING_PROVIDER_CONFIG[EMBEDDING_PROVIDER]["model"]
 
 
 def get_embeddings(
@@ -485,122 +424,6 @@ def get_embeddings(
     return embeddings_array
 
 
-def create_embeddings_df(
-    df: pl.DataFrame,
-    client,
-    config: EmbeddingConfig | None = None,
-) -> pl.DataFrame:
-    """Create embeddings DataFrame by augmenting segments with embedding vectors.
-
-    Creates embeddings based on the concatenation of section heading and segment text,
-    then adds them as a new column to the original DataFrame.
-
-    Args:
-        df: DataFrame from create_segments_df() with segment information (required input)
-        client: Embedding client instance (required infrastructure)
-        config: Configuration for embedding operations (optional, uses defaults if None)
-
-    Returns:
-        pl.DataFrame: Original DataFrame with additional embedding column
-
-    Raises:
-        ValueError: If required columns don't exist in DataFrame
-        TypeError: If df is not a polars DataFrame
-
-    Example:
-        from legiscope.segment import create_segments_df
-        from legiscope.embeddings import get_embedding_client, EmbeddingConfig
-
-        # Using defaults
-        client = get_embedding_client("mistral")
-        segments_df = create_segments_df(sections)
-        embedded_df = create_embeddings_df(segments_df, client)
-
-        # Using custom config
-        config = EmbeddingConfig(
-            provider="ollama",
-            model="embeddinggemma",
-            text_col="custom_text"
-        )
-        embedded_df = create_embeddings_df(segments_df, client, config)
-    """
-    # Use default config if not provided
-    config = config or EmbeddingConfig()
-
-    logger.info(
-        f"Creating embeddings DataFrame with model: {config.model or 'default'}"
-    )
-
-    if not isinstance(df, pl.DataFrame):
-        raise TypeError(f"df must be a polars DataFrame, got {type(df)}")
-
-    required_columns = {config.heading_col, config.text_col}
-    missing_columns = required_columns - set(df.columns)
-    if missing_columns:
-        raise ValueError(f"DataFrame missing required columns: {missing_columns}")
-
-    # Handle empty DataFrame
-    if len(df) == 0:
-        logger.warning(
-            "Empty DataFrame provided, returning with empty embeddings column"
-        )
-        return df.with_columns(
-            pl.lit([], dtype=POLARS_EMBEDDING_DTYPE).alias(config.embedding_col)
-        )
-
-    logger.debug(f"Processing {len(df)} rows for embedding generation")
-    logger.debug(
-        f"Using columns: heading='{config.heading_col}', text='{config.text_col}', embedding='{config.embedding_col}'"
-    )
-
-    # Concatenate heading and text for each segment
-    concatenated_texts = []
-    for i, row in enumerate(df.to_dicts()):
-        heading = row[config.heading_col] or ""
-        text = row[config.text_col] or ""
-
-        # Combine heading and text with separator
-        if heading and text:
-            combined = f"{heading}\n\n{text}"
-        elif heading:
-            combined = heading
-        else:
-            combined = text
-
-        concatenated_texts.append(combined)
-
-        # Log sample of concatenated texts for debugging
-        if i == 0:
-            logger.debug(f"Sample concatenated text: {combined[:100]}...")
-
-    logger.debug(
-        f"Concatenated {len(concatenated_texts)} texts for embedding generation."
-    )
-
-    # Estimate max length in tokens (rough estimate using 0.75 words/token)
-    logger.debug(
-        f"Max length: {max(len(text.split()) / 0.75 for text in concatenated_texts)} tokens."
-    )
-
-    # Generate embeddings
-    embeddings = get_embeddings(
-        client, concatenated_texts, config.model, config.provider
-    )
-
-    # If embeddings is a NumPy ndarray, convert to list-of-lists for Polars List column
-    if hasattr(embeddings, "tolist"):
-        embeddings_list = embeddings.tolist()
-    else:
-        embeddings_list = embeddings
-
-    result_df = df.with_columns(
-        pl.Series(config.embedding_col, embeddings_list, dtype=POLARS_EMBEDDING_DTYPE)
-    )
-
-    logger.info(f"Successfully created embeddings DataFrame with {len(result_df)} rows")
-    return result_df
-
-
 def get_or_create_legal_collection(
     config: CollectionConfig | None = None,
 ) -> chromadb.Collection:
@@ -648,7 +471,7 @@ def _add_documents_to_collection(
     collection: chromadb.Collection,
     ids: list[str],
     documents: list[str],
-    embeddings: list,
+    embeddings: list[Any],
     metadata_list: list[dict[str, Any]] | None,
 ) -> None:
     """Add documents to ChromaDB collection in batches.
@@ -687,7 +510,7 @@ class EmbeddingIndexConfig:
     """Configuration for creating a ChromaDB embedding index.
 
     Args:
-        df: DataFrame containing embeddings data (from create_embeddings_df)
+        df: DataFrame containing embeddings data (from create_and_save_embeddings)
         collection_name: Name for the ChromaDB collection
         persist_directory: Directory to persist the ChromaDB index. If None, uses in-memory
         id_col: Name of column containing unique IDs
@@ -707,11 +530,19 @@ class EmbeddingIndexConfig:
     jurisdiction_id: str | None = None
 
 
-def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
+def create_embedding_index(
+    config: EmbeddingIndexConfig,
+    collection: chromadb.Collection | None = None,
+) -> chromadb.Collection:
     """Create a ChromaDB embedding index from a DataFrame with embeddings.
 
     Args:
         config: Configuration object with all parameters
+        collection: Optional existing ChromaDB collection.  When provided the
+            collection is used directly and ``config.persist_directory`` /
+            ``config.collection_name`` are ignored for collection creation.
+            When *None* (default), a collection is obtained via
+            :func:`get_or_create_legal_collection`.
 
     Returns:
         chromadb.Collection: The created ChromaDB collection
@@ -750,14 +581,14 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     if missing_metadata:
         raise ValueError(f"metadata columns not found: {missing_metadata}")
 
-    # Prepare CollectionConfig
-    collection_config = CollectionConfig(
-        persist_directory=config.persist_directory or "data/chroma_db",
-        collection_name=config.collection_name,
-    )
-
-    # Get or create collection
-    collection = get_or_create_legal_collection(collection_config)
+    # Get or create collection (reuse caller-provided collection when given)
+    if collection is None:
+        collection_config = CollectionConfig(
+            persist_directory=config.persist_directory or "data/chroma_db",
+            collection_name=config.collection_name,
+        )
+        collection = get_or_create_legal_collection(collection_config)
+    assert collection is not None  # narrowing for type checker
     logger.info(f"Using collection: {collection.name}")
 
     # Prepare data for ChromaDB
@@ -825,105 +656,6 @@ def create_embedding_index(config: EmbeddingIndexConfig) -> chromadb.Collection:
     return collection
 
 
-def add_jurisdiction_embeddings(
-    collection: chromadb.Collection,
-    embeddings_df: pl.DataFrame,
-    jurisdiction_id: str,
-    config: EmbeddingIndexConfig | None = None,
-) -> None:
-    """Add embeddings for a specific jurisdiction to the shared collection.
-
-    Args:
-        collection: Existing ChromaDB collection (required infrastructure)
-        embeddings_df: DataFrame with embeddings data (required input)
-        jurisdiction_id: Unique identifier for jurisdiction (required input, e.g., 'IL-WindyCity')
-        config: Configuration for embedding index (optional, uses defaults if None)
-
-    Raises:
-        ValueError: If required columns are missing from DataFrame
-
-    Example:
-        # Using defaults
-        add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity")
-
-        # Using custom config
-        config = EmbeddingIndexConfig(
-            df=embeddings_df,
-            collection_name=collection.name,
-            jurisdiction_id="IL-WindyCity",
-            id_col="custom_id",
-            metadata_cols=["state", "locality"]
-        )
-        add_jurisdiction_embeddings(collection, embeddings_df, "IL-WindyCity", config)
-    """
-    logger.info(
-        f"Adding {len(embeddings_df)} embeddings for jurisdiction: {jurisdiction_id}"
-    )
-
-    # Build default config if not provided
-    if config is None:
-        config = EmbeddingIndexConfig(
-            df=embeddings_df,
-            collection_name=collection.name,
-            persist_directory=None,  # Use existing collection
-            jurisdiction_id=jurisdiction_id,
-        )
-
-    # Use the main create_embedding_index function
-    create_embedding_index(config)
-
-    logger.info(
-        f"Successfully added embeddings for {jurisdiction_id} to shared collection"
-    )
-
-
-def _build_embedding_text(
-    segments_df: pl.DataFrame,
-    sections_df: pl.DataFrame,
-) -> list[str]:
-    """Assemble embedding text for each segment: ancestor headings + segment text.
-
-    Args:
-        segments_df: Segments DataFrame with ``section_ordinal`` and ``segment_text``.
-        sections_df: Sections DataFrame with ``section_ordinal``, ``heading_text``,
-            and ``ancestor_path``.
-
-    Returns:
-        List of assembled text strings, one per segment row.
-    """
-    # Build lookup: section_ordinal -> section dict
-    sections_by_ordinal: dict[int, dict] = {
-        row["section_ordinal"]: row for row in sections_df.to_dicts()
-    }
-
-    texts: list[str] = []
-    for row in segments_df.to_dicts():
-        section_ordinal = row.get("section_ordinal")
-        segment_text = row.get("segment_text", "")
-
-        parts: list[str] = []
-
-        # Look up ancestor headings via ancestor_path
-        section = (
-            sections_by_ordinal.get(section_ordinal)
-            if section_ordinal is not None
-            else None
-        )
-        if section and section.get("ancestor_path"):
-            ancestor_ordinals = [int(x) for x in section["ancestor_path"].split("/")]
-            for anc_ordinal in ancestor_ordinals:
-                anc_section = sections_by_ordinal.get(anc_ordinal)
-                if anc_section and anc_section.get("heading_text"):
-                    parts.append(anc_section["heading_text"])
-
-        if segment_text:
-            parts.append(segment_text)
-
-        texts.append("\n\n".join(parts))
-
-    return texts
-
-
 # ---------------------------------------------------------------------------
 # Helpers: context-length error detection & segment splitting
 # ---------------------------------------------------------------------------
@@ -935,13 +667,58 @@ def _is_context_length_error(exc: Exception) -> bool:
     return "context length" in err or "input length" in err
 
 
+def _compact_ancestor_headings(
+    heading_parts: list[str],
+    token_limit: int,
+    *,
+    reserve_body_token: bool,
+) -> list[str]:
+    """Compact ancestor headings to fit within a token budget.
+
+    Headings are retained from nearest ancestor to farthest. If the nearest
+    heading alone exceeds the available heading budget, it is truncated to fit.
+    """
+    from legiscope.segment import _estimate_token_count, _split_by_token_budget
+
+    if not heading_parts:
+        return []
+
+    body_reserve = 1 if reserve_body_token else 0
+    heading_budget = max(1, token_limit - body_reserve)
+
+    compacted: list[str] = []
+    used_tokens = 0
+
+    for heading in reversed(heading_parts):
+        remaining_budget = heading_budget - used_tokens
+        if remaining_budget <= 0:
+            break
+
+        heading_tokens = _estimate_token_count(heading)
+        if heading_tokens <= remaining_budget:
+            compacted.append(heading)
+            used_tokens += heading_tokens
+            continue
+
+        if not compacted:
+            truncated_chunks = _split_by_token_budget(heading, remaining_budget)
+            if truncated_chunks:
+                compacted.append(truncated_chunks[0])
+            break
+
+        break
+
+    compacted.reverse()  # restore document order (root → leaf)
+    return compacted
+
+
 def _split_segment_row(
-    row: dict,
-    sections_by_ordinal: dict[int, dict],
+    row: dict[str, Any],
+    sections_by_ordinal: dict[int, dict[str, Any]],
     token_limit: int,
     *,
     halve_budget: bool = False,
-) -> tuple[list[dict], list[str]]:
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Core splitting logic for a single segment row.
 
     Checks whether the row's assembled embedding text (ancestor headings +
@@ -959,6 +736,11 @@ def _split_segment_row(
     Returns:
         ``(new_rows, embedding_texts)`` — parallel lists.  If no split is
         needed, both are single-element lists wrapping the original row.
+
+    Raises:
+        ValueError: If ancestor headings alone already meet or exceed
+            ``token_limit``, making the row impossible to fit by splitting
+            only the body text.
     """
     from legiscope.segment import _estimate_token_count, _split_by_token_budget
 
@@ -977,12 +759,26 @@ def _split_segment_row(
             if anc_sec and anc_sec.get("heading_text"):
                 heading_parts.append(anc_sec["heading_text"])
 
+    segment_text = row.get("segment_text") or ""
     heading_text = "\n\n".join(heading_parts)
     heading_tokens = _estimate_token_count(heading_text)
-
-    segment_text = row.get("segment_text") or ""
     assembled = (heading_text + "\n\n" + segment_text) if segment_text else heading_text
     total_est = _estimate_token_count(assembled)
+
+    if total_est > token_limit and heading_parts:
+        compacted_heading_parts = _compact_ancestor_headings(
+            heading_parts,
+            token_limit,
+            reserve_body_token=bool(segment_text),
+        )
+        if compacted_heading_parts != heading_parts:
+            heading_parts = compacted_heading_parts
+            heading_text = "\n\n".join(heading_parts)
+            heading_tokens = _estimate_token_count(heading_text)
+            assembled = (
+                (heading_text + "\n\n" + segment_text) if segment_text else heading_text
+            )
+            total_est = _estimate_token_count(assembled)
 
     # --- decide whether to split ---
     needs_split = (total_est > token_limit and segment_text) or (
@@ -996,13 +792,13 @@ def _split_segment_row(
         return [dict(row)], ["\n\n".join(parts)]
 
     # --- split body text ---
-    body_budget = max(20, token_limit - heading_tokens)
+    body_budget = max(1, token_limit - heading_tokens)
     if halve_budget:
-        body_budget = max(20, body_budget // 2)
+        body_budget = max(1, body_budget // 2)
 
     chunks = _split_by_token_budget(segment_text, body_budget)
 
-    new_rows: list[dict] = []
+    new_rows: list[dict[str, Any]] = []
     new_texts: list[str] = []
     for chunk in chunks:
         new_row = dict(row)
@@ -1053,7 +849,7 @@ def _embed_with_fallback(
     chunk_size: int = provider_cfg.get("batch_size") or 1
     log_interval = sys_config.get("logging.batch_log_interval", 1000)
 
-    sections_by_ordinal: dict[int, dict] = {
+    sections_by_ordinal: dict[int, dict[str, Any]] = {
         r["section_ordinal"]: r for r in sections_df.to_dicts()
     }
 
@@ -1160,7 +956,7 @@ def _split_oversized_embedding_segments(
     segments_df: pl.DataFrame,
     sections_df: pl.DataFrame,
     token_limit: int,
-) -> pl.DataFrame:
+) -> tuple[pl.DataFrame, list[str]]:
     """Split segments whose assembled embedding text would exceed *token_limit*.
 
     When ancestor headings are prepended to a segment's body text for
@@ -1178,25 +974,29 @@ def _split_oversized_embedding_segments(
             (ancestor headings + segment body).
 
     Returns:
-        New :class:`pl.DataFrame` with the same schema as *segments_df*.
-        If no segments need splitting, the original DataFrame is returned
-        unchanged.
+        Tuple of ``(segments_df, embedding_texts)``. The DataFrame has the
+        same schema as *segments_df*, and ``embedding_texts`` preserves any
+        heading compaction/truncation performed during splitting.
     """
-    sections_by_ordinal: dict[int, dict] = {
+    sections_by_ordinal: dict[int, dict[str, Any]] = {
         row["section_ordinal"]: row for row in sections_df.to_dicts()
     }
 
-    new_rows: list[dict] = []
+    new_rows: list[dict[str, Any]] = []
+    new_texts: list[str] = []
     split_count = 0
 
     for row in segments_df.to_dicts():
-        split_rows, _ = _split_segment_row(row, sections_by_ordinal, token_limit)
+        split_rows, split_texts = _split_segment_row(
+            row, sections_by_ordinal, token_limit
+        )
         if len(split_rows) > 1:
             split_count += 1
         new_rows.extend(split_rows)
+        new_texts.extend(split_texts)
 
     if split_count == 0:
-        return segments_df
+        return segments_df, new_texts
 
     # Renumber segment_ordinal sequentially and segment_position within
     # each section so positions are sequential after splitting.
@@ -1213,7 +1013,7 @@ def _split_oversized_embedding_segments(
         f"(was {len(segments_df)}) to fit within token_limit={token_limit}"
     )
 
-    return pl.DataFrame(new_rows, schema=segments_df.schema)
+    return pl.DataFrame(new_rows, schema=segments_df.schema), new_texts
 
 
 def create_and_save_embeddings(
@@ -1224,7 +1024,6 @@ def create_and_save_embeddings(
     embedding_config: EmbeddingConfig | None = None,
     output_path: Path | None = None,
     token_limit: int | None = None,
-    words_per_token: float | None = None,
 ) -> pl.DataFrame:
     """Create embeddings with full context and save as a self-describing Parquet file.
 
@@ -1250,8 +1049,6 @@ def create_and_save_embeddings(
         token_limit: Maximum estimated tokens for assembled embedding text.
             Read from ``params.yaml`` (``segmentation.token_limit``) when
             ``None``.
-        words_per_token: Words-per-token ratio.  Read from ``params.yaml``
-            when ``None``.
 
     Returns:
         The embeddings DataFrame that was written.
@@ -1259,15 +1056,12 @@ def create_and_save_embeddings(
     config = embedding_config or EmbeddingConfig()
 
     # --- resolve segmentation defaults from params.yaml -----------------
-    if token_limit is None or words_per_token is None:
+    if token_limit is None:
         from legiscope.params import load_params
 
         p = load_params(code_ref.full_data_dir)
         seg = p.get("segmentation", {})
-        if token_limit is None:
-            token_limit = int(seg.get("token_limit", 1024))
-        if words_per_token is None:
-            words_per_token = float(seg.get("words_per_token", 0.75))
+        token_limit = int(seg.get("token_limit", 1024))
 
     logger.info(f"Creating embeddings for {code_ref.code_id}")
 
@@ -1275,11 +1069,9 @@ def create_and_save_embeddings(
     # Proactive pass: split any segments whose assembled embedding text
     # exceeds the token limit.
     original_len = len(segments_df)
-    segments_df = _split_oversized_embedding_segments(
+    segments_df, embedding_texts = _split_oversized_embedding_segments(
         segments_df, sections_df, token_limit
     )
-
-    embedding_texts = _build_embedding_text(segments_df, sections_df)
 
     # --- generate embeddings with per-segment fallback ------------------
     # Embed all texts.  If an individual text triggers a context-length
@@ -1343,121 +1135,3 @@ def create_and_save_embeddings(
     logger.info(f"Saved embeddings: {output_path} ({len(out)} rows)")
 
     return out
-
-
-def create_and_persist_embeddings(
-    df: pl.DataFrame,
-    client,
-    embedding_config: EmbeddingConfig | None = None,
-    persistence_config: PersistenceConfig | None = None,
-    jurisdiction_config: JurisdictionConfig | None = None,
-) -> tuple[pl.DataFrame, chromadb.Collection]:
-    """Unified workflow: create embeddings, save parquet, and/or create ChromaDB index.
-
-    Args:
-        df: DataFrame with segment information (from create_segments_df)
-        client: Ollama client instance (use get_embedding_client() for configured client)
-        embedding_config: Configuration for embedding operations
-        persistence_config: Configuration for persistence operations
-        jurisdiction_config: Configuration for jurisdiction information
-
-    Returns:
-        Tuple of (embeddings_df, chroma_collection)
-
-    Raises:
-        ValueError: If required columns don't exist in DataFrame or embedding fails
-
-    Example:
-        from legiscope.embeddings import get_embedding_client, EmbeddingConfig, JurisdictionConfig
-        segments_df = create_segments_df(sections)
-        embeddings_df, collection = create_and_persist_embeddings(
-            segments_df,
-            client=get_embedding_client(),
-            jurisdiction_config=JurisdictionConfig(
-                jurisdiction_id="IL-WindyCity"
-            )
-        )
-    """
-    # Use defaults if configs not provided
-    emb_config = embedding_config or EmbeddingConfig()
-    pers_config = persistence_config or PersistenceConfig()
-    jur_config = jurisdiction_config or JurisdictionConfig()
-
-    # Set provider in persistence config if not already set
-    if pers_config.provider is None and emb_config.provider:
-        pers_config.provider = emb_config.provider
-
-    # Set model in persistence config if not already set
-    if pers_config.model is None and emb_config.model:
-        pers_config.model = emb_config.model
-
-    # Auto-resolve model from provider config if still unset
-    if pers_config.provider and not pers_config.model:
-        pers_config.model = EMBEDDING_PROVIDER_CONFIG[pers_config.provider]["model"]
-
-    # Generate provider/model-specific collection name if provider is set
-    collection_name = pers_config.collection_name
-    if pers_config.provider:
-        suffix = f"{pers_config.provider}_{pers_config.model}"
-        if pers_config.collection_name == "legal_code_all":
-            # Default collection name - make provider/model-specific
-            collection_name = f"legal_code_{suffix}"
-        elif not pers_config.collection_name.endswith(f"_{suffix}"):
-            # Custom collection name - append suffix if not already present
-            collection_name = f"{pers_config.collection_name}_{suffix}"
-
-    logger.info("Starting unified embeddings creation and persistence workflow")
-
-    # Step 1: Create embeddings DataFrame
-    logger.info("Step 1: Creating embeddings DataFrame")
-    embeddings_df = create_embeddings_df(
-        df=df,
-        client=client,
-        config=emb_config,
-    )
-
-    # Step 2: Save parquet file if requested
-    if pers_config.save_parquet:
-        logger.info("Step 2: Saving embeddings to parquet file")
-        if pers_config.parquet_path is None:
-            if jur_config.jurisdiction_id:
-                parquet_path = Path(
-                    f"data/laws/{jur_config.jurisdiction_id}/tables/embeddings.parquet"
-                )
-            else:
-                parquet_path = Path("embeddings.parquet")
-        else:
-            parquet_path = Path(pers_config.parquet_path)
-
-        parquet_path.parent.mkdir(parents=True, exist_ok=True)
-        embeddings_df.write_parquet(parquet_path)
-        logger.info(f"Saved embeddings parquet: {parquet_path}")
-
-    # Step 3: Create ChromaDB index
-    logger.info("Step 3: Creating ChromaDB index")
-
-    # Parse jurisdiction information if not provided
-    if not jur_config.jurisdiction_id and (jur_config.state or jur_config.locality):
-        if jur_config.state and jur_config.locality:
-            jur_config.jurisdiction_id = f"{jur_config.state}-{jur_config.locality}"
-        else:
-            logger.warning("Incomplete jurisdiction information provided")
-
-    index_config = EmbeddingIndexConfig(
-        df=embeddings_df,
-        collection_name=collection_name,
-        persist_directory=pers_config.persist_directory,
-        id_col=emb_config.id_col,
-        text_col=emb_config.text_col,
-        embedding_col=emb_config.embedding_col,
-        metadata_cols=pers_config.metadata_cols,
-        jurisdiction_id=jur_config.jurisdiction_id,
-    )
-    collection = create_embedding_index(index_config)
-
-    logger.info("Successfully completed unified embeddings workflow")
-    logger.info(f"  - Embeddings DataFrame: {len(embeddings_df)} rows")
-    logger.info(f"  - ChromaDB collection: {collection_name}")
-    logger.info(f"  - Collection documents: {collection.count()}")
-
-    return embeddings_df, collection
