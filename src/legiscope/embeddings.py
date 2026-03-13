@@ -736,11 +736,6 @@ def _split_segment_row(
     Returns:
         ``(new_rows, embedding_texts)`` — parallel lists.  If no split is
         needed, both are single-element lists wrapping the original row.
-
-    Raises:
-        ValueError: If ancestor headings alone already meet or exceed
-            ``token_limit``, making the row impossible to fit by splitting
-            only the body text.
     """
     from legiscope.segment import _estimate_token_count, _split_by_token_budget
 
