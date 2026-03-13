@@ -1028,9 +1028,9 @@ def create_and_save_embeddings(
 
     Before generating embeddings, any segment whose assembled text (ancestor
     headings + body) exceeds *token_limit* is split into smaller segments so
-    that **no text is lost**.  The split is performed in memory only — the
-    original ``segments.parquet`` is never modified (it is a tracked DVC
-    output of the ``segment`` stage).  Split segment text is captured in the
+    that content is lost, although whitespace/formatting may be normalized during splitting.
+    The split is performed in memory only — the original ``segments.parquet`` is never modified (it is a tracked DVC
+    output of the ``segment`` stage). Split segment text is captured in the
     ``embeddings.parquet`` output.
 
     Args:

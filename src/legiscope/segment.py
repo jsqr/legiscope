@@ -698,9 +698,12 @@ def create_segments_df(
     # _split_oversized_embedding_segments() in embeddings.py is a no-op
     # safety check rather than a routine necessity.
     has_ancestor_path = "ancestor_path" in df.columns
-    sections_by_ordinal: dict[int, dict] = {}
+    heading_text_by_ordinal: dict[int, str] = {}
     if has_ancestor_path:
-        sections_by_ordinal = {r["section_ordinal"]: r for r in df.to_dicts()}
+        heading_text_by_ordinal = {
+            row["section_ordinal"]: row["heading_text"]
+            for row in df.select(["section_ordinal", "heading_text"]).to_dicts()
+        }
 
     # Process each section to create segments
     all_segments = []
@@ -723,10 +726,9 @@ def create_segments_df(
         if has_ancestor_path and row.get("ancestor_path"):
             ancestor_ordinals = [int(x) for x in row["ancestor_path"].split("/")]
             heading_tokens = sum(
-                _estimate_token_count(sections_by_ordinal[anc]["heading_text"])
+                _estimate_token_count(heading_text_by_ordinal[anc])
                 for anc in ancestor_ordinals
-                if anc in sections_by_ordinal
-                and sections_by_ordinal[anc].get("heading_text")
+                if anc in heading_text_by_ordinal and heading_text_by_ordinal[anc]
             )
         else:
             heading_tokens = _estimate_token_count(heading_text)
