@@ -868,6 +868,7 @@ The purpose of this chapter is to establish rules."""
             input_file = f.name
 
         import tempfile as tmp_mod
+
         output_dir = tmp_mod.mkdtemp()
         output_file = os.path.join(output_dir, "code.md")
 
@@ -910,4 +911,5 @@ The purpose of this chapter is to establish rules."""
         finally:
             os.unlink(input_file)
             import shutil
+
             shutil.rmtree(output_dir)

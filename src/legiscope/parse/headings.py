@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field, model_validator
 
 # Schema for headings.parquet
 HEADINGS_SCHEMA = {
-    "element_id": pl.Int64,      # source element in original text
-    "line_number": pl.Int64,     # output line in code.md (for segment.py compat)
+    "element_id": pl.Int64,  # source element in original text
+    "line_number": pl.Int64,  # output line in code.md (for segment.py compat)
     "heading_level": pl.Int64,
     "markdown_level": pl.Int64,
     "section_type": pl.String,
@@ -55,9 +55,7 @@ class HeadingLevel(BaseModel):
             if len(self.regex_patterns) == 1:
                 self.regex_pattern = self.regex_patterns[0]
             else:
-                self.regex_pattern = "|".join(
-                    f"(?:{p})" for p in self.regex_patterns
-                )
+                self.regex_pattern = "|".join(f"(?:{p})" for p in self.regex_patterns)
         return self
 
 
@@ -174,11 +172,13 @@ def detect_headings_from_elements(
         if is_h and level is not None:
             hl_obj = _get_heading_level_obj(level, structure)
             first_line = text.split("\n")[0].strip()
-            results.append({
-                "element_id": row["element_id"],
-                "heading_level": level,
-                "section_type": hl_obj.type_label if hl_obj else "",
-                "section_number": _extract_section_number(first_line, hl_obj),
-                "heading_text": first_line,
-            })
+            results.append(
+                {
+                    "element_id": row["element_id"],
+                    "heading_level": level,
+                    "section_type": hl_obj.type_label if hl_obj else "",
+                    "section_number": _extract_section_number(first_line, hl_obj),
+                    "heading_text": first_line,
+                }
+            )
     return results
