@@ -59,7 +59,7 @@ def main() -> None:
     logger.info(f"Loaded {len(sections_df)} sections, {len(segments_df)} segments")
 
     emb_params = params.get("embeddings", {})
-    provider = emb_params.get("default_provider", "mistral")
+    provider = emb_params.get("default_provider", "ollama")
 
     client = get_embedding_client(provider)
     model = get_default_model(provider)

@@ -21,21 +21,18 @@ POLARS_EMBEDDING_DTYPE = pl.List(pl.Float32)
 
 # Batch processing constants
 CHROMA_BATCH_SIZE = 100  # Fallback Chroma write batch size when params are unavailable
-BATCH_LOG_INTERVAL = 100  # Fallback log progress interval when params are unavailable
+BATCH_LOG_INTERVAL = 100  # Fallback log progress interval when config is unavailable
 
 
 def _get_batch_log_interval() -> int:
-    """Read embedding progress log interval from ``params.yaml`` with fallback."""
-    from legiscope.params import load_params
+    """Read embedding progress log interval from ``config.yaml`` with fallback."""
+    from legiscope.config import get as get_config
 
     try:
-        params = load_params()
+        interval = get_config("logging.batch_log_interval", BATCH_LOG_INTERVAL)
     except FileNotFoundError:
         return BATCH_LOG_INTERVAL
 
-    interval = params.get("embeddings", {}).get(
-        "batch_log_interval", BATCH_LOG_INTERVAL
-    )
     if not isinstance(interval, int) or interval <= 0:
         return BATCH_LOG_INTERVAL
     return interval
@@ -159,7 +156,7 @@ class EmbeddingConfig:
     """Configuration for embedding operations."""
 
     model: str | None = None  # Default model name (None means use provider default)
-    provider: str = "mistral"  # Embedding provider ("ollama" or "mistral")
+    provider: str = "ollama"  # Embedding provider ("ollama" or "mistral")
     heading_col: str = "section_heading"
     text_col: str = "segment_text"
     embedding_col: str = "embedding"

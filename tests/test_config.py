@@ -23,6 +23,9 @@ class TestConfigLoading:
         val = cfg.get("paths.data_dir")
         assert val is not None
 
+    def test_reads_logging_batch_log_interval(self):
+        assert cfg.get("logging.batch_log_interval") == 1000
+
     def test_dot_path_access(self):
         assert cfg.get("paths.data_dir") == "data"
         assert cfg.get("paths.laws_dir") == "laws"

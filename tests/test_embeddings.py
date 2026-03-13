@@ -125,13 +125,13 @@ class TestGetEmbeddings:
 
     @patch("legiscope.embeddings.logger")
     @patch(
-        "legiscope.params.load_params",
-        return_value={"embeddings": {"batch_log_interval": 5}},
+        "legiscope.config.get",
+        return_value=5,
     )
-    def test_get_embeddings_progress_logging_uses_params_interval(
-        self, _mock_load_params, mock_logger
+    def test_get_embeddings_progress_logging_uses_config_interval(
+        self, _mock_get_config, mock_logger
     ):
-        """Progress logging interval should come from params.yaml."""
+        """Progress logging interval should come from config.yaml."""
         mock_client = Mock()
         mock_client.embeddings.side_effect = [{"embedding": [0.1]} for _ in range(12)]
 
@@ -145,18 +145,13 @@ class TestGetEmbeddings:
 
     @patch("legiscope.embeddings.logger")
     @patch(
-        "legiscope.params.load_params",
-        return_value={
-            "embeddings": {
-                "batch_log_interval": 5,
-                "providers": {"mistral": {"batch_size": 2}},
-            }
-        },
+        "legiscope.config.get",
+        return_value=5,
     )
-    def test_get_embeddings_mistral_progress_logging_uses_params_interval(
-        self, _mock_load_params, mock_logger
+    def test_get_embeddings_mistral_progress_logging_uses_config_interval(
+        self, _mock_get_config, mock_logger
     ):
-        """Mistral batching should also use params-driven progress logging."""
+        """Mistral batching should also use config-driven progress logging."""
         mock_client = Mock()
 
         responses = []

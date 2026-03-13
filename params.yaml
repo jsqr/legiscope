@@ -34,7 +34,6 @@ llm:
 embeddings:
   default_provider: ollama
   chroma_batch_size: 100
-  batch_log_interval: 100
 
   providers:
     mistral:

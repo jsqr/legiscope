@@ -47,7 +47,7 @@ def main() -> None:
     params = load_params()
 
     emb_params = params.get("embeddings", {})
-    provider = emb_params.get("default_provider", "mistral")
+    provider = emb_params.get("default_provider", "ollama")
     ret_params = params.get("retrieval", {})
     distance_metric = ret_params.get("distance_metric")
 
