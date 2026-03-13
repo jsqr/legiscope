@@ -197,8 +197,6 @@ class TestLLMConfig:
 
     def test_minimal_config(self):
         """Test creating config with just required parameters."""
-        from legiscope.utils import DEFAULT_MAX_RETRIES, DEFAULT_TEMPERATURE
-
         mock_client = Mock()
         config = LLMConfig(client=mock_client)
 

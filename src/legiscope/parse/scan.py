@@ -462,7 +462,7 @@ def scan_headings(
                 {"role": "user", "content": user_prompt},
             ],
             response_model=HeadingStructure,
-            temperature=0.0,
+            temperature=DEFAULT_TEMPERATURE,
             max_retries=3,
         )
 
