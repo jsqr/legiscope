@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from legiscope.llm_config import Config, PROVIDER_CONFIG
+import legiscope.llm_config
+from legiscope.llm_config import Config
 
 
 # ---------------------------------------------------------------------------
@@ -81,13 +82,16 @@ class TestDefaultProviderAndModels:
 
     def test_default_fast_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
-            assert Config.get_fast_model() == PROVIDER_CONFIG["mistral"]["fast_model"]
+            assert (
+                Config.get_fast_model()
+                == legiscope.llm_config.PROVIDER_CONFIG["mistral"]["fast_model"]
+            )
 
     def test_default_powerful_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
             assert (
                 Config.get_powerful_model()
-                == PROVIDER_CONFIG["mistral"]["powerful_model"]
+                == legiscope.llm_config.PROVIDER_CONFIG["mistral"]["powerful_model"]
             )
 
 
@@ -98,20 +102,26 @@ class TestProviderSwitch:
         p = _params_with(**{"llm.default_provider": "openai"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "openai"
-            assert Config.get_fast_model() == PROVIDER_CONFIG["openai"]["fast_model"]
+            assert (
+                Config.get_fast_model()
+                == legiscope.llm_config.PROVIDER_CONFIG["openai"]["fast_model"]
+            )
             assert (
                 Config.get_powerful_model()
-                == PROVIDER_CONFIG["openai"]["powerful_model"]
+                == legiscope.llm_config.PROVIDER_CONFIG["openai"]["powerful_model"]
             )
 
     def test_ollama_provider_models(self):
         p = _params_with(**{"llm.default_provider": "ollama"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "ollama"
-            assert Config.get_fast_model() == PROVIDER_CONFIG["ollama"]["fast_model"]
+            assert (
+                Config.get_fast_model()
+                == legiscope.llm_config.PROVIDER_CONFIG["ollama"]["fast_model"]
+            )
             assert (
                 Config.get_powerful_model()
-                == PROVIDER_CONFIG["ollama"]["powerful_model"]
+                == legiscope.llm_config.PROVIDER_CONFIG["ollama"]["powerful_model"]
             )
 
 
@@ -144,7 +154,7 @@ class TestGetLLMParams:
         """Ollama num_ctx from params.yaml is forwarded as extra_body."""
         p = _params_with(**{"llm.default_provider": "ollama"})
         # Patch PROVIDER_CONFIG to include num_ctx
-        patched_config = dict(PROVIDER_CONFIG)
+        patched_config = dict(legiscope.llm_config.PROVIDER_CONFIG)
         patched_config["ollama"] = dict(patched_config.get("ollama", {}))
         patched_config["ollama"]["num_ctx"] = 8192
 

@@ -18,9 +18,26 @@ from pydantic import BaseModel
 # Type variable for generic response models
 T = TypeVar("T", bound=BaseModel)
 
-# Constants for LLM operations (imported from other modules when needed)
+# Safe fallback defaults for LLM operations.
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_RETRIES = 3
+
+
+def _load_llm_defaults() -> tuple[float, int]:
+    """Load LLM defaults lazily from ``params.yaml`` with safe fallbacks."""
+    try:
+        from legiscope.params import load_params
+
+        params = load_params()
+    except FileNotFoundError:
+        logger.debug("params.yaml not found; using safe LLM defaults")
+        return DEFAULT_TEMPERATURE, DEFAULT_MAX_RETRIES
+
+    llm_params = params.get("llm", {})
+    return (
+        llm_params.get("temperature", DEFAULT_TEMPERATURE),
+        llm_params.get("max_retries", DEFAULT_MAX_RETRIES),
+    )
 
 
 @dataclass
@@ -55,11 +72,18 @@ class LLMConfig:
 
     client: Instructor
     model: str | None = None
-    temperature: float = DEFAULT_TEMPERATURE
-    max_retries: int = DEFAULT_MAX_RETRIES
+    temperature: float | None = None
+    max_retries: int | None = None
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
+        if self.temperature is None or self.max_retries is None:
+            default_temperature, default_max_retries = _load_llm_defaults()
+            if self.temperature is None:
+                self.temperature = default_temperature
+            if self.max_retries is None:
+                self.max_retries = default_max_retries
+
         if self.model is None:
             from legiscope.llm_config import Config
 
@@ -187,9 +211,7 @@ def create_code_structure(code_ref: "CodeRef") -> Path:
     Raises:
         OSError: If directory creation fails.
     """
-    from legiscope.models import LAWS_DIR
-
-    code_dir = LAWS_DIR / code_ref.data_dir
+    code_dir = code_ref.full_data_dir
     raw_dir = code_dir / "raw"
 
     logger.info("Creating code structure for {}", code_ref.code_id)

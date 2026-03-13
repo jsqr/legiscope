@@ -33,6 +33,7 @@ llm:
 # Embedding configuration
 embeddings:
   default_provider: ollama
+  chroma_batch_size: 100
 
   providers:
     mistral:
@@ -41,7 +42,7 @@ embeddings:
 
     ollama:
       model: embeddinggemma
-      batch_size:
+      batch_size: 1
 
   dtype: float32
 
@@ -54,6 +55,7 @@ segmentation:
 retrieval:
   n_results: 10
   distance_metric: l2
+  debug: false
 
   # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:

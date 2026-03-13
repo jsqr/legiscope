@@ -8,6 +8,7 @@ import pytest
 from legiscope.embeddings import (
     EmbeddingConfig,
     _build_embedding_text,
+    _generate_embeddings_mistral,
     create_and_save_embeddings,
     create_embeddings_df,
     get_embeddings,
@@ -121,6 +122,52 @@ class TestGetEmbeddings:
         # Should log individual processing progress for Ollama
         debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
         assert any("Processed 15/15 texts" in call for call in debug_calls)
+
+    @patch("legiscope.embeddings.logger")
+    @patch(
+        "legiscope.config.get",
+        return_value=5,
+    )
+    def test_get_embeddings_progress_logging_uses_config_interval(
+        self, _mock_get_config, mock_logger
+    ):
+        """Progress logging interval should come from config.yaml."""
+        mock_client = Mock()
+        mock_client.embeddings.side_effect = [{"embedding": [0.1]} for _ in range(12)]
+
+        texts = [f"text{i}" for i in range(12)]
+        get_embeddings(mock_client, texts, "test-model", "ollama")
+
+        debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
+        assert any("Processed 5/12 texts" in call for call in debug_calls)
+        assert any("Processed 10/12 texts" in call for call in debug_calls)
+        assert any("Processed 12/12 texts" in call for call in debug_calls)
+
+    @patch("legiscope.embeddings.logger")
+    @patch(
+        "legiscope.config.get",
+        return_value=5,
+    )
+    def test_get_embeddings_mistral_progress_logging_uses_config_interval(
+        self, _mock_get_config, mock_logger
+    ):
+        """Mistral batching should also use config-driven progress logging."""
+        mock_client = Mock()
+
+        responses = []
+        for _ in range(6):
+            response = Mock()
+            response.data = [Mock(embedding=[0.1]), Mock(embedding=[0.2])]
+            responses.append(response)
+        mock_client.embeddings.create.side_effect = responses
+
+        texts = [f"text{i}" for i in range(12)]
+        _generate_embeddings_mistral(mock_client, texts, "mistral-embed", batch_size=2)
+
+        debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
+        assert any("Processed 6/12 texts" in call for call in debug_calls)
+        assert any("Processed 10/12 texts" in call for call in debug_calls)
+        assert any("Processed 12/12 texts" in call for call in debug_calls)
 
     def test_get_embeddings_mistral_provider(self):
         """Test embedding generation with Mistral provider."""
@@ -694,10 +741,10 @@ class TestCreateAndSaveEmbeddings:
         output_dir = tmp_path / "data" / "laws" / "CA" / "TestCity" / "test-code"
         output_dir.mkdir(parents=True)
 
-        # Monkeypatch _laws_dir so full_data_dir resolves to tmp_path
+        # Monkeypatch laws_dir so full_data_dir resolves to tmp_path
         import legiscope.models as models_mod
 
-        monkeypatch.setattr(models_mod, "_laws_dir", lambda: tmp_path / "data" / "laws")
+        monkeypatch.setattr(models_mod, "laws_dir", lambda: tmp_path / "data" / "laws")
 
         sections_df = pl.DataFrame(
             {
@@ -783,6 +830,35 @@ class TestCreateAndSaveEmbeddings:
 
 class TestChromaOperations:
     """Test cases for ChromaDB operations."""
+
+    @patch(
+        "legiscope.params.load_params",
+        return_value={"embeddings": {"chroma_batch_size": 1}},
+    )
+    def test_add_documents_to_collection_uses_params_batch_size(
+        self, _mock_load_params
+    ):
+        """Chroma write batching should use the params-driven batch size."""
+        from legiscope.embeddings import _add_documents_to_collection
+
+        mock_collection = MagicMock()
+
+        _add_documents_to_collection(
+            collection=mock_collection,
+            ids=["s0", "s1"],
+            documents=["text1", "text2"],
+            embeddings=[[0.1, 0.2], [0.3, 0.4]],
+            metadata_list=[
+                {"section_heading": "Heading 1"},
+                {"section_heading": "Heading 2"},
+            ],
+        )
+
+        assert mock_collection.add.call_count == 2
+        first_call = mock_collection.add.call_args_list[0].kwargs
+        second_call = mock_collection.add.call_args_list[1].kwargs
+        assert first_call["ids"] == ["s0"]
+        assert second_call["ids"] == ["s1"]
 
     def test_get_or_create_collection(self):
         """Test getting or creating a collection."""

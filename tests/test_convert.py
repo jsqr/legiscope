@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from legiscope.parse.convert import text2md
 from legiscope.parse.find_code_start import ScanResult
 from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructure
-from legiscope.parse.scan import scan_legal_text
+from legiscope.parse.scan import DEFAULT_TEMPERATURE, scan_legal_text
 from legiscope.utils import ask
 
 
@@ -219,6 +219,12 @@ Some body text here."""
             # Should have called create at least 2 times
             # (find_code_start scan + heading structure LLM call)
             assert mock_client.chat.completions.create.call_count >= 2
+            assert (
+                mock_client.chat.completions.create.call_args_list[-1].kwargs[
+                    "temperature"
+                ]
+                == DEFAULT_TEMPERATURE
+            )
             assert result.total_levels == 1
 
         finally:
@@ -868,6 +874,7 @@ The purpose of this chapter is to establish rules."""
             input_file = f.name
 
         import tempfile as tmp_mod
+
         output_dir = tmp_mod.mkdtemp()
         output_file = os.path.join(output_dir, "code.md")
 
@@ -910,4 +917,5 @@ The purpose of this chapter is to establish rules."""
         finally:
             os.unlink(input_file)
             import shutil
+
             shutil.rmtree(output_dir)

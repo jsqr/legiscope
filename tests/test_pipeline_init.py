@@ -60,7 +60,7 @@ class TestAppendJurisdiction:
         parquet = tmp_path / "jurisdictions.parquet"
         ref = JurisdictionRef(state="IL", locality="WindyTown")
 
-        with patch.object(pipeline_init, "JURISDICTIONS_PARQUET", parquet):
+        with patch.object(pipeline_init, "jurisdictions_parquet", return_value=parquet):
             pipeline_init._append_jurisdiction(ref, "City of WindyTown")
 
         df = pl.read_parquet(parquet)
@@ -72,7 +72,7 @@ class TestAppendJurisdiction:
         parquet = tmp_path / "jurisdictions.parquet"
         ref = JurisdictionRef(state="IL", locality="WindyTown")
 
-        with patch.object(pipeline_init, "JURISDICTIONS_PARQUET", parquet):
+        with patch.object(pipeline_init, "jurisdictions_parquet", return_value=parquet):
             pipeline_init._append_jurisdiction(ref, "City of WindyTown")
             pipeline_init._append_jurisdiction(ref, "City of WindyTown")
 
@@ -83,7 +83,7 @@ class TestAppendJurisdiction:
         parquet = tmp_path / "jurisdictions.parquet"
         ref = JurisdictionRef(state="CA")
 
-        with patch.object(pipeline_init, "JURISDICTIONS_PARQUET", parquet):
+        with patch.object(pipeline_init, "jurisdictions_parquet", return_value=parquet):
             pipeline_init._append_jurisdiction(ref, "California")
 
         df = pl.read_parquet(parquet)
@@ -94,7 +94,7 @@ class TestAppendJurisdiction:
         parquet = tmp_path / "jurisdictions.parquet"
         ref = JurisdictionRef(state="CA", locality="LosAngeles")
 
-        with patch.object(pipeline_init, "JURISDICTIONS_PARQUET", parquet):
+        with patch.object(pipeline_init, "jurisdictions_parquet", return_value=parquet):
             pipeline_init._append_jurisdiction(ref, "City of Los Angeles")
 
         df = pl.read_parquet(parquet)
@@ -114,7 +114,7 @@ class TestAppendCode:
             code_slug="municipal-code",
         )
 
-        with patch.object(pipeline_init, "CODES_PARQUET", parquet):
+        with patch.object(pipeline_init, "codes_parquet", return_value=parquet):
             pipeline_init._append_code(
                 code_ref, "WindyTown Municipal Code", "municipal"
             )
@@ -131,7 +131,7 @@ class TestAppendCode:
             code_slug="municipal-code",
         )
 
-        with patch.object(pipeline_init, "CODES_PARQUET", parquet):
+        with patch.object(pipeline_init, "codes_parquet", return_value=parquet):
             pipeline_init._append_code(
                 code_ref, "WindyTown Municipal Code", "municipal"
             )
@@ -149,7 +149,7 @@ class TestAppendCode:
             code_slug="zoning-code",
         )
 
-        with patch.object(pipeline_init, "CODES_PARQUET", parquet):
+        with patch.object(pipeline_init, "codes_parquet", return_value=parquet):
             pipeline_init._append_code(code_ref, "LA Zoning Code", "zoning")
 
         df = pl.read_parquet(parquet)
@@ -180,11 +180,11 @@ class TestMain:
         }
 
         with (
-            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
-            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
-            patch(
-                "init.create_code_structure", return_value=code_dir
+            patch.object(
+                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
             ),
+            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch("init.create_code_structure", return_value=code_dir),
             patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
@@ -209,11 +209,11 @@ class TestMain:
         }
 
         with (
-            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
-            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
-            patch(
-                "init.create_code_structure", return_value=tmp_path
+            patch.object(
+                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
             ),
+            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
@@ -236,11 +236,11 @@ class TestMain:
         }
 
         with (
-            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
-            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
-            patch(
-                "init.create_code_structure", return_value=tmp_path
+            patch.object(
+                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
             ),
+            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
@@ -265,11 +265,11 @@ class TestMain:
         }
 
         with (
-            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
-            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
-            patch(
-                "init.create_code_structure", return_value=tmp_path
+            patch.object(
+                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
             ),
+            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
@@ -296,12 +296,12 @@ class TestMain:
 
         with (
             patch.object(
-                pipeline_init, "JURISDICTIONS_PARQUET", tmp_path / "j.parquet"
+                pipeline_init,
+                "jurisdictions_parquet",
+                return_value=tmp_path / "j.parquet",
             ),
-            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
-            patch(
-                "init.create_code_structure", return_value=tmp_path
-            ),
+            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()
@@ -324,11 +324,13 @@ class TestMain:
         }
 
         with (
-            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
-            patch.object(pipeline_init, "CODES_PARQUET", tmp_path / "c.parquet"),
-            patch(
-                "init.create_code_structure", return_value=tmp_path
+            patch.object(
+                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
             ),
+            patch.object(
+                pipeline_init, "codes_parquet", return_value=tmp_path / "c.parquet"
+            ),
+            patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
             pipeline_init.main()

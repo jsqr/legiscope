@@ -6,15 +6,15 @@ from unittest.mock import patch
 import pytest
 
 from legiscope.models import (
-    CODES_PARQUET,
     CODES_SCHEMA,
     EXTERNAL_REFERENCES_SCHEMA,
-    JURISDICTIONS_PARQUET,
     JURISDICTIONS_SCHEMA,
-    LAWS_DIR,
     RELATIONS_SCHEMA,
     CodeRef,
     JurisdictionRef,
+    codes_parquet,
+    jurisdictions_parquet,
+    laws_dir,
 )
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ class TestCodeRef:
     def test_full_data_dir(self):
         j = JurisdictionRef(state="IL", locality="Chicago")
         c = CodeRef(jurisdiction=j, code_slug="municipal-code")
-        assert c.full_data_dir == LAWS_DIR / "IL" / "Chicago" / "municipal-code"
+        assert c.full_data_dir == laws_dir() / "IL" / "Chicago" / "municipal-code"
 
     def test_empty_code_slug_raises(self):
         j = JurisdictionRef(state="CA")
@@ -297,7 +297,7 @@ class TestSchemaConstants:
 
 class TestRegistryPaths:
     def test_jurisdictions_parquet_path(self):
-        assert JURISDICTIONS_PARQUET == Path("data/jurisdictions.parquet")
+        assert jurisdictions_parquet() == Path("data/jurisdictions.parquet")
 
     def test_codes_parquet_path(self):
-        assert CODES_PARQUET == Path("data/codes.parquet")
+        assert codes_parquet() == Path("data/codes.parquet")

@@ -38,6 +38,8 @@ from legiscope.query import BatchQuerySettings, load_queries, run_queries
 
 
 def main():
+    config.setup_logging()
+
     code_ref = CodeRef.from_params()
 
     queries_path = config.default_queries_path()

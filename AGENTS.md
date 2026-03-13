@@ -186,6 +186,7 @@ and path settings from `config.yaml`.
 retrieval:
   n_results: 10
   distance_metric: l2        # ChromaDB HNSW distance (l2, cosine, ip)
+    debug: false               # Enable to write debug output artifacts
   hyde:
     enabled: false            # uses fast model
   relevance_filter:
@@ -301,11 +302,11 @@ Reads jurisdiction from `params.yaml`:
 
 ```bash
 # Uses jurisdiction.state/locality/code_slug/code_name from params.yaml
-python scripts/init.py
+uv run python scripts/init.py
 
 # Override code type or jurisdiction display name
-python scripts/init.py --code-type zoning
-python scripts/init.py --jurisdiction-name "City of LA"
+uv run python scripts/init.py --code-type zoning
+uv run python scripts/init.py --jurisdiction-name "City of LA"
 ```
 
 #### Run the pipeline
@@ -338,8 +339,8 @@ All paths and settings are resolved from `params.yaml` and `config.yaml`:
 # Normal run — zero args needed
 uv run python coep/scripts/benchmark_pipeline.py
 
-# Dev/debug run with limited queries
-uv run python coep/scripts/benchmark_pipeline.py --test-limit 5 --debug
+# Dev/debug run with limited queries (set `retrieval.debug: true` in `params.yaml` for inspection output)
+uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
 ```
 
 ### Advanced Query Execution

@@ -17,7 +17,7 @@ uv run python scripts/init.py
 3. Convert .docx to .txt file:
 
 ```bash
-uv run scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
+./scripts/convert_docx.sh "data/laws/IL/WindyCity/municipal-code/raw"
 ```
 
 
@@ -28,7 +28,7 @@ Run the complete pipeline on the jurisdiction configured in `params.yaml`:
 ```bash
 # Edit params.yaml to set jurisdiction.state=IL, locality=WindyCity,
 # code_slug=municipal-code, code_name="IL-WindyCity Municipal Code", then:
-uv run ./scripts/dvc_repro.sh --force
+./scripts/dvc_repro.sh --force
 ```
 
 **Verify:**
@@ -91,7 +91,7 @@ uv run python scripts/segment.py --state IL --locality WindyCity --code-slug mun
 Override a parameter via DVC experiment:
 
 ```bash
-uv run dvc exp run -S segmentation.token_limit=128
+dvc exp run -S segmentation.token_limit=128
 ```
 
 **Verify:**
@@ -109,7 +109,7 @@ then attempt to parse without placing raw files:
 # code_slug=test-code, code_name="Test Code", then:
 uv run python scripts/init.py
 
-uv run ./scripts/dvc_repro.sh --stage parse --force
+./scripts/dvc_repro.sh --stage parse --force
 ```
 
 **Verify:**

@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 
+from legiscope.config import setup_logging
 from legiscope.parse.convert import convert_to_markdown
 from legiscope.models import CodeRef
 
 
 def main() -> None:
     """Parse raw text files to Markdown using LLM heading detection."""
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Convert raw legal text to structured Markdown",
     )

@@ -13,6 +13,7 @@ import argparse
 import polars as pl
 from loguru import logger
 
+from legiscope.config import setup_logging
 from legiscope.embeddings import (
     EmbeddingConfig,
     create_and_save_embeddings,
@@ -25,6 +26,8 @@ from legiscope.params import load_params
 
 def main() -> None:
     """Generate embeddings for code segments."""
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Generate embeddings from text segments",
     )
@@ -56,7 +59,7 @@ def main() -> None:
     logger.info(f"Loaded {len(sections_df)} sections, {len(segments_df)} segments")
 
     emb_params = params.get("embeddings", {})
-    provider = emb_params.get("default_provider", "mistral")
+    provider = emb_params.get("default_provider", "ollama")
 
     client = get_embedding_client(provider)
     model = get_default_model(provider)
