@@ -53,6 +53,8 @@ from coep.src.query import adjust_drug_paraphernalia_queries
 
 
 def main():
+    config.setup_logging()
+
     code_ref = CodeRef.from_params()
     jurisdiction_id = code_ref.jurisdiction_id
     params = load_params()

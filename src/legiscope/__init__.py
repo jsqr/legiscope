@@ -8,8 +8,6 @@ This package provides tools for:
 - Retrieving relevant legal passages using ChromaDB
 """
 
-from legiscope.config import setup_logging
-
 # Core functionality
 from legiscope.parse.convert import text2md
 from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructure
@@ -53,8 +51,6 @@ from legiscope.segment import (
     get_section_text,
     segment_text,
 )
-
-setup_logging()
 
 # Version
 __version__ = "0.1.0"

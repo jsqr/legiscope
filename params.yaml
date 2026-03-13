@@ -54,6 +54,7 @@ segmentation:
 retrieval:
   n_results: 10
   distance_metric: l2
+  debug: false
 
   # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:

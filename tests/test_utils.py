@@ -207,6 +207,21 @@ class TestLLMConfig:
         assert config.temperature == DEFAULT_TEMPERATURE
         assert config.max_retries == DEFAULT_MAX_RETRIES
 
+    @patch("legiscope.llm_config.Config.get_fast_model")
+    @patch("legiscope.params.load_params", side_effect=FileNotFoundError)
+    def test_minimal_config_uses_safe_fallbacks_without_params(
+        self, _mock_load_params, mock_get_fast_model
+    ):
+        """Missing params.yaml should not break default config creation."""
+        mock_get_fast_model.return_value = "fallback-model"
+        mock_client = Mock()
+
+        config = LLMConfig(client=mock_client)
+
+        assert config.model == "fallback-model"
+        assert config.temperature == DEFAULT_TEMPERATURE
+        assert config.max_retries == DEFAULT_MAX_RETRIES
+
     def test_explicit_model(self):
         """Test config with explicit model specified."""
         mock_client = Mock()
