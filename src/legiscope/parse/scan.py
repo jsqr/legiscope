@@ -8,6 +8,7 @@ import re
 import polars as pl
 from instructor import Instructor
 
+from legiscope.params import load_params
 from legiscope.parse.elements import split_elements
 from legiscope.parse.find_code_start import find_code_start
 from legiscope.parse.headings import HeadingStructure
@@ -15,10 +16,12 @@ from legiscope.parse.headings import HeadingStructure
 
 # ── Constants ──────────────────────────────────────────────────────────
 
-DEFAULT_SCAN_MAX_LINES = (
-    200  # Maximum lines to analyze when scanning legal text structure
-)
-DEFAULT_TEMPERATURE = 0.0  # Low temperature for consistent legal text analysis
+_params = load_params()
+DEFAULT_SCAN_MAX_LINES = _params.get("convert", {}).get("scan_max_lines", 200)
+DEFAULT_TEMPERATURE = _params.get("llm", {}).get(
+    "temperature", 0.0
+)  # Low temperature for consistent legal text analysis
+DEFAULT_MAX_RETRIES = _params.get("llm", {}).get("max_retries", 3)
 
 
 # ── Heading-like line heuristics ───────────────────────────────────────
@@ -460,8 +463,8 @@ def scan_headings(
                 {"role": "user", "content": user_prompt},
             ],
             response_model=HeadingStructure,
-            temperature=0.0,
-            max_retries=3,
+            temperature=DEFAULT_TEMPERATURE,
+            max_retries=DEFAULT_MAX_RETRIES,
         )
 
         # Phase 3: Evaluate on full code elements

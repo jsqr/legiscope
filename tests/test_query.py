@@ -23,6 +23,11 @@ from legiscope.query import (
     BatchQuerySettings,
     query_legal_documents,
     run_queries,
+    DEFAULT_RELEVANCE_FILTER_ENABLED,
+    DEFAULT_RELEVANCE_THRESHOLD,
+    DEFAULT_N_RESULTS,
+    DEFAULT_HYDE_ENABLED,
+    DEFAULT_VALIDATION_ENABLED,
 )
 from legiscope.retrieve import SectionResult, SegmentMatch, SectionCollection, QueryInfo
 
@@ -592,8 +597,8 @@ class TestQueryConfig:
         settings = QuerySettings(llm=llm_config)
 
         assert settings.llm is llm_config
-        assert settings.filter_relevance is False
-        assert settings.relevance_threshold == 0.5
+        assert settings.filter_relevance == DEFAULT_RELEVANCE_FILTER_ENABLED
+        assert settings.relevance_threshold == DEFAULT_RELEVANCE_THRESHOLD
 
     def test_with_filtering(self):
         """Test settings with relevance filtering enabled."""
@@ -663,8 +668,8 @@ class TestBatchQueryConfig:
             settings = BatchQuerySettings()
 
             assert settings.llm is not None  # Should be set by __post_init__
-            assert settings.n_results == 10  # Default
-            assert settings.use_hyde is False
+            assert settings.n_results == DEFAULT_N_RESULTS
+            assert settings.use_hyde == DEFAULT_HYDE_ENABLED
             mock_client.assert_called_once()
 
     def test_with_custom_llm(self):
@@ -722,11 +727,11 @@ class TestBatchQueryConfig:
         mock_llm = Mock(spec=LLMConfig)
         settings = BatchQuerySettings(llm=mock_llm)
 
-        assert settings.n_results == 10
-        assert settings.use_hyde is False
-        assert settings.filter_relevance is False
-        assert settings.relevance_threshold == 0.5
-        assert settings.validate_supporting_passages is True
+        assert settings.n_results == DEFAULT_N_RESULTS
+        assert settings.use_hyde == DEFAULT_HYDE_ENABLED
+        assert settings.filter_relevance == DEFAULT_RELEVANCE_FILTER_ENABLED
+        assert settings.relevance_threshold == DEFAULT_RELEVANCE_THRESHOLD
+        assert settings.validate_supporting_passages == DEFAULT_VALIDATION_ENABLED
 
     def test_batch_query_settings_instantiation(self):
         """Test instantiating with specific values."""
@@ -787,7 +792,7 @@ class TestQueryConfigBasics:
 
         with patch("legiscope.query.ask", return_value=mock_response):
             llm_config = LLMConfig(client=mock_client, model="test-model")
-            settings = QuerySettings(llm=llm_config)
+            settings = QuerySettings(llm=llm_config, filter_relevance=False)
 
             response, similarity_scores = query_legal_documents(
                 retrieval_results, "What are the parking rules?", settings

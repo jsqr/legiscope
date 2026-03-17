@@ -4,17 +4,37 @@ Infrastructure configuration loader for legiscope.
 Loads ``config.yaml`` (deployment/environment-specific settings) and exposes
 a singleton ``Config`` accessor with dot-path key lookup.
 
-The only env-var override honoured here is ``LEGISCOPE_DATA_DIR``, which
-lets operators relocate the data root without editing the YAML file.
+Most path helpers are rooted at ``data_dir()`` and therefore follow the
+``LEGISCOPE_DATA_DIR`` override. ``monqcle_report_path()`` is the intentional
+exception: it points to a COEP-specific dataset outside the main data root, so
+relative values are resolved from the repository/config root instead.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 import yaml
+from loguru import logger
+
+
+# ---------------------------------------------------------------------------
+# Logging Configuration
+# ---------------------------------------------------------------------------
+def setup_logging() -> None:
+    """Configure loguru logging based on config.yaml."""
+    log_level = get("logging.level", "INFO").upper()
+
+    valid_levels = {"TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL"}
+    if log_level not in valid_levels:
+        log_level = "INFO"
+
+    logger.remove()
+    logger.add(sys.stderr, level=log_level)
+
 
 # ---------------------------------------------------------------------------
 # Module-level cache
@@ -110,8 +130,19 @@ def default_queries_path() -> Path:
 
 
 def monqcle_report_path() -> Path:
-    """Return the path to the MonQcle Standard Report CSV."""
-    return data_dir() / get(
-        "paths.monqcle_report",
-        "monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
+    """Return the COEP MonQcle report path.
+
+    Unlike the other convenience path helpers, this location is intentionally
+    not nested under ``data_dir()`` because the benchmark fixture lives in the
+    repository's COEP data tree. Absolute config values are returned as-is;
+    relative values are resolved from the directory containing ``config.yaml``.
+    """
+    raw_path = Path(
+        get(
+            "paths.monqcle_report",
+            "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
+        )
     )
+    if raw_path.is_absolute():
+        return raw_path
+    return _find_config_path().parent / raw_path

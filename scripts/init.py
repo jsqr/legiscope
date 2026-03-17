@@ -17,13 +17,14 @@ from pathlib import Path
 import polars as pl
 from loguru import logger
 
+from legiscope.config import setup_logging
 from legiscope.models import (
-    CODES_PARQUET,
     CODES_SCHEMA,
-    JURISDICTIONS_PARQUET,
     JURISDICTIONS_SCHEMA,
     CodeRef,
     JurisdictionRef,
+    codes_parquet,
+    jurisdictions_parquet,
 )
 from legiscope.params import load_params
 from legiscope.utils import create_code_structure
@@ -42,7 +43,8 @@ def _load_or_create_parquet(path: Path, schema: dict) -> pl.DataFrame:
 
 def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
     """Append a jurisdiction to the registry if it doesn't already exist."""
-    df = _load_or_create_parquet(JURISDICTIONS_PARQUET, JURISDICTIONS_SCHEMA)
+    parquet_path = jurisdictions_parquet()
+    df = _load_or_create_parquet(parquet_path, JURISDICTIONS_SCHEMA)
 
     if df.filter(pl.col("jurisdiction_id") == ref.jurisdiction_id).height > 0:
         logger.info("Jurisdiction {} already registered", ref.jurisdiction_id)
@@ -66,14 +68,15 @@ def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
         schema=JURISDICTIONS_SCHEMA,
     )
     df = pl.concat([df, row])
-    JURISDICTIONS_PARQUET.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(JURISDICTIONS_PARQUET)
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(parquet_path)
     logger.info("Registered jurisdiction: {}", ref.jurisdiction_id)
 
 
 def _append_code(code_ref: CodeRef, name: str, code_type: str) -> None:
     """Append a code to the registry if it doesn't already exist."""
-    df = _load_or_create_parquet(CODES_PARQUET, CODES_SCHEMA)
+    parquet_path = codes_parquet()
+    df = _load_or_create_parquet(parquet_path, CODES_SCHEMA)
 
     if df.filter(pl.col("code_id") == code_ref.code_id).height > 0:
         logger.info("Code {} already registered", code_ref.code_id)
@@ -93,8 +96,8 @@ def _append_code(code_ref: CodeRef, name: str, code_type: str) -> None:
         schema=CODES_SCHEMA,
     )
     df = pl.concat([df, row])
-    CODES_PARQUET.parent.mkdir(parents=True, exist_ok=True)
-    df.write_parquet(CODES_PARQUET)
+    parquet_path.parent.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(parquet_path)
     logger.info("Registered code: {}", code_ref.code_id)
 
 
@@ -105,6 +108,8 @@ def _append_code(code_ref: CodeRef, name: str, code_type: str) -> None:
 
 def main() -> None:
     """Create jurisdiction/code directory structure and update registries."""
+    setup_logging()
+
     params = load_params()
     jur = params.get("jurisdiction", {})
 

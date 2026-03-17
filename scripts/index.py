@@ -13,7 +13,7 @@ import argparse
 import polars as pl
 from loguru import logger
 
-from legiscope.config import chroma_db_path
+from legiscope.config import chroma_db_path, setup_logging
 from legiscope.embeddings import (
     CollectionConfig,
     EmbeddingIndexConfig,
@@ -26,6 +26,8 @@ from legiscope.params import load_params
 
 def main() -> None:
     """Add code embeddings to ChromaDB index (incremental)."""
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Add embeddings to ChromaDB index (incremental)",
     )
@@ -46,7 +48,7 @@ def main() -> None:
     params = load_params()
 
     emb_params = params.get("embeddings", {})
-    provider = emb_params.get("default_provider", "mistral")
+    provider = emb_params.get("default_provider", "ollama")
     ret_params = params.get("retrieval", {})
     distance_metric = ret_params.get("distance_metric")
 

@@ -79,6 +79,11 @@ class Evaluator:
         - 7-9: Mostly correct, minor details missing or slightly different phrasing.
         - 4-6: Partially correct, misses key points or has minor inaccuracies.
         - 0-3: Completely wrong, irrelevant, or dangerous hallucination.
+
+        Important notes:
+        - The ground truth may contain binary results, where 0 = "No" and 1 = "Yes". 
+          The generated answer may use different phrasing (e.g., "No", "False", "0", "Negative" for 0). 
+          Focus on the meaning rather than exact wording.
         """
 
         try:

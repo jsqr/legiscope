@@ -18,19 +18,13 @@ from legiscope import config as cfg
 # ---------------------------------------------------------------------------
 # Data directory helpers (read from config.yaml at access time)
 # ---------------------------------------------------------------------------
-def _data_dir() -> Path:
+def data_dir() -> Path:
     return cfg.data_dir()
 
 
-def _laws_dir() -> Path:
+def laws_dir() -> Path:
     return cfg.laws_dir()
 
-
-# Backward-compatible module-level properties.  These are evaluated once at
-# import time, so callers that need runtime ``LEGISCOPE_DATA_DIR`` support
-# should use ``_data_dir()`` / ``_laws_dir()`` (or ``cfg.data_dir()``) instead.
-DATA_DIR = _data_dir()
-LAWS_DIR = _laws_dir()
 
 # ---------------------------------------------------------------------------
 # Parquet schema constants
@@ -184,7 +178,7 @@ class CodeRef:
     @property
     def full_data_dir(self) -> Path:
         """Full relative path from project root to this code's directory."""
-        return _laws_dir() / self.data_dir
+        return laws_dir() / self.data_dir
 
     @classmethod
     def from_dvc_vars(
@@ -252,13 +246,8 @@ class CodeRef:
 
 
 def jurisdictions_parquet() -> Path:
-    return _data_dir() / "jurisdictions.parquet"
+    return data_dir() / "jurisdictions.parquet"
 
 
 def codes_parquet() -> Path:
-    return _data_dir() / "codes.parquet"
-
-
-# Backward-compatible constants (evaluated at import time)
-JURISDICTIONS_PARQUET = _data_dir() / "jurisdictions.parquet"
-CODES_PARQUET = _data_dir() / "codes.parquet"
+    return data_dir() / "codes.parquet"

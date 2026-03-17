@@ -23,6 +23,9 @@ class TestConfigLoading:
         val = cfg.get("paths.data_dir")
         assert val is not None
 
+    def test_reads_logging_batch_log_interval(self):
+        assert cfg.get("logging.batch_log_interval") == 1000
+
     def test_dot_path_access(self):
         assert cfg.get("paths.data_dir") == "data"
         assert cfg.get("paths.laws_dir") == "laws"
@@ -58,6 +61,12 @@ class TestDataDirOverride:
 
 
 class TestProperties:
+    @staticmethod
+    def _expected_monqcle_report_path() -> Path:
+        return cfg._find_config_path().parent / Path(
+            "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+        )
+
     def test_laws_dir(self):
         assert cfg.laws_dir() == Path("data/laws")
 
@@ -76,9 +85,23 @@ class TestProperties:
         )
 
     def test_monqcle_report_path(self):
-        assert cfg.monqcle_report_path() == Path(
-            "data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+        assert cfg.monqcle_report_path() == self._expected_monqcle_report_path()
+
+    def test_monqcle_report_path_does_not_follow_data_dir(self):
+        with patch.dict(os.environ, {"LEGISCOPE_DATA_DIR": "/tmp/custom_data"}):
+            assert cfg.monqcle_report_path() == self._expected_monqcle_report_path()
+
+    def test_monqcle_report_path_accepts_absolute_config_path(self, monkeypatch):
+        monkeypatch.setattr(
+            cfg,
+            "_load",
+            lambda: {
+                "paths": {
+                    "monqcle_report": "/tmp/monqcle/custom_report.csv",
+                }
+            },
         )
+        assert cfg.monqcle_report_path() == Path("/tmp/monqcle/custom_report.csv")
 
     def test_queries_dir_follows_data_dir(self):
         with patch.dict(os.environ, {"LEGISCOPE_DATA_DIR": "/tmp/custom_data"}):

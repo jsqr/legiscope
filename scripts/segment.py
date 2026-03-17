@@ -12,6 +12,7 @@ import argparse
 
 from loguru import logger
 
+from legiscope.config import setup_logging
 from legiscope.models import CodeRef
 from legiscope.params import load_params
 from legiscope.segment import segment_legal_code
@@ -19,6 +20,8 @@ from legiscope.segment import segment_legal_code
 
 def main() -> None:
     """Segment legal code Markdown into sections and segments."""
+    setup_logging()
+
     parser = argparse.ArgumentParser(
         description="Segment Markdown into sections and text segments",
     )

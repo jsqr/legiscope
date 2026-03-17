@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# ruff: noqa: E402
 """
 Run multiple queries against legal code database.
 
@@ -10,6 +11,8 @@ Paths are resolved from config.yaml.
 """
 
 import sys
+from loguru import logger
+from datetime import datetime
 from pathlib import Path
 
 import chromadb
@@ -30,15 +33,18 @@ if str(src_path) not in sys.path:
 from legiscope import config
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.models import CodeRef
+from legiscope.params import load_params
 from legiscope.query import BatchQuerySettings, load_queries, run_queries
 
 
 def main():
+    config.setup_logging()
+
     code_ref = CodeRef.from_params()
 
     queries_path = config.default_queries_path()
     queries = load_queries(str(queries_path))
-    print(f"Loaded {len(queries)} queries from {queries_path}")
+    logger.info(f"Loaded {len(queries)} queries from {queries_path}")
 
     sections_parquet_path = code_ref.full_data_dir / "sections.parquet"
 
@@ -46,7 +52,16 @@ def main():
     collection_cfg = CollectionConfig(provider=EMBEDDING_PROVIDER)
     collection = chroma_client.get_collection(collection_cfg.collection_name)
 
-    settings = BatchQuerySettings()
+    # Check debug flag from params.yaml
+    params = load_params()
+    debug_enabled = params.get("retrieval", {}).get("debug", False)
+    debug_dir = None
+    if debug_enabled:
+        debug_dir = config.output_dir() / code_ref.jurisdiction_id / "debug"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Debug mode enabled, writing debug files to {debug_dir}")
+
+    settings = BatchQuerySettings(debug_dir=debug_dir)
 
     # Run queries
     results_df = run_queries(
@@ -58,12 +73,17 @@ def main():
     )
 
     # Ensure output directory exists
-    output_path = config.output_dir() / code_ref.jurisdiction_id / "query_results.csv"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = (
+        config.output_dir()
+        / code_ref.jurisdiction_id
+        / f"query_results_{timestamp}.csv"
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     results_df.write_csv(str(output_path))
-    print(f"Results saved to {output_path}")
-    print(f"Average confidence: {results_df['confidence'].mean():.2f}")
+    logger.info(f"Results saved to {output_path}")
+    logger.info(f"Average confidence: {results_df['confidence'].mean():.2f}")
 
 
 if __name__ == "__main__":
