@@ -7,7 +7,6 @@ import pytest
 
 from legiscope.embeddings import (
     EmbeddingConfig,
-    _build_embedding_text,
     _generate_embeddings_mistral,
     create_and_save_embeddings,
     get_embeddings,

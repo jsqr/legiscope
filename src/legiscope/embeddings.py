@@ -312,9 +312,12 @@ def _generate_embeddings_mistral(
         batch_embeddings = [list(item.embedding) for item in response.data]
         embeddings_list.extend(batch_embeddings)
 
-        # Log progress based on configured item interval
-        if (end_idx // log_interval) > (start_idx // log_interval) or end_idx == len(
-            texts
+        # Log progress based on configured item interval.
+        if _should_log_embedding_progress(
+            previous_count=start_idx,
+            current_count=end_idx,
+            total_count=len(texts),
+            log_interval=log_interval,
         ):
             logger.debug(
                 f"Processed {end_idx}/{len(texts)} texts "
@@ -322,6 +325,15 @@ def _generate_embeddings_mistral(
             )
 
     return embeddings_list
+
+
+def _should_log_embedding_progress(
+    previous_count: int, current_count: int, total_count: int, log_interval: int
+) -> bool:
+    """Return whether embedding progress should be logged."""
+    crossed_interval = (current_count // log_interval) > (previous_count // log_interval)
+    is_final_large_batch = current_count == total_count and total_count >= log_interval
+    return crossed_interval or is_final_large_batch
 
 
 def _generate_embeddings_ollama(
@@ -360,8 +372,14 @@ def _generate_embeddings_ollama(
             )
             raise ValueError(f"Embedding error for segment {i}: {e}") from e
 
-        # Log progress for larger datasets
-        if (i + 1) % log_interval == 0 or i == len(texts) - 1:
+        # Log progress only after crossing an interval threshold, with a final
+        # completion log for sufficiently large jobs.
+        if _should_log_embedding_progress(
+            previous_count=i,
+            current_count=i + 1,
+            total_count=len(texts),
+            log_interval=log_interval,
+        ):
             logger.debug(f"Processed {i + 1}/{len(texts)} texts")
 
     return embeddings_list
