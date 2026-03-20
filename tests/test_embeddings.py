@@ -7,10 +7,8 @@ import pytest
 
 from legiscope.embeddings import (
     EmbeddingConfig,
-    _build_embedding_text,
     _generate_embeddings_mistral,
     create_and_save_embeddings,
-    create_embeddings_df,
     get_embeddings,
 )
 from legiscope.models import CodeRef, JurisdictionRef
@@ -110,18 +108,21 @@ class TestGetEmbeddings:
             get_embeddings(mock_client, ["text"], "test-model", "ollama")
 
     @patch("legiscope.embeddings.logger")
-    def test_get_embeddings_progress_logging(self, mock_logger):
-        """Test progress logging for large batches."""
+    def test_get_embeddings_no_per_segment_logging(self, mock_logger):
+        """Embedding functions should not log per-segment; progress is in _embed_with_fallback."""
         mock_client = Mock()
-        # Create sequential responses for 15 texts (Ollama processes sequentially)
         mock_client.embeddings.side_effect = [{"embedding": [0.1]} for _ in range(15)]
 
         texts = [f"text{i}" for i in range(15)]
         get_embeddings(mock_client, texts, "test-model", "ollama")
 
-        # Should log individual processing progress for Ollama
-        debug_calls = [call[0][0] for call in mock_logger.debug.call_args_list]
-        assert any("Processed 15/15 texts" in call for call in debug_calls)
+        # No info or debug calls should reference individual segment progress
+        all_calls = [
+            call[0][0]
+            for call in mock_logger.info.call_args_list
+            + mock_logger.debug.call_args_list
+        ]
+        assert not any("Processed" in c for c in all_calls)
 
     @patch("legiscope.embeddings.logger")
     @patch(
@@ -253,290 +254,6 @@ class TestGetEmbeddings:
             get_embeddings(mock_client, texts, "test-model", "ollama")
 
 
-class TestCreateEmbeddingsDf:
-    """Test cases for create_embeddings_df function."""
-
-    def test_create_embeddings_df_basic(self):
-        """Test basic embeddings DataFrame creation."""
-        # Create test DataFrame
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title 1", "# Title 2"],
-                "segment_text": ["Content 1", "Content 2"],
-            }
-        )
-
-        # Mock embedding client with sequential responses (Ollama)
-        mock_client = Mock()
-        mock_client.embeddings.side_effect = [
-            {"embedding": [0.1, 0.2, 0.3]},
-            {"embedding": [0.4, 0.5, 0.6]},
-        ]
-
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-        result = create_embeddings_df(df, mock_client, config)
-
-        # Check structure
-        assert len(result) == 2
-        assert "embedding" in result.columns
-        assert result.columns == ["section_heading", "segment_text", "embedding"]
-
-        # Check embeddings
-        embeddings = result["embedding"].to_list()
-        assert embeddings[0] == pytest.approx([0.1, 0.2, 0.3])
-        assert embeddings[1] == pytest.approx([0.4, 0.5, 0.6])
-
-    def test_create_embeddings_df_custom_columns(self):
-        """Test with custom column names."""
-        df = pl.DataFrame(
-            {
-                "custom_heading": ["# Title"],
-                "custom_text": ["Content"],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
-
-        config = EmbeddingConfig(
-            model="test-model",
-            provider="ollama",
-            heading_col="custom_heading",
-            text_col="custom_text",
-            embedding_col="custom_embedding",
-        )
-        result = create_embeddings_df(df, mock_client, config)
-
-        assert "custom_embedding" in result.columns
-        assert result["custom_embedding"].to_list()[0] == pytest.approx([0.1, 0.2, 0.3])
-
-    def test_create_embeddings_df_concatenation(self):
-        """Test text concatenation logic."""
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title"],
-                "segment_text": ["Content"],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
-
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-        create_embeddings_df(df, mock_client, config)
-
-        # Should call with concatenated text
-        expected_prompt = "# Title\n\nContent"
-        mock_client.embeddings.assert_called_once_with(
-            model="test-model", prompt=expected_prompt
-        )
-
-    def test_create_embeddings_df_heading_only(self):
-        """Test with heading but no text."""
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title Only"],
-                "segment_text": [None],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
-
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-        create_embeddings_df(df, mock_client, config)
-
-        # Should call with heading only
-        mock_client.embeddings.assert_called_once_with(
-            model="test-model", prompt="# Title Only"
-        )
-
-    def test_create_embeddings_df_text_only(self):
-        """Test with text but no heading."""
-        df = pl.DataFrame(
-            {
-                "section_heading": [None],
-                "segment_text": ["Text only"],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
-
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-        create_embeddings_df(df, mock_client, config)
-
-        # Should call with text only
-        mock_client.embeddings.assert_called_once_with(
-            model="test-model", prompt="Text only"
-        )
-
-    def test_create_embeddings_df_empty_dataframe(self):
-        """Test handling of empty DataFrame."""
-        df = pl.DataFrame(
-            {
-                "section_heading": [],
-                "segment_text": [],
-            }
-        )
-
-        mock_client = Mock()
-
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-        result = create_embeddings_df(df, mock_client, config)
-
-        assert len(result) == 0
-        assert "embedding" in result.columns
-        # Should not call client
-        mock_client.embeddings.assert_not_called()
-
-    def test_create_embeddings_df_invalid_dataframe_type(self):
-        """Test error handling for invalid DataFrame type."""
-        invalid_df = "not a dataframe"  # type: ignore
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-        with pytest.raises(TypeError, match="df must be a polars DataFrame"):
-            create_embeddings_df(invalid_df, Mock(), config)  # type: ignore
-
-    def test_create_embeddings_df_missing_columns(self):
-        """Test error handling for missing required columns."""
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title"],
-                # Missing segment_text
-            }
-        )
-
-        mock_client = Mock()
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-
-        with pytest.raises(ValueError, match="DataFrame missing required columns"):
-            create_embeddings_df(df, mock_client, config)
-
-    def test_create_embeddings_df_embedding_error(self):
-        """Test error handling when embedding generation fails."""
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title"],
-                "segment_text": ["Content"],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.side_effect = Exception("Embedding failed")
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-
-        with pytest.raises(Exception, match="Embedding failed"):
-            create_embeddings_df(df, mock_client, config)
-
-    @patch("legiscope.embeddings.logger")
-    def test_create_embeddings_df_logging(self, mock_logger):
-        """Test logging functionality."""
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title"],
-                "segment_text": ["Content"],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-
-        create_embeddings_df(df, mock_client, config)
-
-        # Should log info messages
-        info_calls = [call[0][0] for call in mock_logger.info.call_args_list]
-        assert any(
-            "Creating embeddings DataFrame with model: test-model" in call
-            for call in info_calls
-        )
-        assert any(
-            "Successfully created embeddings DataFrame with 1 rows" in call
-            for call in info_calls
-        )
-
-    def test_create_embeddings_df_large_dataset(self):
-        """Test handling of larger dataset."""
-        # Create DataFrame with multiple rows
-        df = pl.DataFrame(
-            {
-                "section_heading": [f"# Title {i}" for i in range(5)],
-                "segment_text": [f"Content {i}" for i in range(5)],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.side_effect = [
-            {"embedding": [0.1 * i, 0.2 * i, 0.3 * i]} for i in range(5)
-        ]
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-
-        result = create_embeddings_df(df, mock_client, config)
-
-        assert len(result) == 5
-        assert len(result["embedding"].to_list()) == 5
-        assert mock_client.embeddings.call_count == 5
-
-    def test_create_embeddings_df_embedding_dtype(self):
-        """Test that embedding column has correct dtype."""
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title"],
-                "segment_text": ["Content"],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-
-        result = create_embeddings_df(df, mock_client, config)
-
-        # Check that embedding column is List(Float32)
-        schema = result.schema
-        assert schema["embedding"] == pl.List(pl.Float32)
-
-    def test_create_embeddings_df_preserves_original_columns(self):
-        """Test that original columns are preserved."""
-        df = pl.DataFrame(
-            {
-                "section_heading": ["# Title"],
-                "segment_text": ["Content"],
-                "extra_column": ["extra_value"],
-            }
-        )
-
-        mock_client = Mock()
-        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
-        config = EmbeddingConfig(model="test-model", provider="ollama")
-
-        result = create_embeddings_df(df, mock_client, config)
-
-        # Should preserve all original columns plus embedding
-        expected_columns = [
-            "section_heading",
-            "segment_text",
-            "extra_column",
-            "embedding",
-        ]
-        assert set(result.columns) == set(expected_columns)
-        assert result["extra_column"][0] == "extra_value"
-
-
-class TestEmbeddingConfigDefaults:
-    """Test that EmbeddingConfig defaults use the new ID column names."""
-
-    def test_id_col_default(self):
-        """Test that id_col defaults to segment_id."""
-        config = EmbeddingConfig()
-        assert config.id_col == "segment_id"
-
-    def test_id_col_custom(self):
-        """Test that id_col can be overridden."""
-        config = EmbeddingConfig(id_col="custom_id")
-        assert config.id_col == "custom_id"
-
-
 class TestEmbeddingIndexConfigDefaults:
     """Test that EmbeddingIndexConfig defaults use the new ID column names."""
 
@@ -551,97 +268,232 @@ class TestEmbeddingIndexConfigDefaults:
         assert config.id_col == "segment_id"
 
 
-class TestBuildEmbeddingText:
-    """Test cases for _build_embedding_text function."""
+class TestIsContextLengthError:
+    """Unit tests for _is_context_length_error."""
 
-    def test_basic_with_ancestors(self):
-        """Test embedding text assembly with ancestor headings."""
-        sections_df = pl.DataFrame(
-            {
-                "section_ordinal": [0, 1, 2],
-                "heading_text": ["Title I", "Chapter 1", "Section 1.1"],
-                "ancestor_path": [None, "0", "0/1"],
-            }
+    def test_matches_context_length(self):
+        """Recognises 'context length' substring (case-insensitive)."""
+        from legiscope.embeddings import _is_context_length_error
+
+        assert _is_context_length_error(ValueError("Exceeds context length limit"))
+
+    def test_matches_input_length(self):
+        """Recognises 'input length' substring."""
+        from legiscope.embeddings import _is_context_length_error
+
+        assert _is_context_length_error(ValueError("input length exceeds the maximum"))
+
+    def test_rejects_unrelated_error(self):
+        """Unrelated errors return False."""
+        from legiscope.embeddings import _is_context_length_error
+
+        assert not _is_context_length_error(RuntimeError("connection refused"))
+
+    def test_rejects_empty_message(self):
+        """Empty exception message returns False."""
+        from legiscope.embeddings import _is_context_length_error
+
+        assert not _is_context_length_error(ValueError(""))
+
+
+class TestCompactAncestorHeadings:
+    """Unit tests for _compact_ancestor_headings."""
+
+    def test_empty_input(self):
+        """Empty heading list returns empty list."""
+        from legiscope.embeddings import _compact_ancestor_headings
+
+        assert _compact_ancestor_headings([], 100, reserve_body_token=False) == []
+
+    def test_all_fit(self):
+        """When all headings fit, they are returned in document order (root→leaf)."""
+        from legiscope.embeddings import _compact_ancestor_headings
+
+        headings = ["Title I", "Chapter 2", "Section 3"]
+        result = _compact_ancestor_headings(headings, 100, reserve_body_token=False)
+        assert result == headings
+
+    def test_document_order_preserved(self):
+        """Output order matches input (root→leaf), not reversed."""
+        from legiscope.embeddings import _compact_ancestor_headings
+
+        headings = ["Root", "Mid", "Leaf"]
+        result = _compact_ancestor_headings(headings, 100, reserve_body_token=False)
+        assert result[0] == "Root"
+        assert result[-1] == "Leaf"
+
+    def test_nearest_headings_preferred(self):
+        """When budget is tight, nearest ancestors (leaf-side) are kept."""
+        from legiscope.embeddings import _compact_ancestor_headings
+
+        far = " ".join(["far"] * 12)  # ~12 tokens
+        mid = "mid"  # ~1 token
+        near = "near"  # ~1 token
+        # Budget = 3 tokens — only mid + near should fit
+        result = _compact_ancestor_headings(
+            [far, mid, near], 3, reserve_body_token=False
         )
-        segments_df = pl.DataFrame(
-            {
-                "section_ordinal": [2],
-                "segment_text": ["Body text here."],
-            }
-        )
+        assert near in result
+        assert mid in result
+        assert far not in result
 
-        result = _build_embedding_text(segments_df, sections_df)
+    def test_nearest_truncated_when_alone_exceeds(self):
+        """If the nearest heading alone exceeds budget, it is truncated."""
+        from legiscope.embeddings import _compact_ancestor_headings
 
+        long = " ".join(["word"] * 30)
+        result = _compact_ancestor_headings([long], 5, reserve_body_token=False)
         assert len(result) == 1
-        assert result[0] == "Title I\n\nChapter 1\n\nBody text here."
+        # The truncated heading should be shorter than the original
+        assert len(result[0].split()) < len(long.split())
 
-    def test_no_ancestors(self):
-        """Test segment with no ancestor_path (root section)."""
-        sections_df = pl.DataFrame(
-            {
-                "section_ordinal": [0],
-                "heading_text": ["Root"],
-                "ancestor_path": [None],
-            }
+    def test_reserve_body_token_reduces_budget(self):
+        """reserve_body_token=True leaves 1 token for the body."""
+        from legiscope.embeddings import _compact_ancestor_headings
+
+        # Budget = 2, reserve 1 for body → only 1 token for headings
+        result_reserved = _compact_ancestor_headings(
+            ["A", "B"], 2, reserve_body_token=True
         )
-        segments_df = pl.DataFrame(
-            {
-                "section_ordinal": [0],
-                "segment_text": ["Root body."],
-            }
+        result_full = _compact_ancestor_headings(
+            ["A", "B"], 2, reserve_body_token=False
         )
+        # With reservation, fewer heading tokens available
+        assert len(result_reserved) <= len(result_full)
 
-        result = _build_embedding_text(segments_df, sections_df)
 
-        assert len(result) == 1
-        assert result[0] == "Root body."
+class TestSplitSegmentRow:
+    """Unit tests for _split_segment_row."""
 
-    def test_empty_segment_text(self):
-        """Test segment with empty text."""
-        sections_df = pl.DataFrame(
-            {
-                "section_ordinal": [0, 1],
-                "heading_text": ["Title", "Section"],
-                "ancestor_path": [None, "0"],
-            }
+    @staticmethod
+    def _sections_by_ordinal(sections_data):
+        return {row["section_ordinal"]: row for row in sections_data}
+
+    def test_no_split_when_under_limit(self):
+        """Row within token limit returns single-element lists."""
+        from legiscope.embeddings import _split_segment_row
+
+        row = {"section_ordinal": 1, "segment_text": "Short body.", "word_count": 2}
+        sections = self._sections_by_ordinal(
+            [
+                {"section_ordinal": 0, "heading_text": "Root", "ancestor_path": None},
+                {"section_ordinal": 1, "heading_text": "Sec", "ancestor_path": "0"},
+            ]
         )
-        segments_df = pl.DataFrame(
-            {
-                "section_ordinal": [1],
-                "segment_text": [""],
-            }
+        rows, texts = _split_segment_row(row, sections, 100)
+        assert len(rows) == 1
+        assert len(texts) == 1
+        # Heading + body should be present
+        assert "Root" in texts[0]
+        assert "Short body." in texts[0]
+
+    def test_splits_oversized_body(self):
+        """When assembled text exceeds limit, body is split into chunks."""
+        from legiscope.embeddings import _split_segment_row
+
+        long_body = " ".join(["word"] * 200)
+        row = {"section_ordinal": 1, "segment_text": long_body, "word_count": 200}
+        sections = self._sections_by_ordinal(
+            [
+                {"section_ordinal": 0, "heading_text": "Title", "ancestor_path": None},
+                {"section_ordinal": 1, "heading_text": "Child", "ancestor_path": "0"},
+            ]
         )
+        rows, texts = _split_segment_row(row, sections, 20)
+        assert len(rows) > 1
+        assert len(texts) == len(rows)
+        # Each chunk should include the ancestor heading
+        for t in texts:
+            assert "Title" in t
 
-        result = _build_embedding_text(segments_df, sections_df)
+    def test_halve_budget_produces_more_splits(self):
+        """halve_budget=True should produce more, smaller chunks."""
+        from legiscope.embeddings import _split_segment_row
 
-        assert len(result) == 1
-        # Only ancestor heading, no empty text appended
-        assert result[0] == "Title"
-
-    def test_multiple_segments(self):
-        """Test with multiple segments from different sections."""
-        sections_df = pl.DataFrame(
-            {
-                "section_ordinal": [0, 1, 2],
-                "heading_text": ["Title", "Sec A", "Sec B"],
-                "ancestor_path": [None, "0", "0"],
-            }
+        body = " ".join(["word"] * 100)
+        row = {"section_ordinal": 0, "segment_text": body, "word_count": 100}
+        sections = self._sections_by_ordinal(
+            [{"section_ordinal": 0, "heading_text": "T", "ancestor_path": None}]
         )
-        segments_df = pl.DataFrame(
-            {
-                "section_ordinal": [1, 2],
-                "segment_text": ["Body A", "Body B"],
-            }
+        rows_normal, _ = _split_segment_row(row, sections, 20)
+        rows_halved, _ = _split_segment_row(row, sections, 20, halve_budget=True)
+        assert len(rows_halved) >= len(rows_normal)
+
+    def test_heading_compaction_on_tight_budget(self):
+        """When headings alone approach the limit, compaction is triggered."""
+        from legiscope.embeddings import _split_segment_row
+
+        far_heading = " ".join(["far"] * 20)
+        near_heading = "near"
+        row = {"section_ordinal": 2, "segment_text": "Body.", "word_count": 1}
+        sections = self._sections_by_ordinal(
+            [
+                {
+                    "section_ordinal": 0,
+                    "heading_text": far_heading,
+                    "ancestor_path": None,
+                },
+                {
+                    "section_ordinal": 1,
+                    "heading_text": near_heading,
+                    "ancestor_path": "0",
+                },
+                {
+                    "section_ordinal": 2,
+                    "heading_text": "Leaf",
+                    "ancestor_path": "0/1",
+                },
+            ]
         )
+        rows, texts = _split_segment_row(row, sections, 10)
+        # Near heading should be kept, far heading dropped
+        assert near_heading in texts[0]
+        assert far_heading not in texts[0]
 
-        result = _build_embedding_text(segments_df, sections_df)
+    def test_document_order_in_assembled_text(self):
+        """Headings in assembled text appear root→leaf, not reversed."""
+        from legiscope.embeddings import _split_segment_row
 
-        assert len(result) == 2
-        assert result[0] == "Title\n\nBody A"
-        assert result[1] == "Title\n\nBody B"
+        row = {"section_ordinal": 2, "segment_text": "Body.", "word_count": 1}
+        sections = self._sections_by_ordinal(
+            [
+                {
+                    "section_ordinal": 0,
+                    "heading_text": "Root",
+                    "ancestor_path": None,
+                },
+                {
+                    "section_ordinal": 1,
+                    "heading_text": "Mid",
+                    "ancestor_path": "0",
+                },
+                {
+                    "section_ordinal": 2,
+                    "heading_text": "Leaf",
+                    "ancestor_path": "0/1",
+                },
+            ]
+        )
+        _, texts = _split_segment_row(row, sections, 100)
+        # Root should appear before Mid in the assembled text
+        assert texts[0].index("Root") < texts[0].index("Mid")
 
-    def test_missing_section_ordinal(self):
-        """Test segment referencing a section not in sections_df."""
+    def test_no_section_ordinal(self):
+        """Row without section_ordinal still works (no headings)."""
+        from legiscope.embeddings import _split_segment_row
+
+        row = {"segment_text": "Some text.", "word_count": 2}
+        _, texts = _split_segment_row(row, {}, 100)
+        assert texts == ["Some text."]
+
+
+class TestSplitOversizedEmbeddingSegments:
+    """Unit tests for _split_oversized_embedding_segments."""
+
+    def test_no_split_needed(self):
+        """When all segments fit, returns original DataFrame unchanged."""
+        from legiscope.embeddings import _split_oversized_embedding_segments
+
         sections_df = pl.DataFrame(
             {
                 "section_ordinal": [0],
@@ -651,15 +503,101 @@ class TestBuildEmbeddingText:
         )
         segments_df = pl.DataFrame(
             {
-                "section_ordinal": [99],
-                "segment_text": ["Orphan text"],
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "segment_text": ["Short text."],
+                "word_count": [2],
             }
         )
+        result_df, texts = _split_oversized_embedding_segments(
+            segments_df, sections_df, 100
+        )
+        # Original DataFrame returned as-is (identity)
+        assert result_df is segments_df
+        assert len(texts) == 1
 
-        result = _build_embedding_text(segments_df, sections_df)
+    def test_splits_oversized_and_renumbers(self):
+        """Oversized segment is split and segment_ordinal renumbered sequentially."""
+        from legiscope.embeddings import _split_oversized_embedding_segments
 
-        assert len(result) == 1
-        assert result[0] == "Orphan text"
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["T"],
+                "ancestor_path": [None],
+            }
+        )
+        long_body = " ".join(["word"] * 200)
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "segment_text": [long_body],
+                "word_count": [200],
+            }
+        )
+        result_df, texts = _split_oversized_embedding_segments(
+            segments_df, sections_df, 20
+        )
+        assert len(result_df) > 1
+        assert len(texts) == len(result_df)
+        # segment_ordinal should be sequential 0, 1, 2, ...
+        ordinals = result_df["segment_ordinal"].to_list()
+        assert ordinals == list(range(len(ordinals)))
+
+    def test_mixed_rows_only_oversized_split(self):
+        """Only the oversized segment is split; the short one passes through."""
+        from legiscope.embeddings import _split_oversized_embedding_segments
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": ["T", "S"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        long_body = " ".join(["word"] * 200)
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0, 1],
+                "section_ordinal": [0, 1],
+                "segment_text": ["Short.", long_body],
+                "word_count": [1, 200],
+            }
+        )
+        result_df, texts = _split_oversized_embedding_segments(
+            segments_df, sections_df, 20
+        )
+        # More rows than original (the long one was split)
+        assert len(result_df) > 2
+        # First text should be the short segment's assembled text
+        assert "Short." in texts[0]
+
+
+class TestEmbeddingConfigDefaults:
+    """Unit tests for EmbeddingConfig default resolution."""
+
+    def test_default_provider_resolves_to_module_constant(self):
+        """EmbeddingConfig() should resolve provider to EMBEDDING_PROVIDER."""
+        from legiscope.embeddings import EMBEDDING_PROVIDER
+
+        config = EmbeddingConfig()
+        assert config.provider == EMBEDDING_PROVIDER
+
+    def test_explicit_provider_preserved(self):
+        """Explicitly setting provider keeps the given value."""
+        config = EmbeddingConfig(provider="mistral")
+        assert config.provider == "mistral"
+
+    def test_invalid_provider_raises(self):
+        """Unsupported provider raises ValueError."""
+        with pytest.raises(ValueError, match="Unsupported provider"):
+            EmbeddingConfig(provider="nonexistent")
+
+    def test_default_model_is_none(self):
+        """Default model is None (resolved later by provider config)."""
+        config = EmbeddingConfig()
+        assert config.model is None
 
 
 class TestCreateAndSaveEmbeddings:
@@ -828,6 +766,295 @@ class TestCreateAndSaveEmbeddings:
         assert result.schema["embedding"] == pl.List(pl.Float32)
 
 
+class TestFallbackSplittingOnContextError:
+    """Test that context-length errors on individual segments trigger splitting.
+
+    The fallback logic in ``_embed_with_fallback`` processes texts in the
+    provider's native chunk size (1 for Ollama, 100 for Mistral).  When a
+    segment fails, it is split and retried without discarding other work.
+    """
+
+    def _make_code_ref(self):
+        return CodeRef(
+            jurisdiction=JurisdictionRef(state="CA", locality="TestCity"),
+            code_slug="test-code",
+        )
+
+    def test_ollama_splits_failing_segment(self, tmp_path):
+        """Ollama (chunk_size=1): failing segment is split in place."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": ["Title", "Section 1"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        long_text = " ".join(["word"] * 300)
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0, 1],
+                "section_ordinal": [1, 1],
+                "section_heading": ["Section 1", "Section 1"],
+                "segment_text": ["Short.", long_text],
+            }
+        )
+
+        first_fail_done = False
+
+        def mock_get_embeddings(client, texts, model, provider):
+            import numpy as np
+
+            nonlocal first_fail_done
+            assert len(texts) == 1, "Ollama should process one text at a time"
+            # Fail the first time we see the full long text
+            if not first_fail_done and len(texts[0].split()) > 200:
+                first_fail_done = True
+                raise ValueError("input length exceeds the context length")
+            return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        with patch(
+            "legiscope.embeddings.get_embeddings", side_effect=mock_get_embeddings
+        ):
+            result = create_and_save_embeddings(
+                segments_df=segments_df,
+                sections_df=sections_df,
+                client=Mock(),
+                code_ref=code_ref,
+                embedding_config=config,
+                output_path=tmp_path / "embeddings.parquet",
+                token_limit=1024,
+            )
+
+        assert len(result) >= 2
+        assert "embedding" in result.columns
+
+    def test_mistral_batch_failure_falls_back(self, tmp_path):
+        """Mistral (chunk_size=100): batch failure retries per-segment in chunk."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": ["Title", "Section 1"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0, 1],
+                "section_ordinal": [1, 1],
+                "section_heading": ["Section 1", "Section 1"],
+                "segment_text": ["Good.", " ".join(["word"] * 300)],
+            }
+        )
+
+        calls: list[int] = []  # track len(texts) per call
+
+        def mock_get_embeddings(client, texts, model, provider):
+            import numpy as np
+
+            calls.append(len(texts))
+            # Multi-text batch call fails
+            if len(texts) > 1:
+                raise ValueError("input length exceeds the context length")
+            # Single-text calls succeed
+            return np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
+
+        config = EmbeddingConfig(model="test-model", provider="mistral")
+
+        # Patch the provider config so chunk_size=100 is used
+        patched_cfg = {
+            "mistral": {
+                "batch_size": 100,
+                "embedding_function": None,  # not used — get_embeddings is mocked
+                "model": "test-model",
+                "client_factory": None,
+            }
+        }
+
+        with (
+            patch(
+                "legiscope.embeddings.get_embeddings", side_effect=mock_get_embeddings
+            ),
+            patch("legiscope.embeddings.EMBEDDING_PROVIDER_CONFIG", patched_cfg),
+        ):
+            result = create_and_save_embeddings(
+                segments_df=segments_df,
+                sections_df=sections_df,
+                client=Mock(),
+                code_ref=code_ref,
+                embedding_config=config,
+                output_path=tmp_path / "embeddings.parquet",
+                token_limit=1024,
+            )
+
+        # First call was a batch (2 texts), then individual calls
+        assert calls[0] == 2
+        assert all(c == 1 for c in calls[1:])
+        assert len(result) >= 2
+        assert "embedding" in result.columns
+
+    def test_non_context_error_not_retried(self, tmp_path):
+        """Non-context errors are raised immediately, no retry."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Title"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "section_heading": ["Title"],
+                "segment_text": ["Body."],
+            }
+        )
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        with patch(
+            "legiscope.embeddings.get_embeddings",
+            side_effect=ValueError("some other error"),
+        ):
+            with pytest.raises(ValueError, match="some other error"):
+                create_and_save_embeddings(
+                    segments_df=segments_df,
+                    sections_df=sections_df,
+                    client=Mock(),
+                    code_ref=code_ref,
+                    embedding_config=config,
+                    output_path=tmp_path / "embeddings.parquet",
+                    token_limit=1024,
+                )
+
+    def test_max_retries_per_segment_exhausted(self, tmp_path):
+        """After max per-segment retries, raises even if it's a context error."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["Title"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [0],
+                "section_heading": ["Title"],
+                "segment_text": ["Body."],
+            }
+        )
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        with patch(
+            "legiscope.embeddings.get_embeddings",
+            side_effect=ValueError("input length exceeds the context length"),
+        ):
+            with pytest.raises(ValueError, match="still exceeds context length"):
+                create_and_save_embeddings(
+                    segments_df=segments_df,
+                    sections_df=sections_df,
+                    client=Mock(),
+                    code_ref=code_ref,
+                    embedding_config=config,
+                    output_path=tmp_path / "embeddings.parquet",
+                    token_limit=1024,
+                )
+
+    def test_compacts_headings_when_ancestors_exceed_limit(self, tmp_path):
+        """Nearest ancestor headings are preserved when context must be compacted."""
+        code_ref = self._make_code_ref()
+
+        far_heading = " ".join(["far"] * 12)
+        near_heading = " ".join(["near"] * 8)
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1, 2],
+                "heading_text": [far_heading, near_heading, "Section 1"],
+                "ancestor_path": [None, "0", "0/1"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [2],
+                "section_heading": ["Section 1"],
+                "segment_text": [" ".join(["body"] * 6)],
+            }
+        )
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+        mock_client = Mock()
+        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
+
+        result = create_and_save_embeddings(
+            segments_df=segments_df,
+            sections_df=sections_df,
+            client=mock_client,
+            code_ref=code_ref,
+            embedding_config=config,
+            output_path=tmp_path / "embeddings.parquet",
+            token_limit=10,
+        )
+
+        assert len(result) >= 1
+        embedding_texts = result["embedding_text"].to_list()
+        assert any(near_heading in text for text in embedding_texts)
+        assert all(far_heading not in text for text in embedding_texts)
+
+    def test_truncates_nearest_heading_when_single_heading_exceeds_limit(
+        self, tmp_path
+    ):
+        """If only the nearest heading fits, it is truncated to the heading budget."""
+        code_ref = self._make_code_ref()
+
+        long_heading = " ".join(["heading"] * 40)
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_text": [long_heading, "Section 1"],
+                "ancestor_path": [None, "0"],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [1],
+                "section_heading": ["Section 1"],
+                "segment_text": ["Body."],
+            }
+        )
+
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+        mock_client = Mock()
+        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2, 0.3]}
+
+        result = create_and_save_embeddings(
+            segments_df=segments_df,
+            sections_df=sections_df,
+            client=mock_client,
+            code_ref=code_ref,
+            embedding_config=config,
+            output_path=tmp_path / "embeddings.parquet",
+            token_limit=10,
+        )
+
+        embedding_texts = result["embedding_text"].to_list()
+        assert any(text.startswith("heading") for text in embedding_texts)
+        assert all(long_heading not in text for text in embedding_texts)
+
+
 class TestChromaOperations:
     """Test cases for ChromaDB operations."""
 
@@ -929,30 +1156,6 @@ class TestChromaOperations:
             assert metadatas[0]["jurisdiction_id"] == "IL-Test"
             assert metadatas[0]["section_heading"] == "Heading 1"
 
-    def test_add_jurisdiction_embeddings(self):
-        """Test adding jurisdiction embeddings."""
-        from legiscope.embeddings import add_jurisdiction_embeddings
-
-        df = pl.DataFrame(
-            {
-                "segment_id": ["s0"],
-                "segment_text": ["text"],
-                "embedding": [[0.1]],
-                "section_heading": ["H"],
-            }
-        )
-
-        mock_collection = MagicMock()
-        mock_collection.name = "test_coll"
-
-        with patch("legiscope.embeddings.create_embedding_index") as mock_create_idx:
-            add_jurisdiction_embeddings(mock_collection, df, "IL-Test")
-
-            mock_create_idx.assert_called_once()
-            config = mock_create_idx.call_args[0][0]
-            assert config.jurisdiction_id == "IL-Test"
-            assert config.collection_name == "test_coll"
-
     def test_collection_config_provider_model_naming(self):
         """Test that CollectionConfig generates provider_model suffixed names."""
         from legiscope.embeddings import CollectionConfig, EMBEDDING_PROVIDER_CONFIG
@@ -986,47 +1189,3 @@ class TestChromaOperations:
         config = CollectionConfig(collection_name="legal_code_all")
         assert config.collection_name == "legal_code_all"
         assert config.model is None
-
-    def test_create_and_persist_embeddings(self):
-        """Test the unified workflow."""
-        from legiscope.embeddings import (
-            JurisdictionConfig,
-            create_and_persist_embeddings,
-        )
-
-        df = pl.DataFrame({"text": ["content"]})
-        mock_client = MagicMock()
-
-        # Mock dependencies
-        with (
-            patch("legiscope.embeddings.create_embeddings_df") as mock_create_df,
-            patch("legiscope.embeddings.create_embedding_index") as mock_create_idx,
-        ):
-            # Setup mock return for create_embeddings_df
-            embeddings_df = pl.DataFrame(
-                {
-                    "segment_id": ["s0"],
-                    "segment_text": ["content"],
-                    "embedding": [[0.1]],
-                }
-            )
-            # Add write_parquet mock to the dataframe
-            embeddings_df.write_parquet = MagicMock()
-            mock_create_df.return_value = embeddings_df
-
-            mock_collection = MagicMock()
-            mock_create_idx.return_value = mock_collection
-
-            # Run workflow
-            jur_config = JurisdictionConfig(jurisdiction_id="IL-Test")
-            result_df, result_coll = create_and_persist_embeddings(
-                df, mock_client, jurisdiction_config=jur_config
-            )
-
-            # Verify steps
-            mock_create_df.assert_called_once()
-            embeddings_df.write_parquet.assert_called_once()  # Persistence
-            mock_create_idx.assert_called_once()  # Index creation
-
-            assert result_df is embeddings_df
-            assert result_coll is mock_collection

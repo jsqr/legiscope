@@ -67,12 +67,16 @@ def main() -> None:
 
     embedding_config = EmbeddingConfig(model=model, provider=provider)
 
+    seg_params = params.get("segmentation", {})
+    token_limit = seg_params.get("token_limit", 1024)
+
     embeddings_df = create_and_save_embeddings(
         segments_df=segments_df,
         sections_df=sections_df,
         client=client,
         code_ref=code_ref,
         embedding_config=embedding_config,
+        token_limit=token_limit,
     )
 
     logger.info(f"Created {len(embeddings_df)} embeddings for {code_ref.code_id}")

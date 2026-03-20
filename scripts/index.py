@@ -16,7 +16,8 @@ from loguru import logger
 from legiscope.config import chroma_db_path, setup_logging
 from legiscope.embeddings import (
     CollectionConfig,
-    add_jurisdiction_embeddings,
+    EmbeddingIndexConfig,
+    create_embedding_index,
     get_or_create_legal_collection,
 )
 from legiscope.models import CodeRef
@@ -76,11 +77,11 @@ def main() -> None:
 
     logger.info(f"Adding {len(new_df)} new segments from {code_ref.code_id}")
 
-    add_jurisdiction_embeddings(
-        collection=collection,
-        embeddings_df=new_df,
+    index_config = EmbeddingIndexConfig(
+        df=new_df,
         jurisdiction_id=code_ref.jurisdiction_id,
     )
+    create_embedding_index(index_config, collection=collection)
 
     logger.info(f"Index now contains {collection.count()} total segments")
 

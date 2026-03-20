@@ -15,11 +15,8 @@ from legiscope.parse.scan import scan_legal_text
 from legiscope.utils import ask
 from legiscope.embeddings import (
     EmbeddingIndexConfig,
-    add_jurisdiction_embeddings,
-    create_and_persist_embeddings,
     create_and_save_embeddings,
     create_embedding_index,
-    create_embeddings_df,
     get_embeddings,
     get_or_create_legal_collection,
 )
@@ -44,7 +41,6 @@ from legiscope.retrieve import (
 )
 from legiscope.segment import (
     add_parent_relationships,
-    add_segments_to_sections,
     create_segments_df,
     divide_into_sections,
     enrich_sections,
@@ -71,16 +67,12 @@ __all__ = [
     "enrich_sections",
     "get_section_text",
     "segment_text",
-    "add_segments_to_sections",
     "create_segments_df",
     # Embeddings module
     "get_embeddings",
-    "create_embeddings_df",
     "create_embedding_index",
     "EmbeddingIndexConfig",
     "get_or_create_legal_collection",
-    "add_jurisdiction_embeddings",
-    "create_and_persist_embeddings",
     "create_and_save_embeddings",
     # Retrieve module
     "retrieve_segments",

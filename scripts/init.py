@@ -29,6 +29,9 @@ from legiscope.models import (
 from legiscope.params import load_params
 from legiscope.utils import create_code_structure
 
+JURISDICTIONS_PARQUET = jurisdictions_parquet()
+CODES_PARQUET = codes_parquet()
+
 # ------------------------------------------------------------------
 # Registry helpers
 # ------------------------------------------------------------------
@@ -41,9 +44,11 @@ def _load_or_create_parquet(path: Path, schema: dict) -> pl.DataFrame:
     return pl.DataFrame(schema=schema)
 
 
-def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
+def _append_jurisdiction(
+    ref: JurisdictionRef, name: str, parquet_path: Path | None = None
+) -> None:
     """Append a jurisdiction to the registry if it doesn't already exist."""
-    parquet_path = jurisdictions_parquet()
+    parquet_path = parquet_path or jurisdictions_parquet()
     df = _load_or_create_parquet(parquet_path, JURISDICTIONS_SCHEMA)
 
     if df.filter(pl.col("jurisdiction_id") == ref.jurisdiction_id).height > 0:
@@ -73,9 +78,14 @@ def _append_jurisdiction(ref: JurisdictionRef, name: str) -> None:
     logger.info("Registered jurisdiction: {}", ref.jurisdiction_id)
 
 
-def _append_code(code_ref: CodeRef, name: str, code_type: str) -> None:
+def _append_code(
+    code_ref: CodeRef,
+    name: str,
+    code_type: str,
+    parquet_path: Path | None = None,
+) -> None:
     """Append a code to the registry if it doesn't already exist."""
-    parquet_path = codes_parquet()
+    parquet_path = parquet_path or codes_parquet()
     df = _load_or_create_parquet(parquet_path, CODES_SCHEMA)
 
     if df.filter(pl.col("code_id") == code_ref.code_id).height > 0:
@@ -141,8 +151,17 @@ def main() -> None:
             jurisdiction_name = code_ref.jurisdiction.state
 
     code_dir = create_code_structure(code_ref)
-    _append_jurisdiction(code_ref.jurisdiction, jurisdiction_name)
-    _append_code(code_ref, code_name, args.code_type)
+    _append_jurisdiction(
+        code_ref.jurisdiction,
+        jurisdiction_name,
+        parquet_path=JURISDICTIONS_PARQUET,
+    )
+    _append_code(
+        code_ref,
+        code_name,
+        args.code_type,
+        parquet_path=CODES_PARQUET,
+    )
 
     logger.info(f"Created structure: {code_dir}")
 

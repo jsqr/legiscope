@@ -180,10 +180,8 @@ class TestMain:
         }
 
         with (
-            patch.object(
-                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
-            ),
-            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
+            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch("init.create_code_structure", return_value=code_dir),
             patch("init.load_params", return_value=fake_params),
         ):
@@ -209,10 +207,8 @@ class TestMain:
         }
 
         with (
-            patch.object(
-                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
-            ),
-            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
+            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
@@ -236,10 +232,8 @@ class TestMain:
         }
 
         with (
-            patch.object(
-                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
-            ),
-            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
+            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
@@ -265,10 +259,8 @@ class TestMain:
         }
 
         with (
-            patch.object(
-                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
-            ),
-            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
+            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
@@ -296,11 +288,9 @@ class TestMain:
 
         with (
             patch.object(
-                pipeline_init,
-                "jurisdictions_parquet",
-                return_value=tmp_path / "j.parquet",
+                pipeline_init, "JURISDICTIONS_PARQUET", tmp_path / "j.parquet"
             ),
-            patch.object(pipeline_init, "codes_parquet", return_value=c_parquet),
+            patch.object(pipeline_init, "CODES_PARQUET", c_parquet),
             patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):
@@ -324,12 +314,8 @@ class TestMain:
         }
 
         with (
-            patch.object(
-                pipeline_init, "jurisdictions_parquet", return_value=j_parquet
-            ),
-            patch.object(
-                pipeline_init, "codes_parquet", return_value=tmp_path / "c.parquet"
-            ),
+            patch.object(pipeline_init, "JURISDICTIONS_PARQUET", j_parquet),
+            patch.object(pipeline_init, "CODES_PARQUET", tmp_path / "c.parquet"),
             patch("init.create_code_structure", return_value=tmp_path),
             patch("init.load_params", return_value=fake_params),
         ):

@@ -78,7 +78,7 @@ class TestIncrementalIndexing:
                 "index.get_or_create_legal_collection",
                 return_value=collection,
             ),
-            patch("index.add_jurisdiction_embeddings", mock_add),
+            patch("index.create_embedding_index", mock_add),
             patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
         ):
             mock_from_dvc.return_value = sample_code_ref
@@ -90,7 +90,7 @@ class TestIncrementalIndexing:
         mock_add.assert_not_called()
 
     def test_adds_only_new_segments(self, tmp_path, mock_cli_args, sample_code_ref):
-        """Only segment IDs not in the collection are passed to add_jurisdiction_embeddings."""
+        """Only segment IDs not in the collection are passed to create_embedding_index."""
         all_ids = [
             "IL:WindyTown:municipal-code:g0",
             "IL:WindyTown:municipal-code:g1",
@@ -128,7 +128,7 @@ class TestIncrementalIndexing:
                 "index.get_or_create_legal_collection",
                 return_value=collection,
             ),
-            patch("index.add_jurisdiction_embeddings", mock_add),
+            patch("index.create_embedding_index", mock_add),
             patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
         ):
             mock_from_dvc.return_value = sample_code_ref
@@ -137,9 +137,8 @@ class TestIncrementalIndexing:
             pipeline_index.main()
 
         mock_add.assert_called_once()
-        call_kwargs = mock_add.call_args
-        added_df = call_kwargs.kwargs["embeddings_df"]
-        added_ids = set(added_df["segment_id"].to_list())
+        config = mock_add.call_args[0][0]
+        added_ids = set(config.df["segment_id"].to_list())
         assert added_ids == {
             "IL:WindyTown:municipal-code:g1",
             "IL:WindyTown:municipal-code:g2",
@@ -179,7 +178,7 @@ class TestIncrementalIndexing:
                 "index.get_or_create_legal_collection",
                 return_value=collection,
             ),
-            patch("index.add_jurisdiction_embeddings", mock_add),
+            patch("index.create_embedding_index", mock_add),
             patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
         ):
             mock_from_dvc.return_value = sample_code_ref
@@ -188,9 +187,8 @@ class TestIncrementalIndexing:
             pipeline_index.main()
 
         mock_add.assert_called_once()
-        call_kwargs = mock_add.call_args
-        added_df = call_kwargs.kwargs["embeddings_df"]
-        assert len(added_df) == 2
+        config = mock_add.call_args[0][0]
+        assert len(config.df) == 2
 
     def test_missing_embeddings_raises(self, tmp_path, mock_cli_args, sample_code_ref):
         """FileNotFoundError when embeddings.parquet is missing."""
