@@ -10,7 +10,6 @@ from polars import DataFrame
 import polars as pl
 from loguru import logger
 from legiscope.utils import LLMConfig
-from legiscope.llm_config import Config
 
 
 class EvaluationResult(BaseModel):
@@ -42,14 +41,19 @@ class Evaluator:
             llm_config: Configuration for the judge LLM. If None, uses the powerful client.
         """
         if llm_config is None:
+            from legiscope.llm_config import Config
+
             # We want a powerful model for evaluation (Judge)
             # Config.get_powerful_client() already returns an Instructor client
             self.client = Config.get_powerful_client()
-            self.model = Config.get_powerful_model()
+            self._request_params = Config.get_llm_params()
         else:
             # llm_config.client is already an Instructor client
             self.client = llm_config.client
-            self.model = llm_config.model
+            self._request_params = {
+                "temperature": llm_config.temperature,
+                "max_retries": llm_config.max_retries,
+            }
 
     def evaluate_response(
         self, question: str, generated_answer: str, ground_truth: str
@@ -88,12 +92,12 @@ class Evaluator:
 
         try:
             return self.client.chat.completions.create(
-                model=self.model,
                 response_model=EvaluationResult,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
+                **self._request_params,
             )
         except Exception as e:
             logger.error(f"Evaluation failed: {e}")
