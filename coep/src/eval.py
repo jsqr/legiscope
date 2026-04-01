@@ -45,9 +45,14 @@ class Evaluator:
             # We want a powerful model for evaluation (Judge)
             # Config.get_powerful_client() already returns an Instructor client
             self.client = Config.get_powerful_client()
+            self._request_params = Config.get_llm_params()
         else:
             # llm_config.client is already an Instructor client
             self.client = llm_config.client
+            self._request_params = {
+                "temperature": llm_config.temperature,
+                "max_retries": llm_config.max_retries,
+            }
 
     def evaluate_response(
         self, question: str, generated_answer: str, ground_truth: str
@@ -91,7 +96,7 @@ class Evaluator:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
-                **Config.get_llm_params(),
+                **self._request_params,
             )
         except Exception as e:
             logger.error(f"Evaluation failed: {e}")

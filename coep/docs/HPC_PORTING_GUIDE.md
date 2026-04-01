@@ -1135,12 +1135,9 @@ export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
 
 cd /gpfs/data/cerdalab/legiscope
 
-# Phase 1: DVC pipeline (no vLLM needed)
-echo "=== Phase 1: DVC Pipeline ==="
-dvc repro
-
-# Phase 2: Start vLLM and run benchmark
-echo "=== Phase 2: Query/Benchmark with vLLM ==="
+# ── Start vLLM server (needed for BOTH phases) ───────────────────
+# The parse stage in Phase 1 makes LLM calls, so vLLM must be running
+# before dvc repro.
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 
 python -m vllm.entrypoints.openai.api_server \
@@ -1166,6 +1163,12 @@ echo "vLLM ready after ${ELAPSED}s"
 export OPENAI_BASE_URL=http://localhost:8000/v1
 export OPENAI_API_KEY="$API_KEY"
 
+# Phase 1: DVC pipeline (parse stage needs vLLM for heading scanning)
+echo "=== Phase 1: DVC Pipeline ==="
+dvc repro
+
+# Phase 2: Run benchmark (reuses the same vLLM server)
+echo "=== Phase 2: Query/Benchmark ==="
 python coep/scripts/benchmark_pipeline.py
 
 echo "=== Completed: $(date) ==="
