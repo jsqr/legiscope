@@ -10,7 +10,6 @@ from polars import DataFrame
 import polars as pl
 from loguru import logger
 from legiscope.utils import LLMConfig
-from legiscope.llm_config import Config
 
 
 class EvaluationResult(BaseModel):
@@ -42,6 +41,8 @@ class Evaluator:
             llm_config: Configuration for the judge LLM. If None, uses the powerful client.
         """
         if llm_config is None:
+            from legiscope.llm_config import Config
+
             # We want a powerful model for evaluation (Judge)
             # Config.get_powerful_client() already returns an Instructor client
             self.client = Config.get_powerful_client()

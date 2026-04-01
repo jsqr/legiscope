@@ -133,9 +133,8 @@ class TestEvaluator:
         """Test single response evaluation with mocked LLM."""
         mock_client = Mock()
 
-        # Create evaluator with mock client
-        # We need to mock Config.get_powerful_client if we don't pass llm_config
-        with patch("coep.src.eval.Config") as mock_config:
+        # Config is imported inside Evaluator.__init__, so patch at source
+        with patch("legiscope.llm_config.Config") as mock_config:
             mock_config.get_powerful_client.return_value = mock_client
             mock_config.get_llm_params.return_value = {
                 "temperature": 0.0,
@@ -161,7 +160,7 @@ class TestEvaluator:
         """Test batch evaluation."""
         mock_client = Mock()
 
-        with patch("coep.src.eval.Config") as mock_config:
+        with patch("legiscope.llm_config.Config") as mock_config:
             mock_config.get_powerful_client.return_value = mock_client
             mock_config.get_llm_params.return_value = {
                 "temperature": 0.0,
