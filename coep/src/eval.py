@@ -45,11 +45,9 @@ class Evaluator:
             # We want a powerful model for evaluation (Judge)
             # Config.get_powerful_client() already returns an Instructor client
             self.client = Config.get_powerful_client()
-            self.model = Config.get_powerful_model()
         else:
             # llm_config.client is already an Instructor client
             self.client = llm_config.client
-            self.model = llm_config.model
 
     def evaluate_response(
         self, question: str, generated_answer: str, ground_truth: str
@@ -88,12 +86,12 @@ class Evaluator:
 
         try:
             return self.client.chat.completions.create(
-                model=self.model,
                 response_model=EvaluationResult,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
+                **Config.get_llm_params(),
             )
         except Exception as e:
             logger.error(f"Evaluation failed: {e}")

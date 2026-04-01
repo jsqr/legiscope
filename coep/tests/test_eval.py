@@ -137,7 +137,10 @@ class TestEvaluator:
         # We need to mock Config.get_powerful_client if we don't pass llm_config
         with patch("coep.src.eval.Config") as mock_config:
             mock_config.get_powerful_client.return_value = mock_client
-            mock_config.get_powerful_model.return_value = "mock_model"
+            mock_config.get_llm_params.return_value = {
+                "temperature": 0.0,
+                "max_retries": 3,
+            }
 
             evaluator = Evaluator()
 
@@ -160,7 +163,10 @@ class TestEvaluator:
 
         with patch("coep.src.eval.Config") as mock_config:
             mock_config.get_powerful_client.return_value = mock_client
-            mock_config.get_powerful_model.return_value = "mock_model"
+            mock_config.get_llm_params.return_value = {
+                "temperature": 0.0,
+                "max_retries": 3,
+            }
 
             evaluator = Evaluator()
 

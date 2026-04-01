@@ -19,7 +19,7 @@ def _provider_config() -> dict:
     providers = p.get("llm", {}).get("providers", {})
 
     mode_map = {
-        "openai": instructor.Mode.RESPONSES_TOOLS,
+        "openai": instructor.Mode.JSON,
         "mistral": instructor.Mode.MISTRAL_TOOLS,
         "ollama": None,  # auto-configures
     }
