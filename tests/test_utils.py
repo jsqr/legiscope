@@ -38,8 +38,14 @@ class TestAskFunction:
         with pytest.raises(ValueError, match="Prompt cannot be empty"):
             ask(client=mock_client, prompt="   ", response_model=MockResponseModel)
 
-    def test_successful_call(self):
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_successful_call(self, mock_get_llm_params):
         """Test successful LLM call with structured response."""
+        mock_get_llm_params.return_value = {
+            "temperature": 0.5,
+            "max_retries": 3,
+            "model": "gpt-4",
+        }
         # Setup mock client
         mock_client = Mock()
         mock_response = MockResponseModel(name="test", value=42)
@@ -68,8 +74,14 @@ class TestAskFunction:
         # Verify result
         assert result == mock_response
 
-    def test_successful_call_with_system_prompt(self):
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_successful_call_with_system_prompt(self, mock_get_llm_params):
         """Test successful LLM call with system prompt."""
+        mock_get_llm_params.return_value = {
+            "temperature": DEFAULT_TEMPERATURE,
+            "max_retries": DEFAULT_MAX_RETRIES,
+            "model": "gpt-4",
+        }
         # Setup mock client
         mock_client = Mock()
         mock_response = MockResponseModel(name="test", value=42)
@@ -111,8 +123,13 @@ class TestAskFunction:
                 response_model=MockResponseModel,
             )
 
-    def test_default_parameters(self):
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_default_parameters(self, mock_get_llm_params):
         """Test that default parameters are applied correctly."""
+        mock_get_llm_params.return_value = {
+            "temperature": DEFAULT_TEMPERATURE,
+            "max_retries": DEFAULT_MAX_RETRIES,
+        }
         mock_client = Mock()
         mock_response = MockResponseModel(name="test", value=42)
         mock_client.chat.completions.create.return_value = mock_response
@@ -124,7 +141,6 @@ class TestAskFunction:
             response_model=MockResponseModel,
         )
 
-        # Verify defaults were applied
         # Verify defaults were applied (no model parameter since client handles it)
         mock_client.chat.completions.create.assert_called_once_with(
             messages=[{"role": "user", "content": "test prompt"}],
