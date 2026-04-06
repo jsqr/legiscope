@@ -336,22 +336,47 @@ def score_structure(
     if compile_warnings and not compiled:
         return 0.0, errors
 
-    # Count elements matched by patterns — focus on precision (no ambiguity)
+    # Count elements matched by patterns and heading-like elements for recall
     matched_count = 0
     ambiguous_count = 0
+    non_empty_count = 0
+    heading_like_count = 0
+    heading_like_matched = 0
     for row in elements_df.to_dicts():
         first_line = row["text"].split("\n")[0].strip()
         if not first_line:
             continue
+        non_empty_count += 1
+        is_hl = is_heading_like(first_line)
+        if is_hl:
+            heading_like_count += 1
         matching = [lvl for lvl, pat, _ in compiled if pat.match(first_line)]
         if len(matching) >= 1:
             matched_count += 1
+            if is_hl:
+                heading_like_matched += 1
         if len(matching) > 1:
             ambiguous_count += 1
 
-    # Coverage (0.4) — precision: matched exactly once / total matched
+    # If patterns match nothing at all, score is 0 — patterns are wrong
+    if matched_count == 0:
+        errors.append("No elements matched any pattern")
+        return 0.0, errors
+
+    # Precision (0.2) — matched exactly once / total matched
     exactly_one = matched_count - ambiguous_count
-    coverage = exactly_one / matched_count if matched_count > 0 else 1.0
+    precision = exactly_one / matched_count if matched_count > 0 else 1.0
+
+    # Recall (0.3) — fraction of heading-like elements captured by patterns
+    if heading_like_count > 0:
+        recall = heading_like_matched / heading_like_count
+    else:
+        recall = 1.0 if matched_count > 0 else 0.0
+    if recall < 1.0:
+        errors.append(
+            f"Low recall: patterns matched {heading_like_matched} of "
+            f"{heading_like_count} heading-like elements ({recall:.0%})"
+        )
 
     # Pattern validity (0.2) — fraction of non-inferred patterns matching >= 1 element
     all_text = "\n".join(elements_df["text"].to_list())
@@ -365,7 +390,7 @@ def score_structure(
             errors.append(f"Pattern has 0 matches: {pat_str[:70]}")
     pattern_validity = valid_patterns / total_patterns if total_patterns > 0 else 1.0
 
-    # Sibling ordering (0.2)
+    # Sibling ordering (0.1)
     sibling_warnings = _check_sibling_ordering(structure, compiled, elements_df)
     out_of_order = len(sibling_warnings)
     errors.extend(sibling_warnings)
@@ -387,9 +412,10 @@ def score_structure(
     errors.extend(completeness_warnings)
 
     score = (
-        0.4 * coverage
+        0.2 * precision
+        + 0.3 * recall
         + 0.2 * pattern_validity
-        + 0.2 * sibling_score
+        + 0.1 * sibling_score
         + 0.1 * ambiguity_score
         + 0.1 * pc_score
     )
