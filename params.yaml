@@ -3,8 +3,8 @@
 
 # Jurisdiction targeting (override via: dvc exp run -S jurisdiction.state=CA ...)
 jurisdiction:
-  state: CA
-  locality: LosAngeles
+  state: PA
+  locality: Philadelphia
   code_slug: municipal-code
   code_name: Philadelphia Municipal Code
 
@@ -46,6 +46,10 @@ embeddings:
 
     openrouter:
       model: qwen/qwen3-embedding-8b
+      batch_size: 100
+
+    openai:
+      model: text-embedding-3-small
       batch_size: 100
 
   dtype: float32

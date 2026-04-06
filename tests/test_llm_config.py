@@ -81,11 +81,17 @@ class TestDefaultProviderAndModels:
 
     def test_default_fast_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
-            assert Config.get_fast_model() == "mistral-small-2506"
+            assert (
+                Config.get_fast_model()
+                == _BASE_PARAMS["llm"]["providers"]["mistral"]["fast"]
+            )
 
     def test_default_powerful_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
-            assert Config.get_powerful_model() == "mistral-large-2512"
+            assert (
+                Config.get_powerful_model()
+                == _BASE_PARAMS["llm"]["providers"]["mistral"]["powerful"]
+            )
 
 
 class TestProviderSwitch:
@@ -95,15 +101,27 @@ class TestProviderSwitch:
         p = _params_with(**{"llm.default_provider": "openai"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "openai"
-            assert Config.get_fast_model() == "gpt-4.1-mini"
-            assert Config.get_powerful_model() == "gpt-4.1"
+            assert (
+                Config.get_fast_model()
+                == _BASE_PARAMS["llm"]["providers"]["openai"]["fast"]
+            )
+            assert (
+                Config.get_powerful_model()
+                == _BASE_PARAMS["llm"]["providers"]["openai"]["powerful"]
+            )
 
     def test_ollama_provider_models(self):
         p = _params_with(**{"llm.default_provider": "ollama"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "ollama"
-            assert Config.get_fast_model() == "qwen3:8b"
-            assert Config.get_powerful_model() == "qwen3:30b"
+            assert (
+                Config.get_fast_model()
+                == _BASE_PARAMS["llm"]["providers"]["ollama"]["fast"]
+            )
+            assert (
+                Config.get_powerful_model()
+                == _BASE_PARAMS["llm"]["providers"]["ollama"]["powerful"]
+            )
 
 
 class TestUnsupportedProvider:

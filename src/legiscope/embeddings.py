@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -132,6 +133,26 @@ def get_openrouter_client():
     )
 
 
+def _get_openai_client():
+    """Get vanilla OpenAI client for embedding generation.
+
+    Returns:
+        openai.OpenAI: Configured OpenAI client (uses OPENAI_API_KEY)
+
+    Raises:
+        ValueError: If OPENAI_API_KEY environment variable is not set
+    """
+    from openai import OpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OPENAI_API_KEY environment variable is required for OpenAI embeddings"
+        )
+
+    return OpenAI(api_key=api_key)
+
+
 def get_default_model(provider: str) -> str:
     """Get the default model name for a given provider.
 
@@ -256,7 +277,9 @@ class CollectionConfig:
         # Auto-append provider_model suffix to collection name
         if self.provider:
             # Sanitize model name for ChromaDB (only allows [a-zA-Z0-9._-])
-            safe_model = self.model.replace("/", "_") if self.model else ""
+            safe_model = (
+                re.sub(r"[^a-zA-Z0-9._-]", "_", self.model) if self.model else ""
+            )
             suffix = f"{self.provider}_{safe_model}"
             if self.collection_name == "legal_code_all":
                 # Default collection name - make provider/model-specific
@@ -274,7 +297,7 @@ def _detect_embedding_provider(client) -> str:
         client: Embedding client instance
 
     Returns:
-        str: Detected provider name ("ollama", "mistral", or "openrouter")
+        str: Detected provider name ("ollama", "mistral", "openrouter", or "openai")
 
     Raises:
         ValueError: If provider cannot be detected
@@ -289,10 +312,10 @@ def _detect_embedding_provider(client) -> str:
         return "mistral"
     elif "openai" in client_module.lower():
         # OpenAI client — check base_url to distinguish OpenRouter from vanilla OpenAI
-        base_url = getattr(client, "base_url", None)
-        if base_url and "openrouter" in str(base_url).lower():
+        base_url = str(getattr(client, "base_url", "") or "")
+        if "openrouter" in base_url.lower():
             return "openrouter"
-        return "openrouter"  # Default OpenAI-compatible client to openrouter
+        return "openai"
     else:
         # Try to detect by checking available methods/attributes
         if hasattr(client, "embeddings") and hasattr(client, "chat"):
@@ -488,11 +511,13 @@ def _build_embedding_provider_config() -> dict[str, dict[str, Any]]:
         "ollama": get_ollama_client,
         "mistral": get_mistral_client,
         "openrouter": get_openrouter_client,
+        "openai": _get_openai_client,
     }
     embedding_functions = {
         "ollama": _generate_embeddings_ollama,
         "mistral": _generate_embeddings_mistral,
         "openrouter": _generate_embeddings_openrouter,
+        "openai": _generate_embeddings_openrouter,  # same OpenAI-compatible API
     }
 
     config: dict[str, dict[str, Any]] = {}

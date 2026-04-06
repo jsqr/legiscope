@@ -339,14 +339,12 @@ def score_structure(
     # Count elements matched by patterns and heading-like elements for recall
     matched_count = 0
     ambiguous_count = 0
-    non_empty_count = 0
     heading_like_count = 0
     heading_like_matched = 0
     for row in elements_df.to_dicts():
         first_line = row["text"].split("\n")[0].strip()
         if not first_line:
             continue
-        non_empty_count += 1
         is_hl = is_heading_like(first_line)
         if is_hl:
             heading_like_count += 1

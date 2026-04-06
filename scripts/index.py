@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-from pathlib import Path
 
 import polars as pl
 from loguru import logger

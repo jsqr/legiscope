@@ -147,7 +147,7 @@ uv run marimo edit
 
 - **`params.yaml`** — All pipeline parameters: jurisdiction, LLM provider/models, embedding settings, retrieval/query tuning. Tracked by DVC.
 - **`config.yaml`** — Infrastructure: data directory path, ChromaDB location.
-- **`.env`** — API keys (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`). Not tracked. Copy from `.env.example`.
+- **`.env`** — API keys (`OPENAI_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`). Not tracked. Copy from `.env.example`.
 
 ## Development
 

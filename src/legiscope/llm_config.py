@@ -63,7 +63,7 @@ class Config:
             )
 
         prov = config[provider]
-        fast_model = cls.get_fast_model()
+        fast_model = prov["fast_model"]
         provider_string = f"{provider}/{fast_model}"
 
         if prov["mode"] is not None:
@@ -84,7 +84,7 @@ class Config:
             )
 
         prov = config[provider]
-        powerful_model = cls.get_powerful_model()
+        powerful_model = prov["powerful_model"]
         provider_string = f"{provider}/{powerful_model}"
 
         if prov["mode"] is not None:

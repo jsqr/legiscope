@@ -28,6 +28,7 @@ The project supports OpenAI, Mistral, and Ollama as LLM providers. Configuration
 #### Environment Variables
 
 - `OPENAI_API_KEY`: Required when using OpenAI provider (secret)
+- `MISTRAL_API_KEY`: Required when using Mistral provider (secret)
 - `OPENROUTER_API_KEY`: Required when using OpenRouter embedding provider (secret)
 - `LEGISCOPE_DATA_DIR`: Override the root data directory path (infrastructure)
 
