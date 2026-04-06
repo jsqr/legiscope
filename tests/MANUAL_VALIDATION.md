@@ -32,7 +32,7 @@ Run the complete pipeline on the jurisdiction configured in `params.yaml`:
 ```
 
 **Verify:**
-- [ ] All 4 stages complete without error (parse, segment, embed, index)
+- [ ] All 5 stages complete without error (parse, segment, embed, index, benchmark)
 - [ ] `data/laws/IL/WindyCity/municipal-code/code.md` is generated
 - [ ] `sections.parquet`, `segments.parquet`, `embeddings.parquet` exist
 - [ ] Log output shows segment/embedding counts

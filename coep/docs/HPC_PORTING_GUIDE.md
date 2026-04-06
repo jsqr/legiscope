@@ -16,41 +16,34 @@ database (ChromaDB), and uses LLM inference to answer structured research
 questions (e.g., drug paraphernalia law questions). Answers are benchmarked
 against human-labeled MonQcle ground truth using an LLM-as-a-judge strategy.
 
-The target HPC environment is **NYU Langone BigPurple** (Cerda Lab allocation).
+The target HPC environment is **NYU Langone BigPurple** (cerdalab allocation).
 
-### Two-Phase Architecture
+### Single-Job Architecture
 
-The system has two computationally distinct phases:
+Since benchmarking is a DVC stage that depends on the index stage, the entire
+pipeline — data ingest through benchmarking — runs as a single `dvc repro`
+command within one SLURM job:
 
-- **Phase 1 — DVC Pipeline** (data preparation): The five DVC stages (validate,
-  parse, segment, embed, index) prepare data and build the vector database. The
-  parse stage requires LLM calls (heading scanning via the powerful model);
-  embed uses an embedding model. When using vLLM, the server must be running
-  for the parse stage. The segment and index stages are pure computation.
+```
+validate → parse → segment → embed → index → benchmark
+```
 
-- **Phase 2 — Query/Benchmark** (LLM inference): A separate CLI command (NOT a
-  DVC stage) that queries the indexed vector database with LLM-generated answers
-  and evaluates them. On BigPurple, this uses a self-hosted **vLLM** server
-  exposing an OpenAI-compatible API on localhost.
+Each SLURM job starts a vLLM server, runs `dvc repro` (which executes all
+stages end-to-end), and produces both the vector index and benchmark results.
+The OpenRouter API is used for embeddings (embed stage); vLLM handles all LLM
+calls (parse heading scanning, benchmark querying, and LLM-as-judge evaluation).
 
-Because these phases are separate, they can be submitted as different SLURM
-jobs — though when using vLLM, both phases need GPU access (the parse stage
-in Phase 1 makes LLM calls). A combined SLURM job is often simpler (see
-Section 9.5).
+To **re-run benchmarking only** (e.g., with different retrieval settings or a
+different model), submit a lighter job that runs `dvc repro benchmark`. DVC
+will skip all upstream stages since their outputs already exist.
 
 ### What the system does end-to-end
 
 ```
-DOCX files  ──►  TXT conversion  ──►  DVC Pipeline (parse → segment → embed → index)
+DOCX files  ──►  TXT conversion  ──►  DVC Pipeline (parse → segment → embed → index → benchmark)
                                             │
                                             ▼
-                                     ChromaDB vector index
-                                            │
-                                            ▼
-                                  Query/Benchmark (vLLM server → RAG → join ground truth → LLM judge)
-                                            │
-                                            ▼
-                                  CSV with scores and accuracy labels
+                                     ChromaDB vector index + benchmark results (CSV + metrics JSON)
 ```
 
 ### Key technologies
@@ -61,9 +54,10 @@ DOCX files  ──►  TXT conversion  ──►  DVC Pipeline (parse → segmen
 | Python | 3.12.x (exact) | Runtime |
 | Pipeline orchestration | DVC | Reproducible stages, parameter tracking, remote storage |
 | Vector database | ChromaDB | Local persistent embedding index |
-| LLM providers | Mistral (default), OpenAI, Ollama | Parsing headings, HYDE, relevance filtering, query answering, evaluation |
+| LLM providers | OpenAI (vLLM via API), Ollama (local dev) | Parsing headings, HYDE, relevance filtering, query answering, evaluation |
 | LLM inference (HPC) | vLLM | Self-hosted OpenAI-compatible API server on BigPurple |
-| Embeddings | Ollama `embeddinggemma` (default) or Mistral `mistral-embed` | Text-to-vector conversion |
+| Embeddings | OpenRouter API `qwen/qwen3-embedding-8b` | Cloud embedding generation (embed stage only; not needed for benchmark-only re-runs) |
+| Embeddings (local dev alt.) | Ollama `embeddinggemma` | Alternative local embedding provider |
 | Data processing | Polars, Parquet | Tabular data (sections, segments, embeddings, results) |
 | Structured outputs | Instructor + Pydantic | Typed LLM responses |
 | DVC remote | GCS (`gs://coep-muni`) | Artifact storage |
@@ -104,7 +98,7 @@ legiscope/
 │
 ├── config.yaml                  # Infrastructure config (paths, ChromaDB, logging)
 ├── params.yaml                  # DVC parameters (jurisdiction, LLM, embeddings, retrieval, query)
-├── dvc.yaml                     # DVC pipeline definition (4 stages + validate)
+├── dvc.yaml                     # DVC pipeline definition (5 stages + validate)
 ├── pyproject.toml               # Python project config (dependencies, build)
 ├── .dvc/config                  # DVC remote: gs://coep-muni
 ├── .env.example                 # Template for API keys
@@ -143,12 +137,15 @@ llm:
   timeout: 300
 
 embeddings:
-  default_provider: ollama     # "ollama" | "mistral"
+  default_provider: openrouter  # "openrouter" | "ollama"
+  chroma_batch_size: 100
   providers:
+    openrouter:
+      model: qwen/qwen3-embedding-8b
+      batch_size: 100
     ollama:
       model: embeddinggemma
-    mistral:
-      model: mistral-embed
+      batch_size: 1
 
 retrieval:
   n_results: 10
@@ -188,8 +185,8 @@ database:
 ### 3.3 `.env` — Secrets
 
 ```bash
-MISTRAL_API_KEY=your-key-here
-OPENAI_API_KEY=your-key-here          # Only if using OpenAI
+OPENAI_API_KEY=your-key-here            # For vLLM (any string) or OpenAI cloud
+OPENROUTER_API_KEY=your-key-here        # For OpenRouter embeddings
 # LEGISCOPE_DATA_DIR=/custom/data/path  # Optional override
 ```
 
@@ -207,15 +204,18 @@ Currently configured to use Google Cloud Storage:
 
 ## 4. Pipeline Stages (DVC)
 
-The processing pipeline has 5 stages defined in `dvc.yaml`. Each stage is
+The processing pipeline has 6 stages defined in `dvc.yaml`. Each stage is
 parameterized by `params.yaml` jurisdiction settings and produces outputs under
 `data/laws/{STATE}/{Locality}/{code-slug}/`.
 
 ### Stage Flow
 
 ```
-validate → parse → segment → embed → index
+validate → parse → segment → embed → index → benchmark
 ```
+
+The `benchmark` stage depends on `index` (it reads from the ChromaDB index)
+and on `segment` outputs (`sections.parquet`).
 
 ### Stage Details
 
@@ -226,6 +226,7 @@ validate → parse → segment → embed → index
 | **segment** | `scripts/segment.py` | `code.md`, `headings.parquet` | `sections.parquet`, `segments.parquet`, `relations.parquet`, `external_references.parquet` | No |
 | **embed** | `scripts/embed.py` | `sections.parquet`, `segments.parquet` | `embeddings.parquet` | No (embedding model only) |
 | **index** | `scripts/index.py` | `embeddings.parquet` | ChromaDB collection (side effect) | No |
+| **benchmark** | `coep/scripts/benchmark_pipeline.py` | `sections.parquet`, `embeddings.parquet`, queries CSV, MonQcle CSV | `benchmark_results.csv`, `benchmark_metrics.json` | Yes (query + evaluation) |
 
 ### Data Directory Layout
 
@@ -253,7 +254,7 @@ data/laws/CA/LosAngeles/municipal-code/
 ```bash
 # 1. Set jurisdiction in params.yaml
 # 2. Initialize (one-time per jurisdiction)
-uv run python scripts/init.py
+python scripts/init.py                     # or: uv run python scripts/init.py (local)
 
 # 3. Place DOCX (or TXT) files in data/laws/{STATE}/{Locality}/{code-slug}/raw/
 # 4. Run all stages
@@ -268,7 +269,8 @@ uv run python scripts/init.py
 ## 5. Benchmark Pipeline
 
 The benchmark evaluates RAG-generated answers against MonQcle human-labeled
-ground truth using an LLM-as-a-judge approach.
+ground truth using an LLM-as-a-judge approach. It is the `benchmark` DVC stage
+and runs automatically as part of `dvc repro`.
 
 ### Script: `coep/scripts/benchmark_pipeline.py`
 
@@ -296,17 +298,29 @@ ground truth using an LLM-as-a-judge approach.
 
 | Output | Path |
 |--------|------|
-| Benchmark results | `data/output/{STATE}-{Locality}/benchmark_results_{timestamp}.csv` |
+| Benchmark results (DVC-tracked) | `data/output/{STATE}-{Locality}/benchmark_results.csv` |
+| Benchmark results (timestamped copy) | `data/output/{STATE}-{Locality}/benchmark_results_{timestamp}.csv` |
+| Benchmark metrics (DVC metrics) | `data/output/{STATE}-{Locality}/benchmark_metrics.json` |
 | Debug artifacts (optional) | `data/output/{STATE}-{Locality}/debug/` |
 
 ### Running
 
+The benchmark runs as part of the DVC pipeline:
+
 ```bash
-# Full run
-uv run python coep/scripts/benchmark_pipeline.py
+# Run as part of full pipeline
+dvc repro
+# Or: ./scripts/dvc_repro.sh
+
+# Run only the benchmark stage
+dvc repro benchmark
+# Or: ./scripts/dvc_repro.sh --stage benchmark
+
+# Run standalone (outside DVC)
+python coep/scripts/benchmark_pipeline.py --state CA --locality LosAngeles --code-slug municipal-code
 
 # Test with limited queries
-uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
+python coep/scripts/benchmark_pipeline.py --test-limit 5
 ```
 
 ---
@@ -542,34 +556,15 @@ The `run_jurisdiction.sh` wrapper already handles both `.docx` and `.txt` inputs
 
 ## 8. HPC Deployment Strategy
 
-### 8.1 Environment Setup on HPC
-
-#### Option A: Using `uv` (general-purpose HPC)
-
-```bash
-# Clone the repo
-git clone https://github.com/jsqr/legiscope.git
-cd legiscope
-
-# Install uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-
-# Create environment (Python 3.12 required)
-uv venv --python 3.12
-source .venv/bin/activate
-uv sync
-
-# Copy and configure .env
-cp .env.example .env
-# Edit .env with your API keys
-```
-
-#### Option B: Using Conda on BigPurple
+### 8.1 Environment Setup on HPC (Conda)
 
 BigPurple login nodes have limited resources — do NOT run `pip install` or heavy
 computation directly on login nodes (processes will be killed). Use SLURM batch
 jobs for package installation.
+
+> **Note:** Local development uses `uv` for dependency management (see
+> `AGENTS.md`). On BigPurple, use a single **conda** environment with
+> `pip install -e .` instead — `uv` is not needed on the HPC.
 
 ```bash
 # On BigPurple login node (bigpurple-ln2 or bigpurple-ln3):
@@ -594,9 +589,11 @@ cd legiscope
 # source ~/.bashrc
 # conda activate /gpfs/home/$USER/conda_envs/legiscope_env
 # cd /gpfs/data/cerdalab/legiscope
+# # If using vLLM, install it FIRST (it pins its own torch version):
+# pip install vllm
+# # If the above fails to find a wheel, try: pip install vllm --no-build-isolation
+# # Then install project dependencies:
 # pip install -e .
-# # If using vLLM (installs torch automatically — do NOT pre-install torch):
-# pip install vllm --no-build-isolation
 # ---
 # sbatch install_packages.sh
 
@@ -611,35 +608,44 @@ cp .env.example .env
   with the project conda environment if you explicitly activate it
 - vLLM pins its own torch version (e.g., `torch==2.9.0`); install vLLM first,
   then other dependencies, to avoid version conflicts
+- The DVC pipeline wrapper scripts (`dvc_python.sh`, `dvc_repro.sh`) look for
+  `.venv/bin/python` first and fall back to system `python`. With conda
+  activated, the fallback to `python` is the correct behavior — no script
+  changes are needed
 
-### 8.2 Embedding Provider Decision
+### 8.2 Embedding Provider: OpenRouter API
 
-**On HPC without GPU**: Use Mistral API for embeddings (cloud-based, no local
-GPU needed). Change `params.yaml`:
+Embeddings are generated via the **OpenRouter API** (OpenAI-compatible), which
+runs in the cloud and requires no local GPU resources. This is the default
+provider and works on both local dev and BigPurple. Set `params.yaml`:
+
 ```yaml
 embeddings:
-  default_provider: mistral
+  default_provider: openrouter
 ```
 
-**On HPC with GPU**: You could run Ollama locally, but this adds complexity
-(Ollama server process, GPU scheduling). Mistral API is simpler for batch jobs.
+Ensure `OPENROUTER_API_KEY` is set in `.env` (loaded by the SLURM script).
+The OpenRouter API is only called during the **embed** stage — benchmark-only
+re-runs do not require it.
 
 ### 8.3 LLM Provider: Self-Hosted vLLM vs. Cloud API
 
-The project supports two approaches for LLM inference on HPC:
+The project supports two approaches for LLM inference on HPC. **On BigPurple,
+the vLLM approach is used** (for all DVC stages requiring LLM calls). The cloud API option
+is documented for reference.
 
-#### Cloud API (Mistral or OpenAI) — Simplest
+#### Cloud API (Mistral or OpenAI) — Alternative
 
 Use cloud LLM APIs by setting API keys in `.env`. No GPU needed for LLM calls.
-This is the approach in the existing pipeline and benchmark scripts.
+This is the approach used in local development.
 
 ```yaml
-# params.yaml
+# params.yaml (local dev only — not used on BigPurple)
 llm:
   default_provider: mistral  # or "openai"
 ```
 
-#### Self-Hosted vLLM — BigPurple Approach
+#### Self-Hosted vLLM — BigPurple Approach (USED)
 
 On BigPurple, the project self-hosts models via **vLLM**, which exposes an
 OpenAI-compatible API server on `localhost:8000`. This eliminates cloud API
@@ -719,9 +725,32 @@ Server takes approximately 240 seconds to be ready on V100.
 - Instructor library integration with `instructor.Mode.JSON`
 - Multi-turn conversations
 
-**LLM provider**: When using cloud APIs, Mistral is the default. When
-self-hosting on BigPurple, use the `openai` provider pointed at the local
-vLLM server (see above).
+**LLM provider on BigPurple**: Use the `openai` provider pointed at the local
+vLLM server. Embeddings use the OpenRouter API separately via
+`embeddings.default_provider: openrouter`.
+
+#### Complete `params.yaml` Diff for BigPurple (vLLM + OpenRouter Embeddings)
+
+Apply these changes to `params.yaml` before your first run. Everything else
+(retrieval, query, benchmark settings) can stay at defaults.
+
+```yaml
+# LLM: use OpenAI provider pointed at local vLLM server
+llm:
+  default_provider: openai
+  providers:
+    openai:
+      fast: "powerful-model"            # must match vLLM --served-model-name
+      powerful: "powerful-model"        # must match vLLM --served-model-name
+
+# Embeddings: OpenRouter API (default, no change needed)
+embeddings:
+  default_provider: openrouter
+```
+
+The SLURM scripts (Section 9.5) set `OPENAI_BASE_URL` and `OPENAI_API_KEY`
+as environment variables so the `openai` provider connects to the local vLLM
+server. `OPENROUTER_API_KEY` is loaded from `.env` for the embed stage.
 
 ### 8.4 Data Storage Strategy
 
@@ -831,50 +860,67 @@ Approach A), `DOCX_DIR` matches `raw/` directly and no copy is needed.
 
 ### 9.2 Per-Jurisdiction Wrapper Script
 
-Create a script that runs the full pipeline for one jurisdiction:
+A single wrapper script handles the full pipeline (ingest + benchmark) for one
+jurisdiction. To re-run only the benchmark stage with different settings, pass
+`--benchmark-only`.
 
 ```bash
 #!/bin/bash
-# run_jurisdiction.sh — Process a single jurisdiction end-to-end
+# run_jurisdiction.sh — Run full DVC pipeline for a single jurisdiction
 # Usage: ./run_jurisdiction.sh CA LosAngeles municipal-code "LA Municipal Code" /path/to/docx/dir
+#        ./run_jurisdiction.sh --benchmark-only CA LosAngeles municipal-code "LA Municipal Code"
 
 set -euo pipefail
+
+BENCHMARK_ONLY=false
+if [ "${1:-}" = "--benchmark-only" ]; then
+    BENCHMARK_ONLY=true
+    shift
+fi
 
 STATE="$1"
 LOCALITY="$2"
 CODE_SLUG="$3"
 CODE_NAME="$4"
-DOCX_DIR="$5"   # Directory containing the source .docx (or .txt) file
+DOCX_DIR="${5:-}"   # Optional; not needed for --benchmark-only
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$PROJECT_DIR"
 
-source .venv/bin/activate
+# Activate conda environment (conda must be initialized via ~/.bashrc)
+source ~/.bashrc
+conda activate /gpfs/home/$USER/conda_envs/legiscope_env
 
-# Step 1: Update params.yaml for this jurisdiction
-python -c "
-import yaml
-from pathlib import Path
+# Step 1: Update params.yaml for this jurisdiction (sed preserves comments)
+sed -i'' \
+    -e "s/^  state: .*/  state: $STATE/" \
+    -e "s/^  locality: .*/  locality: $LOCALITY/" \
+    -e "s/^  code_slug: .*/  code_slug: $CODE_SLUG/" \
+    -e "s/^  code_name: .*/  code_name: $CODE_NAME/" \
+    params.yaml
 
-params = yaml.safe_load(Path('params.yaml').read_text())
-params['jurisdiction'] = {
-    'state': '$STATE',
-    'locality': '$LOCALITY',
-    'code_slug': '$CODE_SLUG',
-    'code_name': '$CODE_NAME',
-}
-Path('params.yaml').write_text(yaml.dump(params, default_flow_style=False))
-"
+if [ "$BENCHMARK_ONLY" = true ]; then
+    # Re-run benchmark stage only (upstream stages are skipped by DVC)
+    INDEX_DIR="data/chroma_db"
+    if [ ! -d "$INDEX_DIR" ]; then
+        echo "ERROR: ChromaDB index not found at $INDEX_DIR"
+        echo "Run the full pipeline first to build the vector index."
+        exit 1
+    fi
+    dvc repro benchmark
+    echo "Benchmark re-run completed: ${STATE}-${LOCALITY}"
+    exit 0
+fi
 
 # Step 2: Initialize jurisdiction (creates raw/ dir + registry entries)
-uv run python scripts/init.py
+python scripts/init.py
 
 # Step 3: Ensure DOCX/TXT files are in place and convert
 RAW_DIR="data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}/raw"
 mkdir -p "$RAW_DIR"
 
 # Copy source files into raw/ if they aren't already there
-if [ "$(realpath "$DOCX_DIR")" != "$(realpath "$RAW_DIR")" ]; then
+if [ -n "$DOCX_DIR" ] && [ "$(realpath "$DOCX_DIR")" != "$(realpath "$RAW_DIR")" ]; then
     if ls "$DOCX_DIR"/*.docx 1>/dev/null 2>&1; then
         cp "$DOCX_DIR"/*.docx "$RAW_DIR/"
     elif ls "$DOCX_DIR"/*.txt 1>/dev/null 2>&1; then
@@ -883,35 +929,34 @@ if [ "$(realpath "$DOCX_DIR")" != "$(realpath "$RAW_DIR")" ]; then
 fi
 
 # Convert DOCX → TXT if DOCX files present in raw/
-# Output: data/laws/{STATE}/{LOCALITY}/{CODE_SLUG}/code.txt
-# (The parse stage finds this automatically — no move needed)
 if ls "$RAW_DIR"/*.docx 1>/dev/null 2>&1; then
     ./scripts/convert_docx.sh "$RAW_DIR"
 fi
 
-# Step 4: Run DVC pipeline (parse → segment → embed → index)
+# Step 4: Run full DVC pipeline (parse → segment → embed → index → benchmark)
+# Requires: vLLM running (for parse + benchmark stages) + OPENROUTER_API_KEY set (for embed stage)
 ./scripts/dvc_repro.sh
 
-# Step 5: Run benchmark
-uv run python coep/scripts/benchmark_pipeline.py
-
-echo "Completed: ${STATE}-${LOCALITY}"
+echo "Pipeline completed: ${STATE}-${LOCALITY} — vector index and benchmark results built"
 ```
 
-### 9.3 SLURM Array Job Script
+### 9.3 SLURM Array Job Script (All Jurisdictions)
+
+This array job runs the full pipeline for all 50 jurisdictions. Each
+array task processes one jurisdiction end-to-end (ingest through benchmark).
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=legiscope
-#SBATCH --output=logs/legiscope_%A_%a.out
-#SBATCH --error=logs/legiscope_%A_%a.err
+#SBATCH --job-name=legiscope-pipeline
+#SBATCH --output=logs/pipeline_%A_%a.out
+#SBATCH --error=logs/pipeline_%A_%a.err
 #SBATCH --array=0-49                    # 50 jurisdictions (0-indexed)
 #SBATCH --time=04:00:00                 # Wall time per jurisdiction (adjust based on code size)
 #SBATCH --mem=16G                       # Memory per job
 #SBATCH --cpus-per-task=4               # CPU cores
 #SBATCH --partition=<your-partition>    # Your HPC partition name
 #
-# Optional GPU (only needed if running Ollama locally for embeddings):
+# GPU (required if running vLLM locally for LLM stages — parse + benchmark):
 # #SBATCH --gres=gpu:1
 #
 # Email notifications (optional):
@@ -921,18 +966,16 @@ echo "Completed: ${STATE}-${LOCALITY}"
 set -euo pipefail
 
 # ── Load modules ──────────────────────────────────────────────────
-module load python/3.12    # Adjust to your HPC's module name
 # module load pandoc       # If needed for DOCX conversion
-# module load google-cloud-sdk  # If using GCS
 
 # ── Project setup ─────────────────────────────────────────────────
 PROJECT_DIR="/path/to/legiscope"   # CHANGE THIS to your HPC project path
 cd "$PROJECT_DIR"
 
-source .venv/bin/activate
-export PATH="$HOME/.local/bin:$PATH"
+source ~/.bashrc
+conda activate /gpfs/home/$USER/conda_envs/legiscope_env
 
-# Load environment variables (API keys)
+# Load environment variables (API keys — OPENROUTER_API_KEY needed for embeddings)
 set -a
 source .env
 set +a
@@ -951,25 +994,43 @@ CODE_SLUG=$(echo "$LINE" | cut -f3)
 CODE_NAME=$(echo "$LINE" | cut -f4)
 DOCX_DIR=$(echo "$LINE" | cut -f5)
 
-echo "=== Processing: ${STATE}-${LOCALITY} (task ${SLURM_ARRAY_TASK_ID}) ==="
+echo "=== Pipeline: ${STATE}-${LOCALITY} (task ${SLURM_ARRAY_TASK_ID}) ==="
 echo "Code: ${CODE_SLUG} (${CODE_NAME})"
 echo "DOCX source: ${DOCX_DIR}"
 
-# ── Run the full pipeline ─────────────────────────────────────────
+# ── Create per-task working copy (avoids params.yaml race condition) ──
+WORK_DIR="$TMPDIR/legiscope_${SLURM_ARRAY_TASK_ID}"
+echo "Creating working copy in $WORK_DIR"
+mkdir -p "$WORK_DIR"
+cp -r "$PROJECT_DIR"/. "$WORK_DIR"/
+
+# Resolve DOCX_DIR to absolute path BEFORE changing to working copy
+if [ -n "$DOCX_DIR" ]; then
+    DOCX_DIR="$(cd "$PROJECT_DIR" && realpath "$DOCX_DIR")"
+fi
+cd "$WORK_DIR"
+
+# ── Run full pipeline (ingest + benchmark) ────────────────────────
 ./run_jurisdiction.sh "$STATE" "$LOCALITY" "$CODE_SLUG" "$CODE_NAME" "$DOCX_DIR"
 
-echo "=== Completed: ${STATE}-${LOCALITY} ==="
+# ── Copy results back to shared project directory ─────────────────
+mkdir -p "$PROJECT_DIR/data/output"
+cp -r data/output/* "$PROJECT_DIR/data/output/" 2>/dev/null || true
+mkdir -p "$PROJECT_DIR/data/laws"
+cp -r data/laws/* "$PROJECT_DIR/data/laws/" 2>/dev/null || true
+
+echo "=== Pipeline Completed: ${STATE}-${LOCALITY} ==="
 ```
 
 ### 9.4 Single Test Job (CA-LosAngeles)
 
-For initial testing, submit a single job without the array:
+For initial testing, submit a single job (no array):
 
 ```bash
 #!/bin/bash
 #SBATCH --job-name=legiscope-test
-#SBATCH --output=logs/legiscope_test.out
-#SBATCH --error=logs/legiscope_test.err
+#SBATCH --output=logs/test_pipeline.out
+#SBATCH --error=logs/test_pipeline.err
 #SBATCH --time=02:00:00
 #SBATCH --mem=16G
 #SBATCH --cpus-per-task=4
@@ -977,13 +1038,11 @@ For initial testing, submit a single job without the array:
 
 set -euo pipefail
 
-module load python/3.12
-
 PROJECT_DIR="/path/to/legiscope"
 cd "$PROJECT_DIR"
 
-source .venv/bin/activate
-export PATH="$HOME/.local/bin:$PATH"
+source ~/.bashrc
+conda activate /gpfs/home/$USER/conda_envs/legiscope_env
 
 set -a
 source .env
@@ -991,65 +1050,130 @@ set +a
 
 mkdir -p logs
 
-# Run for CA-LosAngeles only (DOCX pre-placed in raw/)
+# Full pipeline: ingest + benchmark for CA-LosAngeles (DOCX pre-placed in raw/)
 ./run_jurisdiction.sh CA LosAngeles municipal-code "LA Municipal Code" data/laws/CA/LosAngeles/municipal-code/raw
 ```
 
-Submit with: `sbatch slurm_test.sh`
+To re-run only the benchmark with different settings (after the full pipeline
+has completed at least once):
 
-### 9.5 BigPurple: Two-Phase SLURM Scripts
+```bash
+# Edit params.yaml retrieval/query settings, then:
+./run_jurisdiction.sh --benchmark-only CA LosAngeles municipal-code "LA Municipal Code"
+```
 
-On BigPurple with vLLM, the pipeline naturally splits into two SLURM jobs
-per jurisdiction (or a combined job):
+### 9.5 BigPurple: SLURM Scripts
 
-#### Phase 1: DVC Pipeline Only (CPU or GPU)
+On BigPurple, each job starts a vLLM server and runs the full pipeline.
+A GPU is required for the vLLM server. The OpenRouter API is used for embeddings
+(embed stage).
 
-**Note:** The parse stage makes LLM calls (heading scanning). If using vLLM,
-a GPU and the vLLM server are needed for this stage too. If using a cloud API
-(Mistral/OpenAI), a CPU partition suffices for all DVC stages except embed
-(which may need GPU for local embedding models).
+#### Full Pipeline (ingest + benchmark)
+
+This job starts a vLLM server for LLM calls (parse stage heading scanning,
+benchmark querying and evaluation) and uses the OpenRouter API for embeddings
+(embed stage).
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=legiscope-dvc
-#SBATCH --partition=cpu_medium          # Use gpu4_short if running vLLM for parse/embed
+#SBATCH --job-name=legiscope-pipeline
+#SBATCH --partition=gpu4_short          # Or gpu4_medium for larger codes
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
 #SBATCH --time=12:00:00
-#SBATCH --output=/gpfs/data/cerdalab/legiscope/logs/dvc_%j.out
-#SBATCH --error=/gpfs/data/cerdalab/legiscope/logs/dvc_%j.err
-# Add if using vLLM or GPU embeddings:
-# #SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:1                    # For vLLM
+#SBATCH --output=/gpfs/data/cerdalab/legiscope/logs/pipeline_%j.out
+#SBATCH --error=/gpfs/data/cerdalab/legiscope/logs/pipeline_%j.err
 
 set -euo pipefail
 
 source ~/.bashrc
 conda activate /gpfs/home/$USER/conda_envs/legiscope_env
 
+export HF_HOME=/gpfs/scratch/$USER/hf_cache
+export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
+
 cd /gpfs/data/cerdalab/legiscope
 
-echo "=== DVC Pipeline: $(date) ==="
+# ── Load environment (OPENROUTER_API_KEY needed for embeddings) ──────
+set -a
+source .env
+set +a
+
+# ── Generate API key and start vLLM server ────────────────────────
+API_KEY="legiscope-key-${SLURM_JOB_ID}"
+
+python -m vllm.entrypoints.openai.api_server \
+    --model Qwen/Qwen2.5-3B-Instruct \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --gpu-memory-utilization 0.90 \
+    --max-model-len 4096 \
+    --api-key "$API_KEY" \
+    --served-model-name "powerful-model" \
+    --download-dir /gpfs/scratch/$USER/hf_cache \
+    --dtype float16 \
+    --enforce-eager &
+
+VLLM_PID=$!
+trap "kill $VLLM_PID 2>/dev/null" EXIT
+
+# ── Wait for server health ────────────────────────────────────────
+echo "Waiting for vLLM server (PID $VLLM_PID)..."
+TIMEOUT=600
+ELAPSED=0
+while ! curl -s http://localhost:8000/health >/dev/null 2>&1; do
+    if ! kill -0 $VLLM_PID 2>/dev/null; then
+        echo "ERROR: vLLM server process died"
+        exit 1
+    fi
+    if [ $ELAPSED -ge $TIMEOUT ]; then
+        echo "ERROR: vLLM server did not start within ${TIMEOUT}s"
+        exit 1
+    fi
+    sleep 15
+    ELAPSED=$((ELAPSED + 15))
+    echo "  ... waiting (${ELAPSED}s / ${TIMEOUT}s)"
+done
+echo "vLLM server ready after ${ELAPSED}s"
+
+# ── Configure LLM client connection (vLLM) ───────────────────────
+export OPENAI_BASE_URL=http://localhost:8000/v1
+export OPENAI_API_KEY="$API_KEY"
+
+# Note: OPENROUTER_API_KEY is already loaded from .env above.
+# vLLM handles LLM calls (parse + benchmark); OpenRouter API handles embeddings (embed stage).
+
+# ── Run full DVC pipeline ─────────────────────────────────────────
+echo "=== Full Pipeline: $(date) ==="
 echo "Git: $(git --no-pager log --oneline -1)"
 
 dvc repro
+
+echo "=== Pipeline completed: $(date) ==="
+# Server killed automatically by trap
 ```
 
-#### Phase 2: Query/Benchmark with vLLM (requires GPU)
+#### Benchmark-Only Re-run (optional)
+
+To re-run only the benchmark stage with different settings (e.g., different
+model, retrieval params), submit this lighter job. DVC skips all upstream
+stages since their outputs already exist.
 
 ```bash
 #!/bin/bash
-#SBATCH --job-name=legiscope-query
-#SBATCH --partition=gpu4_short          # Or gpu4_medium for longer runs
+#SBATCH --job-name=legiscope-benchmark
+#SBATCH --partition=gpu4_short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
 #SBATCH --time=12:00:00
-#SBATCH --gres=gpu:1                    # Increase for larger models with tensor parallelism
-#SBATCH --output=/gpfs/data/cerdalab/legiscope/logs/query_%j.out
-#SBATCH --error=/gpfs/data/cerdalab/legiscope/logs/query_%j.err
+#SBATCH --gres=gpu:1
+#SBATCH --output=/gpfs/data/cerdalab/legiscope/logs/benchmark_%j.out
+#SBATCH --error=/gpfs/data/cerdalab/legiscope/logs/benchmark_%j.err
 
 set -euo pipefail
 
@@ -1103,75 +1227,23 @@ echo "vLLM server ready after ${ELAPSED}s"
 export OPENAI_BASE_URL=http://localhost:8000/v1
 export OPENAI_API_KEY="$API_KEY"
 
-# ── Run benchmark ─────────────────────────────────────────────────
-python coep/scripts/benchmark_pipeline.py
+# ── Run benchmark only (DVC stage) ───────────────────────────────
+echo "=== Benchmark re-run: $(date) ==="
+dvc repro benchmark
 
-echo "=== Completed: $(date) ==="
+echo "=== Benchmark completed: $(date) ==="
 # Server killed automatically by trap
 ```
 
-#### Combined: DVC Pipeline + Query/Benchmark in One Job
+#### Submitting Jobs
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=legiscope-full
-#SBATCH --partition=gpu4_short
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
-#SBATCH --time=12:00:00
-#SBATCH --gres=gpu:1
-#SBATCH --output=/gpfs/data/cerdalab/legiscope/logs/full_%j.out
-#SBATCH --error=/gpfs/data/cerdalab/legiscope/logs/full_%j.err
+# Full pipeline (first run)
+sbatch scripts/slurm_pipeline.sh
 
-set -euo pipefail
-
-source ~/.bashrc
-conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-
-export HF_HOME=/gpfs/scratch/$USER/hf_cache
-export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
-
-cd /gpfs/data/cerdalab/legiscope
-
-# ── Start vLLM server (needed for BOTH phases) ───────────────────
-# The parse stage in Phase 1 makes LLM calls, so vLLM must be running
-# before dvc repro.
-API_KEY="legiscope-key-${SLURM_JOB_ID}"
-
-python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-3B-Instruct \
-    --host 0.0.0.0 --port 8000 \
-    --gpu-memory-utilization 0.90 --max-model-len 4096 \
-    --api-key "$API_KEY" --served-model-name "powerful-model" \
-    --download-dir /gpfs/scratch/$USER/hf_cache \
-    --dtype float16 --enforce-eager &
-
-VLLM_PID=$!
-trap "kill $VLLM_PID 2>/dev/null" EXIT
-
-# Wait for server
-TIMEOUT=600; ELAPSED=0
-while ! curl -s http://localhost:8000/health >/dev/null 2>&1; do
-    kill -0 $VLLM_PID 2>/dev/null || { echo "vLLM died"; exit 1; }
-    [ $ELAPSED -ge $TIMEOUT ] && { echo "vLLM timeout"; exit 1; }
-    sleep 15; ELAPSED=$((ELAPSED + 15))
-done
-echo "vLLM ready after ${ELAPSED}s"
-
-export OPENAI_BASE_URL=http://localhost:8000/v1
-export OPENAI_API_KEY="$API_KEY"
-
-# Phase 1: DVC pipeline (parse stage needs vLLM for heading scanning)
-echo "=== Phase 1: DVC Pipeline ==="
-dvc repro
-
-# Phase 2: Run benchmark (reuses the same vLLM server)
-echo "=== Phase 2: Query/Benchmark ==="
-python coep/scripts/benchmark_pipeline.py
-
-echo "=== Completed: $(date) ==="
+# Benchmark-only re-run (after full pipeline has completed)
+# Edit params.yaml retrieval/query settings first, then:
+sbatch scripts/slurm_benchmark.sh
 ```
 
 For multi-GPU models (e.g., Qwen3.5-32B on 4x V100), change `--gres=gpu:4`
@@ -1183,72 +1255,78 @@ and add `--tensor-parallel-size 4` to the vLLM launch command.
 
 ### 10.1 SLURM Array Job Concurrency & params.yaml
 
-**Critical issue**: `params.yaml` is a single shared file. If multiple array
-tasks run simultaneously and each modifies `params.yaml`, you'll get race
-conditions.
+**Critical issue**: `params.yaml` is a single shared file. `run_jurisdiction.sh`
+modifies it via `sed` to set the current jurisdiction. If multiple array tasks
+run simultaneously, concurrent `sed` writes will race.
 
-**Solutions** (pick one):
+**Solution — per-task working copies** (used in Section 9.3):
 
-1. **Working copies**: Each array task copies the entire project to a task-specific
-   directory (e.g., `$TMPDIR/legiscope_$SLURM_ARRAY_TASK_ID/`) and works there.
-   This is the most robust approach.
-
-2. **Sequential execution**: Set `--array=0-49%1` to limit to 1 concurrent task
-   (safe but slow — 50x the wall time).
-
-3. **DVC -S overrides**: Instead of modifying `params.yaml`, use
-   `dvc exp run -S jurisdiction.state=CA -S jurisdiction.locality=LosAngeles ...`
-   which doesn't modify the file. However, the benchmark script also reads
-   `params.yaml` directly, so this alone is insufficient.
-
-4. **Environment variable overrides**: Modify the Python code to accept
-   jurisdiction from environment variables or CLI args, bypassing `params.yaml`.
-   This is the cleanest long-term solution but requires code changes.
-
-**Recommended for initial deployment**: Use approach (1) — per-task working
-copies. Add this at the top of the SLURM script:
+Each array task copies the repo to a task-specific directory and works there.
+Since DOCX files are stored in a separate staging directory (not inside the
+repo), the copy is lightweight — just code, configs, and DVC metadata. Each
+task then copies its single DOCX into the working copy's `raw/` directory,
+runs the full pipeline, and copies results back.
 
 ```bash
 WORK_DIR="$TMPDIR/legiscope_${SLURM_ARRAY_TASK_ID}"
 cp -r "$PROJECT_DIR" "$WORK_DIR"
 cd "$WORK_DIR"
-# ... run pipeline ...
-# Copy results back
+# ... run_jurisdiction.sh copies one DOCX, runs init + dvc repro ...
+# Copy results back (ChromaDB is consumed during the job and doesn't need to persist)
+mkdir -p "$PROJECT_DIR/data/output"
 cp -r data/output/* "$PROJECT_DIR/data/output/"
+mkdir -p "$PROJECT_DIR/data/laws"
+cp -r data/laws/* "$PROJECT_DIR/data/laws/"
 ```
 
-### 10.2 ChromaDB Concurrency
+This also solves ChromaDB concurrency (Section 10.2) — each task gets its own
+isolated ChromaDB instance.
+
+**Alternative — sequential execution**: Set `--array=0-49%1` to limit to 1
+concurrent task. Safe but slow (50x wall time). No working copies needed.
+
+### 10.2 ChromaDB Concurrency & Collection Design
 
 ChromaDB uses SQLite under the hood. Multiple concurrent processes writing to
 the same ChromaDB directory will cause corruption. The working-copy approach
-(10.1 solution 1) also solves this — each task gets its own ChromaDB instance.
-After all jobs finish, you may need to consolidate the ChromaDB indices if you
-want a single unified index.
+(10.1 solution 1) solves this — each task gets its own ChromaDB instance.
+
+**Collection naming**: Collections are named `legal_code_{provider}_{model}`
+(e.g., `legal_code_openrouter_qwen_qwen3-embedding-8b`) with no jurisdiction
+component. All jurisdictions share one collection, and retrieval filters by
+`jurisdiction_id` in segment metadata. This is intentional — it simplifies
+collection management and the working-copies approach means each SLURM task
+builds its own isolated, single-jurisdiction ChromaDB anyway.
+
+**Re-running a single jurisdiction**: The index stage is incremental — it skips
+segments whose `segment_id` already exists in the collection. To fully re-index
+one jurisdiction, delete its working copy's `data/chroma_db/` directory before
+re-running.
 
 ### 10.3 Rate Limiting
 
-50 parallel jobs all calling Mistral/OpenAI APIs simultaneously will likely hit
-rate limits. Solutions:
+If running multiple array jobs simultaneously, they will all
+call the OpenRouter API for embeddings in parallel. This may hit rate limits.
 
 - Use `--array=0-49%5` to limit to 5 concurrent jobs
 - The code already has `max_retries: 3` configured
 - Add exponential backoff if needed (the `instructor` library handles some retries)
 
+Benchmark-only re-runs use only vLLM (local), so rate limiting is not a
+concern for those jobs.
+
 ### 10.4 Ollama on HPC
 
-If you want to use Ollama for embeddings on HPC:
-- Ollama requires a local server process (`ollama serve`)
-- This is complex on shared HPC (needs GPU allocation, port management)
-- **Recommendation**: Use Mistral API for embeddings on HPC instead
-  (`embeddings.default_provider: mistral` in `params.yaml`)
+Ollama is not used on BigPurple. LLM inference uses vLLM (self-hosted via the
+`openai` provider), and embeddings use the OpenRouter API (cloud). The Ollama
+provider is only for local development.
 
 ### 10.5 Network Access
 
 The HPC compute nodes need outbound HTTPS access to:
-- `api.mistral.ai` (if using Mistral)
-- `api.openai.com` (if using OpenAI)
-- `storage.googleapis.com` (if using GCS/DVC push)
-- `huggingface.co` (if downloading model weights for vLLM)
+- `openrouter.ai` (**required** — OpenRouter API for embeddings)
+- `huggingface.co` (**required** — downloading model weights for vLLM)
+- `storage.googleapis.com` (only if using GCS/DVC push)
 
 Check with your HPC admins if compute nodes have internet access. If not, you
 may need to run on login nodes or a special partition with network access.
@@ -1296,21 +1374,28 @@ enabling efficient tensor parallelism for multi-GPU model hosting.
 
 2. **Set up environment**:
    ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   export PATH="$HOME/.local/bin:$PATH"
-   uv venv --python 3.12
-   source .venv/bin/activate
-   uv sync
+   # Create conda env (one-time)
+   conda create -p /gpfs/home/$USER/conda_envs/legiscope_env python=3.12 pip -y
+
+   # Activate and install (via SLURM job — see Section 8.1)
+   source ~/.bashrc
+   conda activate /gpfs/home/$USER/conda_envs/legiscope_env
+   # pip install -e .          # Run via SLURM, not on login node!
+   # pip install vllm   # add --no-build-isolation only if wheel install fails
    ```
 
 3. **Configure**:
    ```bash
    cp .env.example .env
-   # Edit .env: add MISTRAL_API_KEY (and OPENAI_API_KEY if using OpenAI)
+   # Edit .env: add OPENROUTER_API_KEY (for embeddings)
+   # OPENAI_API_KEY is set dynamically by SLURM scripts (vLLM server key)
 
-   # Edit params.yaml: set jurisdiction to CA-LosAngeles
-   # Edit params.yaml: set embeddings.default_provider to "mistral" (unless Ollama available)
-   # Edit params.yaml: set llm.default_provider to "mistral"
+   # Edit params.yaml:
+   #   llm.default_provider: "openai"            # vLLM via OpenAI-compatible API
+   #   llm.providers.openai.fast: "powerful-model"
+   #   llm.providers.openai.powerful: "powerful-model"
+   #   embeddings.default_provider: "openrouter"  # OpenRouter API for embeddings
+   #   jurisdiction: set to CA-LosAngeles
    ```
 
 4. **Install pandoc** (for DOCX conversion on Linux):
@@ -1348,33 +1433,36 @@ enabling efficient tensor parallelism for multi-GPU model hosting.
    # (Both should be in the repo already or copied from your source)
    ```
 
-8. **Initialize and run pipeline**:
+8. **Run the full pipeline** (ingest + benchmark, one-time per jurisdiction):
    ```bash
-   uv run python scripts/init.py
-   ./scripts/dvc_repro.sh
+   python scripts/init.py
+   # On BigPurple, submit as SLURM job (starts vLLM + runs dvc repro):
+   sbatch scripts/slurm_pipeline.sh
+   # Or run interactively in a GPU dev session (see Section 15 for srun command)
    ```
 
-9. **Run benchmark**:
+9. **Re-run benchmark only** (optional, with different settings):
    ```bash
-   uv run python coep/scripts/benchmark_pipeline.py
-   # Results in: data/output/CA-LosAngeles/benchmark_results_<timestamp>.csv
+   # On BigPurple, submit benchmark-only SLURM job:
+   sbatch scripts/slurm_benchmark.sh
+   # Results in: data/output/CA-LosAngeles/benchmark_results.csv
    ```
 
 10. **Verify results**:
-   ```bash
-   # Check output exists
-   ls data/output/CA-LosAngeles/
-   # Quick peek at scores
-   python -c "
-   import polars as pl
-   import glob
-   f = sorted(glob.glob('data/output/CA-LosAngeles/benchmark_results_*.csv'))[-1]
-   df = pl.read_csv(f)
-   print(f'Average score: {df[\"eval_score\"].mean():.2f}')
-   print(f'Correct: {df.filter(pl.col(\"eval_label\")==\"Correct\").height}')
-   print(f'Total: {df.height}')
-   "
-   ```
+    ```bash
+    # Check output exists
+    ls data/output/CA-LosAngeles/
+    # Quick peek at scores
+    python -c "
+    import polars as pl
+    import glob
+    f = sorted(glob.glob('data/output/CA-LosAngeles/benchmark_results_*.csv'))[-1]
+    df = pl.read_csv(f)
+    print(f'Average score: {df[\"eval_score\"].mean():.2f}')
+    print(f'Correct: {df.filter(pl.col(\"eval_label\")==\"Correct\").height}')
+    print(f'Total: {df.height}')
+    "
+    ```
 
 ---
 
@@ -1471,17 +1559,20 @@ if all_results:
 
 | Task | Command |
 |------|---------|
-| Set up environment | `uv sync` or `make env` |
+| Set up environment | `conda activate legiscope_env` (HPC) or `make env` (local) |
 | Convert DOCX | `./scripts/convert_docx.sh data/laws/STATE/Locality/slug/raw` |
-| Initialize jurisdiction | `uv run python scripts/init.py` |
+| Initialize jurisdiction | `python scripts/init.py` |
 | Run DVC pipeline | `./scripts/dvc_repro.sh` |
-| Run benchmark | `uv run python coep/scripts/benchmark_pipeline.py` |
-| Run benchmark (test) | `uv run python coep/scripts/benchmark_pipeline.py --test-limit 5` |
-| Run queries only | `uv run python scripts/run_queries.py` |
+| Run benchmark (DVC stage) | `dvc repro benchmark` |
+| Run benchmark (standalone) | `python coep/scripts/benchmark_pipeline.py` |
+| Run benchmark (test) | `python coep/scripts/benchmark_pipeline.py --test-limit 5` |
+| Run queries only | `python scripts/run_queries.py` |
 | Push to GCS | `dvc push` |
 | Pull from GCS | `dvc pull` |
 | Run tests | `make test` |
 | Check errors | `make lint` |
+| **BigPurple: Full pipeline** | `sbatch scripts/slurm_pipeline.sh` |
+| **BigPurple: Benchmark only** | `sbatch scripts/slurm_benchmark.sh` |
 
 ---
 
@@ -1644,7 +1735,7 @@ python download_model.py
 |---------|----------|
 | **CUDA out of memory** | Reduce `--max-model-len`, lower `--gpu-memory-utilization`, increase `--tensor-parallel-size` (use more GPUs), or use a smaller/quantized model |
 | **Connection refused (localhost:8000)** | Server takes ~240s to start on V100. Check if server process is alive. Check vLLM logs. The health check loop in SLURM templates handles this automatically |
-| **vLLM tries to build from source** | Ensure torch and vLLM versions are compatible. Working: `torch==2.9.0+cu128` with `vllm==0.11.2`. Install vLLM first (`pip install vllm --no-build-isolation`), let it pin torch |
+| **vLLM tries to build from source** | Ensure torch and vLLM versions are compatible. Working: `torch==2.9.0+cu128` with `vllm==0.11.2`. Install vLLM first (`pip install vllm`), let it pin torch. If it still builds from source, try `pip install vllm --no-build-isolation` |
 | **Quantized model not loading** | Verify model was downloaded in correct format (AWQ/GPTQ). Check model's `config.json` for quantization method |
 | **instructor structured output fails** | Verify `instructor.Mode.JSON` is set for the openai provider in `llm_config.py` (changed from `RESPONSES_TOOLS`, which requires OpenAI's Responses API that vLLM doesn't support) |
 
@@ -1701,10 +1792,10 @@ git commit -am "message" && git push
 # On BigPurple:
 cd /gpfs/data/cerdalab/legiscope
 git pull
-# Submit DVC pipeline job (if data processing needed):
-sbatch scripts/slurm_dvc.sh
-# After pipeline completes, submit query/benchmark job:
-sbatch scripts/slurm_query.sh
-# Or submit combined job for both:
-sbatch scripts/slurm_full.sh
+
+# Full pipeline (ingest + benchmark):
+sbatch scripts/slurm_pipeline.sh
+
+# Benchmark-only re-run (with different settings):
+sbatch scripts/slurm_benchmark.sh
 ```

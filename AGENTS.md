@@ -28,7 +28,7 @@ The project supports OpenAI, Mistral, and Ollama as LLM providers. Configuration
 #### Environment Variables
 
 - `OPENAI_API_KEY`: Required when using OpenAI provider (secret)
-- `MISTRAL_API_KEY`: Required when using Mistral provider (secret)
+- `OPENROUTER_API_KEY`: Required when using OpenRouter embedding provider (secret)
 - `LEGISCOPE_DATA_DIR`: Override the root data directory path (infrastructure)
 
 All hyperparameters (provider, model names, temperature, retrieval/query settings, etc.) are configured in `params.yaml`.
@@ -42,8 +42,8 @@ from legiscope.llm_config import Config
 from legiscope.utils import LLMConfig
 
 # Get fast client for quick tasks
-fast_client = Config.get_fast_client()      # Uses mistral-medium-latest (default)
-powerful_client = Config.get_powerful_client()  # Uses magistral-medium-latest
+fast_client = Config.get_fast_client()      # Model determined by params.yaml
+powerful_client = Config.get_powerful_client()  # Model determined by params.yaml
 
 # Create reusable LLM configuration
 llm_config = LLMConfig(
@@ -121,17 +121,19 @@ results_df = run_queries(
 
 #### Available Models by Provider
 
+Models are configured per-provider in `params.yaml` under `llm.providers`. Current defaults:
+
 **OpenAI Provider:**
-- Fast model: `gpt-4.1-mini` (for HYDE, relevance assessment, etc.)
-- Powerful model: `gpt-4.1` (for complex legal analysis)
+- Fast model: `Qwen/Qwen2.5-3B-Instruct` (via vLLM on HPC)
+- Powerful model: `Qwen/Qwen2.5-3B-Instruct`
 
 **Mistral Provider:**
-- Fast model: `mistral-small-2506` (for quick tasks)
-- Powerful model: `mistral-large-2512` (for complex reasoning)
+- Fast model: `mistral-small-2506`
+- Powerful model: `mistral-large-2512`
 
 **Ollama Provider:**
-- Fast model: `qwen3:8b` (for quick local tasks)
-- Powerful model: `qwen3:30b` (for complex local reasoning)
+- Fast model: `gemma3:4b`
+- Powerful model: `gemma3:4b`
 - Requires Ollama server running locally
 
 #### Example Setup
@@ -139,40 +141,40 @@ results_df = run_queries(
 ```bash
 # Set API keys as secrets (in .env or environment)
 export OPENAI_API_KEY=your_openai_key
-export MISTRAL_API_KEY=your_mistral_key
+export OPENROUTER_API_KEY=your_openrouter_key
 
 # To change the default provider, edit params.yaml:
-#   llm.default_provider: "mistral"  (or "openai", "ollama")
+#   llm.default_provider: "openai"  (or "mistral", "ollama")
 
 # For Ollama (local), ensure server is running: ollama serve
 ```
 
 ### Embedding Model Configuration
 
-The project supports multiple embedding models for generating text embeddings. The default provider is Ollama.
+The project supports multiple embedding models for generating text embeddings. The default provider is OpenRouter.
 
 #### Current Configuration
 
-**Ollama with embeddinggemma (default)**
+**OpenRouter with qwen/qwen3-embedding-8b (default)**
+- Uses OpenRouter's OpenAI-compatible API
+- Model: `qwen/qwen3-embedding-8b`
+- Client: `get_embedding_client("openrouter")`
+- Requires: `OPENROUTER_API_KEY` environment variable
+
+#### Alternative Configuration
+
+**Ollama with embeddinggemma**
 - Uses local Ollama server
 - Model: `embeddinggemma`
 - Client: `get_embedding_client("ollama")`
 - Requires: Ollama server running locally (`ollama serve`)
-
-#### Alternative Configuration
-
-**Mistral with mistral-embed**
-- Uses Mistral's API
-- Model: `mistral-embed`
-- Client: `get_embedding_client("mistral")`
-- Requires: `MISTRAL_API_KEY` environment variable
 
 #### Switching Between Embedding Models
 
 To switch between embedding providers, edit `params.yaml`:
 ```yaml
 embeddings:
-  default_provider: "ollama"  # or "mistral"
+  default_provider: "openrouter"  # or "ollama"
 ```
 
 #### Retrieval & Query Configuration
@@ -204,8 +206,8 @@ Use the embedding interface:
    ```python
    from legiscope.embeddings import get_embedding_client, get_embeddings
 
-   # For Mistral (default)
-   client = get_embedding_client("mistral")
+   # For OpenRouter (default)
+   client = get_embedding_client("openrouter")
    embeddings = get_embeddings(client, ["text1", "text2"])
 
    # For Ollama
@@ -219,17 +221,17 @@ Use the embedding interface:
 from legiscope.embeddings import get_embedding_client, get_embeddings, EmbeddingConfig
 
 # Get embedding client for specific provider
-client = get_embedding_client("mistral")  # or "ollama"
+client = get_embedding_client("openrouter")  # or "ollama"
 
 # Generate embeddings (auto-detects model)
 texts = ["Legal text 1", "Legal text 2"]
 embeddings = get_embeddings(client, texts)
 
 # Or specify model explicitly
-embeddings = get_embeddings(client, texts, model="mistral-embed", provider="mistral")
+embeddings = get_embeddings(client, texts, model="qwen/qwen3-embedding-8b", provider="openrouter")
 
 # Using with EmbeddingConfig
-config = EmbeddingConfig(provider="ollama")  # Uses default embeddinggemma model
+config = EmbeddingConfig(provider="openrouter")  # Uses default qwen3-embedding-8b model
 client = get_embedding_client(config.provider)
 ```
 
@@ -294,7 +296,11 @@ uv pip list
 
 ### Pipeline Commands
 
-The pipeline is managed by DVC with four stages: **parse → segment → embed → index**.
+The pipeline is managed by DVC with five stages: **parse → segment → embed → index → benchmark**.
+
+The `index` and `benchmark` stages both depend on the `embed` stage. The
+`benchmark` stage additionally depends on `index` (it reads from the ChromaDB
+index that `index` creates).
 
 #### Initialize a jurisdiction (one-time, not a DVC stage)
 
@@ -333,15 +339,25 @@ dvc exp run \
 The project handles benchmarking against MonQcle data using an LLM-as-judge approach.
 See `coep/docs/BENCHMARKING.md` for full documentation.
 
-All paths and settings are resolved from `params.yaml` and `config.yaml`:
+Benchmarking is a DVC stage (`benchmark`). It runs automatically as part of
+`dvc repro` / `./scripts/dvc_repro.sh`, or can be run individually:
 
 ```bash
-# Normal run — zero args needed
+# Run benchmark as part of the full pipeline
+./scripts/dvc_repro.sh
+
+# Run only the benchmark stage (requires embed stage outputs to exist)
+./scripts/dvc_repro.sh --stage benchmark
+
+# Or run the script directly (standalone, outside DVC)
 uv run python coep/scripts/benchmark_pipeline.py
 
 # Dev/debug run with limited queries (set `retrieval.debug: true` in `params.yaml` for inspection output)
 uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
 ```
+
+DVC tracks benchmark metrics in `benchmark_metrics.json` and results in
+`benchmark_results.csv` under `data/output/{STATE}-{Locality}/`.
 
 ### Advanced Query Execution
 
@@ -394,7 +410,7 @@ uv run python scripts/run_queries.py
 │   │   ├── test_eval.py
 │   │   └── test_query_adjustments.py
 │   ├── scripts/
-│   │   └── benchmark_pipeline.py  # COEP benchmarking workflow
+│   │   └── benchmark_pipeline.py  # COEP benchmarking (DVC benchmark stage)
 │   ├── docs/
 │   │   └── BENCHMARKING.md        # COEP benchmark docs
 │   └── data/
@@ -413,7 +429,7 @@ uv run python scripts/run_queries.py
 │           └── external_references.parquet
 ├── config.yaml          # Infrastructure settings (data dir, ChromaDB path)
 ├── params.yaml          # DVC parameters (provider, models, jurisdiction)
-├── dvc.yaml             # DVC pipeline definition
+├── dvc.yaml             # DVC pipeline definition (5 stages + validate)
 ├── pyproject.toml       # Project configuration and dependencies
 ├── Makefile            # Development commands
 ├── AGENTS.md           # This file
@@ -423,8 +439,8 @@ uv run python scripts/run_queries.py
 ## Key Dependencies
 
 - `dvc`: Pipeline orchestration and experiment tracking
-- `openai`: OpenAI API client for embeddings and language models
-- `mistralai`: Mistral API client for embeddings and language models
+- `openai`: OpenAI API client for LLM and OpenRouter embeddings
+- `mistralai`: Mistral API client for language models
 - `ollama`: Ollama client for local LLM inference
 - `instructor`: AI-powered function calls and structured outputs
 - `pytest`: Testing framework

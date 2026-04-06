@@ -56,25 +56,30 @@ _See [Configuration Files](#configuration-files) for details._
    ./scripts/convert_docx.sh path/to/file.docx
    ```
 
-4. **Run the pipeline** (parse → segment → embed → index):
+4. **Run the pipeline** (parse → segment → embed → index → benchmark):
 
    ```bash
    ./scripts/dvc_repro.sh
    ```
 
-| Stage   | Key outputs                                  |
-|---------|----------------------------------------------|
-| parse   | `code.md`, `headings.parquet`                |
-| segment | `sections.parquet`, `segments.parquet`, `relations.parquet` |
-| embed   | `embeddings.parquet`                         |
-| index   | ChromaDB collection (in `data/chroma_db/`)   |
+| Stage     | Key outputs                                  |
+|-----------|----------------------------------------------|
+| parse     | `code.md`, `headings.parquet`                |
+| segment   | `sections.parquet`, `segments.parquet`, `relations.parquet` |
+| embed     | `embeddings.parquet`                         |
+| index     | ChromaDB collection (in `data/chroma_db/`)   |
+| benchmark | `benchmark_results.csv`, `benchmark_metrics.json` (in `data/output/`) |
 
 ### Query
 
-Querying is **not** (yet) a DVC stage — for now run it directly:
+Querying can be run standalone or as part of the benchmark DVC stage:
 
 ```bash
+# Standalone query execution
 uv run python scripts/run_queries.py
+
+# Or run the benchmark stage (includes querying + evaluation)
+./scripts/dvc_repro.sh --stage benchmark
 ```
 
 _See [Running Queries](#running-queries) for all options._
@@ -142,7 +147,7 @@ uv run marimo edit
 
 - **`params.yaml`** — All pipeline parameters: jurisdiction, LLM provider/models, embedding settings, retrieval/query tuning. Tracked by DVC.
 - **`config.yaml`** — Infrastructure: data directory path, ChromaDB location.
-- **`.env`** — API keys (`OPENAI_API_KEY`, `MISTRAL_API_KEY`). Not tracked. Copy from `.env.example`.
+- **`.env`** — API keys (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`). Not tracked. Copy from `.env.example`.
 
 ## Development
 
@@ -221,17 +226,17 @@ read from `params.yaml`; paths are read from `config.yaml`.
 - `scripts/segment.py` — Segment Markdown into sections and segments
 - `scripts/embed.py` — Generate embedding vectors
 - `scripts/index.py` — Build ChromaDB search index
+- `coep/scripts/benchmark_pipeline.py` — Benchmark RAG answers against MonQcle ground truth
 
 ### Other Scripts
 
 - `scripts/dvc_repro.sh` — Wrapper around `dvc exp run` for running the pipeline
 - `scripts/run_queries.py` — Run batch queries against legal code database
-- `coep/scripts/benchmark_pipeline.py` — COEP benchmarking workflow
 - `scripts/convert_docx.sh` — Convert DOCX files to plain text using pandoc
 
 ### Notebooks
 
-- `demo_query.py` - Interactive Marimo notebook demonstrating section-level retrieval with drug paraphernalia query
+- `query_demo.py` - Interactive Marimo notebook demonstrating section-level retrieval with drug paraphernalia query
 
 ### Source Modules
 
@@ -239,7 +244,7 @@ read from `params.yaml`; paths are read from `config.yaml`.
 - `params.py` — DVC params.yaml loader
 - `llm_config.py` — Centralized LLM configuration using instructor's provider abstraction
 - `utils.py` — Core utilities including LLM client and directory functions
-- `convert.py` — Text conversion utilities and LLM response models
+- `parse/convert.py` — Text conversion utilities and LLM response models
 - `segment.py` — Text segmentation and hierarchical section processing
 - `embeddings.py` — Embedding generation and ChromaDB management
 - `retrieve.py` — Information retrieval with HYDE query rewriting and section-level search
@@ -307,12 +312,16 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 .
 ├── src/
 │   └── legiscope/           # Main package source code
+│       ├── parse/           # Parse stage: raw text → structured Markdown
+│       │   ├── convert.py       # Conversion utilities and response models
+│       │   ├── scan.py          # LLM heading scanning and verification
+│       │   ├── headings.py      # Heading models and pattern helpers
+│       │   └── elements.py      # Raw text element splitting
 │       ├── pipeline/        # DVC stage modules (parse, segment, embed, index, init)
 │       ├── config.py        # Infrastructure configuration (config.yaml)
 │       ├── params.py        # DVC params.yaml loader
 │       ├── llm_config.py    # LLM configuration and client management
 │       ├── models.py        # Data models (JurisdictionRef, CodeRef, schema constants)
-│       ├── convert.py       # Conversion utilities and response models
 │       ├── utils.py         # Core utility functions
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
