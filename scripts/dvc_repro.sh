@@ -96,7 +96,11 @@ print(j.get('code_slug', ''))
 " 2>/dev/null) || true
 
 if [[ -n "$_info" ]]; then
-    IFS=$'\n' read -r STATE LOCALITY CODE_SLUG <<< "$_info"
+    {
+        read -r STATE
+        read -r LOCALITY
+        read -r CODE_SLUG
+    } <<< "$_info"
 fi
 
 if [[ -z "$STATE" || -z "$CODE_SLUG" ]]; then
