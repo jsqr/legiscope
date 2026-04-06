@@ -82,13 +82,14 @@ def main():
         code_ref = CodeRef.from_params()
 
     jurisdiction_id = code_ref.jurisdiction_id
+    output_dir_name = code_ref.jurisdiction.output_dir_name
     params = load_params()
 
     # Read debug flag from params.yaml (shared with run_queries.py)
     debug_enabled = params.get("retrieval", {}).get("debug", False)
     debug_dir = None
     if debug_enabled:
-        debug_dir = config.output_dir() / jurisdiction_id / "debug"
+        debug_dir = config.output_dir() / output_dir_name / "debug"
         debug_dir.mkdir(parents=True, exist_ok=True)
         logger.info(f"Debug mode enabled, writing debug files to {debug_dir}")
 
@@ -96,7 +97,7 @@ def main():
     queries_path = config.default_queries_path()
     monqcle_path = config.monqcle_report_path()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = config.output_dir() / jurisdiction_id
+    output_dir = config.output_dir() / output_dir_name
     # DVC-tracked output (deterministic name for dvc.yaml outs:)
     output_path = output_dir / "benchmark_results.csv"
     # Timestamped copy for historical tracking (not DVC-tracked)

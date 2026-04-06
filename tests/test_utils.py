@@ -111,8 +111,13 @@ class TestAskFunction:
         # Verify result
         assert result == mock_response
 
-    def test_exception_handling(self):
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_exception_handling(self, mock_get_llm_params):
         """Test that exceptions are properly passed through."""
+        mock_get_llm_params.return_value = {
+            "temperature": DEFAULT_TEMPERATURE,
+            "max_retries": DEFAULT_MAX_RETRIES,
+        }
         mock_client = Mock()
         mock_client.chat.completions.create.side_effect = Exception("LLM error")
 
