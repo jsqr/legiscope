@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import pytest
 
-import legiscope.llm_config
 from legiscope.llm_config import Config
 
 
@@ -62,8 +61,8 @@ def _provider_config_from_params(params: dict) -> dict:
 def _patch_provider_config():
     """Keep tests hermetic from real params.yaml import-time state."""
     with patch(
-        "legiscope.llm_config.PROVIDER_CONFIG",
-        _provider_config_from_params(_BASE_PARAMS),
+        "legiscope.llm_config._get_provider_config",
+        return_value=_provider_config_from_params(_BASE_PARAMS),
     ):
         yield
 
@@ -82,17 +81,11 @@ class TestDefaultProviderAndModels:
 
     def test_default_fast_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
-            assert (
-                Config.get_fast_model()
-                == legiscope.llm_config.PROVIDER_CONFIG["mistral"]["fast_model"]
-            )
+            assert Config.get_fast_model() == "mistral-small-2506"
 
     def test_default_powerful_model(self):
         with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
-            assert (
-                Config.get_powerful_model()
-                == legiscope.llm_config.PROVIDER_CONFIG["mistral"]["powerful_model"]
-            )
+            assert Config.get_powerful_model() == "mistral-large-2512"
 
 
 class TestProviderSwitch:
@@ -102,27 +95,15 @@ class TestProviderSwitch:
         p = _params_with(**{"llm.default_provider": "openai"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "openai"
-            assert (
-                Config.get_fast_model()
-                == legiscope.llm_config.PROVIDER_CONFIG["openai"]["fast_model"]
-            )
-            assert (
-                Config.get_powerful_model()
-                == legiscope.llm_config.PROVIDER_CONFIG["openai"]["powerful_model"]
-            )
+            assert Config.get_fast_model() == "gpt-4.1-mini"
+            assert Config.get_powerful_model() == "gpt-4.1"
 
     def test_ollama_provider_models(self):
         p = _params_with(**{"llm.default_provider": "ollama"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             assert Config.get_llm_provider() == "ollama"
-            assert (
-                Config.get_fast_model()
-                == legiscope.llm_config.PROVIDER_CONFIG["ollama"]["fast_model"]
-            )
-            assert (
-                Config.get_powerful_model()
-                == legiscope.llm_config.PROVIDER_CONFIG["ollama"]["powerful_model"]
-            )
+            assert Config.get_fast_model() == "qwen3:8b"
+            assert Config.get_powerful_model() == "qwen3:30b"
 
 
 class TestUnsupportedProvider:
@@ -153,14 +134,15 @@ class TestGetLLMParams:
     def test_ollama_num_ctx(self):
         """Ollama num_ctx from params.yaml is forwarded as extra_body."""
         p = _params_with(**{"llm.default_provider": "ollama"})
-        # Patch PROVIDER_CONFIG to include num_ctx
-        patched_config = dict(legiscope.llm_config.PROVIDER_CONFIG)
+        patched_config = _provider_config_from_params(p)
         patched_config["ollama"] = dict(patched_config.get("ollama", {}))
         patched_config["ollama"]["num_ctx"] = 8192
 
         with (
             patch("legiscope.llm_config.load_params", return_value=p),
-            patch("legiscope.llm_config.PROVIDER_CONFIG", patched_config),
+            patch(
+                "legiscope.llm_config._get_provider_config", return_value=patched_config
+            ),
         ):
             params = Config.get_llm_params()
             assert "extra_body" in params

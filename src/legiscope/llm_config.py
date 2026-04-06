@@ -36,9 +36,9 @@ def _provider_config() -> dict:
     return config
 
 
-# Eagerly build once; tests that need to override can monkeypatch or
-# reload params before importing.
-PROVIDER_CONFIG = _provider_config()
+def _get_provider_config() -> dict:
+    """Return provider config, rebuilding from params.yaml on each call."""
+    return _provider_config()
 
 
 class Config:
@@ -54,19 +54,20 @@ class Config:
     def get_fast_client(cls) -> Instructor:
         """Get fast client for most LLM tasks based on current provider."""
         provider = cls.get_llm_provider()
+        config = _get_provider_config()
 
-        if provider not in PROVIDER_CONFIG:
+        if provider not in config:
             raise ValueError(
                 f"Unsupported LLM provider: {provider}. "
-                f"Supported providers: {', '.join(PROVIDER_CONFIG.keys())}"
+                f"Supported providers: {', '.join(config.keys())}"
             )
 
-        config = PROVIDER_CONFIG[provider]
+        prov = config[provider]
         fast_model = cls.get_fast_model()
         provider_string = f"{provider}/{fast_model}"
 
-        if config["mode"] is not None:
-            return instructor.from_provider(provider_string, mode=config["mode"])
+        if prov["mode"] is not None:
+            return instructor.from_provider(provider_string, mode=prov["mode"])
         else:
             return instructor.from_provider(provider_string)
 
@@ -74,19 +75,20 @@ class Config:
     def get_powerful_client(cls) -> Instructor:
         """Get powerful client for complex reasoning tasks based on current provider."""
         provider = cls.get_llm_provider()
+        config = _get_provider_config()
 
-        if provider not in PROVIDER_CONFIG:
+        if provider not in config:
             raise ValueError(
                 f"Unsupported LLM provider: {provider}. "
-                f"Supported providers: {', '.join(PROVIDER_CONFIG.keys())}"
+                f"Supported providers: {', '.join(config.keys())}"
             )
 
-        config = PROVIDER_CONFIG[provider]
+        prov = config[provider]
         powerful_model = cls.get_powerful_model()
         provider_string = f"{provider}/{powerful_model}"
 
-        if config["mode"] is not None:
-            return instructor.from_provider(provider_string, mode=config["mode"])
+        if prov["mode"] is not None:
+            return instructor.from_provider(provider_string, mode=prov["mode"])
         else:
             return instructor.from_provider(provider_string)
 
@@ -94,23 +96,25 @@ class Config:
     def get_fast_model(cls) -> str:
         """Get model name for fast/cheap LLM tasks based on current provider."""
         provider = cls.get_llm_provider()
-        if provider not in PROVIDER_CONFIG:
+        config = _get_provider_config()
+        if provider not in config:
             raise ValueError(
                 f"Unsupported LLM provider: {provider}. "
-                f"Supported providers: {', '.join(PROVIDER_CONFIG.keys())}"
+                f"Supported providers: {', '.join(config.keys())}"
             )
-        return PROVIDER_CONFIG[provider]["fast_model"]
+        return config[provider]["fast_model"]
 
     @classmethod
     def get_powerful_model(cls) -> str:
         """Get model name for complex reasoning tasks based on current provider."""
         provider = cls.get_llm_provider()
-        if provider not in PROVIDER_CONFIG:
+        config = _get_provider_config()
+        if provider not in config:
             raise ValueError(
                 f"Unsupported LLM provider: {provider}. "
-                f"Supported providers: {', '.join(PROVIDER_CONFIG.keys())}"
+                f"Supported providers: {', '.join(config.keys())}"
             )
-        return PROVIDER_CONFIG[provider]["powerful_model"]
+        return config[provider]["powerful_model"]
 
     @classmethod
     def get_llm_params(cls, **kwargs) -> dict:
@@ -129,7 +133,8 @@ class Config:
 
         # Ollama-specific context limit from params.yaml
         if cls.get_llm_provider() == "ollama":
-            num_ctx = PROVIDER_CONFIG.get("ollama", {}).get("num_ctx")
+            config = _get_provider_config()
+            num_ctx = config.get("ollama", {}).get("num_ctx")
             if num_ctx is not None:
                 params["extra_body"] = {"num_ctx": int(num_ctx)}
                 logger.debug(f"Ollama num_ctx set to {num_ctx}")
