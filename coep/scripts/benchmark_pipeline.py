@@ -17,10 +17,12 @@ Paths are resolved from config.yaml.
 Usage:
     python scripts/benchmark_pipeline.py
     python scripts/benchmark_pipeline.py --test-limit 5 --debug
+    python scripts/benchmark_pipeline.py --state CA --locality LosAngeles --code-slug municipal-code
 """
 
 import argparse
 import csv
+import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -55,13 +57,12 @@ from coep.src.query import adjust_drug_paraphernalia_queries
 def main():
     config.setup_logging()
 
-    code_ref = CodeRef.from_params()
-    jurisdiction_id = code_ref.jurisdiction_id
-    params = load_params()
-
     parser = argparse.ArgumentParser(
         description="Run benchmark evaluation pipeline against MonQcle ground truth"
     )
+    parser.add_argument("--state", help="Two-letter state abbreviation")
+    parser.add_argument("--locality", help="Locality name")
+    parser.add_argument("--code-slug", help="Code slug identifier")
     parser.add_argument(
         "--test-limit",
         type=int,
@@ -69,6 +70,19 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Build CodeRef from CLI args (DVC stage) or params.yaml (standalone)
+    if args.state and args.code_slug:
+        code_ref = CodeRef.from_dvc_vars(
+            state=args.state,
+            locality=args.locality,
+            code_slug=args.code_slug,
+        )
+    else:
+        code_ref = CodeRef.from_params()
+
+    jurisdiction_id = code_ref.jurisdiction_id
+    params = load_params()
 
     # Read debug flag from params.yaml (shared with run_queries.py)
     debug_enabled = params.get("retrieval", {}).get("debug", False)
@@ -82,9 +96,13 @@ def main():
     queries_path = config.default_queries_path()
     monqcle_path = config.monqcle_report_path()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_path = (
-        config.output_dir() / jurisdiction_id / f"benchmark_results_{timestamp}.csv"
-    )
+    output_dir = config.output_dir() / jurisdiction_id
+    # DVC-tracked output (deterministic name for dvc.yaml outs:)
+    output_path = output_dir / "benchmark_results.csv"
+    # Timestamped copy for historical tracking (not DVC-tracked)
+    timestamped_path = output_dir / f"benchmark_results_{timestamp}.csv"
+    # DVC metrics file
+    metrics_path = output_dir / "benchmark_metrics.json"
     series_title = params.get("benchmark", {}).get(
         "series_title", "DPL_2025_Consolidated"
     )
@@ -282,12 +300,26 @@ def main():
     # =========================================================================
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if str(output_path).endswith(".parquet"):
-        eval_df.write_parquet(str(output_path))
-    else:
-        eval_df.write_csv(str(output_path))
+    # Write DVC-tracked output (deterministic path)
+    eval_df.write_csv(str(output_path))
+    logger.info(f"Results saved to {output_path}")
 
-    logger.info(f"Detailed results saved to {output_path}")
+    # Write timestamped copy for historical reference
+    eval_df.write_csv(str(timestamped_path))
+    logger.info(f"Timestamped copy saved to {timestamped_path}")
+
+    # Write DVC metrics JSON
+    metrics = {
+        "jurisdiction_id": jurisdiction_id,
+        "avg_score": round(avg_score, 4) if avg_score is not None else None,
+        "accuracy_rate": round(accuracy_rate, 2),
+        "correct": correct_count,
+        "partially_correct": partial_count,
+        "incorrect": incorrect_count,
+        "total": total_count,
+    }
+    metrics_path.write_text(json.dumps(metrics, indent=2))
+    logger.info(f"Metrics saved to {metrics_path}")
 
 
 if __name__ == "__main__":

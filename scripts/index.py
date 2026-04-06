@@ -9,6 +9,8 @@ Usage::
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+from pathlib import Path
 
 import polars as pl
 from loguru import logger
@@ -73,17 +75,24 @@ def main() -> None:
         logger.info(
             f"All {len(embeddings_df)} segments from {code_ref.code_id} already indexed"
         )
-        return
+    else:
+        logger.info(f"Adding {len(new_df)} new segments from {code_ref.code_id}")
 
-    logger.info(f"Adding {len(new_df)} new segments from {code_ref.code_id}")
-
-    index_config = EmbeddingIndexConfig(
-        df=new_df,
-        jurisdiction_id=code_ref.jurisdiction_id,
-    )
-    create_embedding_index(index_config, collection=collection)
+        index_config = EmbeddingIndexConfig(
+            df=new_df,
+            jurisdiction_id=code_ref.jurisdiction_id,
+        )
+        create_embedding_index(index_config, collection=collection)
 
     logger.info(f"Index now contains {collection.count()} total segments")
+
+    # Write stamp file so DVC can track index completion
+    stamp_path = code_ref.full_data_dir / "index.stamp"
+    stamp_path.write_text(
+        f"indexed {collection.count()} segments at "
+        f"{datetime.now(timezone.utc).isoformat()}\n"
+    )
+    logger.info(f"Wrote index stamp: {stamp_path}")
 
 
 if __name__ == "__main__":

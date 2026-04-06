@@ -107,21 +107,31 @@ class TestDvcParamsCoherence:
             dvc_config = yaml.safe_load(f)
 
         stages = set(dvc_config.get("stages", {}).keys())
-        expected = {"parse", "segment", "embed", "index"}
+        expected = {"parse", "segment", "embed", "index", "benchmark"}
         assert expected.issubset(stages), (
             f"Missing stages: {expected - stages}. Found: {stages}"
         )
 
-    def test_index_stage_has_no_outs(self):
-        """Index stage should not have outs (ChromaDB is not DVC-tracked)."""
+    def test_index_stage_has_stamp_output(self):
+        """Index stage should produce a stamp file for DAG ordering."""
         dvc_path = PROJECT_ROOT / "dvc.yaml"
 
         with open(dvc_path) as f:
             dvc_config = yaml.safe_load(f)
 
         index_stage = dvc_config["stages"]["index"]
-        assert "outs" not in index_stage, (
-            "Index stage should not have 'outs' — ChromaDB is persistent, not DVC-tracked"
+        assert "outs" in index_stage, (
+            "Index stage should have 'outs' with a stamp file for benchmark dependency"
+        )
+        outs = index_stage["outs"]
+        # The stamp file should be present and not cached
+        stamp_entries = [
+            o
+            for o in outs
+            if isinstance(o, dict) and any("index.stamp" in k for k in o)
+        ]
+        assert len(stamp_entries) == 1, (
+            f"Expected exactly one index.stamp output, found: {outs}"
         )
 
 
