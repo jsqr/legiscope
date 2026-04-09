@@ -63,14 +63,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_from_project_root(path: Path) -> Path:
+    """Resolve a path relative to the repository root if needed."""
+    if path.is_absolute():
+        return path
+    return (project_root / path).resolve()
+
+
 def resolve_output_dir(override: Path | None) -> Path:
     """Resolve output directory from argument or config.yaml."""
     if override:
-        return override
+        return _resolve_from_project_root(override)
     try:
         from legiscope import config
 
-        return config.output_dir()
+        return _resolve_from_project_root(config.output_dir())
     except Exception:
         return project_root / "data" / "output"
 
