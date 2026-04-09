@@ -119,7 +119,7 @@ fi
 echo ""
 echo ">>> Step 5: Installing remaining project dependencies"
 
-# ROOT CAUSE (diagnosed by inspectiang the wheel):
+# ROOT CAUSE (diagnosed by inspecting the wheel):
 #   mistralai 2.x is a namespace package with NO top-level __init__.py.
 #   The Mistral class moved to mistralai.client.Mistral.
 #   But instructor 1.15.x does "from mistralai import Mistral" — needs __init__.py.
