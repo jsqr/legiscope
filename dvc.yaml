@@ -115,7 +115,7 @@ stages:
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/embeddings.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/index.stamp
-            - data/queries/drug_paraphernalia_queries_clean.csv
+            - data/queries/DPL_queries_with_context.csv
             - coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv
         params:
             - jurisdiction

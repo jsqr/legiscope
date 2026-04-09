@@ -27,6 +27,7 @@ every command picks up the values.
 - Provider/model choices set in `params.yaml` (`llm.default_provider`,
   `embeddings.default_provider`)
 - For Ollama: server running (`ollama serve`) and models pulled
+- `scripts/dvc_repro.sh` uses the project `.venv` automatically when it exists
 
 _See [Configuration Files](#configuration-files) for details._
 
@@ -60,6 +61,9 @@ _See [Configuration Files](#configuration-files) for details._
 
    ```bash
    ./scripts/dvc_repro.sh
+
+   # Or run a single stage
+   ./scripts/dvc_repro.sh --stage validate
    ```
 
 | Stage     | Key outputs                                  |
@@ -112,6 +116,12 @@ Compare experiments with `dvc exp show` / `dvc exp diff <exp-name>`.
 - `dvc exp push` / `dvc exp pull` — share experiment state.
 
 _See [DVC Remote Storage](#dvc-remote-storage) for setup._
+
+### HPC Use
+
+The same DVC pipeline can be run on HPC systems, but cluster-specific setup,
+SLURM entrypoints, environment notes, and BigPurple operational guidance are
+kept in `coep/docs/HPC_PORTING_GUIDE.md` rather than duplicated here.
 
 ## Getting started
 
@@ -188,6 +198,9 @@ to change jurisdictions. For one-off DVC overrides, use `-S` flags directly:
 # Run a single pipeline stage
 ./scripts/dvc_repro.sh --stage segment
 
+# Validate the DVC/Python environment before a full run
+./scripts/dvc_repro.sh --stage validate
+
 # Override params for a DVC experiment (does not modify params.yaml)
 dvc exp run -S jurisdiction.state=CA -S jurisdiction.locality=LosAngeles \
     -S jurisdiction.code_slug=municipal-code
@@ -202,7 +215,11 @@ uv run python scripts/run_queries.py
 ```
 
 Queries are read from the default path configured in `config.yaml`
-(`paths.default_queries_file`) and expected to include a `question` column.
+(`paths.default_queries_file`). Standalone query execution expects a `question`
+column. The COEP benchmark pipeline can also consume a structured query CSV
+such as `data/queries/DPL_queries_with_context.csv`, where the benchmark
+adjuster composes the final prompt from columns like `prepend_text`,
+`query_text`, `coding_instructions`, and `response_options`.
 Results are saved to
 `data/output/{JURISDICTION}/query_results.csv` with answers, citations,
 confidence scores, and processing metrics.
@@ -233,6 +250,8 @@ read from `params.yaml`; paths are read from `config.yaml`.
 - `scripts/dvc_repro.sh` — Wrapper around `dvc exp run` for running the pipeline
 - `scripts/run_queries.py` — Run batch queries against legal code database
 - `scripts/convert_docx.sh` — Convert DOCX files to plain text using pandoc
+- `coep/scripts/HPC_scripts/` — Optional HPC/SLURM helper scripts documented in
+   `coep/docs/HPC_PORTING_GUIDE.md`
 
 ### Notebooks
 
@@ -274,7 +293,9 @@ data/
 ├── queries/                        # Query templates and examples
 ├── output/                         # LLM query output
 │   └── {STATE}-{Locality}/
-│       └── query_results.csv
+│       ├── query_results.csv
+│       ├── benchmark_results.csv
+│       └── benchmark_metrics.json
 └── ...
 ```
 

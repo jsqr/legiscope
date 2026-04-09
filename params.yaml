@@ -14,9 +14,9 @@ llm:
 
   providers:
     openai:
-      fast: Qwen/Qwen2.5-3B-Instruct
-      powerful: Qwen/Qwen2.5-3B-Instruct
-
+      fast: Qwen/Qwen3.5-4B
+      powerful: Qwen/Qwen3.5-4B
+      
     mistral:
       fast: mistral-small-2506
       powerful: mistral-large-2512

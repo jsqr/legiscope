@@ -47,6 +47,7 @@ from legiscope.params import load_params
 from legiscope.query import BatchQuerySettings, load_queries, run_queries
 from coep.src.eval import (
     Evaluator,
+    expand_combined_variables,
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
@@ -138,36 +139,8 @@ def main():
     # Get variable names from query inputs for filtering ground truth
     variable_names = [q.variable_name for q in query_inputs if q.variable_name]
 
-    # Identify combined variables
-    combined_vars = [v for v in variable_names if "combined" in v]
-
-    # Pre-process MonQcle row to include combined variables
-    if combined_vars:
-        logger.info(
-            f"Pre-processing {len(combined_vars)} combined variables: {combined_vars}"
-        )
-
-        # Specific handling for Drug Paraphernalia combined variables
-        if any(v.startswith("dp") for v in variable_names):
-            val_collected = ""
-            val_valid = ""
-
-            if "dp_collected" in monqcle_row.columns:
-                val = monqcle_row["dp_collected"][0]
-                val_collected = str(val) if val not in [None, "-"] else ""
-
-            if "dp_valid_imp" in monqcle_row.columns:
-                val = monqcle_row["dp_valid_imp"][0]
-                val_valid = str(val) if val not in [None, "-"] else ""
-
-            combined_truth = (
-                f"Collected: {val_collected}\nValid/Imp: {val_valid}".strip()
-            )
-
-            # Add columns for each combined variable name to the MonQcle row
-            new_cols = [pl.lit(combined_truth).alias(v) for v in combined_vars]
-            monqcle_row = monqcle_row.with_columns(new_cols)
-            logger.info(f"Added combined columns to MonQcle data: {combined_vars}")
+    # Expand any combined variables (e.g. dp_collected_combined, dp_state_fed_combined)
+    monqcle_row = expand_combined_variables(monqcle_row, variable_names)
 
     # Melt to long format (now handles everything including combined vars)
     ground_truth_df = melt_monqcle_to_long(monqcle_row, variable_names)

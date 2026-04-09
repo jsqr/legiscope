@@ -120,15 +120,6 @@ def main() -> None:
     """Create jurisdiction/code directory structure and update registries."""
     setup_logging()
 
-    params = load_params()
-    jur = params.get("jurisdiction", {})
-
-    code_name = jur.get("code_name")
-    if not code_name:
-        raise SystemExit("Error: jurisdiction.code_name must be set in params.yaml")
-
-    code_ref = CodeRef.from_params(params)
-
     parser = argparse.ArgumentParser(
         description="Initialize directory structure for a legal code",
         epilog="Jurisdiction is read from params.yaml.",
@@ -142,6 +133,15 @@ def main() -> None:
         help="Display name for jurisdiction (auto-generated if omitted)",
     )
     args = parser.parse_args()
+
+    params = load_params()
+    jur = params.get("jurisdiction", {})
+
+    code_name = jur.get("code_name")
+    if not code_name:
+        raise SystemExit("Error: jurisdiction.code_name must be set in params.yaml")
+
+    code_ref = CodeRef.from_params(params)
 
     jurisdiction_name = args.jurisdiction_name
     if jurisdiction_name is None:
