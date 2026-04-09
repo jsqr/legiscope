@@ -1,50 +1,83 @@
-jurisdiction: {}
+# Pipeline parameters tracked by DVC
+# Changes here trigger pipeline reruns
+
+# Jurisdiction targeting (override via: dvc exp run -S jurisdiction.state=CA ...)
+jurisdiction:
+  state: PA
+  locality: Philadelphia
+  code_slug: municipal-code
+  code_name: Philadelphia Municipal Code
+
+# LLM configuration
 llm:
   default_provider: openai
+
   providers:
     openai:
       fast: Qwen/Qwen3.5-4B
       powerful: Qwen/Qwen3.5-4B
+      
     mistral:
       fast: mistral-small-2506
       powerful: mistral-large-2512
+
     ollama:
       fast: gemma3:4b
       powerful: gemma3:4b
       num_ctx: 4096
+
   temperature: 0.0
   max_retries: 3
   timeout: 300
+
+# Embedding configuration
 embeddings:
   default_provider: openrouter
   chroma_batch_size: 100
+
   providers:
     mistral:
       model: mistral-embed
       batch_size: 100
+
     ollama:
       model: embeddinggemma
       batch_size: 1
+
     openrouter:
       model: qwen/qwen3-embedding-8b
       batch_size: 100
+
     openai:
       model: text-embedding-3-small
       batch_size: 100
+
   dtype: float32
+
+# Segmentation settings
 segmentation:
   token_limit: 1024
+
+# Retrieval: vector search and post-retrieval filtering
 retrieval:
   n_results: 10
   distance_metric: l2
   debug: false
+
+  # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:
     enabled: false
+
+  # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
     enabled: false
     threshold: 0.5
+
+# Benchmark evaluation settings
 benchmark:
   series_title: DPL_2025_Consolidated
+
+# Query: LLM analysis of retrieved context (uses powerful model)
 query:
   validation:
     enabled: true
