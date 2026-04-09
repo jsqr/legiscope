@@ -112,7 +112,6 @@ for docx in "$DOCX_DIR"/*.docx; do
     else
         echo "  Submitting: ${STATE}-${LOCALITY} (${CODE_SLUG})"
         sbatch \
-            --job-name="legiscope-${STATE}-${LOCALITY}" \
             --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS}" \
             "$SLURM_SCRIPT"
     fi

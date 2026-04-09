@@ -43,6 +43,11 @@ export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
 cd /gpfs/data/cerdalab/LegalAI/legiscope
 
 # Load .env (API keys, etc.)
+if [[ ! -r .env ]]; then
+    echo "ERROR: Required .env file is missing or not readable in $(pwd). Create it or fix its permissions before running the benchmark job." >&2
+    exit 1
+fi
+
 set -a
 source .env
 set +a
@@ -88,5 +93,8 @@ export OPENAI_API_KEY="$API_KEY"
 echo "=== Benchmark re-run: $(date) ==="
 ./scripts/dvc_repro.sh --stage benchmark
 
-dvc exp push origin
-echo "=== Benchmark completed (experiment pushed): $(date) ==="
+if dvc exp push origin; then
+    echo "=== Benchmark completed (experiment pushed): $(date) ==="
+else
+    echo "WARNING: Benchmark completed, but 'dvc exp push origin' failed; continuing without pushing experiment: $(date) ===" >&2
+fi

@@ -697,7 +697,7 @@ Key flags:
 Model weights are ~8 GB (FP16); fits comfortably on V100-16GB with room for
 KV cache at `--max-model-len 4096`.
 
-**(Recommended): Verifiy basic LLM capabilities:**
+**(Recommended): Verify basic LLM capabilities:**
 - Basic chat completions (non-streaming and streaming)
 - Structured JSON output via raw HTTP top-level `structured_outputs` or OpenAI-client `extra_body`
 - Pydantic structured output via `response_format`
@@ -978,6 +978,10 @@ The dispatcher runs on the **login node** (no GPU needed). It:
 2. Parses each filename into `STATE`, `LOCALITY`, and optional `CODE_SLUG`
 3. Calls `sbatch --export=... coep/scripts/HPC_scripts/slurm_jurisdiction.sh` for each file
 4. Reports how many jobs were submitted (and any files that couldn't be parsed)
+
+The dispatcher does **not** override the SLURM job name. Submitted jobs keep
+the fixed name from `slurm_jurisdiction.sh` (`legiscope-jurisdiction`), which
+is what the monitoring and aggregation commands in Section 13 filter on.
 
 SLURM handles GPU scheduling — if only 5 GPUs are available, SLURM queues the
 remaining jobs until resources free up. You can monitor all submitted jobs
@@ -1407,6 +1411,9 @@ with open('coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv',
 Check job status while the batch is running:
 
 ```bash
+# Jobs submitted via slurm_dispatch.sh inherit the fixed name
+# `legiscope-jurisdiction` from slurm_jurisdiction.sh.
+
 # How many jobs are still queued / running?
 squeue -u $USER -n legiscope-jurisdiction
 
@@ -1428,8 +1435,11 @@ grep -l "ERROR\|FAILED\|Traceback" /gpfs/data/cerdalab/LegalAI/legiscope/logs/ju
 # Show the last few lines of every job's stdout (quick health check)
 tail -n 3 /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_*.out
 
-# Read a specific job's error log
-cat /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_PA_Philadelphia.err
+# Read a specific job's error log by job ID
+cat /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_<JOBID>.err
+
+# Or inspect the most recent error log
+cat "$(ls -t /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_*.err | head -1)"
 ```
 
 ### 13.3 DVC Experiment Comparison

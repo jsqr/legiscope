@@ -11,6 +11,7 @@ import polars as pl
 from coep.src.eval import (
     Evaluator,
     EvaluationResult,
+    expand_combined_variables,
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
@@ -129,6 +130,57 @@ class TestMonqcleMelting:
         # Should only return var1
         assert len(result) == 1
         assert result["variable_name"][0] == "var1"
+
+
+class TestCombinedVariableExpansion:
+    """Test expansion of combined MonQcle query variables."""
+
+    def test_expand_adds_requested_combined_columns(self):
+        """Requested combined variables should be added as new columns."""
+        row = pl.DataFrame(
+            {
+                "dp_collected": ["Yes"],
+                "dp_valid_imp": ["By officer"],
+                "dp_state_fed_reference": ["Yes"],
+                "dp_state_fed_citation": ["21 U.S.C. 863"],
+            }
+        )
+
+        result = expand_combined_variables(
+            row,
+            ["dp_collected_combined", "dp_state_fed_combined"],
+        )
+
+        assert "dp_collected_combined" in result.columns
+        assert "dp_state_fed_combined" in result.columns
+        assert (
+            result["dp_collected_combined"][0]
+            == "Collected: Yes\nValid/Imp: By officer"
+        )
+        assert result["dp_state_fed_combined"][0] == (
+            "References state/federal law: Yes\nCitation: 21 U.S.C. 863"
+        )
+
+    def test_expand_handles_dash_and_none_values(self):
+        """Dash and null source values should be normalized to empty strings."""
+        row = pl.DataFrame(
+            {
+                "dp_collected": ["-"],
+                "dp_valid_imp": [None],
+            }
+        )
+
+        result = expand_combined_variables(row, ["dp_collected_combined"])
+
+        assert result["dp_collected_combined"][0] == "Collected: \nValid/Imp:"
+
+    def test_expand_is_noop_when_no_combined_variables_requested(self):
+        """When no combined variables are requested, the input row is unchanged."""
+        row = pl.DataFrame({"var1": ["value1"], "var2": ["value2"]})
+
+        result = expand_combined_variables(row, ["var1"])
+
+        assert result.equals(row)
 
 
 class TestEvaluator:
