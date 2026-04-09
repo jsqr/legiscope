@@ -3,14 +3,17 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCAL_PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
 NETID=""
 HOST="bigpurple.nyumc.org"
-LAB_ROOT="/gpfs/data/cerdalab/LegalAI"
-PROJECT_ROOT="${LAB_ROOT}/legiscope"
-REMOTE_DOCX_DIR="${LAB_ROOT}/docx_sources"
+PROJECT_HOME="/gpfs/data/cerdalab/LegalAI"
+PROJECT_ROOT="${PROJECT_HOME}/legiscope"
+REMOTE_DOCX_DIR="${PROJECT_HOME}/docx_sources"
 LOCAL_DOCX_DIR=""
-LOCAL_QUERY_FILE="data/queries/DPL_queries_with_context.csv"
-LOCAL_MONQCLE_FILE="coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+LOCAL_QUERY_FILE="${LOCAL_PROJECT_ROOT}/data/queries/DPL_queries_with_context.csv"
+LOCAL_MONQCLE_FILE="${LOCAL_PROJECT_ROOT}/coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
 SSH_JUMP=""
 DRY_RUN=false
 
@@ -30,8 +33,8 @@ Options:
   --project-root PATH   Remote repo path (default: /gpfs/data/cerdalab/LegalAI/legiscope)
   --remote-docx-dir PATH
                         Remote flat DOCX staging dir (default: /gpfs/data/cerdalab/LegalAI/docx_sources)
-  --query-file PATH     Local query CSV (default: data/queries/DPL_queries_with_context.csv)
-  --monqcle-file PATH   Local MonQcle CSV (default: coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv)
+    --query-file PATH     Local query CSV (default: <repo>/data/queries/DPL_queries_with_context.csv)
+    --monqcle-file PATH   Local MonQcle CSV (default: <repo>/coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv)
   --ssh-jump TARGET     Optional SSH jump host, e.g. user@gw.hpc.nyu.edu
   --dry-run             Print commands and run rsync in preview mode
   -h, --help            Show this help

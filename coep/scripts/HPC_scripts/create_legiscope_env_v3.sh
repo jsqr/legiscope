@@ -28,8 +28,7 @@
 #   PyTorch also published fixed 2.10.0 wheels.
 #
 # Usage:
-#   scp create_legiscope_env_v3.sh <netid>@bigpurple.nyumc.org:~/scripts/
-#   sbatch ~/scripts/create_legiscope_env_v3.sh
+#   sbatch coep/scripts/HPC_scripts/create_legiscope_env_v3.sh
 #
 
 source ~/.bashrc

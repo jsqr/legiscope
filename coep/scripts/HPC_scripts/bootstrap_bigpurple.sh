@@ -5,9 +5,9 @@
 
 set -euo pipefail
 
-LAB_ROOT="/gpfs/data/cerdalab/LegalAI"
-PROJECT_ROOT="${LAB_ROOT}/legiscope"
-DOCX_STAGE_DIR="${LAB_ROOT}/docx_sources"
+PROJECT_HOME="/gpfs/data/cerdalab/LegalAI"
+PROJECT_ROOT="${PROJECT_HOME}/legiscope"
+DOCX_STAGE_DIR="${PROJECT_HOME}/docx_sources"
 REPO_URL="https://github.com/jsqr/legiscope.git"
 BRANCH="main"
 STRICT=false
@@ -95,6 +95,7 @@ require_cmd grep
 
 say "=== BigPurple Legiscope Bootstrap ==="
 say "Current dir  : $(pwd) (ignored)"
+say "Project home : ${PROJECT_HOME}"
 say "Project root : ${PROJECT_ROOT}"
 say "DOCX staging : ${DOCX_STAGE_DIR}"
 say "Branch       : ${BRANCH}"
@@ -189,9 +190,9 @@ fi
 
 say ""
 say ">>> Next commands"
-say "Local sync: ./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx"
+say "Local sync: bash coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx"
 say "Single run : sbatch --export=\"ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=${DOCX_STAGE_DIR}/PA_Philadelphia.docx\" coep/scripts/HPC_scripts/slurm_jurisdiction.sh"
-say "Batch run  : ./coep/scripts/HPC_scripts/slurm_dispatch.sh ${DOCX_STAGE_DIR}"
+say "Batch run  : bash coep/scripts/HPC_scripts/slurm_dispatch.sh ${DOCX_STAGE_DIR}"
 
 if [[ "$STRICT" == true && $missing -gt 0 ]]; then
     echo "Error: bootstrap checks found ${missing} missing item(s)" >&2

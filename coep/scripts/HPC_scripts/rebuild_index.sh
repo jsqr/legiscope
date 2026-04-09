@@ -8,8 +8,8 @@
 #
 # Usage:
 #   cd /gpfs/data/cerdalab/LegalAI/legiscope
-#   module load anaconda3/gpu/2025.06
-#   conda activate ~/conda_envs/legiscope_env
+#   source ~/.bashrc
+#   conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
 #   bash coep/scripts/HPC_scripts/rebuild_index.sh [--clean]
 #
 # Options:
@@ -20,7 +20,7 @@ set -euo pipefail
 if ! command -v python &>/dev/null || ! python -c "import legiscope" &>/dev/null; then
     source ~/.bashrc 2>/dev/null || true
     # Skip 'module load anaconda3' — cuda/12.6 dependency has a read-only FS bug.
-    conda activate ~/conda_envs/legiscope_env 2>/dev/null || true
+    conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3 2>/dev/null || true
 fi
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"

@@ -73,7 +73,7 @@ python -m vllm.entrypoints.openai.api_server \
     --dtype float16 --enforce-eager &
 
 VLLM_PID=$!
-trap "kill $VLLM_PID 2>/dev/null" EXIT
+trap "kill $VLLM_PID 2>/dev/null || true" EXIT
 
 READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
 

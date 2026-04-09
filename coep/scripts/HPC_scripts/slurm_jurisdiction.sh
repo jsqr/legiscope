@@ -33,7 +33,7 @@
 #
 # Usage:
 #   # Via dispatcher (recommended):
-#   ./coep/scripts/HPC_scripts/slurm_dispatch.sh /path/to/docx/folder
+#   bash coep/scripts/HPC_scripts/slurm_dispatch.sh /path/to/docx/folder
 #
 #   # Manual single submission:
 #   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx \

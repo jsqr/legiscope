@@ -81,7 +81,7 @@ class TestProperties:
 
     def test_default_queries_path(self):
         expected_file = cfg.get("paths.default_queries_file", "queries.csv")
-        assert cfg.default_queries_path() == Path(f"data/queries/{expected_file}")
+        assert cfg.default_queries_path() == cfg.queries_dir() / expected_file
 
     def test_monqcle_report_path(self):
         assert cfg.monqcle_report_path() == self._expected_monqcle_report_path()

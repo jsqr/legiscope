@@ -18,7 +18,7 @@
 #   5. Validate all imports
 #
 # Usage:
-#   sbatch ~/create_legiscope_env_v2.sh
+#   sbatch coep/scripts/HPC_scripts/create_legiscope_env_v2.sh
 #
 # After success, update scripts to use:
 #   conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v2

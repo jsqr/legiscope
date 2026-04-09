@@ -19,8 +19,8 @@
 #   CA_LosAngeles_zoning-code.docx  → STATE=CA, LOCALITY=LosAngeles, CODE_SLUG=zoning-code
 #
 # Usage:
-#   ./coep/scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources
-#   ./coep/scripts/slurm_dispatch.sh --dry-run /gpfs/data/cerdalab/LegalAI/docx_sources
+#   bash coep/scripts/HPC_scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources
+#   bash coep/scripts/HPC_scripts/slurm_dispatch.sh --dry-run /gpfs/data/cerdalab/LegalAI/docx_sources
 #
 set -euo pipefail
 
