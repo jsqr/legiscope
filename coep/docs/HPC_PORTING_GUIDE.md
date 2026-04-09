@@ -392,7 +392,6 @@ naming convention from Section 9.2:
 /gpfs/data/cerdalab/LegalAI/docx_sources/
   PA_Philadelphia.docx
   IL_Chicago.docx
-  PA_Philadelphia.docx
   TX_Houston.docx
   ...                           # 50 total
 ```
@@ -538,9 +537,8 @@ jobs for package installation.
 # Login to BigPurple:
 ssh $USER@bigpurple.nyumc.org
 
-# Load anaconda module (required before any conda commands):
-module purge
-module load anaconda3/gpu/2025.06
+# Conda should already be available via ~/.bashrc after `conda init`
+source ~/.bashrc
 
 # Create conda environment (one-time):
 conda create -p ~/conda_envs/legiscope_env python=3.12 pip -y
@@ -561,7 +559,6 @@ cd legiscope
 # #SBATCH --output=logs/install_%j.out
 # set -e
 # source ~/.bashrc
-# module load anaconda3/gpu/2025.06
 # conda activate ~/conda_envs/legiscope_env
 # cd /gpfs/data/cerdalab/LegalAI/legiscope
 # # If using vLLM, install it FIRST (it pins its own torch version):
@@ -579,9 +576,9 @@ cp .env.example .env
 
 **Important BigPurple notes:**
 - `source ~/.bashrc` is required in SLURM scripts before `conda activate`
-- Run `module load anaconda3/gpu/2025.06` before using conda (on login nodes
-  and in SLURM scripts). This does not conflict with the project conda
-  environment if you explicitly activate it
+- Do not add an Anaconda module-load step to these workflows; the provided
+  SLURM scripts intentionally rely on `source ~/.bashrc` plus explicit
+  `conda activate`, which matches the validated BigPurple setup used here
 - vLLM pins its own torch version (e.g., `torch==2.9.0`); install vLLM first,
   then other dependencies, to avoid version conflicts
 - The DVC pipeline wrapper scripts (`dvc_python.sh`, `dvc_repro.sh`) look for
@@ -946,7 +943,10 @@ implementation details:
 - **Dynamic vLLM port**: Uses Python's `socket` module to find a free port,
   avoiding conflicts when multiple jobs share a compute node.
 - **Result copying**: After the pipeline completes, results (`data/output/`
-  and `data/laws/`) are copied back to the shared project directory.
+  and `data/laws/`) are copied back to the shared project directory. Shared
+  registry files are intentionally excluded to avoid concurrent overwrite races.
+  There is currently no built-in central registry merge or locking step in this
+  workflow.
 
 To submit a single jurisdiction manually:
 
@@ -1106,7 +1106,17 @@ Each job copies these artifacts back to the shared project directory:
 - `data/laws/{STATE}/{Locality}/` — pipeline outputs including
   `embeddings.parquet`, `sections.parquet`, etc.
 - `data/output/{STATE}-{Locality}/` — benchmark results and metrics
-- `data/jurisdictions.parquet`, `data/codes.parquet` — registry files
+
+Each job does **not** copy back `data/jurisdictions.parquet` or
+`data/codes.parquet`. Those registry files are shared global state; copying a
+per-job working-copy version back to the shared filesystem would create a
+last-writer-wins race under concurrent SLURM runs. If you need to update those
+registries on HPC, do it centrally in a serialized step rather than as part of
+every batch job.
+
+At present, that centralized handling is only a recommendation: this HPC
+workflow does **not** yet implement an automatic merge, file lock, or separate
+registry-update job for these parquet files.
 
 The `embeddings.parquet` files persist permanently and can be used to rebuild
 a shared ChromaDB index at any time.
@@ -1226,11 +1236,10 @@ bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh
 ./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx
 ```
 
-1. **Login and load modules**:
+1. **Login and initialize your shell environment**:
    ```bash
    ssh $USER@bigpurple.nyumc.org
-   module purge
-   module load anaconda3/gpu/2025.06
+  source ~/.bashrc
    ```
 
 2. **Clone repo on HPC**:
@@ -1300,7 +1309,7 @@ bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh
 Everything from here is handled by `slurm_jurisdiction.sh` — it creates an
 isolated working copy, sets `params.yaml`, runs `init.py`, copies and converts
 the DOCX, starts vLLM, runs the full DVC pipeline, pushes the experiment, and
-copies results back.
+copies jurisdiction outputs and benchmark results back.
 
 8. **Submit the SLURM job**:
    ```bash

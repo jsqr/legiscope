@@ -25,7 +25,7 @@
 # Usage:
 #   # Rebuild shared index first, then submit benchmark:
 #   bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
-#   sbatch coep/scripts/slurm_benchmark.sh
+#   sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
 #
 set -euo pipefail
 

@@ -175,6 +175,32 @@ class TestDvcPipelineCli:
         )
         assert "usage" in result.stdout.lower()
 
+    def test_dvc_repro_validate_without_initialized_jurisdiction(self):
+        """Validate stage should run without jurisdiction params or initialized data."""
+        script = PROJECT_ROOT / "scripts" / "dvc_repro.sh"
+        params_path = PROJECT_ROOT / "params.yaml"
+        original_text = params_path.read_text()
+
+        try:
+            params_config = yaml.safe_load(original_text)
+            params_config["jurisdiction"] = {}
+            params_path.write_text(yaml.safe_dump(params_config, sort_keys=False))
+
+            result = subprocess.run(
+                [str(script), "--stage", "validate"],
+                capture_output=True,
+                text=True,
+                cwd=PROJECT_ROOT,
+            )
+
+            assert result.returncode == 0, (
+                f"dvc_repro.sh --stage validate failed without jurisdiction params "
+                f"(rc={result.returncode}):\nstdout: {result.stdout}\nstderr: {result.stderr}"
+            )
+            assert "Target stage : validate" in result.stdout
+        finally:
+            params_path.write_text(original_text)
+
     def test_pipeline_modules_help(self):
         """Each pipeline script accepts --help without error."""
         for module in PIPELINE_MODULES:

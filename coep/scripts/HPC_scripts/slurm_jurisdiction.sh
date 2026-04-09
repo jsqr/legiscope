@@ -33,11 +33,11 @@
 #
 # Usage:
 #   # Via dispatcher (recommended):
-#   ./coep/scripts/slurm_dispatch.sh /path/to/docx/folder
+#   ./coep/scripts/HPC_scripts/slurm_dispatch.sh /path/to/docx/folder
 #
 #   # Manual single submission:
 #   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx \
-#       coep/scripts/slurm_jurisdiction.sh
+#       coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 #
 set -euo pipefail
 
@@ -207,10 +207,9 @@ fi
 # index in $TMPDIR that is discarded when the job ends. To build a shared
 # index from all jurisdictions, run rebuild_index.sh after all jobs finish.
 
-# Registry files
-for f in data/jurisdictions.parquet data/codes.parquet; do
-    [[ -f "$f" ]] && cp "$f" "${PROJECT_DIR}/$f"
-done
+# NOTE: Registry parquet files are also NOT copied back here. Each job updates
+# them only inside its isolated working copy; copying them back would create a
+# last-writer-wins race across concurrent SLURM runs.
 
 echo "=== Completed: ${STATE}-${LOCALITY} ($(date)) ==="
 # vLLM server killed automatically by trap
