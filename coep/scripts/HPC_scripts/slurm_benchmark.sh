@@ -1,0 +1,92 @@
+#!/bin/bash
+#SBATCH --job-name=legiscope-benchmark
+#SBATCH --partition=gpu4_short
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=12:00:00
+#SBATCH --gres=gpu:1
+#SBATCH --output=/gpfs/data/cerdalab/LegalAI/legiscope/logs/benchmark_%j.out
+#SBATCH --error=/gpfs/data/cerdalab/LegalAI/legiscope/logs/benchmark_%j.err
+#
+# slurm_benchmark.sh — Re-run ONLY the benchmark stage (no parsing/embedding).
+#
+# This is a lighter SLURM job that starts vLLM and runs only the benchmark
+# DVC stage. Use after the full pipeline has already completed for all
+# jurisdictions and you want to re-evaluate with different retrieval/query
+# settings in params.yaml.
+#
+# Prerequisites:
+#   - Full pipeline must have completed (embeddings.parquet files exist)
+#   - Shared ChromaDB index must be rebuilt: bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
+#   - Retrieval/query settings in params.yaml updated as desired
+#
+# Usage:
+#   # Rebuild shared index first, then submit benchmark:
+#   bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
+#   sbatch coep/scripts/slurm_benchmark.sh
+#
+set -euo pipefail
+
+# ── Environment setup ────────────────────────────────────────────
+source ~/.bashrc
+export PYTHONNOUSERSITE=1
+# Skip 'module load anaconda3' — cuda/12.6 dependency has a read-only FS bug.
+# Conda is available via ~/.bashrc after 'conda init'.
+# Uses the validated build: vLLM 0.19.0 + torch 2.10.0+cu128.
+conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
+
+export HF_HOME=/gpfs/scratch/$USER/hf_cache
+export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
+
+cd /gpfs/data/cerdalab/LegalAI/legiscope
+
+# Load .env (API keys, etc.)
+set -a
+source .env
+set +a
+
+# ── Start vLLM server ───────────────────────────────────────────
+MODEL_ID="Qwen/Qwen3.5-4B"
+API_KEY="legiscope-key-${SLURM_JOB_ID}"
+VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+
+echo "Starting vLLM on port ${VLLM_PORT}..."
+
+VLLM_HOST=127.0.0.1
+
+python -m vllm.entrypoints.openai.api_server \
+    --model "$MODEL_ID" \
+    --host 0.0.0.0 --port "$VLLM_PORT" \
+    --gpu-memory-utilization 0.90 --max-model-len 4096 \
+    --api-key "$API_KEY" \
+    --served-model-name "$MODEL_ID" \
+    --download-dir /gpfs/scratch/$USER/hf_cache \
+    --reasoning-parser qwen3 \
+    --default-chat-template-kwargs '{"enable_thinking": false}' \
+    --dtype float16 --enforce-eager &
+
+VLLM_PID=$!
+trap "kill $VLLM_PID 2>/dev/null" EXIT
+
+READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
+
+echo "Waiting for vLLM server at ${READY_URL} (PID $VLLM_PID)..."
+TIMEOUT=900; ELAPSED=0
+while ! curl -sf "$READY_URL" >/dev/null 2>&1; do
+    if ! kill -0 $VLLM_PID 2>/dev/null; then echo "ERROR: vLLM died"; exit 1; fi
+    if [ $ELAPSED -ge $TIMEOUT ]; then echo "ERROR: vLLM timeout"; exit 1; fi
+    sleep 15; ELAPSED=$((ELAPSED + 15))
+done
+echo "vLLM server ready after ${ELAPSED}s"
+
+export OPENAI_BASE_URL="http://${VLLM_HOST}:${VLLM_PORT}/v1"
+export OPENAI_API_KEY="$API_KEY"
+
+# ── Run benchmark ────────────────────────────────────────────────
+echo "=== Benchmark re-run: $(date) ==="
+./scripts/dvc_repro.sh --stage benchmark
+
+dvc exp push origin
+echo "=== Benchmark completed (experiment pushed): $(date) ==="

@@ -20,22 +20,26 @@ The target HPC environment is **NYU Langone BigPurple** (cerdalab allocation).
 
 ### Single-Job Architecture
 
-Since benchmarking is a DVC stage that depends on the index stage, the entire
-pipeline — data ingest through benchmarking — runs as a single `dvc repro`
-command within one SLURM job:
+The entire pipeline — data ingest through benchmarking — runs as a single
+`dvc exp run` command within one SLURM job:
 
 ```
 validate → parse → segment → embed → index → benchmark
 ```
 
-Each SLURM job starts a vLLM server, runs `dvc repro` (which executes all
-stages end-to-end), and produces both the vector index and benchmark results.
+Each SLURM job starts a vLLM server, runs `dvc exp run` (which executes all
+stages end-to-end and records the run as a DVC experiment), and produces both
+the vector index and benchmark results. DVC experiments capture the
+`params.yaml`, `dvc.lock`, and metrics for each run as lightweight Git
+references under `refs/exps/` — no manual branches needed.
+
 The OpenRouter API is used for embeddings (embed stage); vLLM handles all LLM
 calls (parse heading scanning, benchmark querying, and LLM-as-judge evaluation).
 
 To **re-run benchmarking only** (e.g., with different retrieval settings or a
-different model), submit a lighter job that runs `dvc repro benchmark`. DVC
-will skip all upstream stages since their outputs already exist.
+different model), first rebuild the shared ChromaDB index with
+`bash coep/scripts/HPC_scripts/rebuild_index.sh --clean`, then submit a lighter
+job that runs `dvc exp run -f benchmark`.
 
 ### What the system does end-to-end
 
@@ -60,7 +64,7 @@ DOCX files  ──►  TXT conversion  ──►  DVC Pipeline (parse → segmen
 | Embeddings (local dev alt.) | Ollama `embeddinggemma` | Alternative local embedding provider |
 | Data processing | Polars, Parquet | Tabular data (sections, segments, embeddings, results) |
 | Structured outputs | Instructor + Pydantic | Typed LLM responses |
-| DVC remote | GCS (`gs://coep-muni`) | Artifact storage |
+| Experiment tracking | DVC experiments (`dvc exp`) | Per-jurisdiction params + metrics tracking via Git refs |
 
 ---
 
@@ -115,20 +119,20 @@ This file controls **all** pipeline behavior. Key sections:
 
 ```yaml
 jurisdiction:
-  state: CA                    # Two-letter state code
-  locality: LosAngeles         # PascalCase city name (no spaces)
+  state: PA                    # Two-letter state code
+  locality: Philadelphia         # PascalCase city name (no spaces)
   code_slug: municipal-code    # URL-friendly code identifier
-  code_name: "LA Municipal Code"
+  code_name: "Philadelphia Municipal Code"
 
 llm:
-  default_provider: mistral    # "mistral" | "openai" | "ollama"
+  default_provider: openai    # "mistral" | "openai" | "ollama"
   providers:
     mistral:
       fast: mistral-small-2506       # Used for HYDE, relevance filtering
       powerful: mistral-large-2512   # Used for query answering, evaluation
     openai:
-      fast: gpt-4.1-mini
-      powerful: gpt-4.1
+      fast: Qwen/Qwen3.5-4B
+      powerful: Qwen/Qwen3.5-4B
     ollama:
       fast: qwen3:8b
       powerful: qwen3:30b
@@ -173,7 +177,7 @@ paths:
   chroma_db_dir: "chroma_db"          # Under data_dir
   queries_dir: "queries"
   output_dir: "output"
-  default_queries_file: "drug_paraphernalia_queries_clean.csv"
+  default_queries_file: "DPL_queries_with_context.csv"
   monqcle_report: "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
 
 database:
@@ -187,6 +191,7 @@ database:
 ```bash
 OPENAI_API_KEY=your-key-here            # For vLLM (any string) or OpenAI cloud
 OPENROUTER_API_KEY=your-key-here        # For OpenRouter embeddings
+MISTRAL_API_KEY=your-key-here           # For Mistral LLMs or embedding models
 # LEGISCOPE_DATA_DIR=/custom/data/path  # Optional override
 ```
 
@@ -230,12 +235,12 @@ and on `segment` outputs (`sections.parquet`).
 
 ### Data Directory Layout
 
-For a jurisdiction like CA-LosAngeles with code-slug `municipal-code`:
+For a jurisdiction like PA-Philadelphia with code-slug `municipal-code`:
 
 ```
-data/laws/CA/LosAngeles/municipal-code/
+data/laws/PA/Philadelphia/municipal-code/
 ├── raw/                          # Input: original DOCX (and/or TXT) source files
-│   └── los_angeles-ca-1.docx     #   Naming convention: {city}-{state}-{number}.docx
+│   └── philadelphia-pa-1.docx     #   Naming convention: {city}-{state}-{number}.docx
 ├── code.txt                      # Intermediate: DOCX→TXT conversion output
 ├── code.md                       # Parse output: structured Markdown
 ├── headings.parquet              # Parse output: heading hierarchy
@@ -247,20 +252,26 @@ data/laws/CA/LosAngeles/municipal-code/
 ```
 
 **DOCX file naming convention**: `{city}-{state}-{number}.docx` (e.g.,
-`los_angeles-ca-1.docx`, `chicago-il-1.docx`). One DOCX per jurisdiction.
+`philadelphia-pa-1.docx`, `chicago-il-1.docx`). One DOCX per jurisdiction.
 
 ### Running the Pipeline
 
 ```bash
-# 1. Set jurisdiction in params.yaml
+# 1. Set jurisdiction in params.yaml (or pass via -S flags)
 # 2. Initialize (one-time per jurisdiction)
 python scripts/init.py                     # or: uv run python scripts/init.py (local)
 
 # 3. Place DOCX (or TXT) files in data/laws/{STATE}/{Locality}/{code-slug}/raw/
-# 4. Run all stages
-./scripts/dvc_repro.sh
+# 4. Run all stages as a DVC experiment
+dvc exp run
 
-# Or run a single stage
+# Or with jurisdiction overrides (no need to edit params.yaml):
+dvc exp run \
+    -S jurisdiction.state=PA \
+    -S jurisdiction.locality=Philadelphia \
+    -S jurisdiction.code_slug=municipal-code
+
+# Run a single stage
 ./scripts/dvc_repro.sh --stage parse
 ```
 
@@ -270,13 +281,13 @@ python scripts/init.py                     # or: uv run python scripts/init.py (
 
 The benchmark evaluates RAG-generated answers against MonQcle human-labeled
 ground truth using an LLM-as-a-judge approach. It is the `benchmark` DVC stage
-and runs automatically as part of `dvc repro`.
+and runs automatically as part of `dvc exp run`.
 
 ### Script: `coep/scripts/benchmark_pipeline.py`
 
 ### Workflow
 
-1. **Load queries** from `data/queries/drug_paraphernalia_queries_clean.csv`
+1. **Load queries** from `data/queries/DPL_queries_with_context.csv`
    (CSV with `question` and `variable_name` columns)
 2. **Load MonQcle data** from `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv`,
    filter to target jurisdiction
@@ -289,7 +300,7 @@ and runs automatically as part of `dvc repro`.
 
 | Input | Path | Notes |
 |-------|------|-------|
-| Queries | `data/queries/drug_paraphernalia_queries_clean.csv` | Same for all jurisdictions |
+| Queries | `data/queries/DPL_queries_with_context.csv` | Same for all jurisdictions |
 | MonQcle ground truth | `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv` | **One file with data for all cities**; filtered by jurisdiction ID at runtime |
 | ChromaDB index | `data/chroma_db/` | Must be pre-built via DVC pipeline |
 | Sections parquet | `data/laws/{STATE}/{Locality}/{code-slug}/sections.parquet` | Pre-built via DVC pipeline |
@@ -308,16 +319,14 @@ and runs automatically as part of `dvc repro`.
 The benchmark runs as part of the DVC pipeline:
 
 ```bash
-# Run as part of full pipeline
-dvc repro
-# Or: ./scripts/dvc_repro.sh
+# Run as part of full pipeline (as DVC experiment)
+dvc exp run
 
 # Run only the benchmark stage
-dvc repro benchmark
-# Or: ./scripts/dvc_repro.sh --stage benchmark
+dvc exp run -f benchmark
 
 # Run standalone (outside DVC)
-python coep/scripts/benchmark_pipeline.py --state CA --locality LosAngeles --code-slug municipal-code
+python coep/scripts/benchmark_pipeline.py --state PA --locality Philadelphia --code-slug municipal-code
 
 # Test with limited queries
 python coep/scripts/benchmark_pipeline.py --test-limit 5
@@ -353,10 +362,10 @@ conda install -c conda-forge pandoc
 ### Usage
 
 ```bash
-./scripts/convert_docx.sh data/laws/CA/LosAngeles/municipal-code/raw
+./scripts/convert_docx.sh data/laws/PA/Philadelphia/municipal-code/raw
 ```
 
-This produces `data/laws/CA/LosAngeles/municipal-code/code.txt` (one level above
+This produces `data/laws/PA/Philadelphia/municipal-code/code.txt` (one level above
 `raw/`, in the code directory itself).
 
 **No file move is needed.** The parse stage (`convert_to_markdown()`) looks for
@@ -374,81 +383,62 @@ So the conversion output is found automatically at step 1.
 You have 50 `.docx` files (one per city) on your local machine that need to
 reach the HPC filesystem before any pipeline work begins.
 
-### 7.1 Recommended Directory Layout on HPC
+### 7.1 Recommended Layout: Flat Staging Directory
 
-The pipeline expects each DOCX to live inside its jurisdiction's `raw/`
-directory within the existing `data/laws/` hierarchy:
+Upload all 50 DOCX files into a single flat directory on the HPC, using the
+naming convention from Section 9.2:
 
 ```
-data/laws/
-├── CA/
-│   └── LosAngeles/
-│       └── municipal-code/
-│           └── raw/
-│               └── los_angeles-ca-1.docx
-├── TX/
-│   └── Houston/
-│       └── municipal-code/
-│           └── raw/
-│               └── houston-tx-1.docx
-├── IL/
-│   └── Chicago/
-│       └── municipal-code/
-│           └── raw/
-│               └── chicago-il-1.docx
-...                           # 50 total
+/gpfs/data/cerdalab/LegalAI/docx_sources/
+  PA_Philadelphia.docx
+  IL_Chicago.docx
+  PA_Philadelphia.docx
+  TX_Houston.docx
+  ...                           # 50 total
 ```
 
-**DOCX naming convention**: `{city}-{state}-{number}.docx` (lowercase with
-underscores/hyphens, e.g., `los_angeles-ca-1.docx`, `chicago-il-1.docx`).
-The exact filename doesn't affect conversion — `convert_docx.sh` processes
-every `*.docx` it finds in the `raw/` directory.
+**Filename format**: `STATE_Locality.docx` — see Section 9.2 for details.
 
-The simplest approach is to organize all 50 DOCX files into this structure
-**on your local machine first**, then upload the entire `data/laws/` tree.
-The `scripts/init.py` step will create the directory structure if it doesn't
-already exist, so alternatively you can upload DOCX files to a flat staging
-area and let the `run_jurisdiction.sh` wrapper copy them into place.
+The dispatcher script (`slurm_dispatch.sh`) will parse each filename to extract
+jurisdiction metadata, and each SLURM job (`slurm_jurisdiction.sh`) will
+automatically copy its DOCX file into the correct
+`data/laws/{STATE}/{Locality}/{code-slug}/raw/` directory, convert it, and run
+the pipeline. No pre-organization into nested directories is needed.
 
 ### 7.2 Transfer Methods
 
 #### Option A: `scp` / `rsync` from your local machine (simplest)
 
 ```bash
-# From your LOCAL machine, upload the pre-organized data/laws/ tree:
-rsync -avz --progress data/laws/ \
-    <netid>@<hpc-host>:/path/to/legiscope/data/laws/
-
-# Or upload a flat staging folder if you haven't pre-organized:
-rsync -avz --progress ~/legiscope-input/ \
-    <netid>@<hpc-host>:~/legiscope-input/
+# From your LOCAL machine, upload the flat DOCX staging folder:
+rsync -avz --progress ~/legiscope-docx/ \
+    <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/docx_sources/
 
 # Or with scp:
-scp -r data/laws/ <netid>@<hpc-host>:/path/to/legiscope/data/laws/
+scp ~/legiscope-docx/*.docx <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/docx_sources/
 ```
 
-Replace `<netid>` with your HPC username and `<hpc-host>` with the login node
-hostname (e.g., `greene.hpc.nyu.edu`).
+Replace `<netid>` with your HPC username.
 
 If you need to go through a gateway/bastion host (common at NYU):
 ```bash
 rsync -avz -e "ssh -J <netid>@gw.hpc.nyu.edu" \
-    ~/legiscope-input/ \
-    <netid>@<hpc-host>:~/legiscope-input/
+    ~/legiscope-docx/ \
+    <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/docx_sources/
 ```
 
 #### Option B: `sftp` interactive session
 
 ```bash
-sftp <netid>@<hpc-host>
-sftp> mkdir legiscope-input
-sftp> put -r ~/legiscope-input/*
+sftp <netid>@bigpurple.nyumc.org
+sftp> mkdir /gpfs/data/cerdalab/LegalAI/docx_sources
+sftp> put ~/legiscope-docx/*.docx /gpfs/data/cerdalab/LegalAI/docx_sources/
 sftp> quit
 ```
 
 #### Option C: Globus (recommended for large transfers)
 
-Many institutional HPCs, including NYU Greene, support
+Many institutional HPCs, including NYU BigPurple, support
 [Globus](https://www.globus.org/) for reliable, resumable, high-speed file
 transfers. This is best if the 50 DOCX files are collectively large or you have
 an unreliable connection.
@@ -457,10 +447,10 @@ an unreliable connection.
 2. Set **source endpoint** to "Globus Connect Personal" on your laptop
    (install the Globus Connect Personal agent first)
 3. Set **destination endpoint** to your HPC's Globus endpoint (e.g.,
-   `nyu#greene` — ask your HPC admins for the exact name)
-4. Navigate to the source directory containing your DOCX folders
-5. Navigate to `~/legiscope-input/` on the destination
-6. Select all 50 folders and click **Start**
+   `nyu#bigpurple` — ask your HPC admins for the exact name)
+4. Navigate to the source directory containing your DOCX files
+5. Navigate to `/gpfs/data/cerdalab/LegalAI/docx_sources/` on the destination
+6. Select all 50 files and click **Start**
 
 Globus handles retries, checksums, and parallelism automatically.
 
@@ -470,11 +460,12 @@ If the DOCX files are already in a GCS bucket (or you want to stage them there):
 
 ```bash
 # From local machine — upload to GCS
-gsutil -m cp -r ~/legiscope-input/ gs://coep-muni/input-docx/
+gsutil -m cp ~/legiscope-docx/*.docx gs://coep-muni/input-docx/
 
 # On HPC — download from GCS
 module load google-cloud-sdk
-gsutil -m cp -r gs://coep-muni/input-docx/ ~/legiscope-input/
+mkdir -p /gpfs/data/cerdalab/LegalAI/docx_sources
+gsutil -m cp gs://coep-muni/input-docx/*.docx /gpfs/data/cerdalab/LegalAI/docx_sources/
 ```
 
 This requires GCS authentication on both ends but gives you a durable backup
@@ -487,49 +478,28 @@ binary files bloat the repo and these are input data, not code artifacts.
 
 ### 7.3 Verifying the Transfer
 
-After uploading, confirm all 50 jurisdictions are present:
+After uploading, confirm all 50 DOCX files are present:
 
 ```bash
-# On HPC — if you uploaded directly into data/laws/:
-find data/laws/ -name "*.docx" | wc -l     # Should be ≥ 50
-find data/laws/ -name "*.docx" | head -10   # Spot-check paths
-
-# Or if using a staging area:
-find ~/legiscope-input/ -name "*.docx" | wc -l
+# On HPC:
+ls /gpfs/data/cerdalab/LegalAI/docx_sources/*.docx | wc -l   # Should be 50
+ls /gpfs/data/cerdalab/LegalAI/docx_sources/                 # Spot-check filenames
 ```
 
-### 7.4 Connecting Input Files to the Pipeline
+### 7.4 How Input Files Reach the Pipeline
 
-There are two approaches:
+The `slurm_dispatch.sh` script (Section 9.4) scans the staging directory,
+parses each `STATE_Locality.docx` filename, and submits a SLURM job per file.
+Each `slurm_jurisdiction.sh` job:
 
-**Approach A: Pre-place DOCX files directly** (recommended)
+1. Runs `init.py` to create the `data/laws/{STATE}/{Locality}/{code-slug}/raw/`
+   directory and register the jurisdiction
+2. Copies the DOCX file into the `raw/` directory
+3. Runs `convert_docx.sh` to convert DOCX → TXT
+4. Runs the full DVC pipeline
 
-Organize DOCX files into the `data/laws/{STATE}/{Locality}/{code-slug}/raw/`
-structure before uploading. The `run_jurisdiction.sh` wrapper then skips the
-copy step since the file is already in place.
-
-**Approach B: Use a flat staging directory**
-
-Put all DOCX files in a staging directory (one subdir per jurisdiction), then
-have the `jurisdictions.tsv` manifest (Section 9.1) `DOCX_DIR` column point at
-each:
-
-```
-# jurisdictions.tsv (DOCX_DIR column points to staging location)
-CA	LosAngeles	municipal-code	LA Municipal Code	/home/<netid>/legiscope-input/LosAngeles
-IL	Chicago	municipal-code	Chicago Municipal Code	/home/<netid>/legiscope-input/Chicago
-...
-```
-
-The `run_jurisdiction.sh` wrapper (Section 9.2) copies the DOCX files from
-this staging directory into `data/laws/{STATE}/{Locality}/{code-slug}/raw/`,
-converts them to TXT, and runs the DVC pipeline.
-
-**If you pre-placed the files (Approach A)**, set `DOCX_DIR` to the `raw/`
-directory itself:
-```
-CA	LosAngeles	municipal-code	LA Municipal Code	data/laws/CA/LosAngeles/municipal-code/raw
-```
+No manual file organization is needed — just name the files correctly and run
+the dispatcher.
 
 ### 7.5 Alternative: Pre-convert to TXT Locally
 
@@ -537,20 +507,18 @@ If you want to avoid installing `pandoc` on the HPC, you can convert all DOCX
 files on your local Mac (which has `textutil`) before uploading:
 
 ```bash
-# On your LOCAL Mac
-for dir in ~/legiscope-input/*/; do
-    city=$(basename "$dir")
-    for f in "$dir"*.docx; do
-        [ -f "$f" ] && textutil -convert txt -output "${f%.docx}.txt" "$f"
-    done
+# On your LOCAL Mac — convert all DOCX to TXT in place
+cd ~/legiscope-docx
+for f in *.docx; do
+    [ -f "$f" ] && textutil -convert txt "$f"
 done
 
-# Then upload only the .txt files
-rsync -avz --include='*/' --include='*.txt' --exclude='*' \
-    ~/legiscope-input/ <netid>@<hpc-host>:~/legiscope-input/
+# Upload the TXT files (same naming convention: STATE_Locality.txt)
+rsync -avz --include='*.txt' --exclude='*' \
+    ~/legiscope-docx/ <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/docx_sources/
 ```
 
-The `run_jurisdiction.sh` wrapper already handles both `.docx` and `.txt` inputs.
+The `slurm_jurisdiction.sh` job already handles both `.docx` and `.txt` inputs.
 
 ---
 
@@ -567,12 +535,18 @@ jobs for package installation.
 > `pip install -e .` instead — `uv` is not needed on the HPC.
 
 ```bash
-# On BigPurple login node (bigpurple-ln2 or bigpurple-ln3):
-# Create conda environment (one-time)
-conda create -p /gpfs/home/$USER/conda_envs/legiscope_env python=3.12 pip -y
+# Login to BigPurple:
+ssh $USER@bigpurple.nyumc.org
+
+# Load anaconda module (required before any conda commands):
+module purge
+module load anaconda3/gpu/2025.06
+
+# Create conda environment (one-time):
+conda create -p ~/conda_envs/legiscope_env python=3.12 pip -y
 
 # Clone repo to lab storage (backed up, primary working location)
-cd /gpfs/data/cerdalab
+cd /gpfs/data/cerdalab/LegalAI
 git clone https://github.com/jsqr/legiscope.git
 cd legiscope
 
@@ -587,8 +561,9 @@ cd legiscope
 # #SBATCH --output=logs/install_%j.out
 # set -e
 # source ~/.bashrc
-# conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-# cd /gpfs/data/cerdalab/legiscope
+# module load anaconda3/gpu/2025.06
+# conda activate ~/conda_envs/legiscope_env
+# cd /gpfs/data/cerdalab/LegalAI/legiscope
 # # If using vLLM, install it FIRST (it pins its own torch version):
 # pip install vllm
 # # If the above fails to find a wheel, try: pip install vllm --no-build-isolation
@@ -604,8 +579,9 @@ cp .env.example .env
 
 **Important BigPurple notes:**
 - `source ~/.bashrc` is required in SLURM scripts before `conda activate`
-- BigPurple loads `anaconda3/gpu/2025.06` by default; this does not conflict
-  with the project conda environment if you explicitly activate it
+- Run `module load anaconda3/gpu/2025.06` before using conda (on login nodes
+  and in SLURM scripts). This does not conflict with the project conda
+  environment if you explicitly activate it
 - vLLM pins its own torch version (e.g., `torch==2.9.0`); install vLLM first,
   then other dependencies, to avoid version conflicts
 - The DVC pipeline wrapper scripts (`dvc_python.sh`, `dvc_repro.sh`) look for
@@ -630,14 +606,14 @@ re-runs do not require it.
 
 ### 8.3 LLM Provider: Self-Hosted vLLM vs. Cloud API
 
-The project supports two approaches for LLM inference on HPC. **On BigPurple,
-the vLLM approach is used** (for all DVC stages requiring LLM calls). The cloud API option
-is documented for reference.
+The project supports two approaches for LLM inference on HPC. 
+**On BigPurple, the vLLM approach is used** (for all DVC stages requiring LLM calls).
+The cloud API option is documented for reference.
 
 #### Cloud API (Mistral or OpenAI) — Alternative
 
-Use cloud LLM APIs by setting API keys in `.env`. No GPU needed for LLM calls.
-This is the approach used in local development.
+Use cloud LLM APIs by setting API keys in `.env` and setting params.yaml. 
+No GPU needed for LLM calls.
 
 ```yaml
 # params.yaml (local dev only — not used on BigPurple)
@@ -648,7 +624,7 @@ llm:
 #### Self-Hosted vLLM — BigPurple Approach (USED)
 
 On BigPurple, the project self-hosts models via **vLLM**, which exposes an
-OpenAI-compatible API server on `localhost:8000`. This eliminates cloud API
+OpenAI-compatible API server on `localhost` (dynamic port). This eliminates cloud API
 costs and allows using any HuggingFace model.
 
 vLLM is started as a background process in the SLURM job, then the pipeline
@@ -657,11 +633,12 @@ the local server.
 
 **How it works:**
 
-1. SLURM job starts vLLM server in the background
-2. Server loads model weights and exposes `http://localhost:8000/v1`
+1. SLURM job starts vLLM server in the background on a **dynamic port**
+   (avoids conflicts when multiple jobs share a node)
+2. Server loads model weights and exposes `http://localhost:${VLLM_PORT}/v1`
 3. Environment variables tell the `openai` Python client to connect locally:
    ```bash
-   export OPENAI_BASE_URL=http://localhost:8000/v1
+   export OPENAI_BASE_URL=http://localhost:${VLLM_PORT}/v1
    export OPENAI_API_KEY=<any-string>  # vLLM accepts any key
    ```
 4. Set `params.yaml` to use the `openai` provider with model names matching
@@ -697,7 +674,7 @@ mode_map = {
 
 ```bash
 python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-3B-Instruct \
+    --model Qwen/Qwen3.5-4B \
     --host 0.0.0.0 \
     --port 8000 \
     --gpu-memory-utilization 0.90 \
@@ -710,17 +687,19 @@ python -m vllm.entrypoints.openai.api_server \
 ```
 
 Key flags:
+- Qwen3.5 is natively supported in the validated vLLM 0.19.0 build (no `--model-impl` or `--trust-remote-code` needed)
 - `--dtype float16`: Required on V100 (no bfloat16 support)
 - `--enforce-eager`: Skip CUDA graph compilation, faster startup (~4 min vs ~8 min)
 - `--served-model-name`: Name that appears in the API; must match `params.yaml`
 - `--download-dir`: Point to scratch for large model weights
 - `--tensor-parallel-size N`: Add for multi-GPU models (must match `--gres=gpu:N`)
 
-Server takes approximately 240 seconds to be ready on V100.
+Model weights are ~8 GB (FP16); fits comfortably on V100-16GB with room for
+KV cache at `--max-model-len 4096`.
 
-**Verified capabilities (all tested and passing with vLLM):**
+**(Recommended): Verifiy basic LLM capabilities:**
 - Basic chat completions (non-streaming and streaming)
-- Structured JSON output via `extra_body` `guided_json`
+- Structured JSON output via raw HTTP top-level `structured_outputs` or OpenAI-client `extra_body`
 - Pydantic structured output via `response_format`
 - Instructor library integration with `instructor.Mode.JSON`
 - Multi-turn conversations
@@ -748,7 +727,7 @@ embeddings:
   default_provider: openrouter
 ```
 
-The SLURM scripts (Section 9.5) set `OPENAI_BASE_URL` and `OPENAI_API_KEY`
+The SLURM scripts (Section 9.6) set `OPENAI_BASE_URL` and `OPENAI_API_KEY`
 as environment variables so the `openai` provider connects to the local vLLM
 server. `OPENROUTER_API_KEY` is loaded from `.env` for the embed stage.
 
@@ -761,13 +740,13 @@ BigPurple has three storage tiers with different characteristics:
 | Tier | Path | Backed Up? | Notes |
 |------|------|-----------|-------|
 | **Home** | `/gpfs/home/$USER/` | Yes | Small quota — conda envs and `.bashrc` only |
-| **Lab** | `/gpfs/data/cerdalab/legiscope/` | Yes | Primary working location — git repo, data, results |
+| **Lab** | `/gpfs/data/cerdalab/LegalAI/legiscope/` | Yes | Primary working location — git repo, data, results |
 | **Scratch** | `/gpfs/scratch/$USER/` | No | Fast SSD, periodically purged — model weights, temp files |
 
 **Recommended layout on BigPurple:**
 
 ```
-/gpfs/data/cerdalab/legiscope/          # Git repo (lab storage, backed up)
+/gpfs/data/cerdalab/LegalAI/legiscope/          # Git repo (lab storage, backed up)
 ├── data/laws/{STATE}/{Locality}/...    # Pipeline inputs + outputs (actual repo structure)
 ├── data/chroma_db/                     # ChromaDB vector database
 ├── data/output/                        # Benchmark results
@@ -775,47 +754,66 @@ BigPurple has three storage tiers with different characteristics:
 
 /gpfs/scratch/$USER/
 ├── hf_cache/                           # HuggingFace model weights (large, re-downloadable)
-│   └── models--Qwen--Qwen2.5-3B-Instruct/
+│   └── models--Qwen--Qwen3.5-4B/
 └── tmp/                                # Temp files for pip builds
 ```
 
 If scratch is purged, re-download model weights via a SLURM batch job using
 `huggingface_hub.snapshot_download()`.
 
-#### Option A: Store everything on HPC lab storage (RECOMMENDED)
+#### Data Storage: HPC Lab Storage + DVC Experiments (RECOMMENDED)
 
-- All intermediate files (parquet, Markdown, ChromaDB) stay in the local
-  `data/` directory on the HPC filesystem
-- Final benchmark CSVs also written to `data/output/`
-- DVC still tracks file hashes in `dvc.lock` (committed to git) for
-  reproducibility — you can verify which data state produced which results
-- **Pros**: Zero setup, no auth complexity, fastest I/O (local filesystem),
-  lab storage is already backed up by BigPurple IT, no per-run cost
-- **Cons**: Data only accessible from BigPurple; collaborators must log in
+All data files (parquet, Markdown, ChromaDB, benchmark CSVs) stay on the
+HPC lab filesystem. **DVC experiments** handle reproducibility tracking:
 
-#### Option B: Use DVC + GCS for artifact management
+- Each `dvc exp run` creates a lightweight Git reference under `refs/exps/`
+  that captures `params.yaml`, `dvc.lock`, and metrics for that run
+- No manual branches needed — 50 jurisdiction runs produce 50 experiments,
+  all viewable in a single `dvc exp show` table
+- Experiments are pushed to GitHub via `dvc exp push origin`, making params
+  and metrics (but not data files) accessible from any machine
+- Data files remain on BigPurple lab storage (backed up by IT)
 
-- The repo includes a DVC remote configured at `gs://coep-muni` (in `.dvc/config`)
-- Run `dvc push` after each jurisdiction to upload artifacts to GCS
-- **Pros**: Artifacts accessible from any machine (`dvc pull` from laptop or
-  other HPC), cloud-grade durability, enables collaboration without BigPurple
-  access
-- **Cons**: Requires GCS service account key on BigPurple, network I/O per
-  `dvc push` (can be slow for large embeddings), GCS storage + egress costs,
-  auth tokens can expire
+**Pros**: Zero cloud storage setup, fastest I/O (local filesystem), lab
+storage is already backed up, `dvc exp show` gives a comparison table of
+all 50 jurisdictions' params and metrics in one view.
 
-Add GCS later when you need cross-machine access or collaboration — at that
-point it's just `dvc push` after successful runs.
+**Cons**: Data files only accessible from BigPurple (use `rsync` to pull
+results to your laptop).
 
-#### GCS Authentication on HPC (if using Option B)
+#### Tracking Results Across Jurisdictions
 
 ```bash
-# Option 1: Service account key
-export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+# View all experiments (params + metrics side-by-side)
+dvc exp show
 
-# Option 2: gcloud CLI
-module load google-cloud-sdk  # or install
-gcloud auth application-default login
+# Push experiments to GitHub (lightweight Git refs, not data files)
+dvc exp push origin
+
+# On your laptop — pull experiment metadata from GitHub
+dvc exp pull origin
+dvc exp show  # See all 50 runs with params + metrics
+
+# Promote a specific experiment to a real branch (if needed)
+dvc exp branch <exp-name> results/PA-Philadelphia
+```
+
+#### What stays on `main`
+
+- Code changes, `dvc.yaml`, `config.yaml`, HPC scripts
+- `dvc.lock` is **not** committed on `main` — each experiment captures its
+  own `dvc.lock` in its experiment ref
+- `params.yaml` on `main` can hold a "default" jurisdiction or the last-run
+  jurisdiction; experiments override it via `-S` flags
+
+#### Pulling Results to Your Laptop
+
+To get benchmark CSVs and metrics off BigPurple:
+
+```bash
+# From your LOCAL machine:
+rsync -avz <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/legiscope/data/output/ \
+    ./data/output/
 ```
 
 ### 8.5 Single-Jurisdiction vs. Batch Processing
@@ -840,410 +838,216 @@ one failure stops all remaining jurisdictions.
 
 ## 9. SLURM Execution Plan
 
-### 9.1 Jurisdiction Manifest
+Two scripts handle the full batch workflow:
 
-Create a TSV file listing all 50 jurisdictions. Use PascalCase locality names
-(matching the `data/laws/` directory names) and the established DOCX naming
+1. **`coep/scripts/HPC_scripts/slurm_dispatch.sh`** — **Login-node** script (thin loop). Iterates
+   over DOCX files, parses jurisdiction metadata from each filename, and calls
+   `sbatch` for each one. Does **no** setup or pipeline work.
+2. **`coep/scripts/HPC_scripts/slurm_jurisdiction.sh`** — **SLURM job** (self-contained). Receives
+   `STATE`, `LOCALITY`, `DOCX_PATH` as env vars and handles *everything* else:
+   `init.py`, DOCX copy + conversion, `params.yaml` editing, vLLM startup,
+   DVC pipeline, experiment push, and result copying.
+
+### 9.1 Responsibility Split: Dispatcher vs. SLURM Job
+
+For each of the 50 jurisdictions, these steps must happen:
+
+| Step | Where | Why |
+|------|-------|-----|
+| Iterate DOCX files | **Dispatcher** (login node) | Only place that sees all 50 files |
+| Parse `STATE`/`Locality` from filename | **Dispatcher** (login node) | Trivial string parsing; provides env vars for `sbatch` |
+| `init.py` (create dirs + registries) | **SLURM job** (compute node) | Writes to `data/laws/`; must happen inside the isolated working copy to avoid race conditions |
+| Copy DOCX → `raw/` directory | **SLURM job** (compute node) | Each job operates on its own `$TMPDIR` working copy; dispatcher can't write there |
+| `convert_docx.sh` (DOCX → TXT) | **SLURM job** (compute node) | Writes `code.txt` into the working copy |
+| Edit `params.yaml` jurisdiction metadata | **SLURM job** (compute node) | Each job edits its own isolated `params.yaml` via `sed` — the whole reason for working-copy isolation |
+| `dvc_repro.sh` (full pipeline) | **SLURM job** (compute node) | GPU-bound; requires vLLM server running locally |
+| Push DVC experiment | **SLURM job** (compute node) | Captures the exact params + metrics for this run |
+| Copy results back | **SLURM job** (compute node) | Writes pipeline outputs to shared project directory |
+
+**Why the dispatcher stays thin (Option A, not Option B):**
+
+- **Race conditions**: If the dispatcher ran `init.py` or edited `params.yaml`
+  for all 50 jurisdictions before jobs start, each call would overwrite the last,
+  and concurrent jobs would read stale metadata.
+- **Working copy boundary**: The dispatcher can't write into `$TMPDIR` — that
+  directory doesn't exist until SLURM allocates the compute node.
+- **Error recovery**: If a job fails, just resubmit the one `sbatch` command.
+  No dispatcher-side cleanup needed.
+
+### 9.2 DOCX Naming Convention
+
+Place all 50 DOCX files in a single folder on the HPC (e.g.,
+`/gpfs/data/cerdalab/LegalAI/docx_sources/`). Name each file using this
 convention:
 
 ```
-# jurisdictions.tsv
-# STATE	LOCALITY	CODE_SLUG	CODE_NAME	DOCX_DIR
-CA	LosAngeles	municipal-code	LA Municipal Code	data/laws/CA/LosAngeles/municipal-code/raw
-TX	Houston	municipal-code	Houston Municipal Code	data/laws/TX/Houston/municipal-code/raw
-IL	Chicago	municipal-code	Chicago Municipal Code	data/laws/IL/Chicago/municipal-code/raw
-...
+STATE_Locality.docx
 ```
 
-If you pre-placed the DOCX files into the `raw/` directories (Section 7.4,
-Approach A), `DOCX_DIR` matches `raw/` directly and no copy is needed.
+Where:
+- **STATE** — 2-letter state code (e.g., `PA`, `CA`, `IL`)
+- **Locality** — PascalCase city name matching directory convention (e.g.,
+  `Philadelphia`, `Chicago`, `Houston`)
 
-### 9.2 Per-Jurisdiction Wrapper Script
+The `code_slug` defaults to `municipal-code`. To specify a different code type:
 
-A single wrapper script handles the full pipeline (ingest + benchmark) for one
-jurisdiction. To re-run only the benchmark stage with different settings, pass
-`--benchmark-only`.
+```
+STATE_Locality_code-slug.docx
+```
+
+Examples:
+
+| Filename | STATE | LOCALITY | CODE_SLUG |
+|----------|-------|----------|-----------|
+| `PA_Philadelphia.docx` | PA | Philadelphia | municipal-code |
+| `CA_LosAngeles.docx` | CA | LosAngeles | municipal-code |
+| `IL_Chicago_zoning-code.docx` | IL | Chicago | zoning-code |
+
+The display name (`code_name`) is derived automatically as
+`"{Locality} Municipal Code"`.
+
+### 9.3 Single-Jurisdiction SLURM Script (`slurm_jurisdiction.sh`)
+
+The script `coep/scripts/HPC_scripts/slurm_jurisdiction.sh` is a
+self-contained SLURM job that runs the complete pipeline for one jurisdiction
+on BigPurple. It:
+
+1. Creates an isolated per-job working copy of the repo (avoids `params.yaml`
+   and ChromaDB race conditions with concurrent jobs)
+2. Edits `params.yaml` in the working copy and runs `init.py`
+3. Copies the DOCX file into `raw/` and converts to TXT
+4. Starts a vLLM server on a dynamic port (avoids port conflicts when
+   sharing nodes)
+5. Runs the full DVC pipeline via `./scripts/dvc_repro.sh`
+6. Pushes the DVC experiment to GitHub
+7. Copies results back to the shared project directory
+
+**Required environment variables** (set by the dispatcher or `--export`):
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `STATE` | 2-letter state code | `PA` |
+| `LOCALITY` | PascalCase city name | `Philadelphia` |
+| `DOCX_PATH` | Absolute path to DOCX file | `/gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx` |
+
+**Optional environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CODE_SLUG` | `municipal-code` | Code slug |
+| `CODE_NAME` | `{Locality} Municipal Code` | Display name |
+
+The full script is at `coep/scripts/HPC_scripts/slurm_jurisdiction.sh`. Key
+implementation details:
+
+- **Working copy isolation**: Each job rsyncs the repo to `$TMPDIR` (excluding
+  generated data), giving it its own `params.yaml`, ChromaDB, and DVC
+  workspace. This is what makes concurrent execution safe.
+- **Dynamic vLLM port**: Uses Python's `socket` module to find a free port,
+  avoiding conflicts when multiple jobs share a compute node.
+- **Result copying**: After the pipeline completes, results (`data/output/`
+  and `data/laws/`) are copied back to the shared project directory.
+
+To submit a single jurisdiction manually:
 
 ```bash
-#!/bin/bash
-# run_jurisdiction.sh — Run full DVC pipeline for a single jurisdiction
-# Usage: ./run_jurisdiction.sh CA LosAngeles municipal-code "LA Municipal Code" /path/to/docx/dir
-#        ./run_jurisdiction.sh --benchmark-only CA LosAngeles municipal-code "LA Municipal Code"
-
-set -euo pipefail
-
-BENCHMARK_ONLY=false
-if [ "${1:-}" = "--benchmark-only" ]; then
-    BENCHMARK_ONLY=true
-    shift
-fi
-
-STATE="$1"
-LOCALITY="$2"
-CODE_SLUG="$3"
-CODE_NAME="$4"
-DOCX_DIR="${5:-}"   # Optional; not needed for --benchmark-only
-
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$PROJECT_DIR"
-
-# Activate conda environment (conda must be initialized via ~/.bashrc)
-source ~/.bashrc
-conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-
-# Step 1: Update params.yaml for this jurisdiction (sed preserves comments)
-sed -i'' \
-    -e "s/^  state: .*/  state: $STATE/" \
-    -e "s/^  locality: .*/  locality: $LOCALITY/" \
-    -e "s/^  code_slug: .*/  code_slug: $CODE_SLUG/" \
-    -e "s/^  code_name: .*/  code_name: $CODE_NAME/" \
-    params.yaml
-
-if [ "$BENCHMARK_ONLY" = true ]; then
-    # Re-run benchmark stage only (upstream stages are skipped by DVC)
-    INDEX_DIR="data/chroma_db"
-    if [ ! -d "$INDEX_DIR" ]; then
-        echo "ERROR: ChromaDB index not found at $INDEX_DIR"
-        echo "Run the full pipeline first to build the vector index."
-        exit 1
-    fi
-    dvc repro benchmark
-    echo "Benchmark re-run completed: ${STATE}-${LOCALITY}"
-    exit 0
-fi
-
-# Step 2: Initialize jurisdiction (creates raw/ dir + registry entries)
-python scripts/init.py
-
-# Step 3: Ensure DOCX/TXT files are in place and convert
-RAW_DIR="data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}/raw"
-mkdir -p "$RAW_DIR"
-
-# Copy source files into raw/ if they aren't already there
-if [ -n "$DOCX_DIR" ] && [ "$(realpath "$DOCX_DIR")" != "$(realpath "$RAW_DIR")" ]; then
-    if ls "$DOCX_DIR"/*.docx 1>/dev/null 2>&1; then
-        cp "$DOCX_DIR"/*.docx "$RAW_DIR/"
-    elif ls "$DOCX_DIR"/*.txt 1>/dev/null 2>&1; then
-        cp "$DOCX_DIR"/*.txt "$RAW_DIR/"
-    fi
-fi
-
-# Convert DOCX → TXT if DOCX files present in raw/
-if ls "$RAW_DIR"/*.docx 1>/dev/null 2>&1; then
-    ./scripts/convert_docx.sh "$RAW_DIR"
-fi
-
-# Step 4: Run full DVC pipeline (parse → segment → embed → index → benchmark)
-# Requires: vLLM running (for parse + benchmark stages) + OPENROUTER_API_KEY set (for embed stage)
-./scripts/dvc_repro.sh
-
-echo "Pipeline completed: ${STATE}-${LOCALITY} — vector index and benchmark results built"
+sbatch \
+    --export="ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=/gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx" \
+  coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 ```
 
-### 9.3 SLURM Array Job Script (All Jurisdictions)
+### 9.4 Dispatcher Script (`slurm_dispatch.sh`)
 
-This array job runs the full pipeline for all 50 jurisdictions. Each
-array task processes one jurisdiction end-to-end (ingest through benchmark).
+The dispatcher script `coep/scripts/HPC_scripts/slurm_dispatch.sh` scans a
+directory of DOCX files, parses jurisdiction metadata from each filename
+(Section 9.2), and submits a separate `slurm_jurisdiction.sh` job for each one.
+
+Usage:
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=legiscope-pipeline
-#SBATCH --output=logs/pipeline_%A_%a.out
-#SBATCH --error=logs/pipeline_%A_%a.err
-#SBATCH --array=0-49                    # 50 jurisdictions (0-indexed)
-#SBATCH --time=04:00:00                 # Wall time per jurisdiction (adjust based on code size)
-#SBATCH --mem=16G                       # Memory per job
-#SBATCH --cpus-per-task=4               # CPU cores
-#SBATCH --partition=<your-partition>    # Your HPC partition name
-#
-# GPU (required if running vLLM locally for LLM stages — parse + benchmark):
-# #SBATCH --gres=gpu:1
-#
-# Email notifications (optional):
-# #SBATCH --mail-type=END,FAIL
-# #SBATCH --mail-user=your-email@nyu.edu
+# Preview what would be submitted (no jobs actually submitted):
+./coep/scripts/HPC_scripts/slurm_dispatch.sh --dry-run /gpfs/data/cerdalab/LegalAI/docx_sources
 
-set -euo pipefail
-
-# ── Load modules ──────────────────────────────────────────────────
-# module load pandoc       # If needed for DOCX conversion
-
-# ── Project setup ─────────────────────────────────────────────────
-PROJECT_DIR="/path/to/legiscope"   # CHANGE THIS to your HPC project path
-cd "$PROJECT_DIR"
-
-source ~/.bashrc
-conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-
-# Load environment variables (API keys — OPENROUTER_API_KEY needed for embeddings)
-set -a
-source .env
-set +a
-
-# Create log directory
-mkdir -p logs
-
-# ── Read jurisdiction from manifest ───────────────────────────────
-MANIFEST="jurisdictions.tsv"
-# Skip header line, get line for this array task
-LINE=$(sed -n "$((SLURM_ARRAY_TASK_ID + 2))p" "$MANIFEST")
-
-STATE=$(echo "$LINE" | cut -f1)
-LOCALITY=$(echo "$LINE" | cut -f2)
-CODE_SLUG=$(echo "$LINE" | cut -f3)
-CODE_NAME=$(echo "$LINE" | cut -f4)
-DOCX_DIR=$(echo "$LINE" | cut -f5)
-
-echo "=== Pipeline: ${STATE}-${LOCALITY} (task ${SLURM_ARRAY_TASK_ID}) ==="
-echo "Code: ${CODE_SLUG} (${CODE_NAME})"
-echo "DOCX source: ${DOCX_DIR}"
-
-# ── Create per-task working copy (avoids params.yaml race condition) ──
-WORK_DIR="$TMPDIR/legiscope_${SLURM_ARRAY_TASK_ID}"
-echo "Creating working copy in $WORK_DIR"
-mkdir -p "$WORK_DIR"
-cp -r "$PROJECT_DIR"/. "$WORK_DIR"/
-
-# Resolve DOCX_DIR to absolute path BEFORE changing to working copy
-if [ -n "$DOCX_DIR" ]; then
-    DOCX_DIR="$(cd "$PROJECT_DIR" && realpath "$DOCX_DIR")"
-fi
-cd "$WORK_DIR"
-
-# ── Run full pipeline (ingest + benchmark) ────────────────────────
-./run_jurisdiction.sh "$STATE" "$LOCALITY" "$CODE_SLUG" "$CODE_NAME" "$DOCX_DIR"
-
-# ── Copy results back to shared project directory ─────────────────
-mkdir -p "$PROJECT_DIR/data/output"
-cp -r data/output/* "$PROJECT_DIR/data/output/" 2>/dev/null || true
-mkdir -p "$PROJECT_DIR/data/laws"
-cp -r data/laws/* "$PROJECT_DIR/data/laws/" 2>/dev/null || true
-
-echo "=== Pipeline Completed: ${STATE}-${LOCALITY} ==="
+# Submit all jurisdictions:
+./coep/scripts/HPC_scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources
 ```
 
-### 9.4 Single Test Job (CA-LosAngeles)
+The dispatcher runs on the **login node** (no GPU needed). It:
 
-For initial testing, submit a single job (no array):
+1. Scans the DOCX directory for `*.docx` files
+2. Parses each filename into `STATE`, `LOCALITY`, and optional `CODE_SLUG`
+3. Calls `sbatch --export=... coep/scripts/HPC_scripts/slurm_jurisdiction.sh` for each file
+4. Reports how many jobs were submitted (and any files that couldn't be parsed)
+
+SLURM handles GPU scheduling — if only 5 GPUs are available, SLURM queues the
+remaining jobs until resources free up. You can monitor all submitted jobs
+with `squeue -u $USER`.
+
+**Rate limiting note**: If many jobs run concurrently, they all call the
+OpenRouter API for embeddings in parallel. If you hit rate limits, submit in
+smaller batches or add `--array=0-49%5` style throttling by modifying the
+SLURM script (see Section 10.3).
+
+### 9.5 Testing with a Single Jurisdiction
+
+Before running all 50 jurisdictions, test with one:
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=legiscope-test
-#SBATCH --output=logs/test_pipeline.out
-#SBATCH --error=logs/test_pipeline.err
-#SBATCH --time=02:00:00
-#SBATCH --mem=16G
-#SBATCH --cpus-per-task=4
-#SBATCH --partition=<your-partition>
+# Place a test DOCX file (e.g., PA_Philadelphia.docx) in your DOCX source folder
+# Submit a single job:
+sbatch \
+    --export="ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=/gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx" \
+  coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 
-set -euo pipefail
+# Monitor the job:
+squeue -u $USER
+tail -f /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_*.out
 
-PROJECT_DIR="/path/to/legiscope"
-cd "$PROJECT_DIR"
-
-source ~/.bashrc
-conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-
-set -a
-source .env
-set +a
-
-mkdir -p logs
-
-# Full pipeline: ingest + benchmark for CA-LosAngeles (DOCX pre-placed in raw/)
-./run_jurisdiction.sh CA LosAngeles municipal-code "LA Municipal Code" data/laws/CA/LosAngeles/municipal-code/raw
+# After completion, verify results:
+ls data/output/PA-Philadelphia/
+dvc exp show
 ```
 
-To re-run only the benchmark with different settings (after the full pipeline
-has completed at least once):
+Or use the dispatcher with a directory containing just one DOCX:
 
 ```bash
-# Edit params.yaml retrieval/query settings, then:
-./run_jurisdiction.sh --benchmark-only CA LosAngeles municipal-code "LA Municipal Code"
+./coep/scripts/HPC_scripts/slurm_dispatch.sh --dry-run /gpfs/data/cerdalab/LegalAI/docx_sources
+./coep/scripts/HPC_scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources
 ```
 
-### 9.5 BigPurple: SLURM Scripts
-
-On BigPurple, each job starts a vLLM server and runs the full pipeline.
-A GPU is required for the vLLM server. The OpenRouter API is used for embeddings
-(embed stage).
-
-#### Full Pipeline (ingest + benchmark)
-
-This job starts a vLLM server for LLM calls (parse stage heading scanning,
-benchmark querying and evaluation) and uses the OpenRouter API for embeddings
-(embed stage).
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=legiscope-pipeline
-#SBATCH --partition=gpu4_short          # Or gpu4_medium for larger codes
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
-#SBATCH --time=12:00:00
-#SBATCH --gres=gpu:1                    # For vLLM
-#SBATCH --output=/gpfs/data/cerdalab/legiscope/logs/pipeline_%j.out
-#SBATCH --error=/gpfs/data/cerdalab/legiscope/logs/pipeline_%j.err
-
-set -euo pipefail
-
-source ~/.bashrc
-conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-
-export HF_HOME=/gpfs/scratch/$USER/hf_cache
-export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
-
-cd /gpfs/data/cerdalab/legiscope
-
-# ── Load environment (OPENROUTER_API_KEY needed for embeddings) ──────
-set -a
-source .env
-set +a
-
-# ── Generate API key and start vLLM server ────────────────────────
-API_KEY="legiscope-key-${SLURM_JOB_ID}"
-
-python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-3B-Instruct \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --gpu-memory-utilization 0.90 \
-    --max-model-len 4096 \
-    --api-key "$API_KEY" \
-    --served-model-name "powerful-model" \
-    --download-dir /gpfs/scratch/$USER/hf_cache \
-    --dtype float16 \
-    --enforce-eager &
-
-VLLM_PID=$!
-trap "kill $VLLM_PID 2>/dev/null" EXIT
-
-# ── Wait for server health ────────────────────────────────────────
-echo "Waiting for vLLM server (PID $VLLM_PID)..."
-TIMEOUT=600
-ELAPSED=0
-while ! curl -s http://localhost:8000/health >/dev/null 2>&1; do
-    if ! kill -0 $VLLM_PID 2>/dev/null; then
-        echo "ERROR: vLLM server process died"
-        exit 1
-    fi
-    if [ $ELAPSED -ge $TIMEOUT ]; then
-        echo "ERROR: vLLM server did not start within ${TIMEOUT}s"
-        exit 1
-    fi
-    sleep 15
-    ELAPSED=$((ELAPSED + 15))
-    echo "  ... waiting (${ELAPSED}s / ${TIMEOUT}s)"
-done
-echo "vLLM server ready after ${ELAPSED}s"
-
-# ── Configure LLM client connection (vLLM) ───────────────────────
-export OPENAI_BASE_URL=http://localhost:8000/v1
-export OPENAI_API_KEY="$API_KEY"
-
-# Note: OPENROUTER_API_KEY is already loaded from .env above.
-# vLLM handles LLM calls (parse + benchmark); OpenRouter API handles embeddings (embed stage).
-
-# ── Run full DVC pipeline ─────────────────────────────────────────
-echo "=== Full Pipeline: $(date) ==="
-echo "Git: $(git --no-pager log --oneline -1)"
-
-dvc repro
-
-echo "=== Pipeline completed: $(date) ==="
-# Server killed automatically by trap
-```
-
-#### Benchmark-Only Re-run (optional)
+### 9.6 Benchmark-Only Re-run
 
 To re-run only the benchmark stage with different settings (e.g., different
-model, retrieval params), submit this lighter job. DVC skips all upstream
-stages since their outputs already exist.
+model, retrieval params) after the full pipeline has completed at least once,
+you must first rebuild the shared ChromaDB index (since per-job indexes are
+ephemeral — see Section 10.2):
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=legiscope-benchmark
-#SBATCH --partition=gpu4_short
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
-#SBATCH --time=12:00:00
-#SBATCH --gres=gpu:1
-#SBATCH --output=/gpfs/data/cerdalab/legiscope/logs/benchmark_%j.out
-#SBATCH --error=/gpfs/data/cerdalab/legiscope/logs/benchmark_%j.err
-
-set -euo pipefail
-
-source ~/.bashrc
-conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-
-export HF_HOME=/gpfs/scratch/$USER/hf_cache
-export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
-
-cd /gpfs/data/cerdalab/legiscope
-
-# ── Generate API key (unique per job) ─────────────────────────────
-API_KEY="legiscope-key-${SLURM_JOB_ID}"
-
-# ── Start vLLM server in background ──────────────────────────────
-python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen2.5-3B-Instruct \
-    --host 0.0.0.0 \
-    --port 8000 \
-    --gpu-memory-utilization 0.90 \
-    --max-model-len 4096 \
-    --api-key "$API_KEY" \
-    --served-model-name "powerful-model" \
-    --download-dir /gpfs/scratch/$USER/hf_cache \
-    --dtype float16 \
-    --enforce-eager &
-
-VLLM_PID=$!
-trap "kill $VLLM_PID 2>/dev/null" EXIT
-
-# ── Wait for server health ────────────────────────────────────────
-echo "Waiting for vLLM server (PID $VLLM_PID)..."
-TIMEOUT=600
-ELAPSED=0
-while ! curl -s http://localhost:8000/health >/dev/null 2>&1; do
-    if ! kill -0 $VLLM_PID 2>/dev/null; then
-        echo "ERROR: vLLM server process died"
-        exit 1
-    fi
-    if [ $ELAPSED -ge $TIMEOUT ]; then
-        echo "ERROR: vLLM server did not start within ${TIMEOUT}s"
-        exit 1
-    fi
-    sleep 15
-    ELAPSED=$((ELAPSED + 15))
-    echo "  ... waiting (${ELAPSED}s / ${TIMEOUT}s)"
-done
-echo "vLLM server ready after ${ELAPSED}s"
-
-# ── Configure client connection ──────────────────────────────────
-export OPENAI_BASE_URL=http://localhost:8000/v1
-export OPENAI_API_KEY="$API_KEY"
-
-# ── Run benchmark only (DVC stage) ───────────────────────────────
-echo "=== Benchmark re-run: $(date) ==="
-dvc repro benchmark
-
-echo "=== Benchmark completed: $(date) ==="
-# Server killed automatically by trap
+bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
 ```
+
+Then use `slurm_jurisdiction.sh` with a modified `params.yaml`. Since the
+benchmark runs inside the working copy, you can edit retrieval/query settings
+in the shared `params.yaml` and the working copy will pick them up.
+
+Alternatively, use `coep/scripts/HPC_scripts/slurm_benchmark.sh` — a lighter
+SLURM job that starts vLLM and runs only the benchmark stage. See the script
+for full details on prerequisites (rebuild_index, etc.).
 
 #### Submitting Jobs
 
 ```bash
-# Full pipeline (first run)
-sbatch scripts/slurm_pipeline.sh
+# Run all 50 jurisdictions (dispatcher submits one SLURM job per DOCX):
+./coep/scripts/HPC_scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources
 
-# Benchmark-only re-run (after full pipeline has completed)
-# Edit params.yaml retrieval/query settings first, then:
-sbatch scripts/slurm_benchmark.sh
+# Run a single jurisdiction manually:
+sbatch \
+    --export="ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=/gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx" \
+  coep/scripts/HPC_scripts/slurm_jurisdiction.sh
+
+# Benchmark-only re-run (after full pipeline has completed):
+# NOTE: Requires rebuild_index.sh --clean first (see Section 13.5)
+sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
 ```
 
 For multi-GPU models (e.g., Qwen3.5-32B on 4x V100), change `--gres=gpu:4`
@@ -1253,55 +1057,97 @@ and add `--tensor-parallel-size 4` to the vLLM launch command.
 
 ## 10. Important Considerations
 
-### 10.1 SLURM Array Job Concurrency & params.yaml
+### 10.1 Concurrent Jobs & params.yaml
 
-**Critical issue**: `params.yaml` is a single shared file. `run_jurisdiction.sh`
-modifies it via `sed` to set the current jurisdiction. If multiple array tasks
-run simultaneously, concurrent `sed` writes will race.
+**Critical issue**: `params.yaml` is a single shared file. If multiple SLURM
+jobs run simultaneously from the same directory, they could conflict when
+writing to it.
 
-**Solution — per-task working copies** (used in Section 9.3):
+**Solution — per-job working copies** (built into `slurm_jurisdiction.sh`):
 
-Each array task copies the repo to a task-specific directory and works there.
-Since DOCX files are stored in a separate staging directory (not inside the
-repo), the copy is lightweight — just code, configs, and DVC metadata. Each
-task then copies its single DOCX into the working copy's `raw/` directory,
-runs the full pipeline, and copies results back.
+Each SLURM job rsyncs the repo to `$TMPDIR`, giving it an isolated
+`params.yaml`, ChromaDB, and DVC workspace. The job edits `params.yaml` via
+`sed` for `init.py`, then `dvc_repro.sh` passes `-S` flags to `dvc exp run`.
+No race conditions since each job works in its own directory.
 
-```bash
-WORK_DIR="$TMPDIR/legiscope_${SLURM_ARRAY_TASK_ID}"
-cp -r "$PROJECT_DIR" "$WORK_DIR"
-cd "$WORK_DIR"
-# ... run_jurisdiction.sh copies one DOCX, runs init + dvc repro ...
-# Copy results back (ChromaDB is consumed during the job and doesn't need to persist)
-mkdir -p "$PROJECT_DIR/data/output"
-cp -r data/output/* "$PROJECT_DIR/data/output/"
-mkdir -p "$PROJECT_DIR/data/laws"
-cp -r data/laws/* "$PROJECT_DIR/data/laws/"
-```
-
-This also solves ChromaDB concurrency (Section 10.2) — each task gets its own
+This also solves ChromaDB concurrency (Section 10.2) — each job gets its own
 isolated ChromaDB instance.
 
-**Alternative — sequential execution**: Set `--array=0-49%1` to limit to 1
-concurrent task. Safe but slow (50x wall time). No working copies needed.
+**Alternative — sequential execution**: Submit jobs one at a time, or use
+SLURM job dependencies (`--dependency=afterok:JOBID`). Safe but slow.
 
 ### 10.2 ChromaDB Concurrency & Collection Design
 
 ChromaDB uses SQLite under the hood. Multiple concurrent processes writing to
-the same ChromaDB directory will cause corruption. The working-copy approach
-(10.1 solution 1) solves this — each task gets its own ChromaDB instance.
+the same ChromaDB directory will cause corruption.
+
+#### Per-Job Isolation (During Pipeline Runs)
+
+The working-copy approach (Section 10.1) solves this: each SLURM job rsyncs
+the repo to `$TMPDIR` **excluding** `data/chroma_db/`, so the `index` stage
+creates a **brand-new, single-jurisdiction ChromaDB** in the working directory.
+The benchmark and query stages then run against this isolated database, which
+contains only the current jurisdiction's embeddings. No cross-jurisdiction
+contamination is possible during pipeline execution.
+
+The per-job ChromaDB is **ephemeral** — it lives in `$TMPDIR` and is
+automatically deleted when the SLURM job ends. It is intentionally **not**
+copied back to the shared project directory (this avoids corruption from
+concurrent writes).
+
+#### What Gets Copied Back
+
+Each job copies these artifacts back to the shared project directory:
+
+- `data/laws/{STATE}/{Locality}/` — pipeline outputs including
+  `embeddings.parquet`, `sections.parquet`, etc.
+- `data/output/{STATE}-{Locality}/` — benchmark results and metrics
+- `data/jurisdictions.parquet`, `data/codes.parquet` — registry files
+
+The `embeddings.parquet` files persist permanently and can be used to rebuild
+a shared ChromaDB index at any time.
+
+#### Rebuilding a Shared Index (Post-Job, Optional)
+
+After all 50 jobs complete, there is **no shared ChromaDB index** on disk — each
+job's index was discarded with its `$TMPDIR`. If you need a unified index for
+ad-hoc queries or re-running benchmarks from the shared project directory, use
+the rebuild script:
+
+```bash
+bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
+```
+
+This iterates over all `embeddings.parquet` files in `data/laws/` and calls
+`scripts/index.py` for each, building a single ChromaDB collection containing
+all 50 jurisdictions. See Section 13.5 for details.
+
+#### Jurisdiction Filtering at Query Time
 
 **Collection naming**: Collections are named `legal_code_{provider}_{model}`
 (e.g., `legal_code_openrouter_qwen_qwen3-embedding-8b`) with no jurisdiction
-component. All jurisdictions share one collection, and retrieval filters by
-`jurisdiction_id` in segment metadata. This is intentional — it simplifies
-collection management and the working-copies approach means each SLURM task
-builds its own isolated, single-jurisdiction ChromaDB anyway.
+component. All jurisdictions share one collection after rebuild. Each embedding
+is tagged with `jurisdiction_id` metadata (e.g., `PA-Philadelphia`).
 
-**Re-running a single jurisdiction**: The index stage is incremental — it skips
-segments whose `segment_id` already exists in the collection. To fully re-index
-one jurisdiction, delete its working copy's `data/chroma_db/` directory before
-re-running.
+**Retrieval filtering**: Both `run_queries()` and `benchmark_pipeline.py`
+**always** pass `jurisdiction_id` to `SectionRetrievalSettings`, which applies
+a ChromaDB `where` filter: `{"jurisdiction_id": "PA-Philadelphia"}`. This
+ensures that only embeddings from the target jurisdiction are returned —
+cross-jurisdiction contamination is not possible through the standard pipeline.
+
+The `run_queries()` function enforces this with a hard validation:
+```python
+if not jurisdiction_id or not jurisdiction_id.strip():
+    raise ValueError("jurisdiction_id cannot be empty")
+```
+
+#### Re-running a Single Jurisdiction
+
+The index stage is incremental — it skips segments whose `segment_id` already
+exists in the collection. To fully re-index one jurisdiction, either:
+
+- Use `--clean` with `rebuild_index.sh` to wipe and rebuild everything, or
+- Delete the shared `data/chroma_db/` directory before re-running the job
 
 ### 10.3 Rate Limiting
 
@@ -1315,13 +1161,7 @@ call the OpenRouter API for embeddings in parallel. This may hit rate limits.
 Benchmark-only re-runs use only vLLM (local), so rate limiting is not a
 concern for those jobs.
 
-### 10.4 Ollama on HPC
-
-Ollama is not used on BigPurple. LLM inference uses vLLM (self-hosted via the
-`openai` provider), and embeddings use the OpenRouter API (cloud). The Ollama
-provider is only for local development.
-
-### 10.5 Network Access
+### 10.4 Network Access
 
 The HPC compute nodes need outbound HTTPS access to:
 - `openrouter.ai` (**required** — OpenRouter API for embeddings)
@@ -1331,7 +1171,7 @@ The HPC compute nodes need outbound HTTPS access to:
 Check with your HPC admins if compute nodes have internet access. If not, you
 may need to run on login nodes or a special partition with network access.
 
-### 10.6 V100 GPU Constraints (BigPurple)
+### 10.5 V100 GPU Constraints (BigPurple)
 
 BigPurple uses Tesla V100-SXM2 GPUs (compute capability 7.0). This imposes
 specific constraints on vLLM and model selection:
@@ -1364,27 +1204,52 @@ enabling efficient tensor parallelism for multi-GPU model hosting.
 
 ---
 
-## 11. Step-by-Step: Initial Test (CA-LosAngeles)
+## 11. Step-by-Step: Initial Test (PA-Philadelphia)
 
-1. **Clone repo on HPC**:
+### One-Time Setup
+
+These steps only need to be done once, before your first SLURM submission.
+
+If you want to automate the setup and transfer flow, use the helper scripts in
+this repo:
+
+```bash
+# On BigPurple: clone/update repo, create .env, create required directories,
+# and verify whether the expected inputs are present.
+bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh
+
+# On your local machine: sync the active query CSV, MonQcle CSV, and DOCX files.
+./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx
+```
+
+1. **Login and load modules**:
    ```bash
+   ssh $USER@bigpurple.nyumc.org
+   module purge
+   module load anaconda3/gpu/2025.06
+   ```
+
+2. **Clone repo on HPC**:
+   ```bash
+   cd /gpfs/data/cerdalab/LegalAI
    git clone https://github.com/jsqr/legiscope.git
    cd legiscope
    ```
 
-2. **Set up environment**:
+3. **Set up environment**:
    ```bash
    # Create conda env (one-time)
-   conda create -p /gpfs/home/$USER/conda_envs/legiscope_env python=3.12 pip -y
+   conda create -p ~/conda_envs/legiscope_env python=3.12 pip -y
 
-   # Activate and install (via SLURM job — see Section 8.1)
-   source ~/.bashrc
-   conda activate /gpfs/home/$USER/conda_envs/legiscope_env
-   # pip install -e .          # Run via SLURM, not on login node!
-   # pip install vllm   # add --no-build-isolation only if wheel install fails
+   # Activate (both forms work — the tilde expands to /gpfs/home/$USER):
+   conda activate ~/conda_envs/legiscope_env
+
+   # Install dependencies via a SLURM job (not on login node — see Section 8.1):
+   #   pip install vllm
+   #   pip install -e .
    ```
 
-3. **Configure**:
+4. **Configure**:
    ```bash
    cp .env.example .env
    # Edit .env: add OPENROUTER_API_KEY (for embeddings)
@@ -1395,73 +1260,86 @@ enabling efficient tensor parallelism for multi-GPU model hosting.
    #   llm.providers.openai.fast: "powerful-model"
    #   llm.providers.openai.powerful: "powerful-model"
    #   embeddings.default_provider: "openrouter"  # OpenRouter API for embeddings
-   #   jurisdiction: set to CA-LosAngeles
    ```
 
-4. **Install pandoc** (for DOCX conversion on Linux):
+5. **Install pandoc** (required for DOCX conversion — `slurm_jurisdiction.sh` needs it):
    ```bash
-   module load pandoc   # or: conda install -c conda-forge pandoc
+   # Install into the conda env so it's always available in SLURM jobs:
+   conda activate ~/conda_envs/legiscope_env
+   conda install -c conda-forge pandoc -y
+   # The SLURM script also tries `module load pandoc` as a fallback.
    ```
 
-5. **Upload your DOCX file to the HPC** (see Section 7 for full details):
+6. **Upload your DOCX file to the HPC** (see Section 7 for full details):
    ```bash
-   # From your LOCAL machine — upload the LA DOCX directly into place:
-   scp /path/to/los_angeles-ca-1.docx \
-       <netid>@<hpc-host>:/path/to/legiscope/data/laws/CA/LosAngeles/municipal-code/raw/
+   # From your LOCAL machine — upload the Philadelphia DOCX to the staging directory:
+   scp /path/to/PA_Philadelphia.docx \
+       <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/docx_sources/
    ```
 
-6. **Prepare input data**:
+7. **Upload MonQcle and query data** (gitignored — not in the repo):
    ```bash
-   # Ensure the directory exists (init.py also creates it, but just in case):
-   mkdir -p data/laws/CA/LosAngeles/municipal-code/raw
+   # On HPC: create the directories
+   mkdir -p data/queries
+   mkdir -p coep/data/monqcle_data
 
-   # Verify the DOCX is in place:
-   ls data/laws/CA/LosAngeles/municipal-code/raw/
-   # Should show: los_angeles-ca-1.docx (or similar)
+   # From your LOCAL machine: upload the active query file and MonQcle report
+   scp data/queries/DPL_queries_with_context.csv \
+       <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/legiscope/data/queries/
 
-   # Convert DOCX → TXT (output: data/laws/CA/LosAngeles/municipal-code/code.txt)
-   ./scripts/convert_docx.sh data/laws/CA/LosAngeles/municipal-code/raw
+   scp coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
+       <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/legiscope/coep/data/monqcle_data/
    ```
 
-7. **Prepare MonQcle and queries**:
+### Run the Pipeline
+
+Everything from here is handled by `slurm_jurisdiction.sh` — it creates an
+isolated working copy, sets `params.yaml`, runs `init.py`, copies and converts
+the DOCX, starts vLLM, runs the full DVC pipeline, pushes the experiment, and
+copies results back.
+
+8. **Submit the SLURM job**:
    ```bash
-   # The MonQcle CSV (ground truth for all 50 cities) goes here:
-   # coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv
-
-   # Query file:
-   # data/queries/drug_paraphernalia_queries_clean.csv
-   # (Both should be in the repo already or copied from your source)
+   sbatch --export="ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=/gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx" \
+     coep/scripts/HPC_scripts/slurm_jurisdiction.sh
    ```
 
-8. **Run the full pipeline** (ingest + benchmark, one-time per jurisdiction):
+9. **Monitor** (see Section 13 for more):
    ```bash
-   python scripts/init.py
-   # On BigPurple, submit as SLURM job (starts vLLM + runs dvc repro):
-   sbatch scripts/slurm_pipeline.sh
-   # Or run interactively in a GPU dev session (see Section 15 for srun command)
+   # Check job status
+   squeue -u $USER
+
+   # Tail the log
+   tail -f logs/jurisdiction_<JOBID>.out
    ```
 
-9. **Re-run benchmark only** (optional, with different settings):
-   ```bash
-   # On BigPurple, submit benchmark-only SLURM job:
-   sbatch scripts/slurm_benchmark.sh
-   # Results in: data/output/CA-LosAngeles/benchmark_results.csv
-   ```
+### After the Job Completes
 
 10. **Verify results**:
+   ```bash
+   ls data/output/PA-Philadelphia/
+   dvc exp show
+
+   # Quick peek at scores
+   python -c "
+   import polars as pl
+   import glob
+   f = sorted(glob.glob('data/output/PA-Philadelphia/benchmark_results_*.csv'))[-1]
+   df = pl.read_csv(f)
+   print(f'Average score: {df[\"eval_score\"].mean():.2f}')
+   print(f'Correct: {df.filter(pl.col(\"eval_label\")==\"Correct\").height}')
+   print(f'Total: {df.height}')
+   "
+   ```
+
+11. **Re-run benchmark only** (optional, with different settings):
     ```bash
-    # Check output exists
-    ls data/output/CA-LosAngeles/
-    # Quick peek at scores
-    python -c "
-    import polars as pl
-    import glob
-    f = sorted(glob.glob('data/output/CA-LosAngeles/benchmark_results_*.csv'))[-1]
-    df = pl.read_csv(f)
-    print(f'Average score: {df[\"eval_score\"].mean():.2f}')
-    print(f'Correct: {df.filter(pl.col(\"eval_label\")==\"Correct\").height}')
-    print(f'Total: {df.height}')
-    "
+    # First, rebuild shared ChromaDB index (per-job indexes are ephemeral):
+    bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
+
+    # Submit benchmark-only SLURM job:
+    sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
+    # Results in: data/output/PA-Philadelphia/benchmark_results.csv
     ```
 
 ---
@@ -1475,13 +1353,13 @@ The file has a BOM-encoded header; the key columns are:
 
 | Column | Example |
 |--------|---------|
-| `name` | `"Los Angeles, Los Angeles County, California, United States"` |
+| `name` | `"Philadelphia, Philadelphia County, Pennsylvania, United States"` |
 | `series_title` | `DPL_2025_Consolidated` |
 | `dp_law`, `dp_type`, ... | Variable columns (melted to long format) |
 
 The benchmark pipeline automatically:
 
-1. Maps the `jurisdiction_id` (e.g., `CA-LosAngeles`) to the full MonQcle
+1. Maps the `jurisdiction_id` (e.g., `PA-Philadelphia`) to the full MonQcle
    locality name using `jurisdiction_id_to_monqcle_name()` in `coep/src/eval.py`
 2. Filters the CSV to the matching row + series title
 3. Melts to long format (one row per variable)
@@ -1490,23 +1368,24 @@ The benchmark pipeline automatically:
 **You only need one MonQcle CSV file for all 50 jurisdictions.** Each
 benchmark job filters to its own jurisdiction at runtime.
 
-### CRITICAL: Expanding the Jurisdiction Mapping
+### CRITICAL: Maintaining the Jurisdiction Mapping
 
-Currently, `jurisdiction_id_to_monqcle_name()` only has **one mapping**:
+`jurisdiction_id_to_monqcle_name()` now includes the current 50-city batch.
+If you add new jurisdictions beyond that set, extend the mapping in
+`coep/src/eval.py` before running the benchmark.
 
 ```python
 mapping = {
-    "CA-LosAngeles": "Los Angeles, Los Angeles County, California, United States",
-    # Add more as jurisdictions expand
+    "PA-Philadelphia": "Philadelphia, Philadelphia County, Pennsylvania, United States",
+  # ... current 50-city batch omitted here for brevity ...
 }
 ```
 
-**Before running the 50-city batch, you must add all 50 jurisdictions to this
-mapping.** The key is the internal `jurisdiction_id` (`{STATE}-{Locality}`,
-e.g., `TX-Houston`) and the value is the full MonQcle `name` column value
-(e.g., `"Houston, Harris County, Texas, United States"`).
+The key is the internal `jurisdiction_id` (`{STATE}-{Locality}`,
+e.g., `PA-Philadelphia`) and the value is the full MonQcle `name` column value
+(e.g., `"Philadelphia, Philadelphia County, Pennsylvania, United States"`).
 
-You can generate this mapping by cross-referencing your `jurisdictions.tsv`
+You can generate this mapping by cross-referencing your DOCX filenames
 with the MonQcle CSV:
 
 ```python
@@ -1521,37 +1400,127 @@ with open('coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv',
 
 ---
 
-## 13. Post-Processing: Aggregating Results
+## 13. Post-Processing: Monitoring & Aggregating Results
 
-After all 50 jobs complete, aggregate the per-jurisdiction benchmark CSVs:
+### 13.1 Monitoring Running Jobs
 
-```python
-import polars as pl
-from pathlib import Path
+Check job status while the batch is running:
 
-output_dir = Path("data/output")
-all_results = []
+```bash
+# How many jobs are still queued / running?
+squeue -u $USER -n legiscope-jurisdiction
 
-for jurisdiction_dir in sorted(output_dir.iterdir()):
-    if not jurisdiction_dir.is_dir():
-        continue
-    csvs = sorted(jurisdiction_dir.glob("benchmark_results_*.csv"))
-    if csvs:
-        df = pl.read_csv(str(csvs[-1]))  # Latest results
-        all_results.append(df)
+# Quick failure check — any jobs that already failed?
+sacct -u $USER --name=legiscope-jurisdiction -s FAILED \
+      --format=JobID,JobName,State,ExitCode,Elapsed
 
-if all_results:
-    combined = pl.concat(all_results)
-    combined.write_csv("data/output/all_jurisdictions_benchmark.csv")
-
-    # Summary statistics
-    summary = combined.group_by("jurisdiction_id").agg([
-        pl.col("eval_score").mean().alias("avg_score"),
-        (pl.col("eval_label") == "Correct").sum().alias("correct"),
-        pl.len().alias("total"),
-    ])
-    print(summary.sort("avg_score", descending=True))
+# Full status of today's jobs
+sacct -u $USER --name=legiscope-jurisdiction --starttime=today \
+      --format=JobID,JobName%30,State,ExitCode,Elapsed,MaxRSS
 ```
+
+### 13.2 Inspecting Failures
+
+```bash
+# Which log files contain errors?
+grep -l "ERROR\|FAILED\|Traceback" /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_*.err
+
+# Show the last few lines of every job's stdout (quick health check)
+tail -n 3 /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_*.out
+
+# Read a specific job's error log
+cat /gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_PA_Philadelphia.err
+```
+
+### 13.3 DVC Experiment Comparison
+
+DVC tracks `benchmark_metrics.json` as metrics for each experiment. Compare
+all jurisdiction runs at once:
+
+```bash
+# Interactive table (terminal)
+dvc exp show
+
+# Export to CSV for further analysis
+dvc exp show --csv > all_experiments.csv
+```
+
+### 13.4 Aggregation Script
+
+After all jobs complete, use
+`coep/scripts/HPC_scripts/aggregate_results.py` to collect per-jurisdiction
+metrics and benchmark CSVs into a single report:
+
+```bash
+# Basic usage — reads output dir from config.yaml
+python coep/scripts/HPC_scripts/aggregate_results.py
+
+# Cross-check against expected jurisdictions from DOCX staging dir
+python coep/scripts/HPC_scripts/aggregate_results.py \
+    --docx-dir /gpfs/data/cerdalab/LegalAI/docx_sources
+
+# Also query SLURM for failed jobs
+python coep/scripts/HPC_scripts/aggregate_results.py \
+    --docx-dir /gpfs/data/cerdalab/LegalAI/docx_sources \
+    --check-slurm
+
+# Specify a custom output directory
+python coep/scripts/HPC_scripts/aggregate_results.py \
+    --output-dir /gpfs/data/cerdalab/LegalAI/legiscope/data/output
+```
+
+The script produces:
+
+| Output File | Contents |
+|-------------|----------|
+| `all_jurisdictions_metrics.csv` | Per-jurisdiction accuracy, scores, and counts (ranked) |
+| `all_jurisdictions_benchmark.csv` | All per-query results concatenated into one CSV |
+| Terminal report | Formatted summary with per-jurisdiction accuracy and overall stats |
+
+When `--docx-dir` is provided, the script also reports which expected
+jurisdictions are missing results (i.e., jobs that failed or are still running).
+
+### 13.5 Rebuilding the Shared ChromaDB Index (Optional)
+
+Each SLURM job builds an **isolated, ephemeral** ChromaDB in `$TMPDIR` that is
+discarded when the job ends.  The per-job pipeline results (benchmark scores,
+sections, embeddings, etc.) are all copied back to the shared project directory,
+but the ChromaDB index is **not** — this avoids corruption from concurrent writes.
+
+If you need a **unified index** for ad-hoc cross-jurisdiction queries after all
+jobs finish, rebuild it from the persisted `embeddings.parquet` files:
+
+```bash
+# Recommended: wipe the old index and rebuild cleanly
+# WARNING: --clean deletes the entire existing ChromaDB at data/chroma_db/
+bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
+
+# Or append to existing index (incremental, skips already-indexed segments)
+bash coep/scripts/HPC_scripts/rebuild_index.sh
+```
+
+The script discovers all `embeddings.parquet` files under `data/laws/` and calls
+`scripts/index.py` for each jurisdiction.  It prints a summary of indexed vs
+failed jurisdictions.
+
+> **When do you need this?**  Only when you want to query the shared ChromaDB
+> interactively or re-run benchmarks from the persistent project directory.
+> The per-job benchmark results are already complete without it.
+
+#### Post-Job Checklist
+
+After all 50 SLURM jobs finish:
+
+1. **Always run** — aggregate benchmark results:
+   ```bash
+  python coep/scripts/HPC_scripts/aggregate_results.py \
+     --docx-dir /gpfs/data/cerdalab/LegalAI/docx_sources --check-slurm
+   ```
+
+2. **Run only if needed** — rebuild unified ChromaDB for ad-hoc queries:
+   ```bash
+  bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
+   ```
 
 ---
 
@@ -1562,17 +1531,27 @@ if all_results:
 | Set up environment | `conda activate legiscope_env` (HPC) or `make env` (local) |
 | Convert DOCX | `./scripts/convert_docx.sh data/laws/STATE/Locality/slug/raw` |
 | Initialize jurisdiction | `python scripts/init.py` |
-| Run DVC pipeline | `./scripts/dvc_repro.sh` |
-| Run benchmark (DVC stage) | `dvc repro benchmark` |
+| Run DVC pipeline (experiment) | `dvc exp run` |
+| Run with jurisdiction override | `dvc exp run -S jurisdiction.state=PA -S jurisdiction.locality=Philadelphia` |
+| Run benchmark only (experiment) | `dvc exp run -f benchmark` |
 | Run benchmark (standalone) | `python coep/scripts/benchmark_pipeline.py` |
 | Run benchmark (test) | `python coep/scripts/benchmark_pipeline.py --test-limit 5` |
 | Run queries only | `python scripts/run_queries.py` |
-| Push to GCS | `dvc push` |
-| Pull from GCS | `dvc pull` |
+| View all experiments | `dvc exp show` |
+| Push experiments to GitHub | `dvc exp push origin` |
+| Pull experiments from GitHub | `dvc exp pull origin` |
+| Promote experiment to branch | `dvc exp branch <exp-name> results/PA-Philadelphia` |
 | Run tests | `make test` |
 | Check errors | `make lint` |
-| **BigPurple: Full pipeline** | `sbatch scripts/slurm_pipeline.sh` |
-| **BigPurple: Benchmark only** | `sbatch scripts/slurm_benchmark.sh` |
+| **BigPurple: Bootstrap setup** | `bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh` |
+| **BigPurple: All 50 jurisdictions** | `./coep/scripts/HPC_scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources` |
+| **BigPurple: Single jurisdiction** | `sbatch --export=ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=/gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx coep/scripts/HPC_scripts/slurm_jurisdiction.sh` |
+| **BigPurple: Dry run** | `./coep/scripts/HPC_scripts/slurm_dispatch.sh --dry-run /gpfs/data/cerdalab/LegalAI/docx_sources` |
+| **BigPurple: Benchmark only** | `bash coep/scripts/HPC_scripts/rebuild_index.sh --clean && sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh` |
+| **BigPurple: Check failures** | `sacct -u $USER --name=legiscope-jurisdiction -s FAILED` |
+| **BigPurple: Aggregate results** | `python coep/scripts/HPC_scripts/aggregate_results.py --docx-dir /gpfs/data/cerdalab/LegalAI/docx_sources --check-slurm` |
+| **BigPurple: Rebuild shared index** | `bash coep/scripts/HPC_scripts/rebuild_index.sh --clean` |
+| **Local: Sync inputs to HPC** | `./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx` |
 
 ---
 
@@ -1663,7 +1642,7 @@ to a smaller locally-hosted model.
 
 | Setting | Value |
 |---------|-------|
-| Model | `Qwen/Qwen2.5-3B-Instruct` |
+| Model | `Qwen/Qwen3.5-4B` |
 | VRAM usage | ~5.8 GB weights, ~7 GB free for KV cache |
 | Max concurrent requests | ~49 at 4096 context length |
 | Server startup | ~240 seconds |
@@ -1714,7 +1693,7 @@ import os
 from huggingface_hub import snapshot_download
 
 snapshot_download(
-    "Qwen/Qwen2.5-3B-Instruct",
+    "Qwen/Qwen3.5-4B",
     cache_dir=f"/gpfs/scratch/{os.environ['USER']}/hf_cache"
 )
 ```
@@ -1734,8 +1713,8 @@ python download_model.py
 | Problem | Solution |
 |---------|----------|
 | **CUDA out of memory** | Reduce `--max-model-len`, lower `--gpu-memory-utilization`, increase `--tensor-parallel-size` (use more GPUs), or use a smaller/quantized model |
-| **Connection refused (localhost:8000)** | Server takes ~240s to start on V100. Check if server process is alive. Check vLLM logs. The health check loop in SLURM templates handles this automatically |
-| **vLLM tries to build from source** | Ensure torch and vLLM versions are compatible. Working: `torch==2.9.0+cu128` with `vllm==0.11.2`. Install vLLM first (`pip install vllm`), let it pin torch. If it still builds from source, try `pip install vllm --no-build-isolation` |
+| **Connection refused (localhost)** | Server takes ~240s to start on V100. Check if server process is alive. Check vLLM logs. The health check loop in SLURM scripts handles this automatically |
+| **vLLM tries to build from source** | On BigPurple this is expected because glibc 2.28 rejects the official vLLM 0.19.0 wheel. Use GCC 11.2.0, pin `torch==2.10.0`, `torchvision==0.25.0`, `torchaudio==2.10.0`, clear cached local vLLM wheels, then install with `pip install "vllm==0.19.0" --no-build-isolation --no-cache-dir --no-binary vllm --force-reinstall`. Verified working combo: vLLM 0.19.0 with PyTorch 2.10.0+cu128 |
 | **Quantized model not loading** | Verify model was downloaded in correct format (AWQ/GPTQ). Check model's `config.json` for quantization method |
 | **instructor structured output fails** | Verify `instructor.Mode.JSON` is set for the openai provider in `llm_config.py` (changed from `RESPONSES_TOOLS`, which requires OpenAI's Responses API that vLLM doesn't support) |
 
@@ -1744,7 +1723,7 @@ python download_model.py
 | Problem | Solution |
 |---------|----------|
 | **pip install killed on login node** | Always run `pip install` via SLURM batch jobs with ≥32 GB memory |
-| **conda stdlib errors** (e.g., "No module named urllib.parse") | Delete and recreate environment: `conda remove -p /path/to/env --all -y` then `conda create -p /path/to/env python=3.12 pip -y` |
+| **conda stdlib errors** (e.g., "No module named urllib.parse") | Delete and recreate environment: `conda remove -p ~/conda_envs/legiscope_env --all -y` then `conda create -p ~/conda_envs/legiscope_env python=3.12 pip -y` |
 | **Model weights missing from scratch** | Scratch is periodically purged. Re-download via SLURM job using `huggingface_hub.snapshot_download()` |
 | **Job pending too long** | Check `squeue -u $USER -l` REASON column. Try a different partition. Use `scontrol update JobId=JOBID Partition=NEW_PARTITION` |
 | **Default partition error** | Never submit without `--partition`. The default "prod" has no resources |
@@ -1770,8 +1749,8 @@ srun --partition=cpu_short --mem=16G --cpus-per-task=4 \
      --time=02:00:00 --pty bash            # Interactive CPU session
 
 # Log monitoring
-tail -f /gpfs/data/cerdalab/legiscope/logs/<logfile>.out   # Watch job output
-cat $(ls -t /gpfs/data/cerdalab/legiscope/logs/*.out | head -1)  # Read most recent log
+tail -f /gpfs/data/cerdalab/LegalAI/legiscope/logs/<logfile>.out   # Watch job output
+cat $(ls -t /gpfs/data/cerdalab/LegalAI/legiscope/logs/*.out | head -1)  # Read most recent log
 ```
 
 ### Model Management
@@ -1790,12 +1769,32 @@ nvidia-smi                                               # GPU info (GPU nodes o
 git commit -am "message" && git push
 
 # On BigPurple:
-cd /gpfs/data/cerdalab/legiscope
+cd /gpfs/data/cerdalab/LegalAI/legiscope
 git pull
 
-# Full pipeline (ingest + benchmark):
-sbatch scripts/slurm_pipeline.sh
+# Refresh repo + required directories, then verify inputs:
+bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh
+
+# Full pipeline for all jurisdictions — dispatcher submits one SLURM job per DOCX:
+./coep/scripts/HPC_scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources
+
+# Or single jurisdiction:
+sbatch --export="ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=/gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx" \
+  coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 
 # Benchmark-only re-run (with different settings):
-sbatch scripts/slurm_benchmark.sh
+# NOTE: Requires rebuild_index.sh --clean first (see Section 13.5)
+sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
+
+# After jobs complete — view results across all jurisdictions:
+dvc exp show
+
+# Pull experiment metadata to your laptop:
+# (on local machine)
+dvc exp pull origin
+dvc exp show
+
+# Pull result files to your laptop:
+# (on local machine)
+rsync -avz <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/legiscope/data/output/ ./data/output/
 ```

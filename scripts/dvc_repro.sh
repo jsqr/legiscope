@@ -37,7 +37,7 @@ Run the legiscope DVC pipeline. Jurisdiction and all settings are read
 from params.yaml. Use \`dvc exp run -S key=value\` for one-off overrides.
 
 Options:
-  --stage STAGE              Run only up to this stage (parse|segment|embed|index)
+  --stage STAGE              Run only up to this stage (validate|parse|segment|embed|index|benchmark)
   --name NAME                Name the DVC experiment
   --force                    Force-rerun even if nothing changed
   --verbose                  Show verbose DVC output
@@ -115,8 +115,8 @@ fi
 
 if [[ -n "$STAGE" ]]; then
     case "$STAGE" in
-        parse|segment|embed|index) ;;
-        *) echo "Error: --stage must be one of: parse, segment, embed, index" >&2; exit 1 ;;
+        validate|parse|segment|embed|index|benchmark) ;;
+        *) echo "Error: --stage must be one of: validate, parse, segment, embed, index, benchmark" >&2; exit 1 ;;
     esac
 fi
 
