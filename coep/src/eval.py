@@ -152,7 +152,7 @@ def load_and_filter_monqcle(
 
     Args:
         monqcle_path: Path to MonQcle Standard Report CSV
-        jurisdiction_name: Full jurisdiction name (e.g., "Los Angeles, Los Angeles County, California, United States")
+        jurisdiction_name: Full jurisdiction name (e.g., "Philadelphia, Philadelphia County, Pennsylvania, United States")
         series_title: Series to filter on (default: DPL_2025_Consolidated)
 
     Returns:
@@ -167,13 +167,14 @@ def load_and_filter_monqcle(
 
     if len(filtered) == 0:
         available = (
-            df.filter(pl.col("name").str.contains("Los Angeles"))["name"]
+            df.filter(pl.col("series_title") == series_title)["name"]
             .unique()
+            .sort()
             .to_list()
         )
         raise ValueError(
             f"No records found for jurisdiction '{jurisdiction_name}' with series '{series_title}'. "
-            f"Available Los Angeles jurisdictions: {available}"
+            f"Available jurisdictions: {available[:20]}"
         )
 
     if len(filtered) > 1:
@@ -233,6 +234,60 @@ def melt_monqcle_to_long(
     return result
 
 
+# Mapping of combined query variables to their MonQcle source columns.
+# Each key is the combined variable name used in queries; the value is a list of
+# (monqcle_column, label) pairs whose values are merged into the ground truth.
+_COMBINED_VARIABLE_SOURCES: dict[str, list[tuple[str, str]]] = {
+    "dp_collected_combined": [
+        ("dp_collected", "Collected"),
+        ("dp_valid_imp", "Valid/Imp"),
+    ],
+    "dp_state_fed_combined": [
+        ("dp_state_fed_reference", "References state/federal law"),
+        ("dp_state_fed_citation", "Citation"),
+    ],
+}
+
+
+def expand_combined_variables(
+    monqcle_row: pl.DataFrame, variable_names: list[str]
+) -> pl.DataFrame:
+    """Add synthetic columns to a MonQcle row for combined query variables.
+
+    Some query variables (e.g. ``dp_collected_combined``) combine multiple
+    MonQcle columns.  This function detects those variables in
+    *variable_names*, builds a combined ground-truth string from the
+    source columns, and adds it as a new column on *monqcle_row*.
+
+    Args:
+        monqcle_row: Single-row MonQcle DataFrame.
+        variable_names: Variable names requested by the queries.
+
+    Returns:
+        The MonQcle row with any necessary combined columns added.
+    """
+    combined_vars = [v for v in variable_names if v in _COMBINED_VARIABLE_SOURCES]
+    if not combined_vars:
+        return monqcle_row
+
+    logger.info(f"Expanding {len(combined_vars)} combined variable(s): {combined_vars}")
+    row_dict = monqcle_row.to_dicts()[0]
+    new_cols: list[pl.Expr] = []
+
+    for var_name in combined_vars:
+        parts: list[str] = []
+        for col, label in _COMBINED_VARIABLE_SOURCES[var_name]:
+            val = row_dict.get(col)
+            val_str = str(val) if val not in [None, "-"] else ""
+            parts.append(f"{label}: {val_str}")
+        combined_truth = "\n".join(parts).strip()
+        new_cols.append(pl.lit(combined_truth).alias(var_name))
+
+    monqcle_row = monqcle_row.with_columns(new_cols)
+    logger.info(f"Added combined columns to MonQcle data: {combined_vars}")
+    return monqcle_row
+
+
 def jurisdiction_id_to_monqcle_name(jurisdiction_id: str) -> str:
     """
     Convert jurisdiction ID (e.g., CA-LosAngeles) to MonQcle name format.
@@ -247,9 +302,56 @@ def jurisdiction_id_to_monqcle_name(jurisdiction_id: str) -> str:
     """
     # Mapping of jurisdiction IDs to MonQcle names
     mapping = {
+        "AZ-Tucson": "Tucson, Pima County, Arizona, United States",
+        "AZ-Yuma": "Yuma, Yuma County, Arizona, United States",
+        "CA-Alhambra": "Alhambra, Los Angeles County, California, United States",
+        "CA-Anaheim": "Anaheim, Orange County, California, United States",
+        "CA-Antioch": "Antioch, Contra Costa County, California, United States",
+        "CA-BaldwinPark": "Baldwin Park, Los Angeles County, California, 91706, United States",
+        "CA-Chico": "Chico, Butte County, California, United States",
+        "CA-Corona": "Corona, Riverside County, California, United States",
+        "CA-Fullerton": "Fullerton, Orange County, California, United States",
         "CA-LosAngeles": "Los Angeles, Los Angeles County, California, United States",
+        "CA-Menifee": "Menifee, Riverside County, California, United States",
+        "CA-Murrieta": "Murrieta, Riverside County, California, United States",
+        "CA-Ontario": "Ontario, San Bernardino County, California, United States",
+        "CA-Oxnard": "Oxnard, Ventura County, California, United States",
+        "CA-Sacramento": "Sacramento, Sacramento County, California, United States",
+        "CA-SanBernardino": "San Bernardino, San Bernardino County, California, United States",
+        "CA-ThousandOaks": "Thousand Oaks, Ventura County, California, United States",
+        "CA-Visalia": "Visalia, Tulare County, California, United States",
+        "CO-ColoradoSprings": "Colorado Springs, El Paso County, Colorado, United States",
+        "CT-Waterbury": "Waterbury, Naugatuck Valley Planning Region, Connecticut, United States",
+        "FL-Hollywood": "Hollywood, Broward County, Florida, United States",
+        "FL-Palmbay": "Palm Bay, Brevard County, Florida, United States",
+        "FL-PembrokePines": "Pembroke Pines, Broward County, Florida, United States",
+        "FL-PompanoBeach": "Pompano Beach, Broward County, Florida, United States",
+        "HI-Honolulu": "Honolulu, Honolulu County, Hawaii, United States",
+        "IA-IowaCity": "Iowa City, Johnson County, Iowa, United States",
+        "ID-Boise": "Boise, Ada County, Idaho, United States",
+        "IN-Carmel": "Carmel, Hamilton County, Indiana, United States",
+        "IN-Fishers": "Fishers, Hamilton County, Indiana, United States",
+        "IN-FortWayne": "Fort Wayne, Allen County, Indiana, United States",
+        "IN-Hammond": "Hammond, Lake County, Indiana, United States",
+        "KY-LexingtonFayetteCounty": "Lexington, Fayette County, Kentucky, United States",
+        "MI-Dearborn": "Dearborn, Wayne County, Michigan, United States",
+        "MI-SterlingHeights": "Sterling Heights, Macomb County, Michigan, United States",
+        "MN-BrooklynPark": "Brooklyn Park, Hennepin County, Minnesota, United States",
+        "NC-Cary": "Cary, Wake County, North Carolina, United States",
+        "NC-Greenville": "Greenville, Pitt County, North Carolina, United States",
+        "NH-Manchester": "Manchester, Hillsborough County, New Hampshire, United States",
+        "NM-Albuquerque": "Albuquerque, Bernalillo County, New Mexico, United States",
+        "OH-Cleveland": "Cleveland, Cuyahoga County, Ohio, United States",
+        "OH-Parma": "Parma, Cuyahoga County, Ohio, United States",
+        "OH-Toledo": "Toledo, Lucas County, Ohio, United States",
         "PA-Philadelphia": "Philadelphia, Philadelphia County, Pennsylvania, United States",
-        # Add more mappings as jurisdictions are added
+        "SD-SiouxFalls": "Sioux Falls, Minnehaha County, South Dakota, United States",
+        "TX-Dallas": "Dallas, Dallas County, Texas, United States",
+        "TX-FortWorth": "Fort Worth, Tarrant County, Texas, United States",
+        "TX-Longview": "Longview, Gregg County, Texas, United States",
+        "TX-Tyler": "Tyler, Smith County, Texas, United States",
+        "UT-SaltLakeCity": "Salt Lake City, Salt Lake County, Utah, United States",
+        "UT-WestJordan": "West Jordan, Salt Lake County, Utah, United States",
     }
 
     if jurisdiction_id not in mapping:
