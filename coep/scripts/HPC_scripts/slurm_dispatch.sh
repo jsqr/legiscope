@@ -5,7 +5,7 @@
 # This script runs on the LOGIN NODE (no GPU needed). It:
 #   1. Scans a directory for *.docx files
 #   2. Parses STATE and Locality from each filename
-#   3. Submits coep/scripts/slurm_jurisdiction.sh via sbatch for each file
+#   3. Submits coep/scripts/HPC_scripts/slurm_jurisdiction.sh via sbatch for each file
 #
 # All heavy lifting (init.py, file copy, DOCX conversion, params.yaml editing,
 # DVC pipeline) happens inside the SLURM job — NOT here.
