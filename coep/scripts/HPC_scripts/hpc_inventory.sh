@@ -2,9 +2,9 @@
 # ─────────────────────────────────────────────────────────────────────
 # HPC File Inventory Script
 # Run on BigPurple to catalog files across home, scratch, and lab dirs.
-# Usage:  bash scripts/hpc_inventory.sh
+# Usage:  bash coep/scripts/HPC_scripts/hpc_inventory.sh
 # Output: printed to stdout — redirect to a file if desired:
-#         bash scripts/hpc_inventory.sh > ~/hpc_inventory.txt 2>&1
+#         bash coep/scripts/HPC_scripts/hpc_inventory.sh > ~/hpc_inventory.txt 2>&1
 # ─────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
