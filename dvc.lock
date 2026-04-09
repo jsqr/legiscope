@@ -1,161 +1,210 @@
 schema: '2.0'
 stages:
   parse:
-    cmd: python -m legiscope.pipeline.parse --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/parse.py --state PA --locality 
+      Philadelphia --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/raw
+    - path: data/laws/PA/Philadelphia/municipal-code/raw
       hash: md5
-      md5: 634c549fb8f1d6ac8e45bb5eccda3e73.dir
-      size: 217516
+      md5: 68b50f2df420eb326d208024ef0da04a.dir
+      size: 23142398
       nfiles: 1
-    - path: src/legiscope/convert.py
+    - path: scripts/dvc_python.sh
       hash: md5
-      md5: 509bc521bb07d859ed8748ec0225caf6
-      size: 28742
-    - path: src/legiscope/pipeline/parse.py
+      md5: f31135e4c5ab09065459fba655222a7b
+      size: 715
+    - path: scripts/parse.py
       hash: md5
-      md5: bdfbb14ba68c43126adffe4f4e27d359
-      size: 1052
+      md5: c702515e8f681bc6163fc033787cfcc7
+      size: 1111
+    - path: src/legiscope/parse
+      hash: md5
+      md5: b839f52ec65fc586e4cdf36f38d3c4bf.dir
+      size: 132603
+      nfiles: 14
+    - path: tmp/validate_import.ok
+      hash: md5
+      md5: eff5bc1ef8ec9d03e640fc4370f5eacd
+      size: 3
     params:
       params.yaml:
         jurisdiction:
-          state: IL
-          locality: WindyCity
+          state: PA
+          locality: Philadelphia
           code_slug: municipal-code
+          code_name: Philadelphia Municipal Code
         llm:
           default_provider: ollama
           providers:
             openai:
-              fast: gpt-4.1-mini
-              powerful: gpt-4.1
+              fast: Qwen/Qwen2.5-3B-Instruct
+              powerful: Qwen/Qwen2.5-3B-Instruct
             mistral:
               fast: mistral-small-2506
               powerful: mistral-large-2512
             ollama:
               fast: gemma3:4b
-              powerful: gemma3:12b-8k
-              num_ctx:
+              powerful: gemma3:4b
+              num_ctx: 4096
           temperature: 0.0
           max_retries: 3
           timeout: 300
     outs:
-    - path: data/laws/IL/WindyCity/municipal-code/code.md
+    - path: data/laws/PA/Philadelphia/municipal-code/code.md
       hash: md5
-      md5: 67c1b19bbd844ea6bc0f63193cef7ce4
-      size: 564069
-    - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
+      md5: 19edf3e768a6365bc679c9cc254f68c4
+      size: 8473712
+    - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
       hash: md5
-      md5: 702c7f0f44ff1ff6669e44707992eb05
-      size: 52250
+      md5: a69554ce15a1062263ccca0b0d1db65e
+      size: 18090
   segment:
-    cmd: python -m legiscope.pipeline.segment --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/segment.py --state PA --locality 
+      Philadelphia --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/code.md
+    - path: data/laws/PA/Philadelphia/municipal-code/code.md
       hash: md5
-      md5: 67c1b19bbd844ea6bc0f63193cef7ce4
-      size: 564069
-    - path: data/laws/IL/WindyCity/municipal-code/headings.parquet
+      md5: 19edf3e768a6365bc679c9cc254f68c4
+      size: 8473712
+    - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
       hash: md5
-      md5: 702c7f0f44ff1ff6669e44707992eb05
-      size: 52250
-    - path: src/legiscope/pipeline/segment.py
+      md5: a69554ce15a1062263ccca0b0d1db65e
+      size: 18090
+    - path: scripts/dvc_python.sh
       hash: md5
-      md5: c00bfe56c91730d145f2a0ba592702e7
-      size: 1590
+      md5: f31135e4c5ab09065459fba655222a7b
+      size: 715
+    - path: scripts/segment.py
+      hash: md5
+      md5: 50b01c5ddbc22131de2f890f89c50e02
+      size: 1541
     - path: src/legiscope/segment.py
       hash: md5
-      md5: a98e2fa01cc2e02a5891cac274a389dd
-      size: 37532
+      md5: 79af3f6fcb5d1b9a923864049132b71e
+      size: 35458
     params:
       params.yaml:
         jurisdiction:
-          state: IL
-          locality: WindyCity
+          state: PA
+          locality: Philadelphia
           code_slug: municipal-code
+          code_name: Philadelphia Municipal Code
         segmentation:
-          token_limit: 256
-          words_per_token: 0.75
+          token_limit: 1024
     outs:
-    - path: data/laws/IL/WindyCity/municipal-code/external_references.parquet
+    - path: data/laws/PA/Philadelphia/municipal-code/external_references.parquet
       hash: md5
       md5: 61a94b29211d82d0d4dd0bbba2d8735e
       size: 1146
-    - path: data/laws/IL/WindyCity/municipal-code/relations.parquet
+    - path: data/laws/PA/Philadelphia/municipal-code/relations.parquet
       hash: md5
       md5: 8438cdbe094beef79e1782de826157c0
       size: 913
-    - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
+    - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
       hash: md5
-      md5: 34f37575502dac122265f047f5b28f1b
-      size: 165956
-    - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
+      md5: ca9f4b70bebf7de9ae511333f570c090
+      size: 1572
+    - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
       hash: md5
-      md5: 3d30307a3a726939dad361a0d3b14ac7
-      size: 140150
+      md5: e09464f21ae4055c506ad295d00f9c7a
+      size: 1894
   embed:
-    cmd: python -m legiscope.pipeline.embed --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/embed.py --state PA --locality 
+      Philadelphia --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/sections.parquet
+    - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
       hash: md5
-      md5: 34f37575502dac122265f047f5b28f1b
-      size: 165956
-    - path: data/laws/IL/WindyCity/municipal-code/segments.parquet
+      md5: ca9f4b70bebf7de9ae511333f570c090
+      size: 1572
+    - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
       hash: md5
-      md5: 3d30307a3a726939dad361a0d3b14ac7
-      size: 140150
+      md5: e09464f21ae4055c506ad295d00f9c7a
+      size: 1894
+    - path: scripts/dvc_python.sh
+      hash: md5
+      md5: f31135e4c5ab09065459fba655222a7b
+      size: 715
+    - path: scripts/embed.py
+      hash: md5
+      md5: 74cde80e0872702b5ef327bf2ea94d9e
+      size: 2480
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: 18fbeaa68a022001acc5a40a3550d097
-      size: 41290
-    - path: src/legiscope/pipeline/embed.py
-      hash: md5
-      md5: 5a147848706b051a8e2de23b8be44277
-      size: 2292
+      md5: b44226404e62155c563f5a1b37657be6
+      size: 47056
     params:
       params.yaml:
         embeddings:
-          default_provider: ollama
+          default_provider: openrouter
+          chroma_batch_size: 100
           providers:
             mistral:
               model: mistral-embed
               batch_size: 100
             ollama:
               model: embeddinggemma
-              batch_size:
+              batch_size: 1
+            openrouter:
+              model: qwen/qwen3-embedding-8b
+              batch_size: 100
           dtype: float32
         jurisdiction:
-          state: IL
-          locality: WindyCity
+          state: PA
+          locality: Philadelphia
           code_slug: municipal-code
+          code_name: Philadelphia Municipal Code
     outs:
-    - path: data/laws/IL/WindyCity/municipal-code/embeddings.parquet
+    - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
       hash: md5
-      md5: db457e81b6a3015d53c65237e0614acd
-      size: 3275157
+      md5: 39fb95de6d59faaf796be7a93ca57fd6
+      size: 1133
   index:
-    cmd: python -m legiscope.pipeline.index --state IL --locality WindyCity 
-      --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/index.py --state PA --locality 
+      Philadelphia --code-slug municipal-code
     deps:
-    - path: data/laws/IL/WindyCity/municipal-code/embeddings.parquet
+    - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
       hash: md5
-      md5: db457e81b6a3015d53c65237e0614acd
-      size: 3275157
+      md5: 39fb95de6d59faaf796be7a93ca57fd6
+      size: 1133
+    - path: scripts/dvc_python.sh
+      hash: md5
+      md5: f31135e4c5ab09065459fba655222a7b
+      size: 715
+    - path: scripts/index.py
+      hash: md5
+      md5: c60e4880c09de2a3292db1f0ecc51e89
+      size: 2658
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: 18fbeaa68a022001acc5a40a3550d097
-      size: 41290
-    - path: src/legiscope/pipeline/index.py
-      hash: md5
-      md5: c697397da9c6b1b45bb1a3aed5b67c82
-      size: 2583
+      md5: b44226404e62155c563f5a1b37657be6
+      size: 47056
     params:
       params.yaml:
-        embeddings.default_provider: ollama
+        embeddings.default_provider: openrouter
         jurisdiction:
-          state: IL
-          locality: WindyCity
+          state: PA
+          locality: Philadelphia
           code_slug: municipal-code
+          code_name: Philadelphia Municipal Code
         retrieval.distance_metric: l2
+  validate:
+    cmd: "bash -c 'bash scripts/dvc_python.sh -c \"import legiscope; print(f\\\"Package
+      import works: {legiscope.__file__}\\\")\" && mkdir -p tmp && echo ok > tmp/validate_import.ok'"
+    deps:
+    - path: pyproject.toml
+      hash: md5
+      md5: 281105843535089764191cf36093417b
+      size: 1269
+    - path: scripts/dvc_python.sh
+      hash: md5
+      md5: f31135e4c5ab09065459fba655222a7b
+      size: 715
+    - path: src/legiscope/__init__.py
+      hash: md5
+      md5: a8b33b5c5e1ef0f62eb486a23ed1cfef
+      size: 2189
+    outs:
+    - path: tmp/validate_import.ok
+      hash: md5
+      md5: eff5bc1ef8ec9d03e640fc4370f5eacd
+      size: 3

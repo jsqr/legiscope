@@ -117,6 +117,16 @@ class JurisdictionRef:
         """``"state"`` or ``"local"``."""
         return "local" if self.locality else "state"
 
+    @property
+    def output_dir_name(self) -> str:
+        """Directory name for output files, matching DVC conventions.
+
+        Format: ``"{STATE}-{Locality}"`` or ``"{STATE}-State"``.
+        Uses the ``State`` sentinel for state-level jurisdictions so
+        that output paths stay in sync with ``dvc.yaml`` interpolation.
+        """
+        return f"{self.state}-{self.locality or 'State'}"
+
 
 @dataclass(frozen=True)
 class CodeRef:

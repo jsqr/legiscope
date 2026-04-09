@@ -19,4 +19,11 @@ fi
 
 export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 
+# Load .env file if present (exports variables for API keys, etc.)
+if [[ -f .env ]]; then
+    set -a
+    source .env
+    set +a
+fi
+
 "$PYTHON_BIN" "$@"

@@ -1,10 +1,16 @@
 """Tests for legiscope.convert module."""
 
+from __future__ import annotations
+
 import os
 import tempfile
-from unittest.mock import Mock
+from typing import TYPE_CHECKING
+from unittest.mock import Mock, patch
 
 import yaml
+
+if TYPE_CHECKING:
+    import polars as pl
 from pydantic import BaseModel
 
 from legiscope.parse.convert import text2md
@@ -31,8 +37,14 @@ class TestConvertModule:
         # Module-level import should be the same function
         assert utils_ask is ask
 
-    def test_ask_function_backward_compatibility(self):
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_ask_function_backward_compatibility(self, mock_get_llm_params):
         """Test that ask function works as expected when imported from convert."""
+        mock_get_llm_params.return_value = {
+            "temperature": 0.5,
+            "max_retries": 3,
+            "model": "gpt-4",
+        }
         # Setup mock client
         mock_client = Mock()
         mock_response = MockResponseModel(name="test", value=42)
@@ -919,3 +931,154 @@ The purpose of this chapter is to establish rules."""
             import shutil
 
             shutil.rmtree(output_dir)
+
+
+class TestScoreStructure:
+    """Tests for score_structure quality scoring."""
+
+    @staticmethod
+    def _make_elements(lines: list[str]) -> pl.DataFrame:
+        """Build a minimal elements DataFrame from a list of first-lines."""
+        import polars as pl
+
+        return pl.DataFrame(
+            [
+                {
+                    "element_id": i,
+                    "start_line": i + 1,
+                    "end_line": i + 1,
+                    "n_lines": 1,
+                    "text": line,
+                }
+                for i, line in enumerate(lines)
+            ],
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+    def test_low_recall_penalised(self):
+        """Patterns matching few heading-like elements should get low recall."""
+        from legiscope.parse.scan import score_structure
+
+        # Simulate Philadelphia-like case: patterns only capture CHAPTER,
+        # but document also has ARTICLE and § section headings.
+        lines = [
+            "ARTICLE I   POWERS OF THE CITY",
+            "CHAPTER 1   THE COUNCIL",
+            "§ 1-100. The City's Powers Defined.",
+            "§ 1-101. Legislative Power.",
+            "CHAPTER 2   COUNCIL PROCEDURE",
+            "§ 2-100. Regular Meetings.",
+            "§ 2-101. Special Meetings.",
+            "ARTICLE II   LEGISLATIVE BRANCH",
+            "CHAPTER 3   LEGISLATION",
+            "§ 3-100. Ordinances and Resolutions.",
+            "Body text that is not a heading at all.",
+            "More body text describing regulations.",
+        ]
+        elements = self._make_elements(lines)
+
+        # Structure that only captures CHAPTER — misses ARTICLE and §
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^CHAPTER\s+\d+"],
+                    markdown_prefix="# ",
+                    example_heading="CHAPTER 1   THE COUNCIL",
+                    type_label="chapter",
+                ),
+            ],
+            total_levels=1,
+            file_sample_size=len(lines),
+        )
+
+        score, errors = score_structure(elements, structure)
+
+        # With only ~3 of ~10 heading-like elements matched, recall is ~0.3
+        assert score < 0.7, f"Score {score:.3f} should be below 0.7 (low recall)"
+        recall_errors = [e for e in errors if "recall" in e.lower()]
+        assert len(recall_errors) > 0, "Should report low recall in errors"
+
+    def test_high_recall_rewarded(self):
+        """Patterns capturing most heading-like elements should score well."""
+        from legiscope.parse.scan import score_structure
+
+        lines = [
+            "ARTICLE I   POWERS OF THE CITY",
+            "CHAPTER 1   THE COUNCIL",
+            "§ 1-100. The City's Powers Defined.",
+            "§ 1-101. Legislative Power.",
+            "CHAPTER 2   COUNCIL PROCEDURE",
+            "§ 2-100. Regular Meetings.",
+            "Body text that is not a heading.",
+            "More body text.",
+        ]
+        elements = self._make_elements(lines)
+
+        # Structure that captures all three heading types
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^ARTICLE\s+[IVXLCDM]+"],
+                    markdown_prefix="# ",
+                    example_heading="ARTICLE I   POWERS OF THE CITY",
+                    type_label="article",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_patterns=[r"^CHAPTER\s+\d+"],
+                    markdown_prefix="## ",
+                    example_heading="CHAPTER 1   THE COUNCIL",
+                    type_label="chapter",
+                    number_regex=r"\d+",
+                ),
+                HeadingLevel(
+                    level=3,
+                    regex_patterns=[r"^§\s*\d+-\d+"],
+                    markdown_prefix="### ",
+                    example_heading="§ 1-100. The City's Powers Defined.",
+                    type_label="section",
+                    number_regex=r"\d+-\d+",
+                ),
+            ],
+            total_levels=3,
+            file_sample_size=len(lines),
+        )
+
+        score, errors = score_structure(elements, structure)
+        assert score >= 0.7, f"Score {score:.3f} should be >= 0.7 (high recall)"
+
+    def test_zero_matches_returns_zero(self):
+        """Patterns matching nothing should score 0.0."""
+        from legiscope.parse.scan import score_structure
+
+        lines = [
+            "§ 1-100. The City's Powers Defined.",
+            "§ 1-101. Legislative Power.",
+            "Body text.",
+        ]
+        elements = self._make_elements(lines)
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^NONEXISTENT\s+\d+"],
+                    markdown_prefix="# ",
+                    example_heading="NONEXISTENT 1",
+                    type_label="fake",
+                ),
+            ],
+            total_levels=1,
+            file_sample_size=len(lines),
+        )
+
+        score, errors = score_structure(elements, structure)
+        assert score == 0.0

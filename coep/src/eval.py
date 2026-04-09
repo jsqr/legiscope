@@ -248,6 +248,7 @@ def jurisdiction_id_to_monqcle_name(jurisdiction_id: str) -> str:
     # Mapping of jurisdiction IDs to MonQcle names
     mapping = {
         "CA-LosAngeles": "Los Angeles, Los Angeles County, California, United States",
+        "PA-Philadelphia": "Philadelphia, Philadelphia County, Pennsylvania, United States",
         # Add more mappings as jurisdictions are added
     }
 

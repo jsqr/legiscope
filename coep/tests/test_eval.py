@@ -25,6 +25,11 @@ class TestJurisdictionMapping:
         name = jurisdiction_id_to_monqcle_name("CA-LosAngeles")
         assert name == "Los Angeles, Los Angeles County, California, United States"
 
+    def test_pa_philadelphia_mapping(self):
+        """Test mapping for Philadelphia jurisdiction."""
+        name = jurisdiction_id_to_monqcle_name("PA-Philadelphia")
+        assert name == "Philadelphia, Philadelphia County, Pennsylvania, United States"
+
     def test_unknown_jurisdiction(self):
         """Test error for unknown jurisdiction."""
         with pytest.raises(ValueError, match="Unknown jurisdiction ID"):

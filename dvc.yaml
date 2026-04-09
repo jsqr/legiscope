@@ -1,6 +1,6 @@
 # Legiscope DVC Pipeline
 #
-# Process a single legal code through: parse -> segment -> embed -> index
+# Process a single legal code through: parse -> segment -> embed -> index -> benchmark
 #
 # Default jurisdiction is set in params.yaml. Override at runtime:
 #
@@ -98,3 +98,33 @@ stages:
             - jurisdiction
             - embeddings.default_provider
             - retrieval.distance_metric
+        outs:
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/index.stamp:
+                cache: false
+
+    benchmark:
+        cmd: >-
+            bash scripts/dvc_python.sh coep/scripts/benchmark_pipeline.py --state ${jurisdiction.state} --locality ${jurisdiction.locality} --code-slug ${jurisdiction.code_slug}
+        deps:
+            - scripts/dvc_python.sh
+            - coep/scripts/benchmark_pipeline.py
+            - coep/src/eval.py
+            - coep/src/query.py
+            - src/legiscope/query.py
+            - src/legiscope/retrieve.py
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/embeddings.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/index.stamp
+            - data/queries/drug_paraphernalia_queries_clean.csv
+            - coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv
+        params:
+            - jurisdiction
+            - llm
+            - retrieval
+            - query
+            - benchmark
+        metrics:
+            - data/output/${jurisdiction.state}-${jurisdiction.locality}/benchmark_metrics.json:
+                cache: false
+        outs:
+            - data/output/${jurisdiction.state}-${jurisdiction.locality}/benchmark_results.csv

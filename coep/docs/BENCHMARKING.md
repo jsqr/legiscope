@@ -2,6 +2,10 @@
 
 This document describes how to evaluate the RAG pipeline against a human-verified dataset.
 
+> **Note:** Benchmarking is now a DVC stage (`benchmark`). It runs automatically
+> as part of `dvc repro` / `./scripts/dvc_repro.sh`. You can also run it
+> individually with `dvc repro benchmark` or standalone via the script directly.
+
 **Important limitations in current state**:
 - The system is currently only configured to accept Drug Paraphernalia MonQcle records.
 - The benchmarking system is currently hardcoded to function on the CA-LosAngeles jurisdiction 
@@ -20,23 +24,37 @@ with the parent question to provide adequate context during query to the LLM.
 Columns should include `question` and the `variable_name` from MonQcle.
 
 3.  **Environment Variables**: Ensure your `.env` file has the necessary API keys 
-(`OPENAI_API_KEY` or `MISTRAL_API_KEY`) and the `LEGISCOPE_COLLECTION_NAME` is set correctly.
+(`OPENAI_API_KEY` or `OPENROUTER_API_KEY`) and the `LEGISCOPE_COLLECTION_NAME` is set correctly.
 
 ## Running the Benchmark
 
-Run the pipeline script from the project root.
+The benchmark is a DVC stage and runs as part of the full pipeline:
 
-This script is now mostly **config-driven**:
+```bash
+# Run as part of full DVC pipeline
+dvc repro
+# Or: ./scripts/dvc_repro.sh
+
+# Run only the benchmark stage (requires embed stage outputs)
+dvc repro benchmark
+# Or: ./scripts/dvc_repro.sh --stage benchmark
+```
+
+You can also run the script directly (standalone, outside DVC).
+This script is **config-driven**:
 
 - Jurisdiction is read from `params.yaml` (`jurisdiction.*`)
 - Query/retrieval behavior is read from `params.yaml` (via `BatchQuerySettings`)
 - Paths are read from `config.yaml` (`paths.default_queries_file`, `paths.monqcle_report`, `paths.output_dir`)
 - Benchmark series title is read from `params.yaml` at `benchmark.series_title`
 
-### Quick Start
+### Quick Start (Standalone)
 ```bash
 # Run with defaults from params.yaml + config.yaml
 uv run python coep/scripts/benchmark_pipeline.py
+
+# Run with explicit jurisdiction (used by DVC stage)
+uv run python coep/scripts/benchmark_pipeline.py --state CA --locality LosAngeles --code-slug municipal-code
 
 # Run with limited query count for quick testing
 uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
@@ -56,6 +74,9 @@ uv run python coep/scripts/benchmark_pipeline.py
 
 | Argument | Description | Default |
 |----------|-------------|---------|
+| `--state` | Two-letter state code | From `params.yaml` |
+| `--locality` | PascalCase locality name | From `params.yaml` |
+| `--code-slug` | Code slug identifier | From `params.yaml` |
 | `--test-limit` | Limit number of queries (for testing) | None |
 
 > **Note on Debugging:** The `--debug` flag has been removed. Debug mode is now entirely controlled by setting `debug: true` under the `retrieval` section in `params.yaml`. This toggle produces debug files for retrieved sections, LLM relevance assessments, contextual prompts, imported CSVs, and joined pipeline states in `data/output/<jurisdiction_id>/debug`.
@@ -64,7 +85,9 @@ uv run python coep/scripts/benchmark_pipeline.py
 
 - Queries CSV: `config.default_queries_path()`
 - MonQcle report CSV: `config.monqcle_report_path()` (repo-root-relative by default, not under `data_dir`)
-- Output file: `config.output_dir() / {jurisdiction_id} / benchmark_results.csv`
+- Output file: `config.output_dir() / {jurisdiction_id} / benchmark_results.csv` (DVC-tracked)
+- Timestamped copy: `config.output_dir() / {jurisdiction_id} / benchmark_results_{timestamp}.csv`
+- Metrics: `config.output_dir() / {jurisdiction_id} / benchmark_metrics.json` (DVC metrics)
 - Series title: `params["benchmark"]["series_title"]` (fallback: `DPL_2025_Consolidated`)
 
 Jurisdiction, retrieval settings (including HYDE/relevance filtering and debug outputs), and query validation settings are read from `params.yaml`.

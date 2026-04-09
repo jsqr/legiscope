@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -105,6 +106,51 @@ def get_mistral_client():
         )
 
     return Mistral(api_key=api_key)
+
+
+def get_openrouter_client():
+    """Get OpenRouter client for cloud embedding generation.
+
+    Uses the OpenAI Python client with OpenRouter's base URL.
+
+    Returns:
+        openai.OpenAI: Configured OpenAI client pointed at OpenRouter
+
+    Raises:
+        ValueError: If OPENROUTER_API_KEY environment variable is not set
+    """
+    from openai import OpenAI
+
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OPENROUTER_API_KEY environment variable is required for OpenRouter embeddings"
+        )
+
+    return OpenAI(
+        api_key=api_key,
+        base_url="https://openrouter.ai/api/v1",
+    )
+
+
+def _get_openai_client():
+    """Get vanilla OpenAI client for embedding generation.
+
+    Returns:
+        openai.OpenAI: Configured OpenAI client (uses OPENAI_API_KEY)
+
+    Raises:
+        ValueError: If OPENAI_API_KEY environment variable is not set
+    """
+    from openai import OpenAI
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError(
+            "OPENAI_API_KEY environment variable is required for OpenAI embeddings"
+        )
+
+    return OpenAI(api_key=api_key)
 
 
 def get_default_model(provider: str) -> str:
@@ -230,7 +276,11 @@ class CollectionConfig:
 
         # Auto-append provider_model suffix to collection name
         if self.provider:
-            suffix = f"{self.provider}_{self.model}"
+            # Sanitize model name for ChromaDB (only allows [a-zA-Z0-9._-])
+            safe_model = (
+                re.sub(r"[^a-zA-Z0-9._-]", "_", self.model) if self.model else ""
+            )
+            suffix = f"{self.provider}_{safe_model}"
             if self.collection_name == "legal_code_all":
                 # Default collection name - make provider/model-specific
                 self.collection_name = f"legal_code_{suffix}"
@@ -247,7 +297,7 @@ def _detect_embedding_provider(client) -> str:
         client: Embedding client instance
 
     Returns:
-        str: Detected provider name ("ollama" or "mistral")
+        str: Detected provider name ("ollama", "mistral", "openrouter", or "openai")
 
     Raises:
         ValueError: If provider cannot be detected
@@ -260,6 +310,12 @@ def _detect_embedding_provider(client) -> str:
         return "ollama"
     elif "mistral" in client_type.lower() or "mistral" in client_module.lower():
         return "mistral"
+    elif "openai" in client_module.lower():
+        # OpenAI client — check base_url to distinguish OpenRouter from vanilla OpenAI
+        base_url = str(getattr(client, "base_url", "") or "")
+        if "openrouter" in base_url.lower():
+            return "openrouter"
+        return "openai"
     else:
         # Try to detect by checking available methods/attributes
         if hasattr(client, "embeddings") and hasattr(client, "chat"):
@@ -331,7 +387,9 @@ def _should_log_embedding_progress(
     previous_count: int, current_count: int, total_count: int, log_interval: int
 ) -> bool:
     """Return whether embedding progress should be logged."""
-    crossed_interval = (current_count // log_interval) > (previous_count // log_interval)
+    crossed_interval = (current_count // log_interval) > (
+        previous_count // log_interval
+    )
     is_final_large_batch = current_count == total_count and total_count >= log_interval
     return crossed_interval or is_final_large_batch
 
@@ -385,6 +443,57 @@ def _generate_embeddings_ollama(
     return embeddings_list
 
 
+def _generate_embeddings_openrouter(
+    client, texts: list[str], model: str, batch_size: int = 100
+) -> list[list[float]]:
+    """
+    Generate embeddings using OpenRouter API (OpenAI-compatible) with batch processing.
+
+    Args:
+        client: OpenAI client instance configured for OpenRouter
+        texts: List of text strings to embed
+        model: Model name to use (e.g. "qwen/qwen3-embedding-8b")
+        batch_size: Number of texts to process per batch
+
+    Returns:
+        List of embeddings as lists of floats
+
+    Raises:
+        ValueError: If embedding generation fails
+    """
+    embeddings_list: list[list[float]] = []
+    total_batches = (len(texts) + batch_size - 1) // batch_size
+    log_interval = _get_batch_log_interval()
+    logger.info(
+        f"Processing {len(texts)} texts in {total_batches} batches of {batch_size} (OpenRouter)"
+    )
+
+    for batch_num in range(total_batches):
+        start_idx = batch_num * batch_size
+        end_idx = min(start_idx + batch_size, len(texts))
+        batch_texts = texts[start_idx:end_idx]
+
+        response = client.embeddings.create(model=model, input=batch_texts)
+        if response is None or not hasattr(response, "data") or len(response.data) == 0:
+            logger.error(f"Failed to get embeddings for batch {batch_num + 1}")
+            raise ValueError(f"Failed to get embeddings for batch {batch_num + 1}")
+        batch_embeddings = [list(item.embedding) for item in response.data]
+        embeddings_list.extend(batch_embeddings)
+
+        if _should_log_embedding_progress(
+            previous_count=start_idx,
+            current_count=end_idx,
+            total_count=len(texts),
+            log_interval=log_interval,
+        ):
+            logger.debug(
+                f"Processed {end_idx}/{len(texts)} texts "
+                f"(batch {batch_num + 1}/{total_batches})"
+            )
+
+    return embeddings_list
+
+
 # ---------------------------------------------------------------------------
 # Build embedding provider config from params.yaml
 # ---------------------------------------------------------------------------
@@ -401,10 +510,14 @@ def _build_embedding_provider_config() -> dict[str, dict[str, Any]]:
     client_factories = {
         "ollama": get_ollama_client,
         "mistral": get_mistral_client,
+        "openrouter": get_openrouter_client,
+        "openai": _get_openai_client,
     }
     embedding_functions = {
         "ollama": _generate_embeddings_ollama,
         "mistral": _generate_embeddings_mistral,
+        "openrouter": _generate_embeddings_openrouter,
+        "openai": _generate_embeddings_openrouter,  # same OpenAI-compatible API
     }
 
     config: dict[str, dict[str, Any]] = {}
