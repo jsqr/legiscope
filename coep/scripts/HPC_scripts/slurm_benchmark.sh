@@ -27,9 +27,11 @@
 #   bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
 #   sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
 #
-set -euo pipefail
+set -eo pipefail
 
 # ── Environment setup ────────────────────────────────────────────
+# BigPurple's /etc/bashrc references BASHRCSOURCED before defining it,
+# so these SLURM wrappers cannot enable nounset while sourcing ~/.bashrc.
 source ~/.bashrc
 export PYTHONNOUSERSITE=1
 # Skip 'module load anaconda3' — cuda/12.6 dependency has a read-only FS bug.
@@ -42,6 +44,26 @@ export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
 
 cd /gpfs/data/cerdalab/LegalAI/legiscope
 
+configure_git_identity() {
+    local repo_dir="$1"
+    local git_name="${GIT_USER_NAME:-${GIT_AUTHOR_NAME:-}}"
+    local git_email="${GIT_USER_EMAIL:-${GIT_AUTHOR_EMAIL:-}}"
+
+    if [[ -z "$git_name" ]]; then
+        git_name="$(git -C "$repo_dir" config --get user.name 2>/dev/null || true)"
+    fi
+    if [[ -z "$git_email" ]]; then
+        git_email="$(git -C "$repo_dir" config --get user.email 2>/dev/null || true)"
+    fi
+
+    git_name="${git_name:-${USER:-legiscope-hpc}}"
+    git_email="${git_email:-${USER:-legiscope-hpc}@bigpurple.local}"
+
+    git -C "$repo_dir" config user.name "$git_name"
+    git -C "$repo_dir" config user.email "$git_email"
+    echo "Configured git identity for DVC: ${git_name} <${git_email}>"
+}
+
 # Load .env (API keys, etc.)
 if [[ ! -r .env ]]; then
     echo "ERROR: Required .env file is missing or not readable in $(pwd). Create it or fix its permissions before running the benchmark job." >&2
@@ -51,6 +73,8 @@ fi
 set -a
 source .env
 set +a
+
+configure_git_identity "$(pwd)"
 
 # ── Start vLLM server ───────────────────────────────────────────
 MODEL_ID="Qwen/Qwen3.5-4B"
@@ -78,7 +102,7 @@ trap "kill $VLLM_PID 2>/dev/null || true" EXIT
 READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
 
 echo "Waiting for vLLM server at ${READY_URL} (PID $VLLM_PID)..."
-TIMEOUT=900; ELAPSED=0
+TIMEOUT=1200; ELAPSED=0
 while ! curl -sf "$READY_URL" >/dev/null 2>&1; do
     if ! kill -0 $VLLM_PID 2>/dev/null; then echo "ERROR: vLLM died"; exit 1; fi
     if [ $ELAPSED -ge $TIMEOUT ]; then echo "ERROR: vLLM timeout"; exit 1; fi

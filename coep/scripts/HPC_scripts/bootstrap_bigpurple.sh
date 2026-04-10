@@ -12,6 +12,8 @@ REPO_URL="https://github.com/jsqr/legiscope.git"
 BRANCH="main"
 STRICT=false
 NO_PULL=false
+GIT_USER_NAME_VALUE="${GIT_USER_NAME:-}"
+GIT_USER_EMAIL_VALUE="${GIT_USER_EMAIL:-}"
 
 usage() {
     cat <<'EOF'
@@ -24,7 +26,9 @@ Options:
   --project-root PATH   Override the repo location
   --docx-dir PATH       Override the flat DOCX staging directory
   --repo-url URL        Override the Git clone URL
-  --branch NAME         Branch to clone/pull (default: main)
+    --branch NAME         Branch to clone/pull (default: main)
+    --git-user-name NAME  Configure git config --global user.name
+    --git-user-email VAL  Configure git config --global user.email
   --strict              Exit non-zero if required inputs are missing
   --no-pull             Do not pull if the repo already exists
   -h, --help            Show this help
@@ -33,6 +37,10 @@ Optional environment variables for .env initialization:
   OPENROUTER_API_KEY_VALUE
   OPENAI_API_KEY_VALUE
   MISTRAL_API_KEY_VALUE
+
+Optional environment variables for Git identity:
+    GIT_USER_NAME
+    GIT_USER_EMAIL
 EOF
 }
 
@@ -52,6 +60,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --branch)
             BRANCH="$2"
+            shift 2
+            ;;
+        --git-user-name)
+            GIT_USER_NAME_VALUE="$2"
+            shift 2
+            ;;
+        --git-user-email)
+            GIT_USER_EMAIL_VALUE="$2"
             shift 2
             ;;
         --strict)
@@ -80,6 +96,35 @@ say() {
 
 warn() {
     printf 'WARNING: %s\n' "$1" >&2
+}
+
+configure_global_git_identity() {
+    local existing_name existing_email
+    existing_name="$(git config --global --get user.name 2>/dev/null || true)"
+    existing_email="$(git config --global --get user.email 2>/dev/null || true)"
+
+    if [[ -n "$existing_name" && -n "$existing_email" ]]; then
+        say ">>> Keeping existing global git identity"
+        say "Git user     : ${existing_name} <${existing_email}>"
+        return
+    fi
+
+    if [[ -n "$GIT_USER_NAME_VALUE" && -n "$GIT_USER_EMAIL_VALUE" ]]; then
+        say ">>> Configuring global git identity"
+        git config --global user.name "$GIT_USER_NAME_VALUE"
+        git config --global user.email "$GIT_USER_EMAIL_VALUE"
+        say "Git user     : ${GIT_USER_NAME_VALUE} <${GIT_USER_EMAIL_VALUE}>"
+        return
+    fi
+
+    if [[ -n "$GIT_USER_NAME_VALUE" || -n "$GIT_USER_EMAIL_VALUE" ]]; then
+        warn "Both git name and email are required to configure global git identity; skipping"
+        return
+    fi
+
+    warn "Global git identity is not set; configure it with:"
+    warn "  git config --global user.name \"Your Name\""
+    warn "  git config --global user.email \"you@example.com\""
 }
 
 require_cmd() {
@@ -118,6 +163,8 @@ else
 fi
 
 cd "$PROJECT_ROOT"
+
+configure_global_git_identity
 
 say ">>> Creating required directories"
 mkdir -p \
