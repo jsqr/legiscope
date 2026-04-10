@@ -64,6 +64,36 @@ configure_git_identity() {
     echo "Configured git identity for DVC: ${git_name} <${git_email}>"
 }
 
+should_attempt_dvc_push() {
+    local repo_dir="$1"
+    local push_mode="${DVC_PUSH_EXPERIMENTS:-auto}"
+    local origin_url=""
+
+    case "${push_mode,,}" in
+        0|false|no)
+            return 1
+            ;;
+        1|true|yes)
+            return 0
+            ;;
+    esac
+
+    origin_url="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
+    [[ -n "$origin_url" ]] || return 1
+
+    if [[ "$origin_url" == https://* ]]; then
+        [[ -n "${GITHUB_TOKEN:-}" || -n "${GH_TOKEN:-}" || -n "${GIT_ASKPASS:-}" ]]
+        return $?
+    fi
+
+    if [[ "$origin_url" == git@* || "$origin_url" == ssh://* ]]; then
+        [[ -n "${SSH_AUTH_SOCK:-}" || -r "${HOME}/.ssh/id_ed25519" || -r "${HOME}/.ssh/id_rsa" ]]
+        return $?
+    fi
+
+    return 1
+}
+
 # Load .env (API keys, etc.)
 if [[ ! -r .env ]]; then
     echo "ERROR: Required .env file is missing or not readable in $(pwd). Create it or fix its permissions before running the benchmark job." >&2
@@ -119,8 +149,12 @@ export OPENAI_API_KEY="$API_KEY"
 echo "=== Benchmark re-run: $(date) ==="
 ./scripts/dvc_repro.sh --stage benchmark
 
-if dvc exp push origin; then
-    echo "=== Benchmark completed (experiment pushed): $(date) ==="
+if should_attempt_dvc_push "$(pwd)"; then
+    if dvc exp push origin; then
+        echo "=== Benchmark completed (experiment pushed): $(date) ==="
+    else
+        echo "WARNING: Benchmark completed, but 'dvc exp push origin' failed; continuing without pushing experiment: $(date) ===" >&2
+    fi
 else
-    echo "WARNING: Benchmark completed, but 'dvc exp push origin' failed; continuing without pushing experiment: $(date) ===" >&2
+    echo "=== Benchmark completed (experiment not pushed; no Git auth detected for origin): $(date) ==="
 fi

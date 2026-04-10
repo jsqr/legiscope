@@ -4,11 +4,13 @@ This module implements LLM-as-a-judge patterns to score generated answers
 against ground truth human-authored answers.
 """
 
-from typing import Literal
-from pydantic import BaseModel, Field
-from polars import DataFrame
+from typing import Any, Literal
+
 import polars as pl
 from loguru import logger
+from polars import DataFrame
+from pydantic import BaseModel, Field, model_validator
+
 from legiscope.utils import LLMConfig
 
 
@@ -28,6 +30,24 @@ class EvaluationResult(BaseModel):
     accuracy_label: Literal["Correct", "Partially Correct", "Incorrect"] = Field(
         ..., description="Categorical label for the accuracy of the response."
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_schema_like_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        expected_keys = {"score", "reasoning", "accuracy_label"}
+        if expected_keys.intersection(data):
+            return data
+
+        properties = data.get("properties")
+        if isinstance(properties, dict) and expected_keys.issubset(properties):
+            return properties
+
+        return data
+
+    model_config = {"extra": "ignore"}
 
 
 class Evaluator:
@@ -88,6 +108,23 @@ class Evaluator:
         - The ground truth may contain binary results, where 0 = "No" and 1 = "Yes". 
           The generated answer may use different phrasing (e.g., "No", "False", "0", "Negative" for 0). 
           Focus on the meaning rather than exact wording.
+
+                OUTPUT REQUIREMENTS:
+                - Return exactly one JSON object representing an EvaluationResult instance.
+                - Use these exact top-level keys: `score`, `reasoning`, `accuracy_label`.
+                - `score` must be an integer from 0 to 10.
+                - `accuracy_label` must be one of: `Correct`, `Partially Correct`, `Incorrect`.
+                - Do not return JSON Schema or metadata.
+                - Never include keys like `description`, `properties`, `title`, `type`, `required`, or `$defs`.
+                - Do not wrap the answer inside `properties` or any other container.
+                - No commentary, no Markdown fences, no prose outside the JSON object.
+
+                OUTPUT TEMPLATE:
+                {{
+                    "score": 0,
+                    "reasoning": "...",
+                    "accuracy_label": "Incorrect"
+                }}
         """
 
         try:

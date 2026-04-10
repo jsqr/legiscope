@@ -130,6 +130,36 @@ configure_git_identity() {
     echo "Configured git identity for DVC: ${git_name} <${git_email}>"
 }
 
+should_attempt_dvc_push() {
+    local repo_dir="$1"
+    local push_mode="${DVC_PUSH_EXPERIMENTS:-auto}"
+    local origin_url=""
+
+    case "${push_mode,,}" in
+        0|false|no)
+            return 1
+            ;;
+        1|true|yes)
+            return 0
+            ;;
+    esac
+
+    origin_url="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
+    [[ -n "$origin_url" ]] || return 1
+
+    if [[ "$origin_url" == https://* ]]; then
+        [[ -n "${GITHUB_TOKEN:-}" || -n "${GH_TOKEN:-}" || -n "${GIT_ASKPASS:-}" ]]
+        return $?
+    fi
+
+    if [[ "$origin_url" == git@* || "$origin_url" == ssh://* ]]; then
+        [[ -n "${SSH_AUTH_SOCK:-}" || -r "${HOME}/.ssh/id_ed25519" || -r "${HOME}/.ssh/id_rsa" ]]
+        return $?
+    fi
+
+    return 1
+}
+
 # ── Step 1: Create isolated working copy ──────────────────────────
 # Each job gets its own copy of the repo in $TMPDIR to avoid
 # params.yaml and ChromaDB race conditions with concurrent jobs.
@@ -245,15 +275,26 @@ echo "=== Running pipeline: $(date) ==="
 ./scripts/dvc_repro.sh
 
 # ── Step 7: Push DVC experiment ───────────────────────────────────
-echo "Pushing DVC experiment to GitHub..."
-dvc exp push origin || echo "WARNING: dvc exp push failed (non-fatal)"
+if should_attempt_dvc_push "$WORK_DIR"; then
+    echo "Pushing DVC experiment to GitHub..."
+    if dvc exp push origin; then
+        echo "DVC experiment push succeeded"
+    else
+        echo "WARNING: dvc exp push failed (non-fatal)" >&2
+    fi
+else
+    echo "Skipping dvc exp push: no Git auth detected for origin."
+    echo "Set DVC_PUSH_EXPERIMENTS=1 and configure GitHub auth on HPC to force a push attempt."
+fi
 
 # ── Step 8: Copy results back to shared project directory ─────────
 echo "Copying results back to ${PROJECT_DIR}..."
 
 # Pipeline outputs (sections, embeddings, etc.)
+DEST_LAWS_DIR="${PROJECT_DIR}/data/laws/${STATE}/${LOCALITY}"
+mkdir -p "$DEST_LAWS_DIR"
 rsync -a "data/laws/${STATE}/${LOCALITY}/" \
-    "${PROJECT_DIR}/data/laws/${STATE}/${LOCALITY}/"
+    "${DEST_LAWS_DIR}/"
 
 # Benchmark results
 OUTPUT_DIR="data/output/${STATE}-${LOCALITY}"

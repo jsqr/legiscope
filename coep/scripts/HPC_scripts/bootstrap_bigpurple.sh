@@ -8,7 +8,7 @@ set -euo pipefail
 PROJECT_HOME="/gpfs/data/cerdalab/LegalAI"
 PROJECT_ROOT="${PROJECT_HOME}/legiscope"
 DOCX_STAGE_DIR="${PROJECT_HOME}/docx_sources"
-REPO_URL="https://github.com/jsqr/legiscope.git"
+REPO_URL="git@github.com:jsqr/legiscope.git"
 BRANCH="main"
 STRICT=false
 NO_PULL=false
@@ -98,6 +98,28 @@ warn() {
     printf 'WARNING: %s\n' "$1" >&2
 }
 
+sync_repo_remote() {
+    local repo_dir="$1"
+    local current_origin=""
+
+    current_origin="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
+    if [[ -z "$current_origin" ]]; then
+        warn "No origin remote found in ${repo_dir}; skipping remote sync"
+        return
+    fi
+
+    if [[ "$current_origin" == "$REPO_URL" ]]; then
+        say ">>> Keeping existing origin remote"
+        say "Origin       : ${current_origin}"
+        return
+    fi
+
+    say ">>> Updating origin remote"
+    say "Old origin    : ${current_origin}"
+    say "New origin    : ${REPO_URL}"
+    git -C "$repo_dir" remote set-url origin "$REPO_URL"
+}
+
 configure_global_git_identity() {
     local existing_name existing_email
     existing_name="$(git config --global --get user.name 2>/dev/null || true)"
@@ -151,6 +173,7 @@ mkdir -p "$DOCX_STAGE_DIR"
 
 if [[ -d "${PROJECT_ROOT}/.git" ]]; then
     say ">>> Repo already exists"
+    sync_repo_remote "$PROJECT_ROOT"
     if [[ "$NO_PULL" == false ]]; then
         git -C "$PROJECT_ROOT" fetch --all --prune
         git -C "$PROJECT_ROOT" pull --ff-only origin "$BRANCH"

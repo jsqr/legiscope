@@ -186,6 +186,25 @@ class TestCombinedVariableExpansion:
 class TestEvaluator:
     """Test Evaluator class."""
 
+    def test_evaluation_result_schema_like_payload_is_unwrapped(self):
+        """Schema-wrapped payloads from vLLM should parse as EvaluationResult."""
+        payload = {
+            "description": "Structured output for the evaluation of a single query response.",
+            "properties": {
+                "score": 0,
+                "reasoning": "The generated answer is incorrect.",
+                "accuracy_label": "Incorrect",
+            },
+            "title": "EvaluationResult",
+            "type": "object",
+        }
+
+        result = EvaluationResult.model_validate(payload)
+
+        assert result.score == 0
+        assert result.reasoning == "The generated answer is incorrect."
+        assert result.accuracy_label == "Incorrect"
+
     def test_evaluate_response(self):
         """Test single response evaluation with mocked LLM."""
         mock_client = Mock()
