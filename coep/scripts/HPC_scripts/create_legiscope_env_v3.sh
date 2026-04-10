@@ -74,8 +74,13 @@ fi
 conda create -p "$ENV_PATH" python=3.12 pip -y
 conda activate "$ENV_PATH"
 
+echo ""
+echo ">>> Step 2a: Installing pandoc into the conda env"
+conda install -p "$ENV_PATH" -c conda-forge pandoc -y
+
 echo "  Python: $(python --version)"
 echo "  Pip: $(pip --version)"
+echo "  Pandoc: $(pandoc --version | head -1)"
 
 # ── Step 3: Install vLLM 0.19.0 (native Qwen3.5 support) ─────────
 echo ""

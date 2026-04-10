@@ -72,9 +72,22 @@ source ~/.bashrc
 export PYTHONNOUSERSITE=1
 # Skip 'module load anaconda3' — cuda/12.6 dependency has a read-only FS bug.
 # Conda is available via ~/.bashrc after 'conda init'.
-module load pandoc 2>/dev/null || true  # needed by convert_docx.sh; falls back to conda-installed
+module load pandoc 2>/dev/null || true  # optional: env should also provide pandoc
 # Uses the validated build: vLLM 0.19.0 + torch 2.10.0+cu128.
 conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
+
+if ! command -v pandoc >/dev/null 2>&1; then
+    module load pandoc 2>/dev/null || true
+fi
+
+if ! command -v pandoc >/dev/null 2>&1; then
+    echo "ERROR: pandoc is not available after environment setup." >&2
+    echo "Fix the shared env once with:" >&2
+    echo "  conda install -p /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3 -c conda-forge pandoc -y" >&2
+    exit 1
+fi
+
+echo "Pandoc detected: $(pandoc --version | head -1)"
 
 export HF_HOME=/gpfs/scratch/"$USER"/hf_cache
 export TRANSFORMERS_CACHE=/gpfs/scratch/"$USER"/hf_cache
