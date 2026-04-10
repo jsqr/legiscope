@@ -7,6 +7,7 @@ import tempfile
 from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
+from instructor.core.exceptions import FailedAttempt, InstructorRetryException
 import yaml
 
 if TYPE_CHECKING:
@@ -238,6 +239,66 @@ Some body text here."""
                 == DEFAULT_TEMPERATURE
             )
             assert result.total_levels == 1
+
+        finally:
+            os.unlink(test_file)
+
+    def test_scan_legal_text_retries_after_generation_failure(self):
+        """Test that malformed structured output is handed off to outer retries."""
+        sample_text = """CHAPTER 1: TEST
+
+Some body text here."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: TEST",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=2,
+            )
+
+            retry_error = InstructorRetryException(
+                "retry failed",
+                n_attempts=2,
+                total_usage=0,
+                failed_attempts=[
+                    FailedAttempt(
+                        attempt_number=1,
+                        exception=ValueError(
+                            "3 validation errors for HeadingStructure: heading_levels missing; "
+                            "total_levels missing; file_sample_size missing; input contained $defs and properties"
+                        ),
+                    )
+                ],
+            )
+
+            mock_client = Mock()
+            scan_result = ScanResult(
+                found=True, element_id=0, reasoning="Start of document"
+            )
+            mock_client.chat.completions.create.side_effect = [
+                scan_result,
+                retry_error,
+                mock_response,
+            ]
+
+            result = scan_legal_text(mock_client, test_file)
+
+            assert result.total_levels == 1
+            assert len(result.levels) == 1
+            assert mock_client.chat.completions.create.call_count == 3
 
         finally:
             os.unlink(test_file)

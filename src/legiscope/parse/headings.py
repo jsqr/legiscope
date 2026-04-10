@@ -70,7 +70,23 @@ class HeadingStructure(BaseModel):
     quality_score: float = 0.0
     iterations: int = 0
 
-    model_config = {"populate_by_name": True}
+    @model_validator(mode="before")
+    @classmethod
+    def _unwrap_schema_like_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        expected_keys = {"heading_levels", "levels", "total_levels", "file_sample_size"}
+        if expected_keys.intersection(data):
+            return data
+
+        properties = data.get("properties")
+        if isinstance(properties, dict) and expected_keys.intersection(properties):
+            return properties
+
+        return data
+
+    model_config = {"populate_by_name": True, "extra": "ignore"}
 
 
 # ── Heading pattern helpers ────────────────────────────────────────────

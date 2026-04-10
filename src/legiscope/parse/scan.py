@@ -7,6 +7,7 @@ import re
 
 import polars as pl
 from instructor import Instructor
+from instructor.core.exceptions import InstructorRetryException
 
 from legiscope.params import load_params
 from legiscope.parse.elements import split_elements
@@ -22,6 +23,7 @@ DEFAULT_TEMPERATURE = _params.get("llm", {}).get(
     "temperature", 0.0
 )  # Low temperature for consistent legal text analysis
 DEFAULT_MAX_RETRIES = _params.get("llm", {}).get("max_retries", 3)
+SCAN_CREATE_MAX_RETRIES = min(DEFAULT_MAX_RETRIES, 2)
 
 
 # ── Heading-like line heuristics ───────────────────────────────────────
@@ -89,6 +91,68 @@ def _format_raw_elements(elements_df: pl.DataFrame) -> str:
     return "\n".join(parts)
 
 
+def _is_context_length_error(exc: Exception) -> bool:
+    """Return True if *exc* looks like a model context-length failure."""
+    err = str(exc).lower()
+    return (
+        "maximum context length" in err
+        or "context length" in err
+        or "input_tokens" in err
+        or "max model len" in err
+    )
+
+
+def _summarize_generation_error(exc: Exception) -> str:
+    """Condense verbose Instructor/provider errors into short prompt feedback."""
+    err = str(exc)
+    lowered = err.lower()
+
+    if _is_context_length_error(exc):
+        return (
+            "Previous attempt exceeded the model context window. Return only one "
+            "compact JSON object with the required top-level keys and no schema metadata."
+        )
+
+    if "validation errors for headingstructure" in lowered:
+        if "$defs" in err or "properties" in err:
+            return (
+                "Previous attempt returned a JSON schema wrapper instead of a "
+                "HeadingStructure instance. Put `heading_levels`, `total_levels`, "
+                "and `file_sample_size` at the top level."
+            )
+        return (
+            "Previous attempt was not a valid HeadingStructure object. Return one "
+            "JSON object with all required top-level fields."
+        )
+
+    compact = " ".join(err.split())
+    return compact[:240]
+
+
+def _generation_feedback_from_exception(exc: Exception) -> list[str]:
+    """Extract concise, de-duplicated feedback from Instructor retry errors."""
+    feedback: list[str] = []
+
+    if isinstance(exc, InstructorRetryException):
+        failed_attempts = exc.failed_attempts or []
+        for failed_attempt in failed_attempts[-3:]:
+            message = _summarize_generation_error(failed_attempt.exception)
+            if message and message not in feedback:
+                feedback.append(message)
+
+    top_level_message = _summarize_generation_error(exc)
+    if top_level_message and top_level_message not in feedback:
+        feedback.append(top_level_message)
+
+    if not feedback:
+        feedback.append(
+            "Previous attempt failed to produce valid JSON output. Return one "
+            "HeadingStructure JSON object only."
+        )
+
+    return feedback[:5]
+
+
 # ── System prompt ──────────────────────────────────────────────────────
 
 SCAN_SYSTEM_PROMPT = """\
@@ -143,7 +207,28 @@ RULES:
     Only structural division markers (titles, chapters, articles, sections, parts, etc.)
     are headings.
 
-OUTPUT: valid JSON matching HeadingStructure schema. No commentary."""
+OUTPUT REQUIREMENTS:
+- Return exactly one JSON object representing a HeadingStructure instance.
+- Use these exact top-level keys: `heading_levels`, `total_levels`, `file_sample_size`,
+    `toc_line_ranges`, `outline_warnings`, `quality_score`, `iterations`.
+- Each item in `heading_levels` must be an object with these keys: `level`,
+    `regex_pattern`, `regex_patterns`, `markdown_prefix`, `example_heading`,
+    `type_label`, `number_regex`, `multiline`, `inferred`, `outline_line_numbers`.
+- Do not return JSON Schema or metadata. Never include keys like `$defs`, `properties`,
+    `required`, `title`, `type`, or `description`.
+- Do not wrap the answer inside `properties` or any other container.
+- No commentary, no Markdown fences, no prose.
+
+OUTPUT TEMPLATE:
+{
+    "heading_levels": [...],
+    "total_levels": 0,
+    "file_sample_size": 0,
+    "toc_line_ranges": [],
+    "outline_warnings": [],
+    "quality_score": 0.0,
+    "iterations": 0
+}"""
 
 
 # ── Verification ───────────────────────────────────────────────────────
@@ -455,6 +540,7 @@ def scan_headings(
     error_feedback: list[str] = []
     best_structure: HeadingStructure | None = None
     best_score = 0.0
+    last_generation_error: list[str] = []
 
     for iteration in range(1, max_iterations + 1):
         logger.info(
@@ -474,6 +560,8 @@ def scan_headings(
             f"({code_elements.height} total).\n"
             f"Identify which elements are headings, group by level, create regex "
             f"patterns, and list element ids in outline_line_numbers.\n"
+            f"Return a single JSON object only. Use `heading_levels` as the top-level "
+            f"array key. Do not return schema keys like `$defs` or `properties`.\n"
         )
         if error_feedback:
             feedback_text = "\n".join(f"- {e}" for e in error_feedback[:20])
@@ -481,15 +569,35 @@ def scan_headings(
                 f"\nPREVIOUS ATTEMPT HAD THESE ISSUES (please fix):\n{feedback_text}\n"
             )
 
-        structure = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": SCAN_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            response_model=HeadingStructure,
-            temperature=DEFAULT_TEMPERATURE,
-            max_retries=DEFAULT_MAX_RETRIES,
-        )
+        try:
+            structure = client.chat.completions.create(
+                messages=[
+                    {"role": "system", "content": SCAN_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+                response_model=HeadingStructure,
+                temperature=DEFAULT_TEMPERATURE,
+                max_retries=SCAN_CREATE_MAX_RETRIES,
+            )
+        except Exception as exc:
+            generation_feedback = _generation_feedback_from_exception(exc)
+            last_generation_error = generation_feedback
+            logger.warning(
+                "Iteration {} failed before scoring: {}",
+                iteration,
+                generation_feedback[0],
+            )
+            error_feedback = generation_feedback
+            if _is_context_length_error(exc):
+                reduced_sample_count = max(50, sample_count - 50)
+                if reduced_sample_count < sample_count:
+                    logger.warning(
+                        "Reducing sample_count from {} to {} after context-length failure",
+                        sample_count,
+                        reduced_sample_count,
+                    )
+                    sample_count = reduced_sample_count
+            continue
 
         # Phase 3: Evaluate on full code elements
         score, errors = score_structure(code_elements, structure)
@@ -506,7 +614,16 @@ def scan_headings(
         error_feedback = errors
         sample_count += 100
 
-    assert best_structure is not None
+    if best_structure is None:
+        detail = " ".join(last_generation_error).strip()
+        if detail:
+            raise RuntimeError(
+                "Failed to generate heading structure after "
+                f"{max_iterations} attempts. {detail}"
+            )
+        raise RuntimeError(
+            f"Failed to generate heading structure after {max_iterations} attempts."
+        )
 
     # Finalize
     verification_warnings = verify_structure(best_structure, code_elements)
