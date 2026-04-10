@@ -46,6 +46,7 @@ export HF_HOME=/gpfs/scratch/$USER/hf_cache
 # ── Start vLLM server ────────────────────────────────────────────
 MODEL_ID="Qwen/Qwen3.5-4B"
 export MODEL_ID
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 API_KEY="test-key-${SLURM_JOB_ID}"
 
@@ -55,6 +56,7 @@ echo "  Job ID:    ${SLURM_JOB_ID}"
 echo "  Node:      $(hostname)"
 echo "  GPU:       $(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null || echo 'unknown')"
 echo "  Port:      ${VLLM_PORT}"
+echo "  Max ctx:   ${VLLM_MAX_MODEL_LEN}"
 echo "  Started:   $(date)"
 echo "============================================"
 
@@ -68,7 +70,7 @@ python -m vllm.entrypoints.openai.api_server \
     --host 0.0.0.0 \
     --port "$VLLM_PORT" \
     --gpu-memory-utilization 0.90 \
-    --max-model-len 4096 \
+    --max-model-len "$VLLM_MAX_MODEL_LEN" \
     --api-key "$API_KEY" \
     --served-model-name "$MODEL_ID" \
     --download-dir /gpfs/scratch/"$USER"/hf_cache \

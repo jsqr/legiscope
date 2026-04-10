@@ -159,17 +159,19 @@ bash scripts/convert_docx.sh "$RAW_DIR"
 # Use Python to find a free port, avoiding conflicts with other jobs
 # that may share this compute node.
 MODEL_ID="Qwen/Qwen3.5-4B"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
+echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
 
 python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_ID" \
     --host 0.0.0.0 \
     --port "$VLLM_PORT" \
     --gpu-memory-utilization 0.90 \
-    --max-model-len 4096 \
+    --max-model-len "$VLLM_MAX_MODEL_LEN" \
     --api-key "$API_KEY" \
     --served-model-name "$MODEL_ID" \
     --download-dir /gpfs/scratch/"$USER"/hf_cache \

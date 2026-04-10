@@ -79,16 +79,18 @@ configure_git_identity "$(pwd)"
 # ── Start vLLM server ───────────────────────────────────────────
 MODEL_ID="Qwen/Qwen3.5-4B"
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
+echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
 
 VLLM_HOST=127.0.0.1
 
 python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_ID" \
     --host 0.0.0.0 --port "$VLLM_PORT" \
-    --gpu-memory-utilization 0.90 --max-model-len 4096 \
+    --gpu-memory-utilization 0.90 --max-model-len "$VLLM_MAX_MODEL_LEN" \
     --api-key "$API_KEY" \
     --served-model-name "$MODEL_ID" \
     --download-dir /gpfs/scratch/$USER/hf_cache \
