@@ -87,7 +87,8 @@ should_attempt_dvc_push() {
     fi
 
     if [[ "$origin_url" == git@* || "$origin_url" == ssh://* ]]; then
-        [[ -n "${SSH_AUTH_SOCK:-}" || -r "${HOME}/.ssh/id_ed25519" || -r "${HOME}/.ssh/id_rsa" ]]
+        GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" \
+            git -C "$repo_dir" ls-remote --exit-code origin HEAD >/dev/null 2>&1
         return $?
     fi
 
