@@ -107,6 +107,17 @@ require_cmd() {
 require_cmd ssh
 require_cmd rsync
 
+ssh_run() {
+    local remote="$1"
+    local command="$2"
+
+    if [[ -n "$SSH_JUMP" ]]; then
+        ssh -J "$SSH_JUMP" "$remote" "$command"
+    else
+        ssh "$remote" "$command"
+    fi
+}
+
 [[ -n "$NETID" ]] || die "--netid is required"
 [[ -n "$LOCAL_DOCX_DIR" ]] || die "--docx-dir is required"
 [[ -d "$LOCAL_DOCX_DIR" ]] || die "local DOCX directory not found: $LOCAL_DOCX_DIR"
@@ -122,10 +133,8 @@ if ! compgen -G "${LOCAL_DOCX_DIR}/*.docx" >/dev/null; then
 fi
 
 REMOTE="${NETID}@${HOST}"
-SSH_ARGS=()
 RSYNC_RSH="ssh"
 if [[ -n "$SSH_JUMP" ]]; then
-    SSH_ARGS=(-J "$SSH_JUMP")
     RSYNC_RSH="ssh -J ${SSH_JUMP}"
 fi
 
@@ -153,7 +162,7 @@ say ">>> Checking remote repo exists"
 if [[ "$DRY_RUN" == true ]]; then
     say "ssh ${REMOTE} \"${REMOTE_REPO_CHECK_CMD}\""
 else
-    if ! ssh "${SSH_ARGS[@]}" "$REMOTE" "$REMOTE_REPO_CHECK_CMD"; then
+    if ! ssh_run "$REMOTE" "$REMOTE_REPO_CHECK_CMD"; then
         die "remote repo not found at ${PROJECT_ROOT}; run bootstrap_bigpurple.sh on BigPurple first"
     fi
 fi
@@ -169,7 +178,7 @@ say ">>> Ensuring remote directories exist"
 if [[ "$DRY_RUN" == true ]]; then
     say "ssh ${REMOTE} \"${REMOTE_SETUP_CMD}\""
 else
-    ssh "${SSH_ARGS[@]}" "$REMOTE" "$REMOTE_SETUP_CMD"
+    ssh_run "$REMOTE" "$REMOTE_SETUP_CMD"
 fi
 
 say ">>> Syncing query CSV"
@@ -202,7 +211,7 @@ EOF
 if [[ "$DRY_RUN" == true ]]; then
     say "ssh ${REMOTE} \"${VERIFY_CMD}\""
 else
-    ssh "${SSH_ARGS[@]}" "$REMOTE" "$VERIFY_CMD"
+    ssh_run "$REMOTE" "$VERIFY_CMD"
 fi
 
 say ""

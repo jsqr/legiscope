@@ -39,7 +39,7 @@
 #   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx \
 #       coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 #
-set -euo pipefail
+set -eo pipefail
 
 # ── Validate required inputs ─────────────────────────────────────
 for var in STATE LOCALITY DOCX_PATH; do
@@ -66,6 +66,8 @@ echo "Started : $(date)"
 echo "==========================================="
 
 # ── Environment setup ─────────────────────────────────────────────
+# BigPurple's /etc/bashrc references BASHRCSOURCED before defining it,
+# so these SLURM wrappers cannot enable nounset while sourcing ~/.bashrc.
 source ~/.bashrc
 export PYTHONNOUSERSITE=1
 # Skip 'module load anaconda3' — cuda/12.6 dependency has a read-only FS bug.
@@ -78,6 +80,26 @@ export HF_HOME=/gpfs/scratch/"$USER"/hf_cache
 export TRANSFORMERS_CACHE=/gpfs/scratch/"$USER"/hf_cache
 
 PROJECT_DIR="/gpfs/data/cerdalab/LegalAI/legiscope"
+
+configure_git_identity() {
+    local repo_dir="$1"
+    local git_name="${GIT_USER_NAME:-${GIT_AUTHOR_NAME:-}}"
+    local git_email="${GIT_USER_EMAIL:-${GIT_AUTHOR_EMAIL:-}}"
+
+    if [[ -z "$git_name" ]]; then
+        git_name="$(git -C "$PROJECT_DIR" config --get user.name 2>/dev/null || true)"
+    fi
+    if [[ -z "$git_email" ]]; then
+        git_email="$(git -C "$PROJECT_DIR" config --get user.email 2>/dev/null || true)"
+    fi
+
+    git_name="${git_name:-${USER:-legiscope-hpc}}"
+    git_email="${git_email:-${USER:-legiscope-hpc}@bigpurple.local}"
+
+    git -C "$repo_dir" config user.name "$git_name"
+    git -C "$repo_dir" config user.email "$git_email"
+    echo "Configured git identity for DVC: ${git_name} <${git_email}>"
+}
 
 # ── Step 1: Create isolated working copy ──────────────────────────
 # Each job gets its own copy of the repo in $TMPDIR to avoid
@@ -98,6 +120,7 @@ rsync -a \
 rsync -a "${PROJECT_DIR}/.git/" "${WORK_DIR}/.git/"
 
 cd "$WORK_DIR"
+export PYTHONPATH="$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 # Load environment variables (.env has API keys including OPENROUTER_API_KEY)
 if [[ -f .env ]]; then
@@ -105,6 +128,8 @@ if [[ -f .env ]]; then
     source .env
     set +a
 fi
+
+configure_git_identity "$WORK_DIR"
 
 # ── Step 2: Edit params.yaml with jurisdiction metadata ───────────
 echo "Setting params.yaml: ${STATE} / ${LOCALITY} / ${CODE_SLUG}..."
@@ -160,7 +185,7 @@ VLLM_HOST=127.0.0.1
 READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
 
 echo "Waiting for vLLM server on ${READY_URL} (PID $VLLM_PID)..."
-TIMEOUT=900
+TIMEOUT=1200
 ELAPSED=0
 while ! curl -sf "$READY_URL" >/dev/null 2>&1; do
     if ! kill -0 "$VLLM_PID" 2>/dev/null; then
