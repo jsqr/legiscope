@@ -41,6 +41,7 @@ conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
 
 export HF_HOME=/gpfs/scratch/$USER/hf_cache
 export TRANSFORMERS_CACHE=/gpfs/scratch/$USER/hf_cache
+GITHUB_SSH_REMOTE="${GITHUB_SSH_REMOTE:-git@github.com:jsqr/legiscope.git}"
 
 cd /gpfs/data/cerdalab/LegalAI/legiscope
 
@@ -62,6 +63,19 @@ configure_git_identity() {
     git -C "$repo_dir" config user.name "$git_name"
     git -C "$repo_dir" config user.email "$git_email"
     echo "Configured git identity for DVC: ${git_name} <${git_email}>"
+}
+
+sync_origin_to_ssh() {
+    local repo_dir="$1"
+    local origin_url=""
+
+    origin_url="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
+    [[ -n "$origin_url" ]] || return 0
+
+    if [[ "$origin_url" != "$GITHUB_SSH_REMOTE" ]]; then
+        echo "Updating origin remote for HPC pushes: ${origin_url} -> ${GITHUB_SSH_REMOTE}"
+        git -C "$repo_dir" remote set-url origin "$GITHUB_SSH_REMOTE"
+    fi
 }
 
 should_attempt_dvc_push() {
@@ -106,6 +120,7 @@ source .env
 set +a
 
 configure_git_identity "$(pwd)"
+sync_origin_to_ssh "$(pwd)"
 
 # ── Start vLLM server ───────────────────────────────────────────
 MODEL_ID="Qwen/Qwen3.5-4B"

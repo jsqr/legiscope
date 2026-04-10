@@ -1143,3 +1143,67 @@ class TestScoreStructure:
 
         score, errors = score_structure(elements, structure)
         assert score == 0.0
+
+    def test_compound_identifiers_do_not_trigger_false_ordering_penalty(self):
+        """Compound numeric ids should be compared naturally, not lexicographically."""
+        from legiscope.parse.scan import score_structure
+
+        lines = [
+            "§ 1-100. First section.",
+            "§ 2-100. Second section.",
+            "§ 10-100. Tenth section.",
+        ]
+        elements = self._make_elements(lines)
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^§\s*\d+(?:-\d+)+\.\s*.*$"],
+                    markdown_prefix="# ",
+                    example_heading="§ 1-100. First section.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=1,
+            file_sample_size=len(lines),
+        )
+
+        score, errors = score_structure(elements, structure)
+
+        assert score >= 0.8
+        assert not any("out-of-order siblings" in error.lower() for error in errors)
+
+    def test_outline_mismatch_penalises_broad_regex(self):
+        """Broad regexes should be penalized when they disagree with outline ids."""
+        from legiscope.parse.scan import score_structure
+
+        lines = [
+            "1-100   Proper heading",
+            "1-100 body text that should not be a heading",
+            "2-100   Another heading",
+            "2-100 more body text that should not be a heading",
+        ]
+        elements = self._make_elements(lines)
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^\d+(?:-\d+)+\s+.*$"],
+                    markdown_prefix="# ",
+                    example_heading="1-100   Proper heading",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                    outline_line_numbers=[0, 2],
+                ),
+            ],
+            total_levels=1,
+            file_sample_size=len(lines),
+        )
+
+        score, errors = score_structure(elements, structure)
+
+        assert score < 0.8
+        assert any("outline mismatch" in error.lower() for error in errors)

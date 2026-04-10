@@ -12,7 +12,7 @@ from instructor.core.exceptions import InstructorRetryException
 from legiscope.params import load_params
 from legiscope.parse.elements import split_elements
 from legiscope.parse.find_code_start import find_code_start
-from legiscope.parse.headings import HeadingStructure
+from legiscope.parse.headings import HeadingLevel, HeadingStructure
 
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -244,11 +244,158 @@ def _verify_compile_patterns(
             continue
         for pat_str in level.regex_patterns:
             try:
-                c = re.compile(pat_str, re.IGNORECASE)
+                c = re.compile(pat_str, re.IGNORECASE | re.MULTILINE)
                 compiled.append((level.level, c, pat_str))
             except re.error as e:
                 warnings.append(f"Level {level.level}: invalid regex '{pat_str}': {e}")
     return compiled, warnings
+
+
+def _matched_element_ids_by_level(
+    elements_df: pl.DataFrame,
+    compiled: list[tuple[int, "re.Pattern[str]", str]],
+) -> dict[int, set[int]]:
+    """Return element ids matched by each compiled level pattern."""
+    matched_by_level: dict[int, set[int]] = {}
+    for row in elements_df.to_dicts():
+        eid = row["element_id"]
+        first_line = row["text"].split("\n")[0].strip()
+        if not first_line:
+            continue
+        for level, pattern, _ in compiled:
+            if pattern.match(first_line):
+                matched_by_level.setdefault(level, set()).add(eid)
+    return matched_by_level
+
+
+def _check_outline_alignment(
+    structure: HeadingStructure,
+    compiled: list[tuple[int, "re.Pattern[str]", str]],
+    elements_df: pl.DataFrame,
+) -> tuple[list[str], float]:
+    """Compare regex matches to the model's own outline_line_numbers per level."""
+    warnings: list[str] = []
+    level_scores: list[float] = []
+    matched_by_level = _matched_element_ids_by_level(elements_df, compiled)
+
+    for level in structure.levels:
+        if level.inferred or not level.outline_line_numbers:
+            continue
+
+        expected = set(level.outline_line_numbers)
+        matched = matched_by_level.get(level.level, set())
+        true_positives = expected & matched
+
+        precision = len(true_positives) / len(matched) if matched else 0.0
+        recall = len(true_positives) / len(expected) if expected else 1.0
+        if precision + recall > 0:
+            f1 = 2 * precision * recall / (precision + recall)
+        else:
+            f1 = 0.0
+        level_scores.append(f1)
+
+        if precision < 0.85 or recall < 0.85:
+            warnings.append(
+                f"Level {level.level} outline mismatch: regex matched {len(matched)} elements "
+                f"vs {len(expected)} declared headings (precision {precision:.0%}, recall {recall:.0%})"
+            )
+
+    if not level_scores:
+        return warnings, 1.0
+
+    return warnings, sum(level_scores) / len(level_scores)
+
+
+def _identifier_sort_key(identifier: str) -> tuple[int | str, ...] | None:
+    """Build a natural sort key for identifiers like 1-100, 2-3, or A-10."""
+    parts = re.findall(r"\d+|[A-Za-z]+", identifier)
+    if not parts:
+        return None
+
+    key: list[int | str] = []
+    for part in parts:
+        if part.isdigit():
+            key.append(int(part))
+        else:
+            key.append(part.lower())
+    return tuple(key)
+
+
+def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
+    """Tighten obvious article/chapter/section regexes using the example heading."""
+    example = level.example_heading.strip()
+    label = level.type_label.lower().strip()
+
+    if label == "article":
+        match = re.match(r"^ARTICLE\s+([IVXLCDM]+|\d+)\b", example, re.IGNORECASE)
+        if match:
+            token = match.group(1)
+            numeral_pattern = (
+                r"[IVXLCDM]+"
+                if re.fullmatch(r"[IVXLCDM]+", token, re.IGNORECASE)
+                else r"\d+"
+            )
+            level.regex_pattern = rf"^ARTICLE\s+{numeral_pattern}\s+.*$"
+            level.regex_patterns = [level.regex_pattern]
+            level.number_regex = numeral_pattern
+        return
+
+    if label == "chapter":
+        match = re.match(r"^CHAPTER\s+(\d+)\b", example, re.IGNORECASE)
+        if match:
+            level.regex_pattern = r"^CHAPTER\s+\d+\s+.*$"
+            level.regex_patterns = [level.regex_pattern]
+            level.number_regex = r"\d+"
+        return
+
+    if label == "section":
+        match = re.match(r"^(§\s*)?(\d+(?:-\d+)+)", example)
+        if match:
+            has_section_symbol = bool(match.group(1))
+            identifier = match.group(2)
+            component_count = identifier.count("-")
+            prefix = r"^§\s*" if has_section_symbol else r"^"
+            id_pattern = r"\d+" + (r"(?:-\d+)" * component_count)
+            suffix = example[match.end() :]
+            if suffix.lstrip().startswith("."):
+                ending = r"\.\s*.*$"
+            elif suffix.lstrip().startswith(":"):
+                ending = r":\s*.*$"
+            else:
+                ending = r"\s+.*$"
+            level.regex_pattern = prefix + id_pattern + ending
+            level.regex_patterns = [level.regex_pattern]
+            level.number_regex = id_pattern
+
+
+def _normalize_scanned_structure(structure: HeadingStructure) -> HeadingStructure:
+    """Apply conservative post-processing to LLM output before scoring."""
+    explicit_levels = [level for level in structure.levels if not level.inferred]
+    explicit_counts = [len(level.outline_line_numbers) for level in explicit_levels]
+
+    if (
+        len(explicit_levels) >= 3
+        and all(count > 0 for count in explicit_counts)
+        and any(
+            explicit_counts[index] > explicit_counts[index + 1]
+            for index in range(len(explicit_counts) - 1)
+        )
+    ):
+        ordered_explicit = sorted(
+            explicit_levels,
+            key=lambda level: (len(level.outline_line_numbers), level.level),
+        )
+        inferred_levels = [level for level in structure.levels if level.inferred]
+        structure.levels = inferred_levels + ordered_explicit
+
+    for new_level, level in enumerate(structure.levels, start=1):
+        level.level = new_level
+        _apply_example_based_pattern_refinement(level)
+        if not level.markdown_prefix.strip():
+            level.markdown_prefix = "#" * min(new_level, 4)
+
+    structure.total_levels = len(structure.levels)
+    return structure
 
 
 def _check_completeness(
@@ -263,7 +410,9 @@ def _check_completeness(
         first_line = row["text"].split("\n")[0].strip()
         if not first_line:
             continue
-        matching_levels = [lvl for lvl, pat, _ in compiled if pat.match(first_line)]
+        matching_levels = sorted(
+            set(lvl for lvl, pat, _ in compiled if pat.match(first_line))
+        )
         if len(matching_levels) > 1:
             if ambiguous < 10:
                 warnings.append(
@@ -360,6 +509,7 @@ def _check_sibling_ordering(
         except re.error:
             continue
         prev_id: str | None = None
+        prev_key: tuple[int | str, ...] | None = None
         for text in element_texts:
             matched_this_level = any(
                 _lvl == level.level and pat.match(text) for _lvl, pat, _ in compiled
@@ -370,20 +520,15 @@ def _check_sibling_ordering(
             if not nm:
                 continue
             current_id = nm.group(0)
-            if prev_id is not None and current_id < prev_id:
-                try:
-                    if int(current_id) < int(prev_id):
-                        warnings.append(
-                            f"Out-of-order siblings at level {level.level}: "
-                            f"'{current_id}' after '{prev_id}'"
-                        )
-                except ValueError:
-                    if current_id < prev_id:
-                        warnings.append(
-                            f"Out-of-order siblings at level {level.level}: "
-                            f"'{current_id}' after '{prev_id}'"
-                        )
+            current_key = _identifier_sort_key(current_id)
+            if prev_id is not None and prev_key is not None and current_key is not None:
+                if current_key < prev_key:
+                    warnings.append(
+                        f"Out-of-order siblings at level {level.level}: "
+                        f"'{current_id}' after '{prev_id}'"
+                    )
             prev_id = current_id
+            prev_key = current_key
     return warnings
 
 
@@ -433,7 +578,7 @@ def score_structure(
         is_hl = is_heading_like(first_line)
         if is_hl:
             heading_like_count += 1
-        matching = [lvl for lvl, pat, _ in compiled if pat.match(first_line)]
+        matching = sorted(set(lvl for lvl, pat, _ in compiled if pat.match(first_line)))
         if len(matching) >= 1:
             matched_count += 1
             if is_hl:
@@ -446,11 +591,11 @@ def score_structure(
         errors.append("No elements matched any pattern")
         return 0.0, errors
 
-    # Precision (0.2) — matched exactly once / total matched
+    # Precision (0.15) — matched exactly once / total matched
     exactly_one = matched_count - ambiguous_count
     precision = exactly_one / matched_count if matched_count > 0 else 1.0
 
-    # Recall (0.3) — fraction of heading-like elements captured by patterns
+    # Recall (0.25) — fraction of heading-like elements captured by patterns
     if heading_like_count > 0:
         recall = heading_like_matched / heading_like_count
     else:
@@ -461,7 +606,7 @@ def score_structure(
             f"{heading_like_count} heading-like elements ({recall:.0%})"
         )
 
-    # Pattern validity (0.2) — fraction of non-inferred patterns matching >= 1 element
+    # Pattern validity (0.15) — fraction of non-inferred patterns matching >= 1 element
     all_text = "\n".join(elements_df["text"].to_list())
     valid_patterns = 0
     total_patterns = 0
@@ -490,18 +635,31 @@ def score_structure(
     errors.extend(pc_warnings)
     pc_score = 0.0 if pc_warnings else 1.0
 
+    # Outline alignment (0.15) — regexes should agree with declared outline ids
+    outline_warnings, outline_alignment_score = _check_outline_alignment(
+        structure, compiled, elements_df
+    )
+    errors.extend(outline_warnings)
+
     # Completeness warnings for error feedback
     completeness_warnings = _check_completeness(elements_df, compiled)
     errors.extend(completeness_warnings)
 
     score = (
-        0.2 * precision
-        + 0.3 * recall
-        + 0.2 * pattern_validity
+        0.15 * precision
+        + 0.25 * recall
+        + 0.15 * pattern_validity
         + 0.1 * sibling_score
         + 0.1 * ambiguity_score
         + 0.1 * pc_score
+        + 0.15 * outline_alignment_score
     )
+
+    # Quality gates: cap score when critical metrics are poor
+    if recall < 0.5:
+        score = min(score, recall + 0.3)
+    if outline_alignment_score < 0.8:
+        score = min(score, outline_alignment_score + 0.1)
 
     return score, errors
 
@@ -579,6 +737,7 @@ def scan_headings(
                 temperature=DEFAULT_TEMPERATURE,
                 max_retries=SCAN_CREATE_MAX_RETRIES,
             )
+            structure = _normalize_scanned_structure(structure)
         except Exception as exc:
             generation_feedback = _generation_feedback_from_exception(exc)
             last_generation_error = generation_feedback

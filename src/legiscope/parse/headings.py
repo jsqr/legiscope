@@ -56,6 +56,12 @@ class HeadingLevel(BaseModel):
                 self.regex_pattern = self.regex_patterns[0]
             else:
                 self.regex_pattern = "|".join(f"(?:{p})" for p in self.regex_patterns)
+
+        prefix = self.markdown_prefix.strip()
+        if prefix:
+            self.markdown_prefix = prefix
+        else:
+            self.markdown_prefix = "#" * min(max(self.level, 1), 4)
         return self
 
 
