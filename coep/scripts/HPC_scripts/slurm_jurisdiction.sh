@@ -81,6 +81,22 @@ export TRANSFORMERS_CACHE=/gpfs/scratch/"$USER"/hf_cache
 
 PROJECT_DIR="/gpfs/data/cerdalab/LegalAI/legiscope"
 
+resolve_tmp_root() {
+    local candidate
+    local scratch_root="${SCRATCH:-/gpfs/scratch/${USER}}"
+
+    for candidate in "${TMPDIR:-}" "${scratch_root}/tmp" "${scratch_root}" "/tmp"; do
+        [[ -n "$candidate" ]] || continue
+        if mkdir -p "$candidate" 2>/dev/null && [[ -w "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    echo "ERROR: Could not find a writable temporary directory" >&2
+    return 1
+}
+
 configure_git_identity() {
     local repo_dir="$1"
     local git_name="${GIT_USER_NAME:-${GIT_AUTHOR_NAME:-}}"
@@ -104,7 +120,10 @@ configure_git_identity() {
 # ── Step 1: Create isolated working copy ──────────────────────────
 # Each job gets its own copy of the repo in $TMPDIR to avoid
 # params.yaml and ChromaDB race conditions with concurrent jobs.
-WORK_DIR="${TMPDIR:-/tmp}/legiscope_${SLURM_JOB_ID}"
+TMPDIR="$(resolve_tmp_root)"
+export TMPDIR
+WORK_DIR="${TMPDIR}/legiscope_${SLURM_JOB_ID}"
+mkdir -p "$TMPDIR"
 echo "Creating working copy: ${WORK_DIR}"
 mkdir -p "$WORK_DIR"
 
