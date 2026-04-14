@@ -1207,3 +1207,51 @@ class TestScoreStructure:
 
         assert score < 0.8
         assert any("outline mismatch" in error.lower() for error in errors)
+
+
+class TestScanNormalization:
+    """Tests for scan-time normalization of heading structures."""
+
+    def test_reordered_levels_also_reset_markdown_prefixes(self):
+        """Markdown prefixes should follow normalized level order, not stale LLM output."""
+        from legiscope.parse.scan import _normalize_scanned_structure
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^ARTICLE\s+[IVXLCDM]+\s+.*$"],
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I   POWERS OF THE CITY",
+                    type_label="article",
+                    outline_line_numbers=[116],
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_patterns=[r"^\d+(?:-\d+)\s+.*$"],
+                    markdown_prefix="##",
+                    example_heading="1-100   The City's Powers Defined",
+                    type_label="section",
+                    outline_line_numbers=list(range(117, 180)),
+                ),
+                HeadingLevel(
+                    level=3,
+                    regex_patterns=[r"^CHAPTER\s+\d+\s+.*$"],
+                    markdown_prefix="###",
+                    example_heading="CHAPTER 1   THE COUNCIL",
+                    type_label="chapter",
+                    outline_line_numbers=[120, 121, 129, 135],
+                ),
+            ],
+            total_levels=3,
+            file_sample_size=200,
+        )
+
+        normalized = _normalize_scanned_structure(structure)
+
+        assert normalized.levels[0].type_label == "article"
+        assert normalized.levels[0].markdown_prefix == "#"
+        assert normalized.levels[1].type_label == "chapter"
+        assert normalized.levels[1].markdown_prefix == "##"
+        assert normalized.levels[2].type_label == "section"
+        assert normalized.levels[2].markdown_prefix == "###"

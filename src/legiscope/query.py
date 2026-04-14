@@ -4,6 +4,8 @@ Query processing module for the legiscope package.
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
+import re
 from rapidfuzz import fuzz
 from pathlib import Path
 from typing import Any, Callable, cast
@@ -17,6 +19,11 @@ from pydantic import BaseModel, Field
 
 from legiscope.llm_config import Config
 from legiscope.params import load_params
+from legiscope.retrieval_guidance import (
+    RetrievalGuidance,
+    RetrievalGuidanceProvider,
+    RetrievalGuidanceRequest,
+)
 from legiscope.retrieve import (
     filter_sections,
     retrieve_sections,
@@ -26,18 +33,18 @@ from legiscope.retrieve import (
 from legiscope.utils import ask, LLMConfig
 
 
-def _query_params() -> dict:
+def _query_params() -> dict[str, Any]:
     """Load query-related params from params.yaml."""
     p = load_params()
     return p.get("query", {})
 
 
-def _llm_params() -> dict:
+def _llm_params() -> dict[str, Any]:
     p = load_params()
     return p.get("llm", {})
 
 
-def _retrieval_params() -> dict:
+def _retrieval_params() -> dict[str, Any]:
     p = load_params()
     return p.get("retrieval", {})
 
@@ -75,6 +82,59 @@ DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
     "fuzzy_match_threshold", 0.9
 )
 
+DEBUG_SECTION_LIMIT = 5
+DEBUG_SEGMENT_LIMIT = 8
+DEBUG_TEXT_LIMIT = 400
+DEBUG_REASONING_LIMIT = 300
+
+_MONTH_NAME_PATTERN = (
+    r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+    r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
+    r"Nov(?:ember)?|Dec(?:ember)?"
+)
+_NUMERIC_DATE_RE = re.compile(
+    r"\b(?P<month>\d{1,2})[/-](?P<day>\d{1,2})[/-](?P<year>\d{2,4})\b"
+)
+_ISO_DATE_RE = re.compile(
+    r"\b(?P<year>\d{4})[/-](?P<month>\d{1,2})[/-](?P<day>\d{1,2})\b"
+)
+_MONTH_DAY_YEAR_RE = re.compile(
+    rf"\b(?P<month>{_MONTH_NAME_PATTERN})\.?\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?[,]?\s+(?P<year>\d{4})\b",
+    re.IGNORECASE,
+)
+_MONTH_YEAR_RE = re.compile(
+    rf"\b(?P<month>{_MONTH_NAME_PATTERN})\.?\s+(?P<year>\d{{4}})\b",
+    re.IGNORECASE,
+)
+_NUMERIC_MONTH_YEAR_RE = re.compile(r"\b(?P<month>\d{1,2})[/-](?P<year>\d{4})\b")
+_YEAR_ONLY_RE = re.compile(r"\b(?P<year>(?:18|19|20|21)\d{2})\b")
+_DATE_PLACEHOLDER_RE = re.compile(r"<[^>]*date[^>]*>", re.IGNORECASE)
+_CITATION_PATTERNS = [
+    re.compile(
+        r"(?:relevant\s+)?citation\s*(?:is|:)\s*(?P<citation>[^\n]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"relevant\s+law\s*(?:is|:)\s*(?P<citation>[^\n]+)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<citation>\d+\s+(?:P\.S\.|U\.S\.C\.)\s*§+\s*[\w().-]+)\b",
+        re.IGNORECASE,
+    ),
+]
+_UNKNOWN_TOKENS = {
+    "unknown",
+    "unkown",
+    "not known",
+    "not available",
+    "n/a",
+    "na",
+    "none",
+    "blank",
+}
+
 
 @dataclass
 class QueryInput:
@@ -97,6 +157,8 @@ class QuerySettings:
         filter_relevance: Whether to filter sections by relevance before LLM
         relevance_threshold: Minimum confidence score for relevance filtering
         filter_llm: Separate LLM config for filtering (uses llm if None)
+        retrieval_guidance: Optional per-query retrieval guidance injected by
+            a caller-provided project hook
 
     Example:
         >>> from legiscope.utils import LLMConfig
@@ -121,6 +183,7 @@ class QuerySettings:
     filter_relevance: bool = DEFAULT_RELEVANCE_FILTER_ENABLED
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     filter_llm: LLMConfig | None = None
+    retrieval_guidance: RetrievalGuidance | None = None
 
     # Validation
     validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
@@ -150,6 +213,8 @@ class BatchQuerySettings:
         use_hyde: Whether to apply HYDE query rewriting
         filter_relevance: Whether to filter sections by relevance
         relevance_threshold: Minimum confidence for relevance filtering
+        retrieval_guidance_provider: Optional project-owned hook that maps a
+            query and metadata to generic retrieval guidance
 
     Example:
         >>> # Minimal settings (uses defaults)
@@ -192,9 +257,11 @@ class BatchQuerySettings:
     filter_relevance: bool = DEFAULT_RELEVANCE_FILTER_ENABLED
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
+    retrieval_guidance_provider: RetrievalGuidanceProvider | None = None
 
     # Debug output
     debug_dir: Path | None = None
+    debug_timestamp: str | None = None
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
@@ -252,6 +319,7 @@ def load_queries(
         )
 
     if adjust_for_dataset and not df.is_empty():
+        assert query_adjuster is not None
         df = query_adjuster(df)
 
     # Check for question column after adjuster (adjuster may create it)
@@ -341,15 +409,10 @@ def _validate_supporting_passages(
     )
 
     # Collect text from matching sections and segments only
-    # Uses only first 1000 words of section body to avoid excessive length (same as logic used in _prepare_legal_context)
     all_texts = []
     for section in sections:
         if section.body_text:
-            words = section.body_text.split()
-            trunc_text = " ".join(words[:1000])
-            if len(words) > 1000:
-                trunc_text += "... [content truncated]"
-            all_texts.append(trunc_text)
+            all_texts.append(section.body_text)
         else:
             all_texts.append("[No body text]")
 
@@ -449,6 +512,7 @@ def query_legal_documents(
     debug_dir: Path | None = None,
     query_index: int = 0,
     debug_timestamp: str | None = None,
+    debug_capture: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[LegalQueryResponse, list[float]]:
     """
     Process a user query against retrieved legal documents using LLM analysis.
@@ -509,6 +573,9 @@ def query_legal_documents(
     sections = retrieval_results.sections
     if not sections:
         logger.warning("No sections found in retrieval results")
+        if debug_capture is not None:
+            debug_capture.setdefault("relevance", {})["stage_status"] = "no_sections"
+            debug_capture.setdefault("query", {})["stage_status"] = "no_sections"
         return LegalQueryResponse(
             short_answer="I cannot answer your question as no relevant legal provisions were found.",
             reasoning="The search did not return any legal sections that address your query.",
@@ -520,7 +587,17 @@ def query_legal_documents(
 
     logger.info(f"Found {len(sections)} relevant sections to analyze")
 
-    shared_debug_timestamp = debug_timestamp or _debug_timestamp()
+    if debug_capture is not None:
+        debug_capture.setdefault("relevance", {})
+        debug_capture.setdefault("query", {})
+        debug_capture["relevance"].setdefault(
+            "relevance_prompt",
+            _build_relevance_debug_prompt(query, settings),
+        )
+        debug_capture["relevance"].setdefault(
+            "stage_status",
+            "skipped" if not settings.filter_relevance else "pending",
+        )
 
     if settings.filter_relevance:
         # filter_llm is guaranteed to be set by __post_init__
@@ -536,42 +613,76 @@ def query_legal_documents(
                 query=query,
                 confidence_threshold=settings.relevance_threshold,
                 model=settings.filter_llm.model,
+                retrieval_guidance=settings.retrieval_guidance,
             )
             sections = filtered_results.sections
+            if debug_capture is not None and filtered_results.filtering_metadata:
+                assessments = []
+                for assessment in filtered_results.filtering_metadata.assessments:
+                    idx = assessment.get("index", -1)
+                    heading_text = ""
+                    if 0 <= idx < len(retrieval_results.sections):
+                        heading_text = retrieval_results.sections[idx].heading_text
 
-            # Write relevance assessments debug file
-            if debug_dir and filtered_results.filtering_metadata:
-                try:
-                    prefix = f"q{query_index:02d}"
-                    assessments = filtered_results.filtering_metadata.assessments
-                    if assessments:
-                        records = []
-                        for a in assessments:
-                            idx = a.get("index", -1)
-                            section_text = ""
-                            if 0 <= idx < len(retrieval_results.sections):
-                                sec = retrieval_results.sections[idx]
-                                section_text = (
-                                    f"{sec.heading_text}\n\n{sec.body_text}".strip()
-                                )
-                            records.append(
-                                {**a, "query": query, "section_text": section_text}
-                            )
-                        pl.DataFrame(records).write_csv(
-                            str(
-                                debug_dir
-                                / f"{prefix}_relevance_assessments_{shared_debug_timestamp}.csv"
-                            )
-                        )
-                except Exception as e:
-                    logger.warning(f"Failed to write debug relevance assessments: {e}")
+                    assessments.append(
+                        {
+                            "section_id": assessment.get("section_id"),
+                            "heading_text": heading_text,
+                            "is_relevant": assessment.get("is_relevant"),
+                            "relevance_score": assessment.get("relevance_score"),
+                            "confidence": assessment.get("confidence"),
+                            "reasoning": _truncate_debug_text(
+                                assessment.get("reasoning"),
+                                DEBUG_REASONING_LIMIT,
+                            ),
+                            "kept": bool(
+                                assessment.get("is_relevant")
+                                and (assessment.get("relevance_score") or 0)
+                                >= settings.relevance_threshold
+                                and (assessment.get("confidence") or 0)
+                                >= settings.relevance_threshold
+                            ),
+                        }
+                    )
+
+                debug_capture["relevance"].update(
+                    {
+                        "stage_status": "completed",
+                        "original_section_count": filtered_results.filtering_metadata.original_count,
+                        "filtered_section_count": filtered_results.filtering_metadata.filtered_count,
+                        "relevance_assessments": _json_debug(assessments),
+                    }
+                )
 
         except Exception:
             sections = retrieval_results.sections
             logger.warning("Retrieved section relevance filtering failed.")
+            if debug_capture is not None:
+                debug_capture["relevance"].update(
+                    {
+                        "stage_status": "error",
+                        "relevance_assessments": "[]",
+                    }
+                )
+
+    elif debug_capture is not None:
+        debug_capture["relevance"].update(
+            {
+                "original_section_count": len(retrieval_results.sections),
+                "filtered_section_count": len(retrieval_results.sections),
+                "relevance_assessments": "[]",
+            }
+        )
 
     if not sections:
         logger.warning("All sections filtered out as irrelevant")
+        if debug_capture is not None:
+            debug_capture["query"].update(
+                {
+                    "stage_status": "no_sections_after_filtering",
+                    "sections_used_for_completion": 0,
+                }
+            )
         return LegalQueryResponse(
             short_answer="I cannot answer your question as no relevant legal provisions were found after filtering.",
             reasoning="The search returned legal sections, but all were determined to be irrelevant to your specific query.",
@@ -583,18 +694,21 @@ def query_legal_documents(
 
     full_context = _prepare_legal_context(sections)
 
-    # Write context debug file
-    if debug_dir:
-        try:
-            debug_dir.mkdir(parents=True, exist_ok=True)
-            prefix = f"q{query_index:02d}"
-            (debug_dir / f"{prefix}_context_{shared_debug_timestamp}.txt").write_text(
-                f"Query: {query}\n\nSections after filtering: {len(sections)}\n\n{full_context}"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to write debug context: {e}")
-
     system_prompt, user_prompt = _build_legal_prompts(query, full_context)
+
+    if debug_capture is not None:
+        debug_capture["query"].update(
+            {
+                "stage_status": "completed",
+                "sections_used_for_completion": len(sections),
+                "final_section_headings": _json_debug(
+                    [section.heading_text for section in sections[:DEBUG_SECTION_LIMIT]]
+                ),
+                "llm_system_prompt": system_prompt,
+                "llm_user_prompt": user_prompt,
+                "llm_context_preview": _truncate_debug_text(full_context, 2000),
+            }
+        )
 
     # Execute LLM call for query processing
     logger.debug(
@@ -628,12 +742,34 @@ def query_legal_documents(
         if settings.validate_supporting_passages:
             similarity_scores = _validate_supporting_passages(response, sections)
 
+        if debug_capture is not None:
+            debug_capture["query"].update(
+                {
+                    "short_answer": response.short_answer,
+                    "reasoning": response.reasoning,
+                    "citations": _json_debug(response.citations),
+                    "supporting_passages": _json_debug(response.supporting_passages),
+                    "confidence": response.confidence,
+                    "limitations": response.limitations,
+                    "supporting_passage_validation_scores": _json_debug(
+                        similarity_scores
+                    ),
+                }
+            )
+
         return response, similarity_scores
 
     except FutureTimeoutError:
         logger.error(
             f"LLM call timed out after {timeout_seconds:.0f}s; returning fallback response"
         )
+        if debug_capture is not None:
+            debug_capture["query"].update(
+                {
+                    "stage_status": "timeout",
+                    "supporting_passage_validation_scores": "[]",
+                }
+            )
         return LegalQueryResponse(
             short_answer="Error: LLM call timed out.",
             reasoning="The LLM did not return a response within the allotted timeout.",
@@ -644,6 +780,13 @@ def query_legal_documents(
         ), []
     except ValidationError as ve:
         logger.error("LLM returned invalid response payload", exc_info=ve)
+        if debug_capture is not None:
+            debug_capture["query"].update(
+                {
+                    "stage_status": "validation_error",
+                    "supporting_passage_validation_scores": "[]",
+                }
+            )
         return LegalQueryResponse(
             short_answer="Error: LLM returned an invalid response format.",
             reasoning=str(ve),
@@ -776,6 +919,10 @@ def run_queries(
 
     # Process queries in loop
     results = []
+    debug_timestamp = settings.debug_timestamp or _debug_timestamp()
+    retrieval_debug_rows: list[dict[str, Any]] = []
+    relevance_debug_rows: list[dict[str, Any]] = []
+    query_debug_rows: list[dict[str, Any]] = []
     for i, query_input in enumerate(query_inputs):
         query_text = query_input.question.strip()
         if not query_text:
@@ -794,6 +941,8 @@ def run_queries(
             jurisdiction_id=jurisdiction_id,
             settings=settings,
             start_time=start_time,
+            variable_name=query_input.variable_name,
+            query_metadata=query_input.metadata,
             debug_dir=settings.debug_dir,
             query_index=i,
         )
@@ -805,6 +954,17 @@ def run_queries(
         if query_input.metadata:
             result.update(query_input.metadata)
 
+        retrieval_debug_row = result.pop("_debug_retrieval_row", None)
+        relevance_debug_row = result.pop("_debug_relevance_row", None)
+        query_debug_row = result.pop("_debug_query_row", None)
+
+        if retrieval_debug_row is not None:
+            retrieval_debug_rows.append(retrieval_debug_row)
+        if relevance_debug_row is not None:
+            relevance_debug_rows.append(relevance_debug_row)
+        if query_debug_row is not None:
+            query_debug_rows.append(query_debug_row)
+
         results.append(result)
 
         if "Error:" not in result["short_answer"]:
@@ -812,6 +972,25 @@ def run_queries(
                 f"Query {i + 1} completed - confidence: {result['confidence']:.2f}, "
                 f"sections: {result['sections_found']}, time: {result['processing_time']:.2f}s"
             )
+
+    _write_stage_debug_csv(
+        settings.debug_dir,
+        "retrieval",
+        debug_timestamp,
+        retrieval_debug_rows,
+    )
+    _write_stage_debug_csv(
+        settings.debug_dir,
+        "relevance",
+        debug_timestamp,
+        relevance_debug_rows,
+    )
+    _write_stage_debug_csv(
+        settings.debug_dir,
+        "query",
+        debug_timestamp,
+        query_debug_rows,
+    )
 
     return _compile_query_results(results)
 
@@ -827,15 +1006,8 @@ def _prepare_legal_context(sections: list[SectionResult]) -> str:
             f"Relevance Score: {section.relevance_score:.3f}",
         ]
 
-        # Add truncated body content (first 1000 words ~ 1300 tokens)
-        # We truncate to ensure we fit within LLM context limits while providing
-        # enough context for analysis
         if section.body_text:
-            words = section.body_text.split()
-            trunc_text = " ".join(words[:1000])
-            if len(words) > 1000:
-                trunc_text += "... [content truncated]"
-            section_parts.append(f"Content: {trunc_text}")
+            section_parts.append(f"Content: {section.body_text}")
         else:
             section_parts.append("Content: [No body text]")
 
@@ -902,6 +1074,465 @@ Please analyze this legal context and provide a comprehensive response following
     return system_prompt, user_prompt
 
 
+def _truncate_debug_text(text: str | None, max_chars: int = DEBUG_TEXT_LIMIT) -> str:
+    """Truncate long debug strings to keep CSV artifacts readable."""
+    if not text:
+        return ""
+
+    text = str(text).strip()
+    if len(text) <= max_chars:
+        return text
+
+    return text[: max_chars - 3] + "..."
+
+
+def _json_debug(value: Any) -> str:
+    """Serialize debug structures consistently for CSV storage."""
+    return json.dumps(value, ensure_ascii=True)
+
+
+def _base_debug_row(
+    query: str,
+    query_index: int,
+    variable_name: str | None,
+    query_metadata: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build common columns shared by all stage-level debug artifacts."""
+    metadata = query_metadata or {}
+    return {
+        "query_index": query_index,
+        "variable_name": variable_name,
+        "question_number": metadata.get("question_number"),
+        "query_text": metadata.get("query_text"),
+        "query": query,
+    }
+
+
+def _build_relevance_debug_prompt(query: str, settings: QuerySettings) -> str:
+    """Build a compact, one-row summary of the relevance-filter prompt setup."""
+    guidance = settings.retrieval_guidance
+    lines = [f"Query: {query}"]
+
+    if guidance:
+        if guidance.guidance_topic:
+            lines.append(f"Topic focus: {guidance.guidance_topic}")
+        if guidance.shared_context:
+            lines.append(f"Query context: {guidance.shared_context}")
+        if guidance.relevance_instructions:
+            lines.append(f"Relevance instructions: {guidance.relevance_instructions}")
+        if guidance.anchor_terms:
+            lines.append("Anchor terms: " + ", ".join(guidance.anchor_terms))
+
+    lines.append(
+        "Thresholds: is_relevant must be true, relevance_score >= "
+        f"{settings.relevance_threshold:.2f}, confidence >= {settings.relevance_threshold:.2f}"
+    )
+
+    return "\n".join(lines)
+
+
+def _summarize_retrieved_sections(
+    sections: list[SectionResult],
+) -> tuple[str, str]:
+    """Summarize top sections and matching segments for retrieval-stage debug rows."""
+    section_summaries = []
+    segment_summaries = []
+
+    for section in sections[:DEBUG_SECTION_LIMIT]:
+        section_summaries.append(
+            {
+                "section_id": section.section_id,
+                "heading_text": section.heading_text,
+                "relevance_score": section.relevance_score,
+                "segment_count": section.segment_count,
+            }
+        )
+
+    for section in sections:
+        for segment in section.matching_segments:
+            if len(segment_summaries) >= DEBUG_SEGMENT_LIMIT:
+                break
+            segment_summaries.append(
+                {
+                    "section_id": section.section_id,
+                    "heading_text": section.heading_text,
+                    "distance": segment.distance,
+                    "segment_text": _truncate_debug_text(segment.segment_text),
+                }
+            )
+        if len(segment_summaries) >= DEBUG_SEGMENT_LIMIT:
+            break
+
+    return _json_debug(section_summaries), _json_debug(segment_summaries)
+
+
+def _write_stage_debug_csv(
+    debug_dir: Path | None,
+    stage_name: str,
+    debug_timestamp: str | None,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Write one consolidated CSV per debug stage."""
+    if not debug_dir or not debug_timestamp or not rows:
+        return
+
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame(rows).write_csv(
+            str(debug_dir / f"{stage_name}_stage_{debug_timestamp}.csv")
+        )
+    except Exception as e:
+        logger.warning(f"Failed to write {stage_name} debug CSV: {e}")
+
+
+def _clean_response_options(response_options: Any) -> str:
+    """Normalize response-options text from the structured query CSV."""
+    text = str(response_options or "").strip()
+    text = re.sub(r"^\s*responses:\s*", "", text, flags=re.IGNORECASE)
+    return text.strip().strip('"')
+
+
+def _split_response_options(response_options: str) -> tuple[list[str], str | None]:
+    """Split canonical response options while preserving their declared order."""
+    if " AND/OR " in response_options:
+        separator = " AND/OR "
+    elif " OR " in response_options:
+        separator = " OR "
+    else:
+        return [response_options.strip()], None
+
+    options = [part.strip().strip('"') for part in response_options.split(separator)]
+    return [option for option in options if option], separator
+
+
+def _has_date_placeholder(text: str) -> bool:
+    """Return whether a response option contains a date placeholder."""
+    return bool(_DATE_PLACEHOLDER_RE.search(text))
+
+
+def _is_scalar_date_response_options(response_options: str) -> bool:
+    """Detect response-option shapes like `<date> OR Unknown`."""
+    options, separator = _split_response_options(response_options)
+    return bool(
+        separator == " OR "
+        and len(options) >= 1
+        and options[0].startswith("<")
+        and _has_date_placeholder(options[0])
+    )
+
+
+def _is_status_date_response_options(response_options: str) -> bool:
+    """Detect response-option shapes like `Known, <date> OR Unknown, <date>`."""
+    options, separator = _split_response_options(response_options)
+    if separator != " OR ":
+        return False
+
+    date_options = [option for option in options if _has_date_placeholder(option)]
+    if not date_options:
+        return False
+
+    return all(
+        "," in option and _extract_option_label(option) != option.strip().strip('"')
+        for option in date_options
+    )
+
+
+def _normalize_option_text(text: str) -> str:
+    """Reduce option text to a matching-friendly form."""
+    normalized = text.lower()
+    normalized = re.sub(r"<[^>]+>", " ", normalized)
+    normalized = normalized.replace("and/or", " and or ")
+    normalized = normalized.replace("/", " ")
+    normalized = normalized.replace("-", " ")
+    normalized = re.sub(r"[\[\](){}]", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _looks_like_unknown(answer: str) -> bool:
+    """Return whether an answer is effectively a null/unknown marker."""
+    normalized = _normalize_option_text(answer)
+    if normalized in _UNKNOWN_TOKENS:
+        return True
+
+    return bool(re.fullmatch(r"unknown(?:\s+date)?", normalized))
+
+
+def _parse_month_name(month_name: str) -> int:
+    """Parse a month name or abbreviation into an integer month."""
+    for fmt in ("%B", "%b"):
+        try:
+            return datetime.strptime(month_name.rstrip("."), fmt).month
+        except ValueError:
+            continue
+    raise ValueError(f"Unsupported month value: {month_name}")
+
+
+def _format_date(month: int, day: int, year: int) -> str:
+    """Format a validated calendar date as MM/DD/YYYY."""
+    return datetime(year, month, day).strftime("%m/%d/%Y")
+
+
+def _extract_canonical_date(
+    answer: str,
+    coding_instructions: str,
+    *,
+    allow_partial_imputation: bool = False,
+) -> str | None:
+    """Extract and canonicalize a date answer when the field is structurally date-like."""
+    for match in (_ISO_DATE_RE.search(answer), _NUMERIC_DATE_RE.search(answer)):
+        if match is None:
+            continue
+
+        year = int(match.group("year"))
+        if year < 100:
+            year += 2000 if year < 50 else 1900
+        return _format_date(int(match.group("month")), int(match.group("day")), year)
+
+    textual_match = _MONTH_DAY_YEAR_RE.search(answer)
+    if textual_match is not None:
+        return _format_date(
+            _parse_month_name(textual_match.group("month")),
+            int(textual_match.group("day")),
+            int(textual_match.group("year")),
+        )
+
+    instructions = coding_instructions.lower()
+    allow_month_imputation = (
+        "impute the day as the 15th" in instructions or allow_partial_imputation
+    )
+    allow_year_imputation = (
+        "impute month and day as july 15" in instructions or allow_partial_imputation
+    )
+
+    numeric_month_year_match = _NUMERIC_MONTH_YEAR_RE.search(answer)
+    if numeric_month_year_match is not None and allow_month_imputation:
+        return _format_date(
+            int(numeric_month_year_match.group("month")),
+            15,
+            int(numeric_month_year_match.group("year")),
+        )
+
+    month_year_match = _MONTH_YEAR_RE.search(answer)
+    if month_year_match is not None and allow_month_imputation:
+        return _format_date(
+            _parse_month_name(month_year_match.group("month")),
+            15,
+            int(month_year_match.group("year")),
+        )
+
+    year_match = _YEAR_ONLY_RE.search(answer)
+    if year_match is not None and allow_year_imputation:
+        return _format_date(7, 15, int(year_match.group("year")))
+
+    return None
+
+
+def _normalize_binary_answer(answer: str) -> str:
+    """Canonicalize binary-coded answers to Yes/No when possible."""
+    stripped = answer.strip()
+    if re.match(r"^\s*(yes|true|1)\b", stripped, re.IGNORECASE):
+        return "Yes"
+    if re.match(r"^\s*(no|false|0)\b", stripped, re.IGNORECASE):
+        return "No"
+    return stripped
+
+
+def _extract_citation(answer: str) -> str | None:
+    """Extract a citation payload from a Yes/citation coded answer."""
+    for pattern in _CITATION_PATTERNS:
+        match = pattern.search(answer)
+        if match is None:
+            continue
+        citation = match.group("citation").strip(" ,.;")
+        if citation:
+            return citation
+    return None
+
+
+def _normalize_yes_no_citation_answer(answer: str) -> str:
+    """Canonicalize a Yes/citation or No response."""
+    stripped = answer.strip()
+    if re.match(r"^\s*(no|false|0)\b", stripped, re.IGNORECASE):
+        return "No"
+
+    citation = _extract_citation(stripped)
+    if citation and re.match(r"^\s*(yes|true|1)\b", stripped, re.IGNORECASE):
+        return f"Yes, {citation}"
+    if citation and not _looks_like_unknown(stripped):
+        return f"Yes, {citation}"
+
+    if not re.match(r"^\s*(yes|true|1)\b", stripped, re.IGNORECASE):
+        return stripped
+
+    return "Yes"
+
+
+def _extract_option_label(option: str) -> str:
+    """Extract the canonical label portion of a response option."""
+    label = re.sub(r",?\s*<[^>]+>.*$", "", option).strip().strip('"')
+    return label or option.strip().strip('"')
+
+
+def _extract_status_date_label(answer: str, response_options: str) -> str | None:
+    """Infer the canonical status label for a status/date combined response."""
+    options, _separator = _split_response_options(response_options)
+    labels = [_extract_option_label(option) for option in options]
+    normalized_answer = _normalize_option_text(answer)
+
+    for label in labels:
+        normalized_label = _normalize_option_text(label)
+        if (
+            normalized_label == "partially known"
+            and normalized_label in normalized_answer
+        ):
+            return label
+
+    for label in labels:
+        normalized_label = _normalize_option_text(label)
+        if normalized_label and normalized_label in normalized_answer:
+            return label
+
+    if _looks_like_unknown(answer) and "Unknown" in labels:
+        return "Unknown"
+
+    if "Partially known" in labels and re.search(
+        r"\b(partial|partially|imputed)\b",
+        normalized_answer,
+    ):
+        return "Partially known"
+
+    return None
+
+
+def _normalize_status_date_answer(
+    answer: str,
+    response_options: str,
+    coding_instructions: str,
+) -> str:
+    """Canonicalize status/date combined responses such as dp_collected_combined."""
+    stripped = answer.strip()
+    label = _extract_status_date_label(stripped, response_options)
+    allow_partial_imputation = label == "Partially known"
+    canonical_date = _extract_canonical_date(
+        stripped,
+        coding_instructions,
+        allow_partial_imputation=allow_partial_imputation,
+    )
+
+    if label is None and canonical_date is not None:
+        label = "Known"
+
+    if label is not None and canonical_date is not None:
+        return f"{label}, {canonical_date}"
+    if label is not None:
+        return label
+    return stripped
+
+
+def _normalize_multi_select_answer(answer: str, response_options: str) -> str:
+    """Canonicalize multi-select coded answers using declared option order."""
+    options, separator = _split_response_options(response_options)
+    if separator != " AND/OR ":
+        return answer.strip()
+
+    normalized_answer = _normalize_option_text(answer)
+    if not normalized_answer:
+        return answer.strip()
+
+    exclusive_options = [
+        option
+        for option in options
+        if _normalize_option_text(option) in {"none", "not specified"}
+    ]
+    for option in exclusive_options:
+        normalized_option = _normalize_option_text(option)
+        if normalized_option and re.search(
+            rf"\b{re.escape(normalized_option)}\b", normalized_answer
+        ):
+            return option
+
+    matches = []
+    for option in options:
+        normalized_option = _normalize_option_text(option)
+        if not normalized_option or normalized_option in {"none", "not specified"}:
+            continue
+        if normalized_option in normalized_answer:
+            matches.append(option)
+
+    if matches:
+        return " AND/OR ".join(matches)
+
+    return answer.strip()
+
+
+def _normalize_single_choice_answer(answer: str, response_options: str) -> str:
+    """Canonicalize a single-choice coded answer when it cleanly matches one option."""
+    stripped = answer.strip()
+    options, separator = _split_response_options(response_options)
+    if separator != " OR ":
+        return stripped
+
+    normalized_answer = _normalize_option_text(stripped)
+    matches = [
+        option
+        for option in options
+        if _normalize_option_text(option)
+        and _normalize_option_text(option) in normalized_answer
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    return stripped
+
+
+def _normalize_structured_short_answer(
+    short_answer: str,
+    variable_name: str | None,
+    query_metadata: dict[str, Any] | None,
+) -> str:
+    """Apply deterministic answer normalization using structured query metadata."""
+    stripped = str(short_answer or "").strip()
+    if not stripped:
+        return stripped
+
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return stripped
+
+    coding_instructions = str(metadata.get("coding_instructions") or "")
+    _ = variable_name
+
+    if _is_status_date_response_options(response_options):
+        return _normalize_status_date_answer(
+            stripped,
+            response_options,
+            coding_instructions,
+        )
+
+    if _is_scalar_date_response_options(response_options):
+        if _looks_like_unknown(stripped):
+            return "Unknown"
+        canonical_date = _extract_canonical_date(stripped, coding_instructions)
+        if canonical_date is not None:
+            return canonical_date
+        return stripped
+
+    if response_options == "Yes OR No":
+        return _normalize_binary_answer(stripped)
+
+    if response_options == "Yes, <citation> OR No":
+        return _normalize_yes_no_citation_answer(stripped)
+
+    if " AND/OR " in response_options:
+        return _normalize_multi_select_answer(stripped, response_options)
+
+    if " OR " in response_options:
+        return _normalize_single_choice_answer(stripped, response_options)
+
+    return stripped
+
+
 def _run_with_timeout(func, timeout_seconds: float, *args, **kwargs):
     """Run a callable with a hard timeout using a thread executor."""
     with ThreadPoolExecutor(max_workers=1) as executor:
@@ -916,9 +1547,11 @@ def _process_single_query_with_error_handling(
     jurisdiction_id: str,
     settings: BatchQuerySettings,
     start_time: float,
+    variable_name: str | None = None,
+    query_metadata: dict[str, Any] | None = None,
     debug_dir: Path | None = None,
     query_index: int = 0,
-) -> dict:
+) -> dict[str, Any]:
     """Process a single query with comprehensive error handling."""
     import time
     from legiscope.retrieve import SectionRetrievalSettings
@@ -926,7 +1559,82 @@ def _process_single_query_with_error_handling(
     try:
         # llm is guaranteed to be set by BatchQuerySettings.__post_init__
         llm = cast(LLMConfig, settings.llm)
-        debug_timestamp = _debug_timestamp()
+        debug_timestamp = settings.debug_timestamp or _debug_timestamp()
+        retrieval_guidance = None
+        base_debug_row = _base_debug_row(
+            query,
+            query_index,
+            variable_name,
+            query_metadata,
+        )
+        retrieval_debug_row = {**base_debug_row, "stage_status": "started"}
+        relevance_debug_row = {
+            **base_debug_row,
+            "stage_status": "pending" if settings.filter_relevance else "skipped",
+        }
+        query_debug_row = {**base_debug_row, "stage_status": "pending"}
+
+        if settings.retrieval_guidance_provider is not None:
+            request = RetrievalGuidanceRequest(
+                query=query,
+                variable_name=variable_name,
+                metadata=query_metadata or {},
+            )
+            retrieval_guidance = settings.retrieval_guidance_provider(request)
+
+        retrieval_query = query
+        if retrieval_guidance and retrieval_guidance.retrieval_query:
+            retrieval_query = retrieval_guidance.retrieval_query
+
+        completion_query = query
+        if retrieval_guidance and retrieval_guidance.completion_instructions:
+            completion_query = (
+                f"{query}\n\nVariable-specific guidance:\n"
+                f"{retrieval_guidance.completion_instructions.strip()}"
+            )
+
+        guidance_topic = (
+            retrieval_guidance.guidance_topic if retrieval_guidance else None
+        )
+        shared_context = (
+            retrieval_guidance.shared_context if retrieval_guidance else None
+        )
+        anchor_terms = retrieval_guidance.anchor_terms if retrieval_guidance else []
+
+        retrieval_debug_row.update(
+            {
+                "guidance_topic": guidance_topic,
+                "shared_context": shared_context,
+                "retrieval_instructions": (
+                    retrieval_guidance.retrieval_instructions
+                    if retrieval_guidance
+                    else None
+                ),
+                "anchor_terms": _json_debug(anchor_terms),
+                "retrieval_query": retrieval_query,
+            }
+        )
+        relevance_debug_row.update(
+            {
+                "guidance_topic": guidance_topic,
+                "shared_context": shared_context,
+                "relevance_instructions": (
+                    retrieval_guidance.relevance_instructions
+                    if retrieval_guidance
+                    else None
+                ),
+                "anchor_terms": _json_debug(anchor_terms),
+                "relevance_query": completion_query,
+                "relevance_threshold": settings.relevance_threshold,
+            }
+        )
+        query_debug_row.update(
+            {
+                "guidance_topic": guidance_topic,
+                "shared_context": shared_context,
+                "completion_query": completion_query,
+            }
+        )
 
         # Build SectionRetrievalSettings for this query
         retrieval_settings = SectionRetrievalSettings(
@@ -940,63 +1648,62 @@ def _process_single_query_with_error_handling(
         retrieval_results = retrieve_sections(
             collection=collection,
             sections_parquet_path=sections_parquet_path,
-            query_text=query,
+            query_text=retrieval_query,
             settings=retrieval_settings,
         )
-
-        # Write retrieved sections debug file
-        if debug_dir:
-            try:
-                debug_dir.mkdir(parents=True, exist_ok=True)
-                prefix = f"q{query_index:02d}"
-                records = []
-                for section in retrieval_results.sections:
-                    records.append(
-                        {
-                            "query": query,
-                            "section_id": section.section_id,
-                            "heading_text": section.heading_text,
-                            "body_text": (section.body_text or "")[:2000],
-                            "relevance_score": section.relevance_score,
-                            "segment_count": section.segment_count,
-                            "matching_segments": str(
-                                [
-                                    s.segment_text[:500]
-                                    for s in section.matching_segments
-                                ]
-                            ),
-                        }
-                    )
-                if records:
-                    pl.DataFrame(records).write_csv(
-                        str(
-                            debug_dir
-                            / f"{prefix}_retrieved_sections_{debug_timestamp}.csv"
-                        )
-                    )
-            except Exception as e:
-                logger.warning(f"Failed to write debug retrieved sections: {e}")
 
         query_info = retrieval_results.query_info
         sections_found = len(retrieval_results.sections)
         segments_found = query_info.total_segments_found
+        retrieved_sections, retrieved_segments = _summarize_retrieved_sections(
+            retrieval_results.sections
+        )
+        retrieval_debug_row.update(
+            {
+                "stage_status": "completed",
+                "rewritten_query": query_info.rewritten_query,
+                "sections_found": sections_found,
+                "segments_found": segments_found,
+                "retrieved_sections": retrieved_sections,
+                "retrieved_segments": retrieved_segments,
+            }
+        )
 
         # Build QuerySettings for this query
         query_settings = QuerySettings(
             llm=llm,
             filter_relevance=settings.filter_relevance,
             relevance_threshold=settings.relevance_threshold,
+            retrieval_guidance=retrieval_guidance,
             validate_supporting_passages=settings.validate_supporting_passages,
         )
 
+        debug_capture = {
+            "relevance": relevance_debug_row,
+            "query": query_debug_row,
+        }
+
         query_response, similarity_scores = query_legal_documents(
             retrieval_results,
-            query,
+            completion_query,
             query_settings,
             debug_dir=debug_dir,
             query_index=query_index,
             debug_timestamp=debug_timestamp,
+            debug_capture=debug_capture,
         )
+
+        normalized_short_answer = _normalize_structured_short_answer(
+            query_response.short_answer,
+            variable_name,
+            query_metadata,
+        )
+        if normalized_short_answer != query_response.short_answer:
+            query_debug_row["raw_short_answer"] = query_response.short_answer
+            query_debug_row["short_answer"] = normalized_short_answer
+            query_response = query_response.model_copy(
+                update={"short_answer": normalized_short_answer}
+            )
 
         processing_time = time.time() - start_time
 
@@ -1014,11 +1721,24 @@ def _process_single_query_with_error_handling(
             "segments_found": segments_found,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": str(similarity_scores),
+            "_debug_retrieval_row": retrieval_debug_row,
+            "_debug_relevance_row": relevance_debug_row,
+            "_debug_query_row": query_debug_row,
         }
 
     except Exception as e:
         processing_time = time.time() - start_time
         logger.error(f"Query processing failed: {str(e)}")
+
+        retrieval_debug_row = locals().get("retrieval_debug_row", {})
+        relevance_debug_row = locals().get("relevance_debug_row", {})
+        query_debug_row = locals().get("query_debug_row", {})
+        retrieval_debug_row["stage_status"] = "error"
+        retrieval_debug_row["error"] = str(e)
+        relevance_debug_row["stage_status"] = "error"
+        relevance_debug_row["error"] = str(e)
+        query_debug_row["stage_status"] = "error"
+        query_debug_row["error"] = str(e)
 
         # Add failed result with error information
         return {
@@ -1033,10 +1753,13 @@ def _process_single_query_with_error_handling(
             "segments_found": 0,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": "[]",
+            "_debug_retrieval_row": retrieval_debug_row,
+            "_debug_relevance_row": relevance_debug_row,
+            "_debug_query_row": query_debug_row,
         }
 
 
-def _compile_query_results(results: list[dict]) -> pl.DataFrame:
+def _compile_query_results(results: list[dict[str, Any]]) -> pl.DataFrame:
     """Compile query results into a structured DataFrame."""
     if not results:
         logger.warning("No queries were processed successfully")

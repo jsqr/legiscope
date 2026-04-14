@@ -8,6 +8,7 @@ import pytest
 from instructor import Instructor
 
 from legiscope.llm_config import Config
+from legiscope.retrieval_guidance import RetrievalGuidance
 from legiscope.retrieve import (
     HydeRewrite,
     RelevanceAssessment,
@@ -301,6 +302,50 @@ class TestIsRelevant:
             mock_ask.assert_called_once()
             call_args = mock_ask.call_args
             assert call_args[1]["model"] == "gpt-4"
+
+    def test_is_relevant_includes_retrieval_guidance(self):
+        """Project-provided retrieval guidance should be injected into the prompt."""
+        mock_result = RelevanceAssessment(
+            is_relevant=True,
+            relevance_score=0.9,
+            confidence=0.9,
+            reasoning="The text directly answers the date query.",
+        )
+
+        guidance = RetrievalGuidance(
+            guidance_topic="date",
+            shared_context=(
+                "This query concerns a local municipal ordinance regulating "
+                "drug paraphernalia-related activities."
+            ),
+            retrieval_instructions=(
+                "Retrieve effective-date clauses tied to the ordinance."
+            ),
+            relevance_instructions="Prefer enactment and effective-date language.",
+            anchor_terms=["effective", "enacted"],
+        )
+
+        with patch("legiscope.retrieve.ask", return_value=mock_result) as mock_ask:
+            mock_client = Mock(spec=Instructor)
+
+            is_relevant(
+                mock_client,
+                "When did this ordinance take effect?",
+                "This ordinance shall take effect 30 days after becoming law.",
+                retrieval_guidance=guidance,
+            )
+
+            call_args = mock_ask.call_args
+            assert "Topic focus for this query: date." in call_args[1]["system"]
+            assert (
+                "Query context: This query concerns a local municipal ordinance regulating drug paraphernalia-related activities."
+                in call_args[1]["system"]
+            )
+            assert (
+                "Prefer enactment and effective-date language."
+                in call_args[1]["system"]
+            )
+            assert "effective, enacted" in call_args[1]["system"]
 
     def test_is_relevant_empty_query(self):
         """Test that empty query raises ValueError."""
@@ -770,6 +815,104 @@ class TestFilterSections:
                 assert result.sections[0].relevance_score == 0.9  # Updated from LLM
                 assert result.sections[0].llm_assessed is True
                 assert result.filtering_metadata.filtered_count == 1
+
+    def test_filter_sections_requires_relevance_score_threshold(self):
+        """Sections below the graded relevance threshold should be filtered out."""
+        from unittest.mock import Mock, patch
+
+        from legiscope.retrieve import (
+            QueryInfo,
+            RelevanceAssessment,
+            SectionCollection,
+            SectionResult,
+            filter_sections,
+        )
+
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="H1",
+                body_text="B1",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.1,
+                segment_count=1,
+            )
+        ]
+
+        input_results = SectionCollection(
+            sections=sections, query_info=QueryInfo(original_query="query")
+        )
+
+        mock_assessment = RelevanceAssessment(
+            is_relevant=True,
+            relevance_score=0.65,
+            confidence=0.95,
+            reasoning="Related but not specific enough",
+        )
+
+        with patch("legiscope.retrieve.is_relevant", return_value=mock_assessment):
+            with (
+                patch("pathlib.Path.mkdir"),
+                patch("legiscope.retrieve.pl.DataFrame.write_csv"),
+            ):
+                mock_client = Mock(spec=Instructor)
+                result = filter_sections(
+                    mock_client, input_results, "query", confidence_threshold=0.7
+                )
+
+                assert len(result.sections) == 0
+                assert result.filtering_metadata.filtered_count == 0
+
+    def test_filter_sections_requires_confidence_threshold(self):
+        """Sections below the confidence threshold should be filtered out."""
+        from unittest.mock import Mock, patch
+
+        from legiscope.retrieve import (
+            QueryInfo,
+            RelevanceAssessment,
+            SectionCollection,
+            SectionResult,
+            filter_sections,
+        )
+
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="H1",
+                body_text="B1",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.1,
+                segment_count=1,
+            )
+        ]
+
+        input_results = SectionCollection(
+            sections=sections, query_info=QueryInfo(original_query="query")
+        )
+
+        mock_assessment = RelevanceAssessment(
+            is_relevant=True,
+            relevance_score=0.95,
+            confidence=0.65,
+            reasoning="Specific but uncertain",
+        )
+
+        with patch("legiscope.retrieve.is_relevant", return_value=mock_assessment):
+            with (
+                patch("pathlib.Path.mkdir"),
+                patch("legiscope.retrieve.pl.DataFrame.write_csv"),
+            ):
+                mock_client = Mock(spec=Instructor)
+                result = filter_sections(
+                    mock_client, input_results, "query", confidence_threshold=0.7
+                )
+
+                assert len(result.sections) == 0
+                assert result.filtering_metadata.filtered_count == 0
 
     def test_filter_sections_sorting(self):
         """Test that results are sorted by LLM relevance score."""

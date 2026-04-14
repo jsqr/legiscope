@@ -391,8 +391,7 @@ def _normalize_scanned_structure(structure: HeadingStructure) -> HeadingStructur
     for new_level, level in enumerate(structure.levels, start=1):
         level.level = new_level
         _apply_example_based_pattern_refinement(level)
-        if not level.markdown_prefix.strip():
-            level.markdown_prefix = "#" * min(new_level, 4)
+        level.markdown_prefix = "#" * min(new_level, 4)
 
     structure.total_levels = len(structure.levels)
     return structure

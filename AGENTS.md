@@ -187,14 +187,14 @@ and path settings from `config.yaml`.
 
 ```yaml
 retrieval:
-  n_results: 10
+    n_results: 20
   distance_metric: l2        # ChromaDB HNSW distance (l2, cosine, ip)
-    debug: false               # Enable to write debug output artifacts
+  debug: true               # Enable consolidated stage debug CSVs
   hyde:
     enabled: false            # uses fast model
   relevance_filter:
-    enabled: false            # uses fast model
-    threshold: 0.5
+    enabled: true             # uses fast model
+    threshold: 0.7
 
 query:                        # uses powerful model
   validation:
@@ -202,6 +202,18 @@ query:                        # uses powerful model
     exact_match_threshold: 1.0
     fuzzy_match_threshold: 0.9
 ```
+
+Project code can also inject per-query guidance with
+`BatchQuerySettings.retrieval_guidance_provider`. The provider receives a
+`RetrievalGuidanceRequest` containing the base query, `variable_name`, and
+metadata, and can return `RetrievalGuidance` with separate fields for:
+
+- retrieval-time query shaping (`retrieval_query`, `retrieval_instructions`)
+- relevance-filter prompt shaping (`relevance_instructions`, `anchor_terms`)
+- completion-time coding hints (`completion_instructions`, `shared_context`)
+
+The COEP benchmark uses this hook in `coep/src/retrieval_guidance.py` to keep
+drug-paraphernalia family logic out of the generic RAG core.
 
 Use the embedding interface:
    ```python
@@ -353,12 +365,20 @@ Benchmarking is a DVC stage (`benchmark`). It runs automatically as part of
 # Or run the script directly (standalone, outside DVC)
 uv run python coep/scripts/benchmark_pipeline.py
 
-# Dev/debug run with limited queries (set `retrieval.debug: true` in `params.yaml` for inspection output)
+# Dev/debug run with limited queries (set `retrieval.debug: true` in `params.yaml`)
 uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
 ```
 
 DVC tracks benchmark metrics in `benchmark_metrics.json` and results in
 `benchmark_results.csv` under `data/output/{STATE}-{Locality}/`.
+When debug is enabled, benchmarking also writes exactly three consolidated
+CSV artifacts under `data/output/{STATE}-{Locality}/debug/`:
+
+- `retrieval_stage_<timestamp>.csv`
+- `relevance_stage_<timestamp>.csv`
+- `query_stage_<timestamp>.csv`
+
+Each file contains one row per question.
 
 ### Advanced Query Execution
 
@@ -378,7 +398,7 @@ uv run python scripts/run_queries.py
 │   └── legiscope/       # Main package source code
 │       ├── parse/           # Parse stage: raw text → structured Markdown
 │       │   ├── convert.py       # Markdown conversion and frontmatter
-│       │   ├── scan.py          # LLM heading scanning and verification
+│       │   ├── scan.py          # LLM heading scanning, regex refinement, and normalized markdown prefixes
 │       │   ├── headings.py      # Heading models and pattern helpers
 │       │   ├── elements.py      # Raw text element splitting
 │       │   └── find_code_start.py  # Locate start of code proper
@@ -389,8 +409,9 @@ uv run python scripts/run_queries.py
 │       ├── utils.py         # Core utility functions
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
+│       ├── retrieval_guidance.py # Project-agnostic stage-specific query guidance hooks
 │       ├── segment.py       # Text segmentation utilities
-│       └── query.py         # Legal query processing with structured responses
+│       └── query.py         # Legal query processing with structured responses and consolidated debug exports
 ├── tests/               # Test files
 ├── scripts/             # DVC stage entry-point scripts and utilities
 │   ├── dvc_repro.sh           # DVC pipeline wrapper (primary interface)
@@ -406,7 +427,8 @@ uv run python scripts/run_queries.py
 │   ├── __init__.py
 │   ├── src/
 │   │   ├── eval.py            # COEP evaluation logic
-│   │   └── query.py           # COEP query preprocessing
+│   │   ├── query.py           # COEP query preprocessing
+│   │   └── retrieval_guidance.py # COEP variable-family guidance provider
 │   ├── tests/
 │   │   ├── test_eval.py
 │   │   └── test_query_adjustments.py

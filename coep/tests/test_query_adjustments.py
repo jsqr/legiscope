@@ -38,8 +38,7 @@ class TestCoepQueryAdjustments:
                 query_adjuster=adjust_drug_paraphernalia_queries,
             )
             assert len(queries) == 2
-            # Check that structured parts are present with headers
-            assert "Context: This is about drug paraphernalia." in queries[0].question
+            # Check that completion-oriented parts are present with headers
             assert (
                 "Question: Does the jurisdiction ban paraphernalia?"
                 in queries[0].question
@@ -48,7 +47,12 @@ class TestCoepQueryAdjustments:
             assert "Response options: Yes OR No" in queries[0].question
             # variable renamed to variable_name
             assert queries[0].variable_name == "dp_law"
-            # Empty prepend_text should be omitted
+            # prepend_text remains in metadata, not the composed question
+            assert (
+                queries[0].metadata["prepend_text"]
+                == "This is about drug paraphernalia."
+            )
+            assert "Context:" not in queries[0].question
             assert "Context:" not in queries[1].question
             assert "Question: What types?" in queries[1].question
         finally:

@@ -7,10 +7,6 @@ def _build_query_text(row: dict) -> str:
     """Compose a single LLM-readable query from the structured CSV columns."""
     parts: list[str] = []
 
-    prepend = (row.get("prepend_text") or "").strip()
-    if prepend:
-        parts.append(f"Context: {prepend}")
-
     query = (row.get("query_text") or "").strip()
     if query:
         parts.append(f"Question: {query}")
@@ -31,7 +27,7 @@ def adjust_drug_paraphernalia_queries(df: pl.DataFrame) -> pl.DataFrame:
 
     Expects the new CSV schema with columns: question_number, variable_name,
     prepend_text, query_text, response_options, coding_instructions.
-    Composes them into a single ``question`` column.
+    Composes completion-oriented text into a single ``question`` column.
     """
     if df.is_empty():
         return df

@@ -31,6 +31,11 @@ from legiscope.query import (
     query_legal_documents,
     run_queries,
 )
+from legiscope.retrieval_guidance import (
+    RetrievalGuidance,
+    RetrievalGuidanceProvider,
+    RetrievalGuidanceRequest,
+)
 from legiscope.retrieve import (
     RetrievalSettings,
     SectionRetrievalSettings,
@@ -87,4 +92,7 @@ __all__ = [
     "QuerySettings",
     "BatchQuerySettings",
     "LegalQueryResponse",
+    "RetrievalGuidance",
+    "RetrievalGuidanceProvider",
+    "RetrievalGuidanceRequest",
 ]

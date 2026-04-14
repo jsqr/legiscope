@@ -79,6 +79,7 @@ legiscope/
 │   ├── models.py                # JurisdictionRef, CodeRef dataclasses + Parquet schemas
 │   ├── embeddings.py            # Embedding generation + ChromaDB collection management
 │   ├── retrieve.py              # Vector search with optional HYDE and relevance filtering
+│   ├── retrieval_guidance.py    # Project-agnostic retrieval/relevance/completion guidance hooks
 │   ├── query.py                 # RAG query engine (single + batch)
 │   ├── segment.py               # Text segmentation
 │   └── parse/                   # Raw text → structured Markdown (heading scanning, etc.)
@@ -86,6 +87,7 @@ legiscope/
 ├── coep/                        # Benchmark evaluation module
 │   ├── src/eval.py              # LLM-as-a-judge Evaluator class
 │   ├── src/query.py             # Drug paraphernalia query adjustments
+│   ├── src/retrieval_guidance.py # COEP variable-family guidance provider
 │   ├── scripts/benchmark_pipeline.py  # Main benchmark workflow script
 │   └── data/monqcle_data/       # MonQcle ground truth CSV
 │
@@ -152,13 +154,13 @@ embeddings:
       batch_size: 1
 
 retrieval:
-  n_results: 10
+  n_results: 20
   hyde:
     enabled: false
   relevance_filter:
-    enabled: false
-    threshold: 0.5
-  debug: false
+    enabled: true
+    threshold: 0.7
+  debug: true
 
 query:
   validation:
@@ -227,11 +229,17 @@ and on `segment` outputs (`sections.parquet`).
 | Stage | Script | Inputs | Outputs | LLM Calls? |
 |-------|--------|--------|---------|-------------|
 | **validate** | inline bash | `src/legiscope/__init__.py` | `tmp/validate_import.ok` | No |
-| **parse** | `scripts/parse.py` | `raw/` directory (TXT files) | `code.md`, `headings.parquet` | Yes (heading scanning) |
+| **parse** | `scripts/parse.py` | `raw/` directory (TXT files) | `code.md`, `headings.parquet` | Yes (heading scanning, regex refinement) |
 | **segment** | `scripts/segment.py` | `code.md`, `headings.parquet` | `sections.parquet`, `segments.parquet`, `relations.parquet`, `external_references.parquet` | No |
 | **embed** | `scripts/embed.py` | `sections.parquet`, `segments.parquet` | `embeddings.parquet` | No (embedding model only) |
 | **index** | `scripts/index.py` | `embeddings.parquet` | ChromaDB collection (side effect) | No |
 | **benchmark** | `coep/scripts/benchmark_pipeline.py` | `sections.parquet`, `embeddings.parquet`, queries CSV, MonQcle CSV | `benchmark_results.csv`, `benchmark_metrics.json` | Yes (query + evaluation) |
+
+Parse-time post-processing is intentionally conservative. After the heading scan
+returns candidate levels, `src/legiscope/parse/scan.py` can reorder explicit
+levels based on outline coverage, regenerate heading regexes from the example
+heading text, and then reset `markdown_prefix` from the normalized level order.
+This prevents stale model-supplied prefixes from surviving into `code.md`.
 
 ### Data Directory Layout
 
@@ -288,13 +296,18 @@ and runs automatically as part of `dvc exp run`.
 ### Workflow
 
 1. **Load queries** from `data/queries/DPL_queries_with_context.csv`
-   (CSV with `question` and `variable_name` columns)
+  (structured CSV with `variable_name`, `query_text`, `coding_instructions`,
+  `response_options`, and optional context fields such as `prepend_text`)
 2. **Load MonQcle data** from `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv`,
    filter to target jurisdiction
-3. **Run RAG pipeline**: query ChromaDB → retrieve sections → LLM generates answers
-4. **Join** generated answers with ground truth by `variable_name`
-5. **Evaluate** using LLM-as-a-judge (powerful model scores 0-10)
-6. **Output** CSV with scores, reasoning, accuracy labels
+3. **Construct stage-specific prompts**: `coep/src/query.py` builds the
+  completion-oriented `question`, while `coep/src/retrieval_guidance.py`
+  derives retrieval, relevance, and completion guidance from
+  `variable_name` plus query metadata
+4. **Run RAG pipeline**: query ChromaDB → retrieve sections → LLM generates answers
+5. **Join** generated answers with ground truth by `variable_name`
+6. **Evaluate** using LLM-as-a-judge (powerful model scores 0-10)
+7. **Output** CSV with scores, reasoning, accuracy labels
 
 ### Inputs
 
@@ -312,7 +325,39 @@ and runs automatically as part of `dvc exp run`.
 | Benchmark results (DVC-tracked) | `data/output/{STATE}-{Locality}/benchmark_results.csv` |
 | Benchmark results (timestamped copy) | `data/output/{STATE}-{Locality}/benchmark_results_{timestamp}.csv` |
 | Benchmark metrics (DVC metrics) | `data/output/{STATE}-{Locality}/benchmark_metrics.json` |
-| Debug artifacts (optional) | `data/output/{STATE}-{Locality}/debug/` |
+| Debug artifacts (optional) | `data/output/{STATE}-{Locality}/debug/` containing `retrieval_stage_<timestamp>.csv`, `relevance_stage_<timestamp>.csv`, and `query_stage_<timestamp>.csv` |
+
+### Benchmark Query Construction
+
+The benchmark no longer relies on one giant prompt string for every stage.
+Instead, it uses three related representations of each query:
+
+- a retrieval-time query optimized for semantic search,
+- a relevance-assessment prompt enriched with variable-family instructions and
+  anchor terms, and
+- a completion-time query that preserves the coding instructions needed for the
+  final answer.
+
+This is implemented through the core `RetrievalGuidanceProvider` hook in
+`src/legiscope/retrieval_guidance.py` and the COEP provider in
+`coep/src/retrieval_guidance.py`.
+
+`prepend_text` remains useful, but only as metadata. It is preserved as shared
+context for guidance generation rather than being blindly prepended to every
+stage's prompt text.
+
+### Benchmark Debug Artifacts
+
+When `retrieval.debug` is enabled, benchmark runs emit exactly three CSV debug
+artifacts with one row per query:
+
+- `retrieval_stage_<timestamp>.csv` records the retrieval query, guidance
+  fields, counts, and compact summaries of retrieved sections and segments.
+- `relevance_stage_<timestamp>.csv` records the relevance prompt setup and the
+  per-section relevance assessments used to keep or discard sections.
+- `query_stage_<timestamp>.csv` records the completion query, final prompts,
+  model response fields, validation scores, and benchmark ground truth columns
+  once the pipeline enriches the file after joining against MonQcle data.
 
 ### Running
 
@@ -1234,6 +1279,9 @@ bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh
 
 # On your local machine: sync the active query CSV, MonQcle CSV, and DOCX files.
 ./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx
+
+# On your local machine: pull benchmark CSV + metrics back from BigPurple.
+./coep/scripts/HPC_scripts/pull_bigpurple_results.sh --netid <netid> --jurisdiction PA-Philadelphia --open
 ```
 
 1. **Login and initialize your shell environment**:
@@ -1571,6 +1619,7 @@ After all 50 SLURM jobs finish:
 | **BigPurple: Aggregate results** | `python coep/scripts/HPC_scripts/aggregate_results.py --docx-dir /gpfs/data/cerdalab/LegalAI/docx_sources --check-slurm` |
 | **BigPurple: Rebuild shared index** | `bash coep/scripts/HPC_scripts/rebuild_index.sh --clean` |
 | **Local: Sync inputs to HPC** | `./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx` |
+| **Local: Pull one jurisdiction's benchmark CSV** | `./coep/scripts/HPC_scripts/pull_bigpurple_results.sh --netid <netid> --jurisdiction PA-Philadelphia --open` |
 
 ---
 

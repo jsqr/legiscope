@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from legiscope.embeddings import get_embedding_client, get_embeddings
 from legiscope.params import load_params
+from legiscope.retrieval_guidance import RetrievalGuidance
 from legiscope.utils import ask, resolve_model_default
 
 
@@ -366,7 +367,11 @@ Provide a rewritten query that would be effective for semantic search against mu
 
 
 def is_relevant(
-    client: Instructor, query: str, text: str, model: str | None = None
+    client: Instructor,
+    query: str,
+    text: str,
+    model: str | None = None,
+    retrieval_guidance: RetrievalGuidance | None = None,
 ) -> RelevanceAssessment:
     """Assess whether text is directly relevant to answering a query using LLM analysis.
 
@@ -437,6 +442,29 @@ Provide THREE scores:
    - 0.6-0.8: Relevant, directly addresses query aspects
    - 0.8-1.0: Highly relevant, comprehensive answer to query
 3. confidence: How certain you are of this assessment (0-1)"""
+
+    if retrieval_guidance and retrieval_guidance.has_content():
+        guidance_lines = []
+        if retrieval_guidance.guidance_topic:
+            guidance_lines.append(
+                f"Topic focus for this query: {retrieval_guidance.guidance_topic}."
+            )
+        if retrieval_guidance.shared_context:
+            guidance_lines.append(
+                f"Query context: {retrieval_guidance.shared_context.strip()}"
+            )
+        if retrieval_guidance.relevance_instructions:
+            guidance_lines.append(retrieval_guidance.relevance_instructions.strip())
+        if retrieval_guidance.anchor_terms:
+            hints = ", ".join(retrieval_guidance.anchor_terms)
+            guidance_lines.append(
+                f"Keyword hints that may indicate high-value text: {hints}."
+            )
+
+        system_prompt = (
+            f"{system_prompt}\n\nAdditional retrieval guidance:\n"
+            + "\n".join(guidance_lines)
+        )
 
     user_prompt = f"""Assess whether the following text is directly relevant to answering the query:
 
@@ -805,18 +833,23 @@ def filter_sections(
     query: str,
     confidence_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
+    retrieval_guidance: RetrievalGuidance | None = None,
 ) -> SectionCollection:
     """Filter section collection by relevance using LLM-powered assessment.
 
     Applies relevance assessment to each section using LLM analysis and filters
-    out sections that are not relevant or fall below the confidence threshold.
+    out sections that are not relevant or fall below the minimum relevance/confidence
+    threshold.
 
     Args:
         client: Instructor client for LLM-powered relevance assessment
         sections_results: Section collection from retrieve_sections or previous filter
         query: Original query used for retrieval
-        confidence_threshold: Minimum confidence score for relevance (0-1). Defaults to 0.5
+        confidence_threshold: Minimum relevance score and confidence score for
+            relevance (0-1). Defaults to 0.7
         model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
+        retrieval_guidance: Optional query-specific instructions to inject into
+            the relevance prompt
 
     Returns:
         SectionCollection: Filtered collection with sections list, query info, and filtering metadata
@@ -860,7 +893,13 @@ def filter_sections(
                 continue
 
             # Assess relevance using LLM
-            assessment = is_relevant(client, query, section_text, model)
+            assessment = is_relevant(
+                client,
+                query,
+                section_text,
+                model,
+                retrieval_guidance=retrieval_guidance,
+            )
 
             # Store assessment for metadata
             assessments.append(
@@ -874,8 +913,13 @@ def filter_sections(
                 }
             )
 
-            # Filter based on relevance and confidence threshold
-            if assessment.is_relevant and assessment.confidence >= confidence_threshold:
+            # Keep sections only when the LLM marks them relevant and both graded
+            # relevance and confidence clear the configured threshold.
+            if (
+                assessment.is_relevant
+                and assessment.relevance_score >= confidence_threshold
+                and assessment.confidence >= confidence_threshold
+            ):
                 # Update section with LLM relevance score for ranking
                 updated_section = SectionResult(
                     section_id=section.section_id,

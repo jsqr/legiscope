@@ -60,9 +60,9 @@ segmentation:
 
 # Retrieval: vector search and post-retrieval filtering
 retrieval:
-  n_results: 10
+  n_results: 20
   distance_metric: l2
-  debug: false
+  debug: true
 
   # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:
@@ -70,8 +70,8 @@ retrieval:
 
   # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
-    enabled: false
-    threshold: 0.5
+    enabled: true
+    threshold: 0.7
 
 # Benchmark evaluation settings
 benchmark:

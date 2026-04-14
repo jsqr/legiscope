@@ -217,12 +217,51 @@ uv run python scripts/run_queries.py
 Queries are read from the default path configured in `config.yaml`
 (`paths.default_queries_file`). Standalone query execution expects a `question`
 column. The COEP benchmark pipeline can also consume a structured query CSV
-such as `data/queries/DPL_queries_with_context.csv`, where the benchmark
-adjuster composes the final prompt from columns like `prepend_text`,
-`query_text`, `coding_instructions`, and `response_options`.
+such as `data/queries/DPL_queries_with_context.csv`. In that flow,
+`coep/src/query.py` composes a completion-oriented `question` from
+`query_text`, `coding_instructions`, and `response_options`, while preserving
+fields such as `prepend_text` in query metadata for downstream hooks.
+Projects can then supply a `RetrievalGuidanceProvider` that turns
+`variable_name` plus metadata into stage-specific retrieval, relevance, and
+completion guidance without hard-coding COEP logic into the core package.
 Results are saved to
 `data/output/{JURISDICTION}/query_results.csv` with answers, citations,
 confidence scores, and processing metrics.
+
+When `retrieval.debug` is enabled, batch query runs also write consolidated
+stage-level CSV artifacts under `data/output/{JURISDICTION}/debug/`:
+`retrieval_stage_<timestamp>.csv`, `relevance_stage_<timestamp>.csv`, and
+`query_stage_<timestamp>.csv`. Each file contains one row per question rather
+than one file per query.
+
+### Guidance Hooks
+
+The core package exposes a project-agnostic guidance interface in
+`src/legiscope/retrieval_guidance.py`:
+
+- `RetrievalGuidanceRequest` carries the base `query`, optional
+   `variable_name`, and arbitrary query metadata.
+- `RetrievalGuidance` splits guidance across retrieval,
+   relevance-assessment, and completion stages via fields such as
+   `retrieval_query`, `retrieval_instructions`, `relevance_instructions`,
+   `anchor_terms`, and `completion_instructions`.
+- `BatchQuerySettings.retrieval_guidance_provider` lets project code inject a
+   hook that derives this guidance per query.
+
+The COEP benchmark uses this mechanism in `coep/src/retrieval_guidance.py` to
+map drug-paraphernalia variables into fine-grained query families while still
+keeping the core RAG pipeline project-agnostic.
+
+### Parse Normalization
+
+The parse scan step treats LLM-produced heading structures as provisional.
+After scan-time normalization, `src/legiscope/parse/scan.py`:
+
+- reorders explicit heading levels conservatively when their outline coverage
+   suggests the returned hierarchy is inverted,
+- refines heading regexes from the example heading text, and
+- resets `markdown_prefix` from the normalized level order so stale prefixes
+   from the model cannot leak into `code.md`.
 
 <details>
 <summary>Full query CLI options</summary>
@@ -264,10 +303,12 @@ read from `params.yaml`; paths are read from `config.yaml`.
 - `llm_config.py` — Centralized LLM configuration using instructor's provider abstraction
 - `utils.py` — Core utilities including LLM client and directory functions
 - `parse/convert.py` — Text conversion utilities and LLM response models
+- `parse/scan.py` — LLM heading scanning, example-based regex refinement, and normalized markdown heading depth
 - `segment.py` — Text segmentation and hierarchical section processing
 - `embeddings.py` — Embedding generation and ChromaDB management
 - `retrieve.py` — Information retrieval with HYDE query rewriting and section-level search
-- `query.py` — Legal query processing with structured responses and batch query execution
+- `retrieval_guidance.py` — Project-agnostic per-query guidance hooks for retrieval, relevance, and completion
+- `query.py` — Legal query processing with structured responses, stage-specific guidance, and consolidated debug exports
 
 ## Data Directory Structure
 
@@ -295,7 +336,11 @@ data/
 │   └── {STATE}-{Locality}/
 │       ├── query_results.csv
 │       ├── benchmark_results.csv
-│       └── benchmark_metrics.json
+│       ├── benchmark_metrics.json
+│       └── debug/
+│           ├── retrieval_stage_<timestamp>.csv
+│           ├── relevance_stage_<timestamp>.csv
+│           └── query_stage_<timestamp>.csv
 └── ...
 ```
 
@@ -346,6 +391,7 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 │       ├── utils.py         # Core utility functions
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
 │       ├── retrieve.py      # Information retrieval with HYDE and section-level search
+│       ├── retrieval_guidance.py # Project-agnostic stage-specific query guidance hooks
 │       ├── segment.py       # Text segmentation utilities
 │       └── query.py         # Legal query processing with structured responses
 ├── tests/                   # Test files
@@ -357,7 +403,8 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 │   ├── __init__.py
 │   ├── src/
 │   │   ├── eval.py              # COEP-specific evaluation logic
-│   │   └── query.py             # COEP-specific query preprocessing
+│   │   ├── query.py             # COEP-specific query preprocessing
+│   │   └── retrieval_guidance.py # COEP mapping from variables to stage-specific guidance
 │   ├── tests/
 │   │   ├── test_eval.py
 │   │   └── test_query_adjustments.py

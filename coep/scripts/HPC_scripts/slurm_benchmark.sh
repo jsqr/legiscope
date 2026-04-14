@@ -166,7 +166,7 @@ echo "=== Benchmark re-run: $(date) ==="
 ./scripts/dvc_repro.sh --stage benchmark
 
 if should_attempt_dvc_push "$(pwd)"; then
-    if dvc exp push origin; then
+    if dvc exp push origin --no-cache; then
         echo "=== Benchmark completed (experiment pushed): $(date) ==="
     else
         echo "WARNING: Benchmark completed, but 'dvc exp push origin' failed; continuing without pushing experiment: $(date) ===" >&2

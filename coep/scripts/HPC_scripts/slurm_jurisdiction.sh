@@ -293,7 +293,7 @@ echo "=== Running pipeline: $(date) ==="
 # ── Step 7: Push DVC experiment ───────────────────────────────────
 if should_attempt_dvc_push "$WORK_DIR"; then
     echo "Pushing DVC experiment to GitHub..."
-    if dvc exp push origin; then
+    if dvc exp push origin --no-cache; then
         echo "DVC experiment push succeeded"
     else
         echo "WARNING: dvc exp push failed (non-fatal)" >&2

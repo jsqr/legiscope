@@ -21,7 +21,6 @@ Usage:
 """
 
 import argparse
-import csv
 import json
 import sys
 from datetime import datetime
@@ -53,6 +52,7 @@ from coep.src.eval import (
     melt_monqcle_to_long,
 )
 from coep.src.query import adjust_drug_paraphernalia_queries
+from coep.src.retrieval_guidance import get_drug_paraphernalia_retrieval_guidance
 
 
 def main():
@@ -119,13 +119,6 @@ def main():
         query_adjuster=adjust_drug_paraphernalia_queries,
     )
 
-    if debug_enabled and debug_dir:
-        debug_queries_path = debug_dir / f"loaded_queries_{timestamp}.csv"
-        with open(debug_queries_path, "w", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow(query_inputs)
-        logger.info(f"Debug: Saved loaded queries to {debug_queries_path}")
-
     if args.test_limit:
         query_inputs = query_inputs[: args.test_limit]
         logger.info(f"Limiting benchmark to first {args.test_limit} queries")
@@ -145,11 +138,6 @@ def main():
     # Melt to long format (now handles everything including combined vars)
     ground_truth_df = melt_monqcle_to_long(monqcle_row, variable_names)
 
-    if debug_enabled and debug_dir:
-        melted_path = debug_dir / f"melted_monqcle_{timestamp}.csv"
-        ground_truth_df.write_csv(melted_path)
-        logger.info(f"Debug: Saved melted MonQcle data to {melted_path}")
-
     # =========================================================================
     # Step 3: Initialize Resources
     # =========================================================================
@@ -166,7 +154,11 @@ def main():
     # =========================================================================
     # Step 4: Configure LLM Agents
     # =========================================================================
-    query_settings = BatchQuerySettings(debug_dir=debug_dir)
+    query_settings = BatchQuerySettings(
+        debug_dir=debug_dir,
+        debug_timestamp=timestamp,
+        retrieval_guidance_provider=get_drug_paraphernalia_retrieval_guidance,
+    )
 
     # Evaluator Agent (Powerful model for judging)
     evaluator = Evaluator()
@@ -194,9 +186,31 @@ def main():
     joined_df = gen_results_df.join(ground_truth_df, on="variable_name", how="left")
 
     if debug_enabled and debug_dir:
-        debug_path = debug_dir / f"queries_and_ground_truth_{timestamp}.csv"
-        joined_df.write_csv(debug_path)
-        logger.info(f"Debug: Saved queries and ground truth to {debug_path}")
+        query_stage_path = debug_dir / f"query_stage_{timestamp}.csv"
+        if query_stage_path.exists():
+            query_stage_df = pl.read_csv(query_stage_path)
+            ground_truth_cols = [
+                col
+                for col in [
+                    "variable_name",
+                    "ground_truth",
+                    "comprehensive_answer",
+                ]
+                if col in joined_df.columns
+            ]
+            if ground_truth_cols:
+                ground_truth_debug = joined_df.select(ground_truth_cols).unique(
+                    subset=["variable_name"]
+                )
+                query_stage_df = query_stage_df.join(
+                    ground_truth_debug,
+                    on="variable_name",
+                    how="left",
+                )
+                query_stage_df.write_csv(query_stage_path)
+                logger.info(
+                    f"Debug: Enriched query stage CSV with ground truth at {query_stage_path}"
+                )
 
     # Check for missing ground truth (Null, empty, or "-")
     missing_truth = joined_df.filter(

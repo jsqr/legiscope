@@ -9,6 +9,7 @@ from .src.eval import (
     melt_monqcle_to_long,
 )
 from .src.query import adjust_drug_paraphernalia_queries
+from .src.retrieval_guidance import get_drug_paraphernalia_retrieval_guidance
 
 __all__ = [
     "EvaluationResult",
@@ -18,4 +19,5 @@ __all__ = [
     "load_and_filter_monqcle",
     "melt_monqcle_to_long",
     "adjust_drug_paraphernalia_queries",
+    "get_drug_paraphernalia_retrieval_guidance",
 ]

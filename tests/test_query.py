@@ -17,6 +17,7 @@ from legiscope.query import (
     format_query_response,
     _validate_supporting_passages,
     _prepare_legal_context,
+    _normalize_structured_short_answer,
     load_queries,
     QueryInput,
     QuerySettings,
@@ -29,6 +30,7 @@ from legiscope.query import (
     DEFAULT_HYDE_ENABLED,
     DEFAULT_VALIDATION_ENABLED,
 )
+from legiscope.retrieval_guidance import RetrievalGuidance, RetrievalGuidanceRequest
 from legiscope.retrieve import SectionResult, SegmentMatch, SectionCollection, QueryInfo
 
 
@@ -50,6 +52,88 @@ class TestQueryInput:
         assert query.question == "Test question"
         assert query.variable_name == "test_var"
         assert query.metadata == {"priority": 1}
+
+
+class TestStructuredShortAnswerNormalization:
+    """Test deterministic normalization for structured answer fields."""
+
+    def test_normalizes_enactment_date_with_month_year_imputation(self):
+        normalized = _normalize_structured_short_answer(
+            "December 2024",
+            "structured_date_field",
+            {
+                "response_options": "Responses: <enactment date> OR Unkown",
+                "coding_instructions": (
+                    "If only month and year are available then impute the day as "
+                    "the 15th of the month."
+                ),
+            },
+        )
+
+        assert normalized == "12/15/2024"
+
+    def test_normalizes_yes_no_citation_output(self):
+        normalized = _normalize_structured_short_answer(
+            "Yes, the relevant citation is 35 P.S. § 780-102.",
+            "citation_field",
+            {
+                "response_options": "Responses: Yes, <citation> OR No",
+            },
+        )
+
+        assert normalized == "Yes, 35 P.S. § 780-102"
+
+    def test_normalizes_citation_only_output_for_state_fed_combined(self):
+        normalized = _normalize_structured_short_answer(
+            "35 P.S. § 780-102",
+            "citation_field",
+            {
+                "response_options": "Responses: Yes, <citation> OR No",
+            },
+        )
+
+        assert normalized == "Yes, 35 P.S. § 780-102"
+
+    def test_normalizes_current_through_combined_output(self):
+        normalized = _normalize_structured_short_answer(
+            "Known; March 19, 2024",
+            "status_date_field",
+            {
+                "response_options": (
+                    "Responses: Known, <current through date published in ordinance> "
+                    "OR Partially known, <partial current through date published in ordinance "
+                    "(month or day imputed)> OR Unknown, <date of data collection>"
+                ),
+            },
+        )
+
+        assert normalized == "Known, 03/19/2024"
+
+    def test_normalizes_partial_current_through_output(self):
+        normalized = _normalize_structured_short_answer(
+            "Partially known, 03/2024",
+            "status_date_field",
+            {
+                "response_options": (
+                    "Responses: Known, <current through date published in ordinance> "
+                    "OR Partially known, <partial current through date published in ordinance "
+                    "(month or day imputed)> OR Unknown, <date of data collection>"
+                ),
+            },
+        )
+
+        assert normalized == "Partially known, 03/15/2024"
+
+    def test_normalizes_multi_select_output_in_declared_order(self):
+        normalized = _normalize_structured_short_answer(
+            "Use; Sales",
+            "multi_select_field",
+            {
+                "response_options": ("Responses: Sales AND/OR Use AND/OR Possession"),
+            },
+        )
+
+        assert normalized == "Sales AND/OR Use"
 
 
 class TestLoadQueries:
@@ -326,7 +410,11 @@ class TestFormatQueryResponse:
 class TestValidateSupportingPassages:
     """Test the _validate_supporting_passages function."""
 
-    def create_test_sections(self, body_text: str, segment_texts: list[str] = None):
+    def create_test_sections(
+        self,
+        body_text: str,
+        segment_texts: list[str] | None = None,
+    ):
         """Helper to create test SectionResult objects."""
         if segment_texts is None:
             segment_texts = []
@@ -540,10 +628,10 @@ class TestValidateSupportingPassages:
 class TestPrepareLegalContext:
     """Test _prepare_legal_context function."""
 
-    def test_truncation(self):
-        """Test that body text is truncated to 1000 words."""
+    def test_full_body_text_included(self):
+        """Test that body text is included without query-time truncation."""
         # Create 1500 word text
-        body_text = " ".join(["word"] * 1500)
+        body_text = " ".join([f"word{i}" for i in range(1500)])
 
         section = SectionResult(
             section_id="s1",
@@ -558,8 +646,8 @@ class TestPrepareLegalContext:
 
         context = _prepare_legal_context([section])
 
-        # Should contain "... [content truncated]"
-        assert "... [content truncated]" in context
+        assert body_text in context
+        assert "... [content truncated]" not in context
 
     def test_matching_segments_included(self):
         """Test that matching segments are included."""
@@ -623,27 +711,46 @@ class TestQueryConfig:
         assert settings.filter_llm is filter_llm
         assert settings.filter_llm is not main_llm
 
+    def test_with_retrieval_guidance(self):
+        """Test settings can carry per-query retrieval guidance."""
+        llm_config = LLMConfig(client=Mock())
+        guidance = RetrievalGuidance(guidance_topic="date")
+
+        settings = QuerySettings(llm=llm_config, retrieval_guidance=guidance)
+
+        assert settings.retrieval_guidance is guidance
+
     def test_empty_query_raises_error(self):
         """Test that empty query is validated at function call."""
         # query validation moved to function, not settings
         settings = QuerySettings(llm=LLMConfig(client=Mock()))
         with pytest.raises(ValueError, match="query cannot be empty"):
             query_legal_documents(
-                {"sections": []},
+                SectionCollection(
+                    sections=[],
+                    query_info=QueryInfo(original_query=""),
+                ),
                 "",  # Empty query
                 settings,
             )
 
     def test_empty_results_raises_error(self):
-        """Test that empty retrieval_results is validated at function call."""
-        # retrieval_results validation moved to function, not settings
+        """Test that an empty SectionCollection returns the no-results fallback."""
         settings = QuerySettings(llm=LLMConfig(client=Mock()))
-        with pytest.raises(ValueError, match="retrieval_results cannot be empty"):
-            query_legal_documents(
-                None,  # Empty results
-                "test",
-                settings,
-            )
+        response, similarity_scores = query_legal_documents(
+            SectionCollection(
+                sections=[],
+                query_info=QueryInfo(original_query="test"),
+            ),
+            "test",
+            settings,
+        )
+
+        assert response.confidence == 0.0
+        assert (
+            "no relevant legal provisions were found" in response.short_answer.lower()
+        )
+        assert similarity_scores == []
 
     def test_invalid_relevance_threshold(self):
         """Test that invalid relevance_threshold raises error."""
@@ -751,6 +858,20 @@ class TestBatchQueryConfig:
         assert settings.relevance_threshold == 0.8
         assert settings.validate_supporting_passages is False
 
+    def test_with_retrieval_guidance_provider(self):
+        """Test settings can carry a project-provided retrieval guidance hook."""
+
+        def provider(request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            return RetrievalGuidance(guidance_topic=request.variable_name)
+
+        mock_llm = Mock(spec=LLMConfig)
+        settings = BatchQuerySettings(
+            llm=mock_llm,
+            retrieval_guidance_provider=provider,
+        )
+
+        assert settings.retrieval_guidance_provider is provider
+
 
 class TestQueryConfigBasics:
     """Test QuerySettings-based query_legal_documents function."""
@@ -832,11 +953,18 @@ class TestQueryConfigBasics:
 
         with patch("legiscope.query.filter_sections") as mock_filter:
             with patch("legiscope.query.ask", return_value=mock_response):
-                mock_filter.return_value = {"sections": [section]}
+                mock_filter.return_value = SectionCollection(
+                    sections=[section],
+                    query_info=QueryInfo(original_query="test query"),
+                )
 
                 llm_config = LLMConfig(client=mock_client, model="test-model")
+                guidance = RetrievalGuidance(guidance_topic="activity")
                 settings = QuerySettings(
-                    llm=llm_config, filter_relevance=True, relevance_threshold=0.7
+                    llm=llm_config,
+                    filter_relevance=True,
+                    relevance_threshold=0.7,
+                    retrieval_guidance=guidance,
                 )
 
                 response, similarity_scores = query_legal_documents(
@@ -845,6 +973,7 @@ class TestQueryConfigBasics:
 
                 assert response.short_answer == "Test answer"
                 mock_filter.assert_called_once()
+                assert mock_filter.call_args.kwargs["retrieval_guidance"] is guidance
 
 
 class TestBatchQueryConfigBasics:
@@ -938,3 +1067,409 @@ class TestBatchQueryConfigBasics:
 
             assert settings.llm is not None
             assert settings.llm.client is mock_client
+
+    def test_run_queries_applies_retrieval_guidance_provider(self, tmp_path):
+        """run_queries should resolve project-specific retrieval guidance per query."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="test query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="Test answer",
+            reasoning="Test reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        captured_guidance = []
+
+        def provider(request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            if request.variable_name == "dp_enacted":
+                return RetrievalGuidance(guidance_topic="date")
+            return None
+
+        def fake_query_legal_documents(_results, _query, query_settings, **_kwargs):
+            captured_guidance.append(query_settings.retrieval_guidance)
+            return mock_response, []
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=fake_query_legal_documents,
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    retrieval_guidance_provider=provider,
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[QueryInput(question="query1", variable_name="dp_enacted")],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+                assert isinstance(results_df, pl.DataFrame)
+                assert len(captured_guidance) == 1
+                assert captured_guidance[0] is not None
+                assert captured_guidance[0].guidance_topic == "date"
+
+    def test_run_queries_uses_retrieval_and_completion_query_variants(self, tmp_path):
+        """Per-query guidance should split retrieval text from completion text."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="retrieval query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="Test answer",
+            reasoning="Test reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        def provider(_request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            return RetrievalGuidance(
+                guidance_topic="date",
+                retrieval_query="Question: When was the ordinance enacted?",
+                completion_instructions="Use enactment-specific coding logic.",
+            )
+
+        with patch(
+            "legiscope.query.retrieve_sections", return_value=retrieval_results
+        ) as mock_retrieve:
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(mock_response, []),
+            ) as mock_query_legal_documents:
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    retrieval_guidance_provider=provider,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="full completion query", variable_name="dp_enacted"
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+                assert (
+                    mock_retrieve.call_args.kwargs["query_text"]
+                    == "Question: When was the ordinance enacted?"
+                )
+                assert (
+                    mock_query_legal_documents.call_args.args[1]
+                    == "full completion query\n\nVariable-specific guidance:\nUse enactment-specific coding logic."
+                )
+
+    def test_run_queries_writes_consolidated_stage_debug_csvs(self, tmp_path):
+        """Debug mode should emit one retrieval/relevance/query CSV row per question."""
+        sections_path = tmp_path / "sections.parquet"
+        debug_dir = tmp_path / "debug"
+        debug_timestamp = "20260413_120000"
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["This ordinance was enacted in 2024."],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s1",
+                    heading_text="# Test",
+                    body_text="This ordinance was enacted in 2024.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[
+                        SegmentMatch(
+                            segment_id="seg1",
+                            segment_text="This ordinance was enacted in 2024.",
+                            distance=0.12,
+                            segment_position=0,
+                        )
+                    ],
+                    relevance_score=0.12,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="full completion query",
+                rewritten_query="Question: When was the ordinance enacted?",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="12/21/2011",
+            reasoning="The ordinance text provides the enactment date.",
+            citations=["Section 1"],
+            supporting_passages=["This ordinance was enacted in 2024."],
+            confidence=0.9,
+            limitations="None",
+        )
+
+        def provider(_request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            return RetrievalGuidance(
+                guidance_topic="date_enactment",
+                shared_context="This query concerns a local municipal ordinance regulating drug paraphernalia-related activities.",
+                retrieval_query="Question: When was the ordinance enacted?",
+                retrieval_instructions="Retrieve ordinance metadata and enactment history.",
+                relevance_instructions="Prefer enactment-date language over effective dates.",
+                anchor_terms=["enacted", "adopted"],
+                completion_instructions="Use enactment-specific coding logic.",
+            )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch("legiscope.query.ask", return_value=mock_response):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    debug_dir=debug_dir,
+                    debug_timestamp=debug_timestamp,
+                    retrieval_guidance_provider=provider,
+                    filter_relevance=False,
+                    validate_supporting_passages=False,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="full completion query",
+                            variable_name="dp_enacted",
+                            metadata={
+                                "question_number": "Q1.2",
+                                "query_text": "On which date was the ordinance enacted?",
+                            },
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        retrieval_debug = pl.read_csv(
+            debug_dir / f"retrieval_stage_{debug_timestamp}.csv"
+        )
+        relevance_debug = pl.read_csv(
+            debug_dir / f"relevance_stage_{debug_timestamp}.csv"
+        )
+        query_debug = pl.read_csv(debug_dir / f"query_stage_{debug_timestamp}.csv")
+
+        assert len(retrieval_debug) == 1
+        assert len(relevance_debug) == 1
+        assert len(query_debug) == 1
+        assert (
+            retrieval_debug[0, "retrieval_query"]
+            == "Question: When was the ordinance enacted?"
+        )
+        assert retrieval_debug[0, "retrieved_segments"] != "[]"
+        assert relevance_debug[0, "stage_status"] == "skipped"
+        assert query_debug[0, "completion_query"] == (
+            "full completion query\n\nVariable-specific guidance:\nUse enactment-specific coding logic."
+        )
+        assert query_debug[0, "short_answer"] == "12/21/2011"
+
+    def test_run_queries_postprocesses_structured_date_answers(self, tmp_path):
+        """Structured date answers should be normalized in results and debug output."""
+        sections_path = tmp_path / "sections.parquet"
+        debug_dir = tmp_path / "debug"
+        debug_timestamp = "20260413_121500"
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["This ordinance was adopted in December 2024."],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="full completion query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="December 2024",
+            reasoning="The ordinance text gives a month and year.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(mock_response, []),
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    debug_dir=debug_dir,
+                    debug_timestamp=debug_timestamp,
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="full completion query",
+                            variable_name="structured_date_field",
+                            metadata={
+                                "question_number": "Q1.2",
+                                "query_text": "On which date was the ordinance enacted?",
+                                "response_options": "Responses: <enactment date> OR Unkown",
+                                "coding_instructions": (
+                                    "If only month and year are available then impute the "
+                                    "day as the 15th of the month."
+                                ),
+                            },
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        query_debug = pl.read_csv(debug_dir / f"query_stage_{debug_timestamp}.csv")
+
+        assert results_df[0, "short_answer"] == "12/15/2024"
+        assert query_debug[0, "short_answer"] == "12/15/2024"
+        assert query_debug[0, "raw_short_answer"] == "December 2024"
+
+    def test_run_queries_postprocesses_current_through_combined_answers(self, tmp_path):
+        """Status/date combined outputs should be normalized in results and debug output."""
+        sections_path = tmp_path / "sections.parquet"
+        debug_dir = tmp_path / "debug"
+        debug_timestamp = "20260413_122500"
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["This code is current through March 19, 2024."],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="full completion query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="Known; March 19, 2024",
+            reasoning="The code header states the current-through date.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(mock_response, []),
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    debug_dir=debug_dir,
+                    debug_timestamp=debug_timestamp,
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="full completion query",
+                            variable_name="status_date_field",
+                            metadata={
+                                "question_number": "Q1.4",
+                                "query_text": "What is the current-through date of the ordinance?",
+                                "response_options": (
+                                    "Responses: Known, <current through date published in ordinance> "
+                                    "OR Partially known, <partial current through date published in ordinance "
+                                    "(month or day imputed)> OR Unknown, <date of data collection>"
+                                ),
+                            },
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        query_debug = pl.read_csv(debug_dir / f"query_stage_{debug_timestamp}.csv")
+
+        assert results_df[0, "short_answer"] == "Known, 03/19/2024"
+        assert query_debug[0, "short_answer"] == "Known, 03/19/2024"
+        assert query_debug[0, "raw_short_answer"] == "Known; March 19, 2024"
