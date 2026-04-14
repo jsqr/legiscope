@@ -125,8 +125,8 @@ results_df = run_queries(
 Models are configured per-provider in `params.yaml` under `llm.providers`. Current defaults:
 
 **OpenAI Provider:**
-- Fast model: `Qwen/Qwen3.5-4B` (via vLLM on HPC)
-- Powerful model: `Qwen/Qwen3.5-4B`
+- Fast model: `Qwen/Qwen3.5-27B` (via vLLM on HPC)
+- Powerful model: `Qwen/Qwen3.5-27B`
 
 **Mistral Provider:**
 - Fast model: `mistral-small-2506`

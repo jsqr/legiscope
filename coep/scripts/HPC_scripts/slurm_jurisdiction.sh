@@ -1,12 +1,12 @@
 #!/bin/bash
 #SBATCH --job-name=legiscope-jurisdiction
-#SBATCH --partition=gpu4_short          # Or gpu4_medium for larger codes
+#SBATCH --partition=gpu8_short          # 27B serving requires tensor parallelism across 8x V100-16GB
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=48G
+#SBATCH --mem=96G
 #SBATCH --time=12:00:00
-#SBATCH --gres=gpu:1                    # For vLLM
+#SBATCH --gres=gpu:8                    # For 27B vLLM tensor parallelism
 #SBATCH --output=/gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_%j.out
 #SBATCH --error=/gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_%j.err
 #
@@ -236,25 +236,29 @@ bash scripts/convert_docx.sh "$RAW_DIR"
 # ── Step 5: Start vLLM server on dynamic port ─────────────────────
 # Use Python to find a free port, avoiding conflicts with other jobs
 # that may share this compute node.
-MODEL_ID="Qwen/Qwen3.5-4B"
+MODEL_ID="Qwen/Qwen3.5-27B"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
+VLLM_TP_SIZE="${VLLM_TP_SIZE:-8}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
 echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
+echo "Using tensor parallel size ${VLLM_TP_SIZE}"
 
 python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_ID" \
     --host 0.0.0.0 \
     --port "$VLLM_PORT" \
-    --gpu-memory-utilization 0.90 \
+    --gpu-memory-utilization 0.85 \
     --max-model-len "$VLLM_MAX_MODEL_LEN" \
     --api-key "$API_KEY" \
     --served-model-name "$MODEL_ID" \
     --download-dir /gpfs/scratch/"$USER"/hf_cache \
+    --tensor-parallel-size "$VLLM_TP_SIZE" \
     --reasoning-parser qwen3 \
     --default-chat-template-kwargs '{"enable_thinking": false}' \
+    --language-model-only \
     --dtype float16 \
     --enforce-eager &
 

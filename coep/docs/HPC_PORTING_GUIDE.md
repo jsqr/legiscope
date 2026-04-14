@@ -133,8 +133,8 @@ llm:
       fast: mistral-small-2506       # Used for HYDE, relevance filtering
       powerful: mistral-large-2512   # Used for query answering, evaluation
     openai:
-      fast: Qwen/Qwen3.5-4B
-      powerful: Qwen/Qwen3.5-4B
+      fast: Qwen/Qwen3.5-27B
+      powerful: Qwen/Qwen3.5-27B
     ollama:
       fast: qwen3:8b
       powerful: qwen3:30b
@@ -712,18 +712,22 @@ mode_map = {
 }
 ```
 
-**vLLM Server Launch (confirmed working on V100-16GB):**
+**vLLM Server Launch (Qwen3.5-27B on 8x V100-16GB):**
 
 ```bash
 python -m vllm.entrypoints.openai.api_server \
-    --model Qwen/Qwen3.5-4B \
+  --model Qwen/Qwen3.5-27B \
     --host 0.0.0.0 \
     --port 8000 \
-    --gpu-memory-utilization 0.90 \
-    --max-model-len 4096 \
+  --gpu-memory-utilization 0.85 \
+  --max-model-len 16384 \
     --api-key "$API_KEY" \
-    --served-model-name "powerful-model" \
+  --served-model-name "Qwen/Qwen3.5-27B" \
     --download-dir /gpfs/scratch/$USER/hf_cache \
+  --tensor-parallel-size 8 \
+  --reasoning-parser qwen3 \
+  --default-chat-template-kwargs '{"enable_thinking": false}' \
+  --language-model-only \
     --dtype float16 \
     --enforce-eager
 ```
@@ -734,10 +738,12 @@ Key flags:
 - `--enforce-eager`: Skip CUDA graph compilation, faster startup (~4 min vs ~8 min)
 - `--served-model-name`: Name that appears in the API; must match `params.yaml`
 - `--download-dir`: Point to scratch for large model weights
-- `--tensor-parallel-size N`: Add for multi-GPU models (must match `--gres=gpu:N`)
+- `--tensor-parallel-size 8`: Required on current BigPurple hardware because 4x nodes were confirmed to have 16 GB GPUs
+- `--language-model-only`: Skip the vision stack and preserve VRAM for KV cache in this text-only pipeline
 
-Model weights are ~8 GB (FP16); fits comfortably on V100-16GB with room for
-KV cache at `--max-model-len 4096`.
+Qwen3.5-27B weights are roughly 54 GB in FP16 before runtime overhead, so the
+current deployment target is an 8x V100-16GB node with tensor parallelism and a
+conservative `--max-model-len 16384`.
 
 **(Recommended): Verify basic LLM capabilities:**
 - Basic chat completions (non-streaming and streaming)
@@ -796,7 +802,7 @@ BigPurple has three storage tiers with different characteristics:
 
 /gpfs/scratch/$USER/
 ├── hf_cache/                           # HuggingFace model weights (large, re-downloadable)
-│   └── models--Qwen--Qwen3.5-4B/
+│   └── models--Qwen--Qwen3.5-27B/
 └── tmp/                                # Temp files for pip builds
 ```
 
@@ -1099,8 +1105,8 @@ sbatch \
 sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
 ```
 
-For multi-GPU models (e.g., Qwen3.5-32B on 4x V100), change `--gres=gpu:4`
-and add `--tensor-parallel-size 4` to the vLLM launch command.
+For the current 27B deployment on BigPurple, request `--gres=gpu:8` and use
+`--tensor-parallel-size 8` in the vLLM launch command.
 
 ---
 
@@ -1706,18 +1712,19 @@ Once model benchmarking is complete, a two-model approach can be re-introduced
 by hosting two vLLM servers on different ports or by splitting the fast model
 to a smaller locally-hosted model.
 
-### Confirmed Working Configuration (V100-16GB, Single GPU)
+### Current Deployment Target (V100-16GB, 8 GPU)
 
 | Setting | Value |
 |---------|-------|
-| Model | `Qwen/Qwen3.5-4B` |
-| VRAM usage | ~5.8 GB weights, ~7 GB free for KV cache |
-| Max concurrent requests | ~49 at 4096 context length |
-| Server startup | ~240 seconds |
+| Model | `Qwen/Qwen3.5-27B` |
+| Node class | `gpu8_short` / `gpu8_medium` |
+| GPU topology | 8× V100-16GB with tensor parallel size 8 |
+| Starting max model len | 16384 |
+| Launch mode | `--language-model-only --dtype float16 --enforce-eager` |
 
-This is the current model for initial pipeline porting and testing. Both
-`fast` and `powerful` slots point to the same model as a temporary
-simplification.
+Both `fast` and `powerful` slots now point to the same 27B model so the current
+single-server HPC workflow can satisfy every legiscope LLM call without running
+separate fast and powerful vLLM servers.
 
 ### Model Testing Plan
 
@@ -1725,23 +1732,22 @@ Once the pipeline is ported, evaluate models in order. Use the first model
 that meets accuracy requirements — earlier options are more practical
 operationally.
 
-**Fast model candidate:**
-- **Qwen3.5-9B** in FP16 on single V100-32GB (if 32 GB confirmed)
-- ~18 GB weight VRAM
-- Recommended `--max-model-len 32768`
+**Current production model:**
+- **Qwen3.5-27B** in FP16 on 8× V100-16GB
+- Recommended `--max-model-len 16384` to start; test `32768` only after smoke-test success
 
-**Powerful model candidates (in evaluation order):**
+**Larger fallback / comparison candidates (in evaluation order):**
 
 | Option | Model | GPUs | VRAM | Quantization | Notes |
 |--------|-------|------|------|-------------|-------|
-| 1 (preferred) | Qwen3.5-32B | 4× V100 | ~64 GB | FP16 (none) | Full precision, 128K native context, fast gpu4 scheduling |
-| 2 | Qwen3-32B | 4× V100 | ~64 GB | FP16 | Thinking mode (`/think`), adds output token overhead |
-| 3 | Llama 3.3 70B | 4× V100 | ~38 GB | AWQ 4-bit | Largest dense model on 4× V100; tests if 70B adds value |
-| 4 (escalation) | Qwen3-235B-A22B | 8× V100 | ~118 GB | AWQ 4-bit | MoE (128 experts, 8 active, ~22B active). Only if Options 1–3 leave an accuracy gap |
+| 1 | Qwen3.5-32B | 8× V100-16GB or 4× V100-32GB | ~64 GB | FP16 (none) | Nearest larger dense Qwen option |
+| 2 | Qwen3-32B | 8× V100-16GB or 4× V100-32GB | ~64 GB | FP16 | Thinking mode adds output-token overhead |
+| 3 | Llama 3.3 70B | 8× V100 | ~38 GB | AWQ 4-bit | Larger dense comparison if 27B underperforms |
+| 4 (escalation) | Qwen3-235B-A22B | 8× V100 | ~118 GB | AWQ 4-bit | MoE escalation only if dense models leave an accuracy gap |
 
-**Decision rule:** If a model scores within 2–3% accuracy of the next-larger
-option on the legal coding benchmark, stop and use the smaller model. Staying
-on 4× V100 with FP16 provides faster scheduling and simpler operations.
+**Decision rule:** If the current 27B model meets accuracy requirements, keep it.
+Moving larger than 27B will increase queue friction and startup cost on
+BigPurple without helping the rest of the pipeline.
 
 ### Context Length Guidance
 
@@ -1761,7 +1767,7 @@ import os
 from huggingface_hub import snapshot_download
 
 snapshot_download(
-    "Qwen/Qwen3.5-4B",
+  "Qwen/Qwen3.5-27B",
     cache_dir=f"/gpfs/scratch/{os.environ['USER']}/hf_cache"
 )
 ```

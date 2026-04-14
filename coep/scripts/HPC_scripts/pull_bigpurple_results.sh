@@ -20,8 +20,8 @@ usage() {
     cat <<'EOF'
 Usage: pull_bigpurple_results.sh --netid NETID --jurisdiction STATE-Locality [options]
 
-Pull benchmark_results.csv and benchmark_metrics.json for a jurisdiction from
-BigPurple onto your local machine.
+Pull benchmark_results.csv, benchmark_metrics.json, and any debug artifacts for
+a jurisdiction from BigPurple onto your local machine.
 
 Required:
   --netid NETID               BigPurple username
@@ -188,6 +188,7 @@ RSYNC_FILTERS=(
     --include='*/'
     --include='benchmark_results.csv'
     --include='benchmark_metrics.json'
+    --include='debug/***'
 )
 
 if [[ "$INCLUDE_TIMESTAMPED" == true ]]; then
@@ -212,6 +213,12 @@ else
         say "benchmark_metrics.json: ok"
     else
         say "benchmark_metrics.json: missing"
+    fi
+    if [[ -d "${LOCAL_TARGET_DIR}/debug" ]]; then
+        debug_file_count=$(find "${LOCAL_TARGET_DIR}/debug" -type f | wc -l | tr -d ' ')
+        say "debug artifacts: ${debug_file_count} file(s)"
+    else
+        say "debug artifacts: not present"
     fi
     say "benchmark_results.csv: ok"
 fi

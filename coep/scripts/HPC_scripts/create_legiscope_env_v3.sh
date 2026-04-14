@@ -367,15 +367,15 @@ print('All imports successful.')
 
 # ── Step 7: vLLM model config check ─────────────────────────────
 echo ""
-echo ">>> Step 7: vLLM Qwen3.5-4B config check"
+echo ">>> Step 7: vLLM Qwen3.5-27B config check"
 
 python -c "
 try:
     import torch
     from vllm.engine.arg_utils import EngineArgs
-    args = EngineArgs(model='Qwen/Qwen3.5-4B', dtype='float16', enforce_eager=True)
+    args = EngineArgs(model='Qwen/Qwen3.5-27B', dtype='float16', enforce_eager=True)
     config = args.create_model_config()
-    print(f'  vLLM can configure Qwen3.5-4B: YES')
+    print(f'  vLLM can configure Qwen3.5-27B: YES')
     print(f'  Model type: {config.hf_config.model_type}')
     print(f'  Architecture: {config.hf_config.architectures}')
 except Exception as e:
@@ -394,7 +394,7 @@ echo "Next steps:"
 echo "  1. Update SLURM scripts: conda activate $ENV_PATH"
 echo "  2. Remove --model-impl and --trust-remote-code from vLLM commands"
 echo "     (Qwen3.5 is natively supported in vLLM 0.19.0)"
-echo "  3. Test with: sbatch qwen3.5-4B_test.sh"
+echo "  3. Test with: sbatch qwen3.5-27B_test.sh"
 echo "  4. Old envs remain as fallback:"
 echo "     v1: /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env"
 echo "     v2: /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v2"
