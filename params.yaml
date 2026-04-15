@@ -16,7 +16,7 @@ llm:
     openai:
       fast: Qwen/Qwen3.5-27B
       powerful: Qwen/Qwen3.5-27B
-      
+
     mistral:
       fast: mistral-small-2506
       powerful: mistral-large-2512
