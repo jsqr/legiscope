@@ -97,6 +97,35 @@ class TestResponseModels:
             == "The evidence is insufficient to determine a clear answer."
         )
 
+    def test_heading_structure_accepts_json_toc_ranges(self):
+        """LLM JSON arrays for toc_line_ranges should normalize to tuple pairs."""
+        structure = HeadingStructure.model_validate(
+            {
+                "heading_levels": [
+                    {
+                        "level": 1,
+                        "regex_pattern": r"^CHAPTER\s+\d+.*$",
+                        "regex_patterns": [r"^CHAPTER\s+\d+.*$"],
+                        "markdown_prefix": "# ",
+                        "example_heading": "CHAPTER 1 GENERAL PROVISIONS",
+                        "type_label": "chapter",
+                        "number_regex": r"\d+",
+                        "multiline": False,
+                        "inferred": False,
+                        "outline_line_numbers": [114, 313],
+                    }
+                ],
+                "total_levels": 1,
+                "file_sample_size": 200,
+                "toc_line_ranges": [[114, 313]],
+                "outline_warnings": [],
+                "quality_score": 0.0,
+                "iterations": 0,
+            }
+        )
+
+        assert structure.toc_line_ranges == [(114, 313)]
+
 
 def _make_mock_client(heading_structure_response):
     """Create a mock client that returns element-based code start results

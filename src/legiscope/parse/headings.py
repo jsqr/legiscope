@@ -82,15 +82,24 @@ class HeadingStructure(BaseModel):
         if not isinstance(data, dict):
             return data
 
+        payload = data
         expected_keys = {"heading_levels", "levels", "total_levels", "file_sample_size"}
-        if expected_keys.intersection(data):
-            return data
+        if not expected_keys.intersection(payload):
+            properties = payload.get("properties")
+            if isinstance(properties, dict) and expected_keys.intersection(properties):
+                payload = properties
 
-        properties = data.get("properties")
-        if isinstance(properties, dict) and expected_keys.intersection(properties):
-            return properties
+        toc_line_ranges = payload.get("toc_line_ranges")
+        if isinstance(toc_line_ranges, list):
+            normalized_ranges: list[Any] = []
+            for line_range in toc_line_ranges:
+                if isinstance(line_range, (list, tuple)) and len(line_range) == 2:
+                    normalized_ranges.append((line_range[0], line_range[1]))
+                else:
+                    normalized_ranges.append(line_range)
+            payload = {**payload, "toc_line_ranges": normalized_ranges}
 
-        return data
+        return payload
 
     model_config = {"populate_by_name": True, "extra": "ignore"}
 
@@ -98,7 +107,9 @@ class HeadingStructure(BaseModel):
 # ── Heading pattern helpers ────────────────────────────────────────────
 
 
-def _compile_heading_patterns(structure: HeadingStructure) -> list:
+def _compile_heading_patterns(
+    structure: HeadingStructure,
+) -> list[tuple[int, re.Pattern[str]]]:
     """Compile regex patterns for heading detection."""
     from loguru import logger
 
@@ -128,7 +139,7 @@ def _compile_heading_patterns(structure: HeadingStructure) -> list:
 
 def _is_heading_element(
     element_text: str,
-    compiled_patterns: list,
+    compiled_patterns: list[tuple[int, re.Pattern[str]]],
 ) -> tuple[bool, int | None]:
     """Check if an element matches any heading pattern.
 
