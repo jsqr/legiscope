@@ -115,9 +115,11 @@ Compare experiments with `dvc exp show` / `dvc exp diff <exp-name>`.
 
 ### Storing and Sharing Results
 
-- `dvc push` / `dvc pull` — share processed artifacts via a configured remote.
-- Query output (`data/output/`) is not DVC-tracked by default; commit to git
-  or add to DVC as needed.
+- `dvc push` / `dvc pull` — share tracked pipeline artifacts via a configured remote.
+   This includes parse/segment/embed outputs and benchmark artifacts such as
+   `benchmark_results.csv` and `benchmark_metrics.json`.
+- Historical timestamped benchmark copies and debug CSVs under `data/output/`
+   are not part of the DVC-tracked artifact set.
 - `dvc exp push` / `dvc exp pull` — share experiment state.
 
 _See [DVC Remote Storage](#dvc-remote-storage) for setup._
@@ -126,7 +128,10 @@ _See [DVC Remote Storage](#dvc-remote-storage) for setup._
 
 The same DVC pipeline can be run on HPC systems, but cluster-specific setup,
 SLURM entrypoints, environment notes, and BigPurple operational guidance are
-kept in `coep/docs/HPC_PORTING_GUIDE.md` rather than duplicated here.
+kept in `coep/docs/HPC_PORTING_GUIDE.md` rather than duplicated here. The HPC
+wrappers default to `DVC_PUSH_CACHE=0`, which makes `dvc exp push` metadata-only
+for faster job teardown; set `DVC_PUSH_CACHE=1` when you want the wrappers to
+also publish DVC cache for later `dvc pull` on another machine.
 
 ## Getting started
 
@@ -374,6 +379,11 @@ data/
 
 DVC can push/pull data to a remote store so that collaborators and CI systems
 share processed artifacts without re-running the pipeline.
+
+Tracked artifacts currently include the main parse/segment/embed parquet files,
+`regions.parquet`, `chunks.parquet`, `benchmark_results.csv`, and
+`benchmark_metrics.json`. Timestamped benchmark history files and debug CSVs are
+kept as local/HPC outputs rather than part of the DVC artifact set.
 
 #### Setup
 

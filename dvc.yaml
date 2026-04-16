@@ -52,6 +52,7 @@ stages:
         outs:
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/headings.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/regions.parquet
 
     segment:
         cmd: >-
@@ -62,11 +63,13 @@ stages:
             - src/legiscope/segment.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/headings.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/regions.parquet
         params:
             - jurisdiction
             - segmentation
         outs:
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/chunks.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/segments.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/relations.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/external_references.parquet
@@ -113,6 +116,7 @@ stages:
             - src/legiscope/query.py
             - src/legiscope/retrieve.py
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/sections.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/chunks.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/embeddings.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/index.stamp
             - data/queries/DPL_queries_with_context.csv
@@ -124,7 +128,6 @@ stages:
             - query
             - benchmark
         metrics:
-            - data/output/${jurisdiction.state}-${jurisdiction.locality}/benchmark_metrics.json:
-                cache: false
+            - data/output/${jurisdiction.state}-${jurisdiction.locality}/benchmark_metrics.json
         outs:
             - data/output/${jurisdiction.state}-${jurisdiction.locality}/benchmark_results.csv

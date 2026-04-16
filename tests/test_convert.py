@@ -19,7 +19,12 @@ from legiscope.parse.convert import text2md
 from legiscope.parse.find_code_start import ScanResult
 from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructure
 from legiscope.parse.regions import REGIONS_SCHEMA
-from legiscope.parse.scan import DEFAULT_TEMPERATURE, scan_legal_text
+from legiscope.parse.scan import (
+    DEFAULT_TEMPERATURE,
+    _select_scan_sample,
+    scan_legal_text,
+    score_structure,
+)
 from legiscope.utils import ask
 
 
@@ -345,6 +350,142 @@ class TestScanLegalText:
         assert "LIKELY EARLIER BOUNDARY CANDIDATES" in messages[1]["content"]
         assert "[2]" in messages[1]["content"]
         assert "[3]" in messages[1]["content"]
+
+    def test_find_code_start_advances_mid_toc_candidate_to_first_substantive_block(
+        self,
+    ):
+        """TOC candidates should advance to the first substantive chapter/body block."""
+        import polars as pl
+
+        from legiscope.parse.find_code_start import find_code_start
+
+        elements = pl.DataFrame(
+            [
+                {
+                    "element_id": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "n_lines": 1,
+                    "text": "TABLE OF CONTENTS",
+                },
+                {
+                    "element_id": 1,
+                    "start_line": 2,
+                    "end_line": 2,
+                    "n_lines": 1,
+                    "text": "ARTICLE I GENERAL PROVISIONS",
+                },
+                {
+                    "element_id": 2,
+                    "start_line": 3,
+                    "end_line": 3,
+                    "n_lines": 1,
+                    "text": "CHAPTER 1 INTRODUCTION",
+                },
+                {
+                    "element_id": 3,
+                    "start_line": 4,
+                    "end_line": 4,
+                    "n_lines": 1,
+                    "text": "§ 1-100. Purpose. 1",
+                },
+                {
+                    "element_id": 4,
+                    "start_line": 5,
+                    "end_line": 6,
+                    "n_lines": 2,
+                    "text": "CHAPTER 1\nGENERAL PROVISIONS",
+                },
+                {
+                    "element_id": 5,
+                    "start_line": 7,
+                    "end_line": 9,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 1-100. Purpose.\n"
+                        "This chapter establishes the general provisions of the code.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+            ],
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+        mock_client = Mock()
+        mock_client.chat.completions.create.side_effect = [
+            ScanResult(found=True, element_id=2, reasoning="mid-TOC candidate"),
+            Mock(
+                correct=True, adjusted_element_id=None, reasoning="candidate accepted"
+            ),
+        ]
+
+        result = find_code_start(mock_client, elements)
+
+        assert result.element_id == 4
+        assert result.start_line == 5
+
+    def test_verify_prompt_treats_toc_as_navigation_not_boundary(self):
+        """Verification prompt should explicitly reject TOC/index boundaries."""
+        import polars as pl
+
+        from legiscope.parse.find_code_start import _verify_code_start
+
+        elements = pl.DataFrame(
+            [
+                {
+                    "element_id": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "n_lines": 1,
+                    "text": "TABLE OF CONTENTS",
+                },
+                {
+                    "element_id": 1,
+                    "start_line": 2,
+                    "end_line": 2,
+                    "n_lines": 1,
+                    "text": "ARTICLE I GENERAL PROVISIONS",
+                },
+                {
+                    "element_id": 2,
+                    "start_line": 3,
+                    "end_line": 5,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 1-100. Purpose.\n"
+                        "This chapter establishes the general provisions of the code.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+            ],
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+        mock_client = Mock()
+        mock_client.chat.completions.create.return_value = Mock(
+            correct=True,
+            adjusted_element_id=None,
+            reasoning="candidate accepted",
+        )
+
+        _verify_code_start(mock_client, elements, candidate_id=2)
+
+        system_prompt = mock_client.chat.completions.create.call_args.kwargs[
+            "messages"
+        ][0]["content"]
+        assert "navigation, not the boundary" in system_prompt
 
     def test_scan_legal_text_success(self):
         """Test successful analysis of legal text with mock LLM response."""
@@ -1945,8 +2086,6 @@ class TestScoreStructure:
 
     def test_outline_mismatch_penalises_broad_regex(self):
         """Broad regexes should be penalized when they disagree with outline ids."""
-        from legiscope.parse.scan import score_structure
-
         lines = [
             "1-100   Proper heading",
             "1-100 body text that should not be a heading",
@@ -1978,7 +2117,6 @@ class TestScoreStructure:
 
     def test_multiline_heading_elements_are_scored_as_matches(self):
         """Score evaluation should match multiline headings the same way conversion does."""
-        from legiscope.parse.scan import score_structure
         import polars as pl
 
         elements = pl.DataFrame(
@@ -2044,8 +2182,6 @@ class TestScoreStructure:
 
     def test_sibling_ordering_resets_after_higher_level_heading(self):
         """Chapter numbering should be allowed to restart under a new article."""
-        from legiscope.parse.scan import score_structure
-
         lines = [
             "ARTICLE I   FIRST ARTICLE",
             "CHAPTER 10   LAST CHAPTER IN ARTICLE I",
@@ -2081,6 +2217,96 @@ class TestScoreStructure:
 
         assert score >= 0.8
         assert not any("out-of-order siblings" in error.lower() for error in errors)
+
+    def test_outline_alignment_can_be_scoped_to_sample_elements(self):
+        """Sample-local outline ids should not be compared to full-document matches."""
+        lines = [
+            "§ 1-100. First sampled heading.",
+            "§ 1-101. Second sampled heading.",
+            "§ 1-102. Third sampled heading.",
+            "§ 1-103. Fourth sampled heading.",
+            "§ 2-100. Later heading outside sample.",
+            "§ 2-101. Another later heading outside sample.",
+            "§ 3-100. More later headings outside sample.",
+            "§ 3-101. Final later heading outside sample.",
+        ]
+        elements = self._make_elements(lines)
+        sample = elements.head(4)
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^§\s*\d+(?:-\d+)+\.\s*.*$"],
+                    markdown_prefix="# ",
+                    example_heading="§ 1-100. First sampled heading.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                    outline_line_numbers=[0, 1, 2, 3],
+                ),
+            ],
+            total_levels=1,
+            file_sample_size=sample.height,
+        )
+
+        full_score, full_errors = score_structure(elements, structure)
+        scoped_score, scoped_errors = score_structure(
+            elements,
+            structure,
+            outline_elements_df=sample,
+        )
+
+        assert scoped_score > full_score
+        assert any("outline mismatch" in error.lower() for error in full_errors)
+        assert not any("outline mismatch" in error.lower() for error in scoped_errors)
+
+
+class TestScanSampling:
+    """Tests for representative scan sampling."""
+
+    @staticmethod
+    def _make_elements(lines: list[str]) -> pl.DataFrame:
+        import polars as pl
+
+        return pl.DataFrame(
+            [
+                {
+                    "element_id": i,
+                    "start_line": i + 1,
+                    "end_line": i + 1,
+                    "n_lines": 1,
+                    "text": line,
+                }
+                for i, line in enumerate(lines)
+            ],
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+    def test_representative_sampling_includes_later_structural_headings(self):
+        """Sampling should include later TITLE/CHAPTER exemplars, not just the front block."""
+        lines = [f"§ 1-{i:03d}. Early section heading." for i in range(180)]
+        lines.extend(
+            [
+                "TITLE 9 LATE TITLE HEADING",
+                "CHAPTER 9 LATE CHAPTER HEADING",
+                "ARTICLE IX LATE ARTICLE HEADING",
+            ]
+        )
+        lines.extend(f"Body text {i}." for i in range(40))
+        elements = self._make_elements(lines)
+
+        sample = _select_scan_sample(elements, 120)
+        sampled_lines = sample["text"].to_list()
+
+        assert any(line.startswith("TITLE 9") for line in sampled_lines)
+        assert any(line.startswith("CHAPTER 9") for line in sampled_lines)
+        assert any(line.startswith("ARTICLE IX") for line in sampled_lines)
 
 
 class TestScanNormalization:

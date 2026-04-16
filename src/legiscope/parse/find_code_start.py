@@ -19,9 +19,16 @@ _SECTION_START_PAT = re.compile(
     r"^(?:§\s*)?(?:[A-Z]-)?\d+(?:[-.]\d+)+\b|^(?:SECTION|SEC\.)\s+\d+",
     re.IGNORECASE,
 )
+_TOC_MARKER_PAT = re.compile(r"\b(?:table of contents|contents|index)\b", re.IGNORECASE)
+_TOC_STRUCTURAL_PAT = re.compile(
+    r"^(?:§\s*)?(?:[A-Z]-)?\d+(?:[-.]\d+)+(?:\b|[\s.:])|"
+    r"^(?:SECTION|SEC\.)\s+\d+\b|"
+    r"^(?:TITLE|CHAPTER|ARTICLE|PART|DIVISION|BOOK)\s+[A-Z0-9IVXLCDM]+\b",
+    re.IGNORECASE,
+)
 _TRANSITION_ANCHOR_PAT = re.compile(
     r"(?:^|\n)(?:PREAMBLE|TITLE\s+[A-Z0-9IVXLCDM]+|ARTICLE\s+[A-Z0-9IVXLCDM]+|"
-    r"PART\s+[A-Z0-9IVXLCDM]+|DIVISION\s+\d+|BOOK\s+\d+)",
+    r"CHAPTER\s+[A-Z0-9IVXLCDM.-]+|PART\s+[A-Z0-9IVXLCDM]+|DIVISION\s+\d+|BOOK\s+\d+)",
     re.IGNORECASE,
 )
 
@@ -63,9 +70,29 @@ def _has_substantial_prose(lines: list[str]) -> bool:
         words = line.split()
         if len(words) >= 12:
             return True
+        if len(words) >= 8 and any(char in line for char in ".;:"):
+            return True
         if len(line) >= 80 and any(char in line for char in ".;:"):
             return True
     return False
+
+
+def _looks_like_toc_listing(text: str) -> bool:
+    """Return True when an element looks like compact TOC/navigation content."""
+    lines = _nonempty_lines(text)
+    if not lines or _has_substantial_prose(lines):
+        return False
+
+    matched_lines = sum(1 for line in lines if _TOC_STRUCTURAL_PAT.match(line))
+    if matched_lines == len(lines) and matched_lines > 0:
+        return True
+
+    return bool(_TOC_STRUCTURAL_PAT.match(lines[0]))
+
+
+def _is_navigation_element(text: str) -> bool:
+    """Return True when an element is a TOC or similar navigation aid."""
+    return bool(_TOC_MARKER_PAT.search(text) or _looks_like_toc_listing(text))
 
 
 def _looks_like_body_start_element(text: str) -> bool:
@@ -81,6 +108,14 @@ def _looks_like_body_start_element(text: str) -> bool:
 def _contains_transition_anchor(text: str) -> bool:
     """Return True when an element contains a top-level start marker."""
     return bool(_TRANSITION_ANCHOR_PAT.search(text))
+
+
+def _is_substantive_transition_anchor(text: str) -> bool:
+    """Return True when a transition element also contains substantive prose."""
+    lines = _nonempty_lines(text)
+    if not lines or not _contains_transition_anchor(text):
+        return False
+    return _has_substantial_prose(lines[1:])
 
 
 def _verification_lookback_for_candidate(text: str) -> int:
@@ -172,12 +207,113 @@ def _refine_code_start_candidate(
         previous_row = row_by_id.get(previous_id)
         if previous_row is None:
             continue
-        if _contains_transition_anchor(previous_row["text"]):
+        if _is_substantive_transition_anchor(previous_row["text"]):
             refined_id = previous_id
         else:
             break
 
     return refined_id
+
+
+def _advance_past_toc_candidate(
+    elements: pl.DataFrame,
+    candidate_id: int,
+    *,
+    lookback: int = 250,
+    lookahead: int = 500,
+) -> int:
+    """Move a candidate out of a TOC/navigation run to the first substantive code block.
+
+    Some documents place large structural tables of contents immediately before the body.
+    When the LLM lands inside that run, prefer the first substantive transition/body
+    anchor after the navigation block, then backtrack to any immediately preceding
+    heading-only transition element that belongs to the same opening chain.
+    """
+    if elements.height == 0:
+        return candidate_id
+
+    lower_bound = max(0, candidate_id - lookback)
+    upper_bound = min(elements.height - 1, candidate_id + lookahead)
+    window = elements.filter(
+        (pl.col("element_id") >= lower_bound) & (pl.col("element_id") <= upper_bound)
+    )
+    rows = window.to_dicts()
+    if not rows:
+        return candidate_id
+
+    candidate_index = next(
+        (index for index, row in enumerate(rows) if row["element_id"] == candidate_id),
+        None,
+    )
+    if candidate_index is None:
+        return candidate_id
+
+    candidate_text = rows[candidate_index]["text"]
+    toc_anchor_index: int | None = None
+    for index in range(candidate_index, -1, -1):
+        text = rows[index]["text"]
+        if _is_navigation_element(text):
+            toc_anchor_index = index
+            break
+        if _looks_like_body_start_element(text) or _is_substantive_transition_anchor(
+            text
+        ):
+            break
+
+    if (
+        toc_anchor_index is None
+        and (
+            _looks_like_body_start_element(candidate_text)
+            or _is_substantive_transition_anchor(candidate_text)
+        )
+        and not _is_navigation_element(candidate_text)
+    ):
+        return candidate_id
+
+    if toc_anchor_index is None:
+        if not _is_navigation_element(rows[candidate_index]["text"]):
+            return candidate_id
+        toc_anchor_index = candidate_index
+
+    body_anchor_index: int | None = None
+    for index in range(toc_anchor_index + 1, len(rows)):
+        text = rows[index]["text"]
+        if _is_navigation_element(text):
+            continue
+
+        if _looks_like_body_start_element(text):
+            body_anchor_index = index
+            break
+
+    if body_anchor_index is None:
+        for index in range(toc_anchor_index + 1, len(rows)):
+            text = rows[index]["text"]
+            if _is_navigation_element(text):
+                continue
+            if _is_substantive_transition_anchor(text):
+                body_anchor_index = index
+                break
+
+    if body_anchor_index is not None:
+        refined_id = rows[body_anchor_index]["element_id"]
+        for previous_index in range(body_anchor_index - 1, toc_anchor_index, -1):
+            previous_text = rows[previous_index]["text"]
+            if _looks_like_body_start_element(
+                previous_text
+            ) or _is_substantive_transition_anchor(previous_text):
+                refined_id = rows[previous_index]["element_id"]
+                continue
+            if body_anchor_index - previous_index == 1 and _contains_transition_anchor(
+                previous_text
+            ):
+                refined_id = rows[previous_index]["element_id"]
+                continue
+            if _is_navigation_element(previous_text):
+                continue
+            break
+        return refined_id
+
+    return candidate_id
 
 
 # ── System prompts ─────────────────────────────────────────────────────
@@ -195,9 +331,10 @@ _SCAN_SYSTEM = (
     "first detailed section you notice. If a later section heading is part of the same run as "
     "an earlier PREAMBLE / ARTICLE / TITLE / CHAPTER transition, the boundary is the earlier "
     "transition element.\n\n"
-    "IMPORTANT: A Table of Contents or section index that appears at the START of a title "
-    "or chapter (e.g. '1-1-1: Title', 'Sec. 2.01 Purpose') IS part of the code proper, "
-    "not preamble. These section listings belong to the hierarchical code structure.\n\n"
+    "IMPORTANT: A Table of Contents, section index, or navigation listing is NOT the code-start "
+    "boundary for this task, even when it mirrors the code hierarchy. If the document shows "
+    "contents entries first and then later repeats those headings with substantive text, the "
+    "boundary is the first substantive heading/body element AFTER the navigation block.\n\n"
     "Signals that the boundary is TOO LATE include: the proposed element is a body section "
     "(for example '§ 1-100 ...') and earlier nearby elements already show PREAMBLE, ARTICLE I, "
     "TITLE 1, CHAPTER 1, or TOC entries that clearly belong to the same code run.\n\n"
@@ -215,15 +352,15 @@ _VERIFY_SYSTEM = (
     "The code proper typically starts with a top-level division (TITLE, CHAPTER, ARTICLE, "
     "PART, DIVISION) with low numbering (e.g. 'TITLE 1', 'CHAPTER 1', 'TITLE I'), followed "
     "by hierarchically numbered sections. Look for where the primary numbering scheme begins. "
-    "A Table of Contents or section index at the start of a title/chapter IS part of the "
-    "code proper.\n\n"
+    "A Table of Contents or section index is navigation, not the boundary for this task. "
+    "Choose the first substantive heading/body element after any such navigation block.\n\n"
     "Choose the EARLIEST boundary for the contiguous code run. If the candidate is already a "
     "section body entry but the BEFORE region contains an earlier PREAMBLE / ARTICLE / TITLE / "
     "CHAPTER transition or TOC block that flows directly into those sections, the candidate is "
     "too late.\n\n"
-    "The BEFORE region should look like preamble (publisher info, preface, adopting "
-    "ordinances, instructions). The CANDIDATE and AFTER regions should look like the "
-    "primary hierarchical code structure.\n\n"
+    "The BEFORE region should look like preamble or navigation (publisher info, preface, "
+    "adopting ordinances, instructions, TOC/index listings). The CANDIDATE and AFTER regions "
+    "should look like the primary substantive hierarchical code structure.\n\n"
     "Prefer earlier structural transition elements over later section elements when both belong "
     "to the same continuous code run.\n\n"
     "If the proposed boundary is correct, set correct=true.\n"
@@ -436,6 +573,7 @@ def find_code_start(
 
         if verification.correct:
             refined_id = _refine_code_start_candidate(elements, candidate.element_id)
+            refined_id = _advance_past_toc_candidate(elements, refined_id)
             if refined_id != candidate.element_id:
                 row = elements.filter(pl.col("element_id") == refined_id).row(
                     0, named=True
@@ -453,6 +591,7 @@ def find_code_start(
         if verification.adjusted_element_id is not None:
             adjusted_id = max(0, min(verification.adjusted_element_id, n - 1))
             adjusted_id = _refine_code_start_candidate(elements, adjusted_id)
+            adjusted_id = _advance_past_toc_candidate(elements, adjusted_id)
             row = elements.filter(pl.col("element_id") == adjusted_id).row(
                 0, named=True
             )

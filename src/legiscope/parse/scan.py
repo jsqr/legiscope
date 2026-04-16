@@ -24,6 +24,7 @@ DEFAULT_TEMPERATURE = _params.get("llm", {}).get(
     "temperature", 0.0
 )  # Low temperature for consistent legal text analysis
 DEFAULT_MAX_RETRIES = _params.get("llm", {}).get("max_retries", 3)
+DEFAULT_LLM_TIMEOUT_SECONDS = float(_params.get("llm", {}).get("timeout", 300))
 SCAN_CREATE_MAX_RETRIES = DEFAULT_MAX_RETRIES
 
 
@@ -43,6 +44,10 @@ _ROMAN_HEADING_PAT = re.compile(r"^[IVXLCDM]+\.?\s+[A-Z]")
 _NUMBERED_HEADING_PAT = re.compile(r"^\d{1,4}\.\s+\S")
 _LETTERED_HEADING_PAT = re.compile(r"^[A-Z]\.\s+[A-Z]")
 _DASH_SECTION_PAT = re.compile(r"^[-\u2013\u2014=_]{3,}\s*$")
+_TITLE_HEADING_PAT = re.compile(r"^TITLE\b", re.IGNORECASE)
+_ARTICLE_HEADING_PAT = re.compile(r"^ARTICLE\b", re.IGNORECASE)
+_CHAPTER_HEADING_PAT = re.compile(r"^CHAPTER\b", re.IGNORECASE)
+_NOTES_HEADING_PAT = re.compile(r"^NOTES$", re.IGNORECASE)
 
 
 def is_heading_like(line: str) -> bool:
@@ -92,6 +97,122 @@ def _format_raw_elements(elements_df: pl.DataFrame) -> str:
     return "\n".join(parts)
 
 
+def _classify_scan_candidate(line: str) -> str:
+    """Classify a first-line heading candidate for sampling diagnostics."""
+    stripped = line.strip()
+    if not stripped:
+        return "other"
+    if _TITLE_HEADING_PAT.match(stripped):
+        return "title"
+    if _ARTICLE_HEADING_PAT.match(stripped):
+        return "article"
+    if _CHAPTER_HEADING_PAT.match(stripped):
+        return "chapter"
+    if _SECTION_SYMBOL_PAT.match(stripped):
+        return "section"
+    if _NOTES_HEADING_PAT.match(stripped):
+        return "notes"
+    if is_heading_like(stripped):
+        return "heading_like"
+    return "other"
+
+
+def _select_scan_sample(code_elements: pl.DataFrame, sample_count: int) -> pl.DataFrame:
+    """Build a representative scan sample instead of taking only the first N elements.
+
+    The scan prompt still needs the early TOC/body region, but relying exclusively on
+    the first N elements can miss later structural headings entirely. This sampler keeps
+    an early contiguous block, then adds later title/article/chapter exemplars and a
+    spaced set of heading-like elements from across the document.
+    """
+    target_count = min(sample_count, code_elements.height)
+    if code_elements.height <= target_count:
+        return code_elements
+
+    rows = code_elements.to_dicts()
+    selected_ids: set[int] = set()
+
+    def add_element_id(element_id: int) -> None:
+        if len(selected_ids) < target_count:
+            selected_ids.add(element_id)
+
+    front_quota = min(target_count, max(50, target_count // 2))
+    for row in rows[:front_quota]:
+        add_element_id(row["element_id"])
+
+    class_quotas = {
+        "title": max(4, target_count // 25),
+        "article": max(4, target_count // 25),
+        "chapter": max(6, target_count // 20),
+    }
+
+    for class_name, quota in class_quotas.items():
+        added_for_class = 0
+        for row in rows[front_quota:]:
+            first_line = row["text"].split("\n")[0].strip()
+            if _classify_scan_candidate(first_line) != class_name:
+                continue
+            if row["element_id"] in selected_ids:
+                continue
+            add_element_id(row["element_id"])
+            added_for_class += 1
+            if added_for_class >= quota or len(selected_ids) >= target_count:
+                break
+
+    heading_like_rows = [
+        row
+        for row in rows
+        if is_heading_like(row["text"].split("\n")[0].strip())
+        and not _NOTES_HEADING_PAT.match(row["text"].split("\n")[0].strip())
+    ]
+    remaining = target_count - len(selected_ids)
+    if remaining > 0 and heading_like_rows:
+        if len(heading_like_rows) <= remaining:
+            for row in heading_like_rows:
+                add_element_id(row["element_id"])
+        else:
+            max_index = len(heading_like_rows) - 1
+            for offset in range(remaining * 2):
+                if len(selected_ids) >= target_count:
+                    break
+                index = round(offset * max_index / max(1, remaining * 2 - 1))
+                add_element_id(heading_like_rows[index]["element_id"])
+
+    if len(selected_ids) < target_count:
+        max_index = len(rows) - 1
+        remaining = target_count - len(selected_ids)
+        for offset in range(remaining * 2):
+            if len(selected_ids) >= target_count:
+                break
+            index = round(offset * max_index / max(1, remaining * 2 - 1))
+            add_element_id(rows[index]["element_id"])
+
+    selected_element_ids = sorted(selected_ids)
+    return code_elements.filter(pl.col("element_id").is_in(selected_element_ids))
+
+
+def _sample_diagnostics(elements_df: pl.DataFrame) -> dict[str, int]:
+    """Return compact diagnostic counts for a scan sample."""
+    diagnostics = {
+        "title": 0,
+        "article": 0,
+        "chapter": 0,
+        "section": 0,
+        "notes": 0,
+        "heading_like": 0,
+        "chars": 0,
+    }
+    for row in elements_df.to_dicts():
+        first_line = row["text"].split("\n")[0].strip()
+        diagnostics["chars"] += len(first_line)
+        label = _classify_scan_candidate(first_line)
+        if label in diagnostics:
+            diagnostics[label] += 1
+        if is_heading_like(first_line):
+            diagnostics["heading_like"] += 1
+    return diagnostics
+
+
 def _is_context_length_error(exc: Exception) -> bool:
     """Return True if *exc* looks like a model context-length failure."""
     err = str(exc).lower()
@@ -107,6 +228,12 @@ def _summarize_generation_error(exc: Exception) -> str:
     """Condense verbose Instructor/provider errors into short prompt feedback."""
     err = str(exc)
     lowered = err.lower()
+
+    if "timed out" in lowered or "timeout" in lowered:
+        return (
+            "Previous attempt timed out before a valid response was returned. "
+            "Respond with a compact HeadingStructure JSON object only."
+        )
 
     if _is_context_length_error(exc):
         return (
@@ -586,6 +713,8 @@ def verify_structure(
 def score_structure(
     elements_df: pl.DataFrame,
     structure: HeadingStructure,
+    *,
+    outline_elements_df: pl.DataFrame | None = None,
 ) -> tuple[float, list[str]]:
     """Compute a 0.0-1.0 quality score and return error messages."""
     compiled, compile_warnings = _verify_compile_patterns(structure)
@@ -667,8 +796,11 @@ def score_structure(
     pc_score = 0.0 if pc_warnings else 1.0
 
     # Outline alignment (0.15) — regexes should agree with declared outline ids
+    outline_scope = (
+        outline_elements_df if outline_elements_df is not None else elements_df
+    )
     outline_warnings, outline_alignment_score = _check_outline_alignment(
-        structure, compiled, elements_df
+        structure, compiled, outline_scope
     )
     errors.extend(outline_warnings)
 
@@ -741,17 +873,34 @@ def scan_headings(
 
         # Phase 1: Format raw elements for LLM
         scan_count = min(sample_count, code_elements.height)
-        sample_elements = code_elements.head(scan_count)
+        sample_elements = _select_scan_sample(code_elements, scan_count)
         raw_text = _format_raw_elements(sample_elements)
+        sample_stats = _sample_diagnostics(sample_elements)
+        sample_element_ids = sample_elements["element_id"].to_list()
+        logger.info(
+            "Iteration {} sample spans E{}-E{} with {} elements (chars={}, titles={}, articles={}, chapters={}, sections={}, notes={}, heading_like={})",
+            iteration,
+            sample_element_ids[0],
+            sample_element_ids[-1],
+            sample_elements.height,
+            sample_stats["chars"],
+            sample_stats["title"],
+            sample_stats["article"],
+            sample_stats["chapter"],
+            sample_stats["section"],
+            sample_stats["notes"],
+            sample_stats["heading_like"],
+        )
 
         # Phase 2: LLM call
         user_prompt = (
             f"Analyze the heading structure in these legal text elements:\n\n"
             f"{raw_text}\n\n"
-            f"These are {scan_count} elements from the start of the document "
+            f"These are {sample_elements.height} representative elements from the document "
             f"({code_elements.height} total).\n"
             f"Identify which elements are headings, group by level, create regex "
             f"patterns, and list element ids in outline_line_numbers.\n"
+            f"Only use the provided element ids in outline_line_numbers.\n"
             f"Return a single JSON object only. Use `heading_levels` as the top-level "
             f"array key. Do not return schema keys like `$defs` or `properties`.\n"
         )
@@ -768,7 +917,10 @@ def scan_headings(
                     {"role": "user", "content": user_prompt},
                 ],
                 response_model=HeadingStructure,
-                **Config.get_llm_params(max_retries=SCAN_CREATE_MAX_RETRIES),
+                **Config.get_llm_params(
+                    max_retries=SCAN_CREATE_MAX_RETRIES,
+                    timeout=DEFAULT_LLM_TIMEOUT_SECONDS,
+                ),
             )
             structure = _normalize_scanned_structure(structure)
         except Exception as exc:
@@ -792,7 +944,11 @@ def scan_headings(
             continue
 
         # Phase 3: Evaluate on full code elements
-        score, errors = score_structure(code_elements, structure)
+        score, errors = score_structure(
+            code_elements,
+            structure,
+            outline_elements_df=sample_elements,
+        )
         logger.info(f"Iteration {iteration}: score={score:.3f}, errors={len(errors)}")
 
         if score > best_score or best_structure is None:

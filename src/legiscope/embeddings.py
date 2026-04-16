@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+from datetime import date, datetime, time
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -59,6 +62,69 @@ def _get_chroma_batch_size() -> int:
     if not isinstance(batch_size, int) or batch_size <= 0:
         return CHROMA_BATCH_SIZE
     return batch_size
+
+
+def _normalize_chroma_metadata_value(
+    value: Any,
+) -> str | int | float | bool | None:
+    """Convert metadata values to ChromaDB-compatible scalar types.
+
+    Chroma metadata only accepts scalar values. This helper drops nulls,
+    converts non-native scalar wrappers to Python primitives, and stringifies
+    any remaining unsupported nested values instead of failing the entire batch.
+    """
+    if value is None:
+        return None
+
+    if isinstance(value, np.generic):
+        return _normalize_chroma_metadata_value(value.item())
+
+    if isinstance(value, Enum):
+        return _normalize_chroma_metadata_value(value.value)
+
+    if isinstance(value, (datetime, date, time)):
+        return value.isoformat()
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, int):
+        return value
+
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            return None
+        return value
+
+    if isinstance(value, str):
+        return value
+
+    if isinstance(value, (list, tuple, set, dict)):
+        try:
+            return json.dumps(value, sort_keys=True, default=str)
+        except TypeError:
+            return str(value)
+
+    return str(value)
+
+
+def _normalize_chroma_metadata(
+    metadata: dict[str, Any],
+) -> dict[str, str | int | float | bool]:
+    """Drop null metadata and coerce remaining values to ChromaDB scalars."""
+    normalized: dict[str, str | int | float | bool] = {}
+    for key, value in metadata.items():
+        normalized_value = _normalize_chroma_metadata_value(value)
+        if normalized_value is None:
+            continue
+        normalized[str(key)] = normalized_value
+    return normalized
 
 
 def get_ollama_client():
@@ -698,6 +764,11 @@ def _add_documents_to_collection(
         batch_documents = documents[i:end_idx]
         batch_embeddings = embeddings[i:end_idx]
         batch_metadata = metadata_list[i:end_idx] if metadata_list else None
+        normalized_batch_metadata = (
+            [_normalize_chroma_metadata(metadata) for metadata in batch_metadata]
+            if batch_metadata
+            else None
+        )
 
         logger.debug(
             f"Adding batch {i // batch_size + 1}/{total_batches} ({len(batch_ids)} documents)"
@@ -707,7 +778,7 @@ def _add_documents_to_collection(
             ids=batch_ids,
             documents=batch_documents,
             embeddings=batch_embeddings,
-            metadatas=cast(Any, batch_metadata),
+            metadatas=cast(Any, normalized_batch_metadata),
         )
 
 

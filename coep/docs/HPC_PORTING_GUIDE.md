@@ -838,16 +838,20 @@ HPC lab filesystem. **DVC experiments** handle reproducibility tracking:
   that captures `params.yaml`, `dvc.lock`, and metrics for that run
 - No manual branches needed — 50 jurisdiction runs produce 50 experiments,
   all viewable in a single `dvc exp show` table
-- Experiments are pushed to GitHub via `dvc exp push origin`, making params
-  and metrics (but not data files) accessible from any machine
+- The HPC wrappers default to `DVC_PUSH_CACHE=0`, so they push experiment refs
+  via `dvc exp push origin --no-cache` for faster job completion
+- Set `DVC_PUSH_CACHE=1` when you want the wrappers to also push DVC cache to the
+  configured remote so another machine can later restore tracked artifacts with
+  `dvc pull`
 - Data files remain on BigPurple lab storage (backed up by IT)
 
 **Pros**: Zero cloud storage setup, fastest I/O (local filesystem), lab
 storage is already backed up, `dvc exp show` gives a comparison table of
 all 50 jurisdictions' params and metrics in one view.
 
-**Cons**: Data files only accessible from BigPurple (use `rsync` to pull
-results to your laptop).
+**Cons**: With the default `DVC_PUSH_CACHE=0`, data files are only accessible
+from BigPurple (use `rsync` to pull results to your laptop). Cross-machine
+`dvc pull` requires re-running with `DVC_PUSH_CACHE=1` or pushing cache later.
 
 #### Tracking Results Across Jurisdictions
 
@@ -856,11 +860,17 @@ results to your laptop).
 dvc exp show
 
 # Push experiments to GitHub (lightweight Git refs, not data files)
+dvc exp push origin --no-cache
+
+# Push experiments plus cached tracked outputs to the DVC remote
 dvc exp push origin
 
 # On your laptop — pull experiment metadata from GitHub
 dvc exp pull origin
 dvc exp show  # See all 50 runs with params + metrics
+
+# If cache was pushed, restore tracked outputs like parquet + benchmark metrics
+dvc pull
 
 # Promote a specific experiment to a real branch (if needed)
 dvc exp branch <exp-name> results/PA-Philadelphia
@@ -1631,8 +1641,10 @@ After all 50 SLURM jobs finish:
 | Run benchmark (test) | `python coep/scripts/benchmark_pipeline.py --test-limit 5` |
 | Run queries only | `python scripts/run_queries.py` |
 | View all experiments | `dvc exp show` |
-| Push experiments to GitHub | `dvc exp push origin` |
+| Push experiments to GitHub (metadata only) | `dvc exp push origin --no-cache` |
+| Push experiments + DVC cache | `dvc exp push origin` |
 | Pull experiments from GitHub | `dvc exp pull origin` |
+| Pull tracked outputs from DVC remote | `dvc pull` |
 | Promote experiment to branch | `dvc exp branch <exp-name> results/PA-Philadelphia` |
 | Run tests | `make test` |
 | Check errors | `make lint` |
@@ -1888,7 +1900,15 @@ dvc exp show
 dvc exp pull origin
 dvc exp show
 
+# If the HPC run used DVC_PUSH_CACHE=1, tracked outputs can also be restored
+# from the DVC remote on your local machine:
+dvc pull
+
 # Pull result files to your laptop:
 # (on local machine)
 rsync -avz <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/legiscope/data/output/ ./data/output/
+
+# BigPurple wrappers default to metadata-only pushes for faster job teardown.
+# Override when you want cross-machine DVC artifact restoration:
+DVC_PUSH_CACHE=1 sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
 ```

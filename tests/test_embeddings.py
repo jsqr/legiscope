@@ -1,13 +1,17 @@
 """Tests for legiscope.embeddings module."""
 
+from datetime import date
+from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import numpy as np
 import polars as pl
 import pytest
 
 from legiscope.embeddings import (
     EmbeddingConfig,
     _generate_embeddings_mistral,
+    _normalize_chroma_metadata,
     create_and_save_embeddings,
     get_embeddings,
 )
@@ -1101,6 +1105,30 @@ class TestFallbackSplittingOnContextError:
 class TestChromaOperations:
     """Test cases for ChromaDB operations."""
 
+    def test_normalize_chroma_metadata(self):
+        """Metadata should be reduced to ChromaDB-compatible scalar values."""
+        metadata = {
+            "null_value": None,
+            "int_value": np.int64(7),
+            "float_value": np.float32(1.25),
+            "nan_value": float("nan"),
+            "bool_value": np.bool_(True),
+            "date_value": date(2026, 4, 16),
+            "path_value": Path("data/laws"),
+            "list_value": [1, "two"],
+        }
+
+        normalized = _normalize_chroma_metadata(metadata)
+
+        assert normalized == {
+            "int_value": 7,
+            "float_value": pytest.approx(1.25),
+            "bool_value": True,
+            "date_value": "2026-04-16",
+            "path_value": "data/laws",
+            "list_value": '[1, "two"]',
+        }
+
     @patch(
         "legiscope.params.load_params",
         return_value={"embeddings": {"chroma_batch_size": 1}},
@@ -1198,6 +1226,41 @@ class TestChromaOperations:
             assert len(metadatas) == 2
             assert metadatas[0]["jurisdiction_id"] == "IL-Test"
             assert metadatas[0]["section_heading"] == "Heading 1"
+
+    def test_create_embedding_index_drops_null_metadata_values(self):
+        """Null metadata values should be removed before Chroma insertion."""
+        from legiscope.embeddings import EmbeddingIndexConfig, create_embedding_index
+
+        df = pl.DataFrame(
+            {
+                "segment_id": ["s0", "s1"],
+                "segment_text": ["text1", "text2"],
+                "embedding": [[0.1, 0.2], [0.3, 0.4]],
+                "section_heading": ["Heading 1", "Heading 2"],
+                "section_number": [None, "1.0"],
+                "context_path": [None, "Part 1 > Section 1"],
+                "retrieval_priority": [1, 2],
+            }
+        )
+
+        with patch(
+            "legiscope.embeddings.get_or_create_legal_collection"
+        ) as mock_get_coll:
+            mock_collection = MagicMock()
+            mock_get_coll.return_value = mock_collection
+
+            config = EmbeddingIndexConfig(
+                df=df, collection_name="test_coll", jurisdiction_id="IL-Test"
+            )
+
+            create_embedding_index(config)
+
+            metadatas = mock_collection.add.call_args.kwargs["metadatas"]
+            assert "section_number" not in metadatas[0]
+            assert "context_path" not in metadatas[0]
+            assert metadatas[0]["retrieval_priority"] == 1
+            assert metadatas[1]["section_number"] == "1.0"
+            assert metadatas[1]["context_path"] == "Part 1 > Section 1"
 
     def test_collection_config_provider_model_naming(self):
         """Test that CollectionConfig generates provider_model suffixed names."""

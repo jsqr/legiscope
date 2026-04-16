@@ -19,8 +19,8 @@
 #   4. Copy DOCX file into raw/ and convert to TXT
 #   5. Start vLLM server on a dynamic port
 #   6. Run the full DVC pipeline via dvc_repro.sh
-#   7. Push DVC experiment to GitHub
-#   8. Copy results back to shared project directory
+#   7. Push the DVC experiment and cache to the configured remote
+#   8. Sync shared project artifacts on success, and also on failure
 #
 # Required env vars (set by dispatcher or --export):
 #   STATE      - 2-letter state code (e.g., CA)
@@ -95,6 +95,12 @@ unset VLLM_PROJECT
 
 PROJECT_DIR="/gpfs/data/cerdalab/LegalAI/legiscope"
 GITHUB_SSH_REMOTE="${GITHUB_SSH_REMOTE:-git@github.com:jsqr/legiscope.git}"
+CODE_DIR_REL="data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}"
+OUTPUT_DIR_REL="data/output/${STATE}-${LOCALITY}"
+SHARED_CODE_DIR="${PROJECT_DIR}/${CODE_DIR_REL}"
+SHARED_OUTPUT_DIR="${PROJECT_DIR}/${OUTPUT_DIR_REL}"
+CURRENT_STAGE="setup"
+VLLM_PID=""
 
 resolve_tmp_root() {
     local candidate
@@ -176,6 +182,98 @@ should_attempt_dvc_push() {
     return 1
 }
 
+run_dvc_exp_push() {
+    local repo_dir="$1"
+    local push_cache="${DVC_PUSH_CACHE:-0}"
+
+    if [[ "${push_cache,,}" == "0" || "${push_cache,,}" == "false" || "${push_cache,,}" == "no" ]]; then
+        dvc -C "$repo_dir" exp push origin --no-cache
+    else
+        dvc -C "$repo_dir" exp push origin
+    fi
+}
+
+remove_shared_code_artifacts() {
+    mkdir -p "$SHARED_CODE_DIR"
+
+    rm -rf "$SHARED_CODE_DIR/raw"
+    rm -f \
+        "$SHARED_CODE_DIR/code.txt" \
+        "$SHARED_CODE_DIR/code.md" \
+        "$SHARED_CODE_DIR/headings.parquet" \
+        "$SHARED_CODE_DIR/regions.parquet" \
+        "$SHARED_CODE_DIR/sections.parquet" \
+        "$SHARED_CODE_DIR/chunks.parquet" \
+        "$SHARED_CODE_DIR/segments.parquet" \
+        "$SHARED_CODE_DIR/relations.parquet" \
+        "$SHARED_CODE_DIR/external_references.parquet" \
+        "$SHARED_CODE_DIR/embeddings.parquet" \
+        "$SHARED_CODE_DIR/index.stamp"
+}
+
+sync_code_artifacts() {
+    local reason="$1"
+    local source_dir="${WORK_DIR}/${CODE_DIR_REL}"
+
+    if [[ ! -d "$source_dir" ]]; then
+        echo "No code artifacts to sync for ${reason} (missing ${source_dir})"
+        return 0
+    fi
+
+    echo "Syncing code artifacts (${reason}) to ${SHARED_CODE_DIR}..."
+    remove_shared_code_artifacts
+    rsync -a --delete "${source_dir}/" "${SHARED_CODE_DIR}/"
+}
+
+remove_shared_benchmark_artifacts() {
+    mkdir -p "$SHARED_OUTPUT_DIR"
+
+    rm -f \
+        "$SHARED_OUTPUT_DIR/benchmark_results.csv" \
+        "$SHARED_OUTPUT_DIR/benchmark_metrics.json"
+}
+
+sync_output_artifacts() {
+    local reason="$1"
+    local source_dir="${WORK_DIR}/${OUTPUT_DIR_REL}"
+
+    echo "Syncing benchmark artifacts (${reason}) to ${SHARED_OUTPUT_DIR}..."
+    remove_shared_benchmark_artifacts
+
+    if [[ ! -d "$source_dir" ]]; then
+        echo "No benchmark output directory present for ${reason}; preserved timestamped history only"
+        return 0
+    fi
+
+    rsync -a "${source_dir}/" "${SHARED_OUTPUT_DIR}/"
+}
+
+sync_checkpoint_artifacts() {
+    local reason="$1"
+
+    sync_code_artifacts "$reason"
+
+    if [[ -d "${WORK_DIR}/${OUTPUT_DIR_REL}" ]]; then
+        sync_output_artifacts "$reason"
+    fi
+}
+
+cleanup_on_exit() {
+    local exit_code="$1"
+
+    if [[ -n "$VLLM_PID" ]]; then
+        kill "$VLLM_PID" 2>/dev/null || true
+    fi
+
+    if [[ "$exit_code" -ne 0 ]]; then
+        echo "Job failed during stage '${CURRENT_STAGE}' (exit ${exit_code}); attempting checkpoint sync before exit..."
+        sync_checkpoint_artifacts "failure-${CURRENT_STAGE}" || true
+    fi
+
+    trap - EXIT
+    exit "$exit_code"
+}
+
 # ── Step 1: Create isolated working copy ──────────────────────────
 # Each job gets its own copy of the repo in $TMPDIR to avoid
 # params.yaml and ChromaDB race conditions with concurrent jobs.
@@ -199,6 +297,8 @@ rsync -a "${PROJECT_DIR}/.git/" "${WORK_DIR}/.git/"
 
 cd "$WORK_DIR"
 export PYTHONPATH="$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+trap 'cleanup_on_exit "$?"' EXIT
 
 # Load environment variables (.env has API keys including OPENROUTER_API_KEY)
 if [[ -f .env ]]; then
@@ -264,7 +364,7 @@ echo "Running init.py..."
 python scripts/init.py
 
 # ── Step 4: Copy DOCX and convert to TXT ──────────────────────────
-RAW_DIR="data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}/raw"
+RAW_DIR="${CODE_DIR_REL}/raw"
 mkdir -p "$RAW_DIR"
 
 echo "Copying DOCX to ${RAW_DIR}/..."
@@ -306,7 +406,6 @@ python -m vllm.entrypoints.openai.api_server \
     --enforce-eager &
 
 VLLM_PID=$!
-trap "kill $VLLM_PID 2>/dev/null || true" EXIT
 
 VLLM_HOST=127.0.0.1
 READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
@@ -354,14 +453,20 @@ then
     exit 1
 fi
 
-# ── Step 6: Run the full DVC pipeline ─────────────────────────────
+# ── Step 6: Run checkpointed pipeline stages ──────────────────────
+CURRENT_STAGE="pipeline"
 echo "=== Running pipeline: $(date) ==="
 ./scripts/dvc_repro.sh
 
-# ── Step 7: Push DVC experiment ───────────────────────────────────
+# ── Step 7: Sync results back to shared project directory ─────────
+CURRENT_STAGE="sync"
+echo "Syncing completed artifacts back to ${PROJECT_DIR}..."
+sync_checkpoint_artifacts "success"
+
+# ── Step 8: Push DVC experiment ───────────────────────────────────
 if should_attempt_dvc_push "$WORK_DIR"; then
-    echo "Pushing DVC experiment to GitHub..."
-    if dvc exp push origin --no-cache; then
+    echo "Pushing DVC experiment and cache to remote..."
+    if run_dvc_exp_push "$WORK_DIR"; then
         echo "DVC experiment push succeeded"
     else
         echo "WARNING: dvc exp push failed (non-fatal)" >&2
@@ -371,21 +476,8 @@ else
     echo "Set DVC_PUSH_EXPERIMENTS=1 and configure GitHub auth on HPC to force a push attempt."
 fi
 
-# ── Step 8: Copy results back to shared project directory ─────────
-echo "Copying results back to ${PROJECT_DIR}..."
-
-# Pipeline outputs (sections, embeddings, etc.)
-DEST_LAWS_DIR="${PROJECT_DIR}/data/laws/${STATE}/${LOCALITY}"
-mkdir -p "$DEST_LAWS_DIR"
-rsync -a "data/laws/${STATE}/${LOCALITY}/" \
-    "${DEST_LAWS_DIR}/"
-
-# Benchmark results
-OUTPUT_DIR="data/output/${STATE}-${LOCALITY}"
-if [[ -d "$OUTPUT_DIR" ]]; then
-    mkdir -p "${PROJECT_DIR}/${OUTPUT_DIR}"
-    rsync -a "${OUTPUT_DIR}/" "${PROJECT_DIR}/${OUTPUT_DIR}/"
-fi
+# ── Step 9: Final shared-project sync summary ─────────────────────
+echo "Shared project artifacts were synced after the DVC pipeline completed."
 
 # NOTE: ChromaDB is NOT copied back here. Each job builds an isolated
 # index in $TMPDIR that is discarded when the job ends. To build a shared
@@ -396,4 +488,5 @@ fi
 # last-writer-wins race across concurrent SLURM runs.
 
 echo "=== Completed: ${STATE}-${LOCALITY} ($(date)) ==="
+CURRENT_STAGE="complete"
 # vLLM server killed automatically by trap

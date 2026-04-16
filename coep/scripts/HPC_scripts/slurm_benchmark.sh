@@ -43,6 +43,7 @@ export HF_HOME=/gpfs/scratch/$USER/hf_cache
 unset TRANSFORMERS_CACHE
 unset VLLM_PROJECT
 GITHUB_SSH_REMOTE="${GITHUB_SSH_REMOTE:-git@github.com:jsqr/legiscope.git}"
+CURRENT_STAGE="setup"
 
 cd /gpfs/data/cerdalab/LegalAI/legiscope
 
@@ -108,6 +109,26 @@ should_attempt_dvc_push() {
     fi
 
     return 1
+}
+
+run_dvc_exp_push() {
+    local repo_dir="$1"
+    local push_cache="${DVC_PUSH_CACHE:-0}"
+
+    if [[ "${push_cache,,}" == "0" || "${push_cache,,}" == "false" || "${push_cache,,}" == "no" ]]; then
+        dvc -C "$repo_dir" exp push origin --no-cache
+    else
+        dvc -C "$repo_dir" exp push origin
+    fi
+}
+
+remove_benchmark_artifacts() {
+    local output_dir="$1"
+
+    mkdir -p "$output_dir"
+    rm -f \
+        "$output_dir/benchmark_results.csv" \
+        "$output_dir/benchmark_metrics.json"
 }
 
 # Load .env (API keys, etc.)
@@ -230,11 +251,30 @@ then
 fi
 
 # ── Run benchmark ────────────────────────────────────────────────
+CURRENT_STAGE="benchmark"
+JURISDICTION_INFO="$(python3 - <<'PY'
+import yaml
+from pathlib import Path
+
+params = yaml.safe_load(Path('params.yaml').read_text()) or {}
+jurisdiction = params.get('jurisdiction', {})
+state = jurisdiction.get('state', '')
+locality = jurisdiction.get('locality') or 'State'
+print(f"{state}\t{locality}")
+PY
+)"
+IFS=$'\t' read -r BENCHMARK_STATE BENCHMARK_LOCALITY <<< "$JURISDICTION_INFO"
+BENCHMARK_OUTPUT_DIR="data/output/${BENCHMARK_STATE}-${BENCHMARK_LOCALITY}"
+
+echo "Preparing benchmark output directory ${BENCHMARK_OUTPUT_DIR}..."
+remove_benchmark_artifacts "$BENCHMARK_OUTPUT_DIR"
+
 echo "=== Benchmark re-run: $(date) ==="
 ./scripts/dvc_repro.sh --stage benchmark
 
+CURRENT_STAGE="push"
 if should_attempt_dvc_push "$(pwd)"; then
-    if dvc exp push origin --no-cache; then
+    if run_dvc_exp_push "$(pwd)"; then
         echo "=== Benchmark completed (experiment pushed): $(date) ==="
     else
         echo "WARNING: Benchmark completed, but 'dvc exp push origin' failed; continuing without pushing experiment: $(date) ===" >&2

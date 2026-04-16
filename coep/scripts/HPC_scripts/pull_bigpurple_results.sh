@@ -197,7 +197,9 @@ if [[ -n "$SSH_JUMP" ]]; then
     RSYNC_RSH="ssh -J ${SSH_JUMP}"
 fi
 
-RSYNC_ARGS=(-avz --progress)
+# Use checksums instead of rsync's default size-plus-mtime quick check so
+# regenerated artifacts are refreshed even when remote timestamps are unchanged.
+RSYNC_ARGS=(-avzc --progress)
 if [[ "$DRY_RUN" == true ]]; then
     RSYNC_ARGS+=(-n)
 fi
