@@ -90,7 +90,8 @@ fi
 echo "Pandoc detected: $(pandoc --version | head -1)"
 
 export HF_HOME=/gpfs/scratch/"$USER"/hf_cache
-export TRANSFORMERS_CACHE=/gpfs/scratch/"$USER"/hf_cache
+unset TRANSFORMERS_CACHE
+unset VLLM_PROJECT
 
 PROJECT_DIR="/gpfs/data/cerdalab/LegalAI/legiscope"
 GITHUB_SSH_REMOTE="${GITHUB_SSH_REMOTE:-git@github.com:jsqr/legiscope.git}"
@@ -209,6 +210,45 @@ fi
 configure_git_identity "$WORK_DIR"
 sync_origin_to_ssh "$WORK_DIR"
 
+resolve_vllm_model_from_params() {
+    local resolved_provider resolved_model
+
+    IFS=$'\t' read -r resolved_provider resolved_model < <(
+        bash scripts/dvc_python.sh -c '
+from legiscope.llm_config import Config
+print(f"{Config.get_llm_provider()}\t{Config.get_openai_served_model()}")
+'
+    )
+
+    if [[ -z "$resolved_provider" || -z "$resolved_model" ]]; then
+        echo "ERROR: Failed to resolve OpenAI/vLLM model from params.yaml" >&2
+        exit 1
+    fi
+
+    if [[ "$resolved_provider" != "openai" ]]; then
+        echo "ERROR: BigPurple jurisdiction job requires llm.default_provider=openai in params.yaml, got '$resolved_provider'" >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$resolved_model"
+}
+
+resolve_llm_context_limit_from_params() {
+    local resolved_context_limit
+
+    resolved_context_limit="$(bash scripts/dvc_python.sh -c '
+from legiscope.params import load_params
+print(int(load_params().get("segmentation", {}).get("llm_context_limit", 32768)))
+')"
+
+    if [[ -z "$resolved_context_limit" ]]; then
+        echo "ERROR: Failed to resolve segmentation.llm_context_limit from params.yaml" >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$resolved_context_limit"
+}
+
 # ── Step 2: Edit params.yaml with jurisdiction metadata ───────────
 echo "Setting params.yaml: ${STATE} / ${LOCALITY} / ${CODE_SLUG}..."
 
@@ -236,13 +276,14 @@ bash scripts/convert_docx.sh "$RAW_DIR"
 # ── Step 5: Start vLLM server on dynamic port ─────────────────────
 # Use Python to find a free port, avoiding conflicts with other jobs
 # that may share this compute node.
-MODEL_ID="Qwen/Qwen3.5-27B"
-VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
+MODEL_ID="$(resolve_vllm_model_from_params)"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
 VLLM_TP_SIZE="${VLLM_TP_SIZE:-8}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
+echo "Resolved model from params.yaml: ${MODEL_ID}"
 echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
 echo "Using tensor parallel size ${VLLM_TP_SIZE}"
 
@@ -255,7 +296,9 @@ python -m vllm.entrypoints.openai.api_server \
     --api-key "$API_KEY" \
     --served-model-name "$MODEL_ID" \
     --download-dir /gpfs/scratch/"$USER"/hf_cache \
+    --generation-config vllm \
     --tensor-parallel-size "$VLLM_TP_SIZE" \
+    --disable-custom-all-reduce \
     --reasoning-parser qwen3 \
     --default-chat-template-kwargs '{"enable_thinking": false}' \
     --language-model-only \
@@ -289,6 +332,27 @@ echo "vLLM server ready after ${ELAPSED}s"
 # Point the openai client at the local vLLM server
 export OPENAI_BASE_URL="http://${VLLM_HOST}:${VLLM_PORT}/v1"
 export OPENAI_API_KEY="$API_KEY"
+
+MODELS_JSON=$(curl -sf -H "Authorization: Bearer ${OPENAI_API_KEY}" "${OPENAI_BASE_URL}/models")
+if ! MODELS_JSON="$MODELS_JSON" EXPECTED_MODEL_ID="$MODEL_ID" python3 - <<'PY'
+import json
+import os
+import sys
+
+payload = json.loads(os.environ["MODELS_JSON"])
+expected = os.environ["EXPECTED_MODEL_ID"]
+model_ids = [item.get("id") for item in payload.get("data", [])]
+if expected not in model_ids:
+    print(
+        f"ERROR: vLLM /models does not expose expected model '{expected}'. Returned: {model_ids}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+print(f"Verified vLLM model exposure: {expected}")
+PY
+then
+    exit 1
+fi
 
 # ── Step 6: Run the full DVC pipeline ─────────────────────────────
 echo "=== Running pipeline: $(date) ==="

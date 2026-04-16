@@ -41,10 +41,31 @@ conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
 
 export HF_HOME=/gpfs/scratch/$USER/hf_cache
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." 2>/dev/null && pwd || true)"
+
+resolve_llm_context_limit_from_params() {
+    if [[ -n "$PROJECT_ROOT" && -f "$PROJECT_ROOT/params.yaml" ]]; then
+        PROJECT_ROOT="$PROJECT_ROOT" python3 - <<'PY'
+import os
+import pathlib
+import yaml
+
+params = yaml.safe_load(
+    pathlib.Path(os.environ["PROJECT_ROOT"]).joinpath("params.yaml").read_text()
+)
+print(int(params.get("segmentation", {}).get("llm_context_limit", 32768)))
+PY
+        return 0
+    fi
+
+    printf '%s\n' '32768'
+}
+
 # ── Start vLLM server ────────────────────────────────────────────
 MODEL_ID="Qwen/Qwen3.5-27B"
 export MODEL_ID
-VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-16384}"
+VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
 VLLM_TP_SIZE="${VLLM_TP_SIZE:-8}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 API_KEY="test-key-${SLURM_JOB_ID}"

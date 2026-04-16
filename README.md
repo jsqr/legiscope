@@ -68,11 +68,16 @@ _See [Configuration Files](#configuration-files) for details._
 
 | Stage     | Key outputs                                  |
 |-----------|----------------------------------------------|
-| parse     | `code.md`, `headings.parquet`                |
-| segment   | `sections.parquet`, `segments.parquet`, `relations.parquet` |
+| parse     | `code.md`, `headings.parquet`, `regions.parquet` |
+| segment   | `sections.parquet`, `chunks.parquet`, `segments.parquet`, `relations.parquet` |
 | embed     | `embeddings.parquet`                         |
 | index     | ChromaDB collection (in `data/chroma_db/`)   |
 | benchmark | `benchmark_results.csv`, `benchmark_metrics.json` (in `data/output/`) |
+
+The segment stage now keeps `sections.parquet` as the canonical heading tree and
+derives `chunks.parquet` on top of it for retrieval. Chunk size is computed from
+`segmentation.llm_context_limit` in `params.yaml`, reserving prompt/answer space
+and budgeting for roughly five retrieved chunks per completion request.
 
 ### Query
 
@@ -234,6 +239,13 @@ stage-level CSV artifacts under `data/output/{JURISDICTION}/debug/`:
 `query_stage_<timestamp>.csv`. Each file contains one row per question rather
 than one file per query.
 
+At query time, `retrieve_sections()` still accepts the canonical
+`sections.parquet` path, but it now automatically prefers a sibling
+`chunks.parquet` when chunk metadata is present in the index. This keeps legal
+introductory and annotation material retrievable while avoiding TOC/publisher
+blocks and overly large full-section prompts during relevance filtering and
+final completion.
+
 ### Guidance Hooks
 
 The core package exposes a project-agnostic guidance interface in
@@ -262,6 +274,17 @@ After scan-time normalization, `src/legiscope/parse/scan.py`:
 - refines heading regexes from the example heading text, and
 - resets `markdown_prefix` from the normalized level order so stale prefixes
    from the model cannot leak into `code.md`.
+
+The parse stage also persists a `code_start` block in `code.md` frontmatter
+and writes `regions.parquet` so downstream section/chunk logic can distinguish
+TOC, publisher material, legal intro text, annotations, and substantive body
+text.
+During segmentation, `segment_legal_code()` uses `regions.parquet` to exclude
+non-canonical regions from default section building. If region metadata is not
+available, it falls back to `code_start.output_line` from frontmatter.
+If repeated ambiguous region cases show up in validation, a narrow LLM
+verification step may be considered in the future, but the current classifier
+is intentionally rule-based for determinism.
 
 <details>
 <summary>Full query CLI options</summary>
@@ -294,7 +317,7 @@ read from `params.yaml`; paths are read from `config.yaml`.
 
 ### Notebooks
 
-- `query_demo.py` - Interactive Marimo notebook demonstrating section-level retrieval with drug paraphernalia query
+- `query_demo.py` - Interactive Marimo notebook demonstrating chunk-backed retrieval with drug paraphernalia query
 
 ### Source Modules
 
@@ -304,9 +327,9 @@ read from `params.yaml`; paths are read from `config.yaml`.
 - `utils.py` — Core utilities including LLM client and directory functions
 - `parse/convert.py` — Text conversion utilities and LLM response models
 - `parse/scan.py` — LLM heading scanning, example-based regex refinement, and normalized markdown heading depth
-- `segment.py` — Text segmentation and hierarchical section processing
+- `segment.py` — Canonical sectioning plus derived chunk construction
 - `embeddings.py` — Embedding generation and ChromaDB management
-- `retrieve.py` — Information retrieval with HYDE query rewriting and section-level search
+- `retrieve.py` — Information retrieval with HYDE query rewriting and chunk-backed context reconstruction
 - `retrieval_guidance.py` — Project-agnostic per-query guidance hooks for retrieval, relevance, and completion
 - `query.py` — Legal query processing with structured responses, stage-specific guidance, and consolidated debug exports
 
@@ -324,9 +347,12 @@ data/
 ├── laws/                           # Legal code data
 │   └── {STATE}/{Locality}/{code-slug}/
 │       ├── raw/                    # Original source files (DOCX, PDF, etc.)
-│       ├── code.md                 # Structured Markdown
+│       ├── code.md                 # Structured Markdown with code_start frontmatter metadata
+│       ├── headings.parquet        # Parsed heading metadata aligned to code.md line numbers
+│       ├── regions.parquet         # Deterministic pre-body/body/annotation region roles
 │       ├── sections.parquet        # Section hierarchy
-│       ├── segments.parquet        # Text segments
+│       ├── chunks.parquet          # Retrieval-oriented chunks derived from sections + chunkable regions
+│       ├── segments.parquet        # Embedding/search segments derived from chunks
 │       ├── embeddings.parquet      # Embedding vectors
 │       ├── relations.parquet       # Intra-code relations
 │       └── external_references.parquet
@@ -382,7 +408,8 @@ See the [DVC remote storage docs](https://dvc.org/doc/user-guide/data-management
 │       │   ├── convert.py       # Conversion utilities and response models
 │       │   ├── scan.py          # LLM heading scanning and verification
 │       │   ├── headings.py      # Heading models and pattern helpers
-│       │   └── elements.py      # Raw text element splitting
+│       │   ├── elements.py      # Raw text element splitting
+│       │   └── regions.py       # Deterministic region-role classification
 │       ├── pipeline/        # DVC stage modules (parse, segment, embed, index, init)
 │       ├── config.py        # Infrastructure configuration (config.yaml)
 │       ├── params.py        # DVC params.yaml loader

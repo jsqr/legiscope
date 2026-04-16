@@ -1006,23 +1006,19 @@ def _prepare_legal_context(sections: list[SectionResult]) -> str:
             f"Relevance Score: {section.relevance_score:.3f}",
         ]
 
+        if section.context_path:
+            section_parts.append(f"Context Path: {section.context_path}")
+
+        if section.source_kind:
+            section_parts.append(f"Source Kind: {section.source_kind}")
+
+        if section.region_role and section.region_role not in {"main_body", "appendix"}:
+            section_parts.append(f"Region Role: {section.region_role}")
+
         if section.body_text:
             section_parts.append(f"Content: {section.body_text}")
         else:
             section_parts.append("Content: [No body text]")
-
-        # Add number matching segments if any
-        if section.matching_segments:
-            section_parts.append(
-                f"Matching Passages ({len(section.matching_segments)}):"
-            )
-
-        # Add matching segments for context
-        for j, segment in enumerate(section.matching_segments):
-            if segment.segment_text:
-                section_parts.append(
-                    f"  [{j + 1}] (score: {segment.distance:.3f}) {segment.segment_text}"
-                )
 
         context_sections.append("\n".join(section_parts))
 

@@ -1,4 +1,4 @@
-"""Build or update ChromaDB index from embeddings (incremental).
+"""Build or replace ChromaDB index entries from embeddings.
 
 Usage::
 
@@ -26,11 +26,11 @@ from legiscope.params import load_params
 
 
 def main() -> None:
-    """Add code embeddings to ChromaDB index (incremental)."""
+    """Replace all indexed embeddings for a code in ChromaDB."""
     setup_logging()
 
     parser = argparse.ArgumentParser(
-        description="Add embeddings to ChromaDB index (incremental)",
+        description="Replace embeddings for a code in ChromaDB",
     )
     parser.add_argument("--state", required=True, help="Two-letter state abbreviation")
     parser.add_argument(
@@ -66,19 +66,16 @@ def main() -> None:
 
     embeddings_df = pl.read_parquet(embeddings_path)
 
-    # Incremental: skip segments already in the collection
-    existing_ids = set(collection.get()["ids"])
-    new_df = embeddings_df.filter(~pl.col("segment_id").is_in(existing_ids))
+    logger.info(f"Removing existing indexed segments for {code_ref.code_id}")
+    collection.delete(where={"code_id": code_ref.code_id})
 
-    if len(new_df) == 0:
-        logger.info(
-            f"All {len(embeddings_df)} segments from {code_ref.code_id} already indexed"
-        )
+    if len(embeddings_df) == 0:
+        logger.info(f"No segments to index for {code_ref.code_id} after replacement")
     else:
-        logger.info(f"Adding {len(new_df)} new segments from {code_ref.code_id}")
+        logger.info(f"Indexing {len(embeddings_df)} segments for {code_ref.code_id}")
 
         index_config = EmbeddingIndexConfig(
-            df=new_df,
+            df=embeddings_df,
             jurisdiction_id=code_ref.jurisdiction_id,
         )
         create_embedding_index(index_config, collection=collection)

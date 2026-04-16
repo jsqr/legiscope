@@ -175,6 +175,13 @@ class CodeRef:
         """
         return f"{self.code_id}:g{ordinal}"
 
+    def chunk_id(self, ordinal: int) -> str:
+        """Globally unique chunk identifier.
+
+        Format: ``"{code_id}:c{ordinal}"``.
+        """
+        return f"{self.code_id}:c{ordinal}"
+
     @property
     def data_dir(self) -> Path:
         """Relative path from ``data/laws/`` to this code's directory.

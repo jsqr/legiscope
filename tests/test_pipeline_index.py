@@ -1,4 +1,4 @@
-"""Tests for scripts/index.py — incremental ChromaDB indexing."""
+"""Tests for scripts/index.py replacement-style ChromaDB indexing."""
 
 from __future__ import annotations
 
@@ -37,15 +37,15 @@ def _mock_collection(existing_ids: list[str]) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
-# Incremental dedup logic
+# Replacement indexing logic
 # ---------------------------------------------------------------------------
 
 
-class TestIncrementalIndexing:
-    def test_skips_already_indexed_segments(
+class TestReplacementIndexing:
+    def test_replaces_existing_code_segments(
         self, tmp_path, mock_cli_args, sample_code_ref
     ):
-        """Segments already in the collection are filtered out."""
+        """Existing rows for a code are deleted before re-adding current embeddings."""
         all_ids = ["IL:WindyTown:municipal-code:g0", "IL:WindyTown:municipal-code:g1"]
         embeddings_df = _make_embeddings_df(all_ids)
         embeddings_path = tmp_path / "embeddings.parquet"
@@ -87,10 +87,17 @@ class TestIncrementalIndexing:
 
             pipeline_index.main()
 
-        mock_add.assert_not_called()
+        collection.delete.assert_called_once_with(
+            where={"code_id": sample_code_ref.code_id}
+        )
+        mock_add.assert_called_once()
+        config = mock_add.call_args[0][0]
+        assert config.df["segment_id"].to_list() == all_ids
 
-    def test_adds_only_new_segments(self, tmp_path, mock_cli_args, sample_code_ref):
-        """Only segment IDs not in the collection are passed to create_embedding_index."""
+    def test_reindexes_all_segments_even_when_ids_overlap(
+        self, tmp_path, mock_cli_args, sample_code_ref
+    ):
+        """Replacement mode re-adds all rows for a code regardless of existing IDs."""
         all_ids = [
             "IL:WindyTown:municipal-code:g0",
             "IL:WindyTown:municipal-code:g1",
@@ -136,16 +143,16 @@ class TestIncrementalIndexing:
 
             pipeline_index.main()
 
+        collection.delete.assert_called_once_with(
+            where={"code_id": sample_code_ref.code_id}
+        )
         mock_add.assert_called_once()
         config = mock_add.call_args[0][0]
         added_ids = set(config.df["segment_id"].to_list())
-        assert added_ids == {
-            "IL:WindyTown:municipal-code:g1",
-            "IL:WindyTown:municipal-code:g2",
-        }
+        assert added_ids == set(all_ids)
 
     def test_empty_collection_adds_all(self, tmp_path, mock_cli_args, sample_code_ref):
-        """Empty collection → all segments are added."""
+        """Empty collection still performs replacement and adds all segments."""
         all_ids = ["IL:WindyTown:municipal-code:g0", "IL:WindyTown:municipal-code:g1"]
         embeddings_df = _make_embeddings_df(all_ids)
         embeddings_path = tmp_path / "embeddings.parquet"
@@ -186,9 +193,60 @@ class TestIncrementalIndexing:
 
             pipeline_index.main()
 
+        collection.delete.assert_called_once_with(
+            where={"code_id": sample_code_ref.code_id}
+        )
         mock_add.assert_called_once()
         config = mock_add.call_args[0][0]
         assert len(config.df) == 2
+
+    def test_empty_embeddings_delete_existing_without_reinserting(
+        self, tmp_path, mock_cli_args, sample_code_ref
+    ):
+        """Replacement mode removes stale rows even when no new embeddings exist."""
+        embeddings_df = _make_embeddings_df([])
+        embeddings_path = tmp_path / "embeddings.parquet"
+        embeddings_df.write_parquet(embeddings_path)
+
+        collection = _mock_collection(["IL:WindyTown:municipal-code:g0"])
+        mock_add = MagicMock()
+
+        mock_cli_args(
+            [
+                "--state",
+                "IL",
+                "--locality",
+                "WindyTown",
+                "--code-slug",
+                "municipal-code",
+            ]
+        )
+
+        with (
+            patch(
+                "index.load_params",
+                return_value={"embeddings": {"default_provider": "mistral"}},
+            ),
+            patch(
+                "index.chroma_db_path",
+                return_value=tmp_path / "chroma_db",
+            ),
+            patch(
+                "index.get_or_create_legal_collection",
+                return_value=collection,
+            ),
+            patch("index.create_embedding_index", mock_add),
+            patch("index.CodeRef.from_dvc_vars") as mock_from_dvc,
+        ):
+            mock_from_dvc.return_value = sample_code_ref
+            type(sample_code_ref).full_data_dir = property(lambda self: tmp_path)
+
+            pipeline_index.main()
+
+        collection.delete.assert_called_once_with(
+            where={"code_id": sample_code_ref.code_id}
+        )
+        mock_add.assert_not_called()
 
     def test_missing_embeddings_raises(self, tmp_path, mock_cli_args, sample_code_ref):
         """FileNotFoundError when embeddings.parquet is missing."""
@@ -225,3 +283,5 @@ class TestIncrementalIndexing:
 
             with pytest.raises(FileNotFoundError, match="Embeddings not found"):
                 pipeline_index.main()
+
+        collection.delete.assert_not_called()

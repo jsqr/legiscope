@@ -765,6 +765,49 @@ class TestCreateAndSaveEmbeddings:
         assert result.schema["embedding_text"] == pl.String
         assert result.schema["embedding"] == pl.List(pl.Float32)
 
+    def test_propagates_chunk_metadata_and_region_headings(self, tmp_path):
+        """Chunk metadata and fallback headings should survive embedding generation."""
+        code_ref = self._make_code_ref()
+
+        sections_df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Article I"],
+                "ancestor_path": [None],
+            }
+        )
+        segments_df = pl.DataFrame(
+            {
+                "segment_ordinal": [0],
+                "section_ordinal": [-1],
+                "section_heading": ["Legal Intro"],
+                "segment_text": ["This ordinance was adopted by the council."],
+                "chunk_ordinal": [0],
+                "chunk_id": ["CA:TestCity:test-code:c0"],
+                "source_kind": ["region"],
+                "region_role": ["legal_intro"],
+                "context_path": ["Legal Intro"],
+            }
+        )
+
+        mock_client = Mock()
+        mock_client.embeddings.return_value = {"embedding": [0.1, 0.2]}
+        config = EmbeddingConfig(model="test-model", provider="ollama")
+
+        result = create_and_save_embeddings(
+            segments_df=segments_df,
+            sections_df=sections_df,
+            client=mock_client,
+            code_ref=code_ref,
+            embedding_config=config,
+            output_path=tmp_path / "embeddings.parquet",
+        )
+
+        assert "chunk_id" in result.columns
+        assert "source_kind" in result.columns
+        assert result["chunk_id"][0] == "CA:TestCity:test-code:c0"
+        assert "Legal Intro" in result["embedding_text"][0]
+
 
 class TestFallbackSplittingOnContextError:
     """Test that context-length errors on individual segments trigger splitting.
@@ -826,7 +869,7 @@ class TestFallbackSplittingOnContextError:
                 code_ref=code_ref,
                 embedding_config=config,
                 output_path=tmp_path / "embeddings.parquet",
-                token_limit=1024,
+                embedding_model_token_limit=1024,
             )
 
         assert len(result) >= 2
@@ -889,7 +932,7 @@ class TestFallbackSplittingOnContextError:
                 code_ref=code_ref,
                 embedding_config=config,
                 output_path=tmp_path / "embeddings.parquet",
-                token_limit=1024,
+                embedding_model_token_limit=1024,
             )
 
         # First call was a batch (2 texts), then individual calls
@@ -932,7 +975,7 @@ class TestFallbackSplittingOnContextError:
                     code_ref=code_ref,
                     embedding_config=config,
                     output_path=tmp_path / "embeddings.parquet",
-                    token_limit=1024,
+                    embedding_model_token_limit=1024,
                 )
 
     def test_max_retries_per_segment_exhausted(self, tmp_path):
@@ -969,7 +1012,7 @@ class TestFallbackSplittingOnContextError:
                     code_ref=code_ref,
                     embedding_config=config,
                     output_path=tmp_path / "embeddings.parquet",
-                    token_limit=1024,
+                    embedding_model_token_limit=1024,
                 )
 
     def test_compacts_headings_when_ancestors_exceed_limit(self, tmp_path):
@@ -1005,7 +1048,7 @@ class TestFallbackSplittingOnContextError:
             code_ref=code_ref,
             embedding_config=config,
             output_path=tmp_path / "embeddings.parquet",
-            token_limit=10,
+            embedding_model_token_limit=10,
         )
 
         assert len(result) >= 1
@@ -1047,7 +1090,7 @@ class TestFallbackSplittingOnContextError:
             code_ref=code_ref,
             embedding_config=config,
             output_path=tmp_path / "embeddings.parquet",
-            token_limit=10,
+            embedding_model_token_limit=10,
         )
 
         embedding_texts = result["embedding_text"].to_list()

@@ -124,6 +124,39 @@ class TestProviderSwitch:
             )
 
 
+class TestOpenAIServedModel:
+    def test_openai_served_model_uses_matching_params_value(self):
+        p = _params_with(
+            **{
+                "llm.default_provider": "openai",
+                "llm.providers.openai.fast": "gpt-4.1",
+            }
+        )
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            assert Config.get_openai_served_model() == "gpt-4.1"
+
+    def test_openai_served_model_allows_single_defined_model(self):
+        p = _params_with(
+            **{
+                "llm.default_provider": "openai",
+                "llm.providers.openai.fast": "",
+            }
+        )
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            assert Config.get_openai_served_model() == "gpt-4.1"
+
+    def test_openai_served_model_rejects_mismatched_fast_and_powerful(self):
+        p = _params_with(**{"llm.default_provider": "openai"})
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            with pytest.raises(ValueError, match="serves only one model per job"):
+                Config.get_openai_served_model()
+
+    def test_openai_served_model_requires_openai_provider(self):
+        with patch("legiscope.llm_config.load_params", return_value=_BASE_PARAMS):
+            with pytest.raises(ValueError, match="llm.default_provider"):
+                Config.get_openai_served_model()
+
+
 class TestUnsupportedProvider:
     def test_unsupported_raises(self):
         p = _params_with(**{"llm.default_provider": "unsupported"})

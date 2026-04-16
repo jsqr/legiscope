@@ -545,6 +545,29 @@ def _get_default_provider() -> str:
 EMBEDDING_PROVIDER_CONFIG = _build_embedding_provider_config()
 EMBEDDING_PROVIDER = _get_default_provider()
 
+SEGMENT_EMBEDDING_METADATA_COLUMNS = [
+    "segment_position",
+    "section_level",
+    "word_count",
+    "section_type",
+    "section_number",
+    "line_number",
+    "parent",
+    "depth",
+    "ancestor_path",
+    "section_id",
+    "parent_id",
+    "chunk_ordinal",
+    "chunk_id",
+    "context_path",
+    "source_kind",
+    "region_role",
+    "retrieval_priority",
+    "chunk_part",
+    "chunk_count",
+    "token_count",
+]
+
 
 def get_embeddings(
     client, texts: list[str], model: str | None = None, provider: str | None = None
@@ -937,6 +960,11 @@ def _split_segment_row(
             if anc_sec and anc_sec.get("heading_text"):
                 heading_parts.append(anc_sec["heading_text"])
 
+    if not heading_parts:
+        fallback_heading = row.get("section_heading") or row.get("context_path")
+        if fallback_heading:
+            heading_parts.append(str(fallback_heading))
+
     segment_text = row.get("segment_text") or ""
     heading_text = "\n\n".join(heading_parts)
     heading_tokens = _estimate_token_count(heading_text)
@@ -1201,7 +1229,7 @@ def create_and_save_embeddings(
     code_ref: CodeRef,
     embedding_config: EmbeddingConfig | None = None,
     output_path: Path | None = None,
-    token_limit: int | None = None,
+    embedding_model_token_limit: int | None = None,
 ) -> pl.DataFrame:
     """Create embeddings with full context and save as a self-describing Parquet file.
 
@@ -1210,7 +1238,7 @@ def create_and_save_embeddings(
     Parquet file containing all metadata needed for a downstream index rebuild.
 
     Before generating embeddings, any segment whose assembled text (ancestor
-    headings + body) exceeds *token_limit* is split into smaller segments so
+    headings + body) exceeds *embedding_model_token_limit* is split into smaller segments so
     that no content is lost, although whitespace/formatting may be normalized during splitting.
     The split is performed in memory only — the original ``segments.parquet`` is never modified (it is a tracked DVC
     output of the ``segment`` stage). Split segment text is captured in the
@@ -1224,9 +1252,9 @@ def create_and_save_embeddings(
         embedding_config: Optional embedding configuration overrides.
         output_path: Where to write the Parquet file. Defaults to
             ``{code_ref.full_data_dir}/embeddings.parquet``.
-        token_limit: Maximum estimated tokens for assembled embedding text.
-            Read from ``params.yaml`` (``segmentation.token_limit``) when
-            ``None``.
+        embedding_model_token_limit: Maximum estimated tokens for assembled
+            embedding text. Read from ``params.yaml``
+            (``segmentation.embedding_model_token_limit``) when ``None``.
 
     Returns:
         The embeddings DataFrame that was written.
@@ -1234,12 +1262,12 @@ def create_and_save_embeddings(
     config = embedding_config or EmbeddingConfig()
 
     # --- resolve segmentation defaults from params.yaml -----------------
-    if token_limit is None:
+    if embedding_model_token_limit is None:
         from legiscope.params import load_params
 
         p = load_params(code_ref.full_data_dir)
         seg = p.get("segmentation", {})
-        token_limit = int(seg.get("token_limit", 1024))
+        embedding_model_token_limit = int(seg.get("embedding_model_token_limit", 1024))
 
     logger.info(f"Creating embeddings for {code_ref.code_id}")
 
@@ -1248,7 +1276,7 @@ def create_and_save_embeddings(
     # exceeds the token limit.
     original_len = len(segments_df)
     segments_df, embedding_texts = _split_oversized_embedding_segments(
-        segments_df, sections_df, token_limit
+        segments_df, sections_df, embedding_model_token_limit
     )
 
     # --- generate embeddings with per-segment fallback ------------------
@@ -1261,7 +1289,7 @@ def create_and_save_embeddings(
         segments_df=segments_df,
         sections_df=sections_df,
         embedding_texts=embedding_texts,
-        token_limit=token_limit,
+        token_limit=embedding_model_token_limit,
     )
 
     if len(segments_df) != original_len:
@@ -1279,28 +1307,42 @@ def create_and_save_embeddings(
 
     out = pl.DataFrame(
         {
-            "segment_id": segment_ids,
-            "segment_ordinal": segments_df["segment_ordinal"],
-            "section_ordinal": segments_df["section_ordinal"],
-            "code_id": [code_ref.code_id] * len(segments_df),
-            "jurisdiction_id": [code_ref.jurisdiction_id] * len(segments_df),
-            "section_heading": segments_df["section_heading"],
-            "segment_text": segments_df["segment_text"],
-            "embedding_text": embedding_texts,
-            "embedding": embeddings.tolist()
-            if hasattr(embeddings, "tolist")
-            else list(embeddings),
+            **{
+                "segment_id": segment_ids,
+                "segment_ordinal": segments_df["segment_ordinal"],
+                "section_ordinal": segments_df["section_ordinal"],
+                "code_id": [code_ref.code_id] * len(segments_df),
+                "jurisdiction_id": [code_ref.jurisdiction_id] * len(segments_df),
+                "section_heading": segments_df["section_heading"],
+                "segment_text": segments_df["segment_text"],
+                "embedding_text": embedding_texts,
+                "embedding": embeddings.tolist()
+                if hasattr(embeddings, "tolist")
+                else list(embeddings),
+            },
+            **{
+                col: segments_df[col]
+                for col in SEGMENT_EMBEDDING_METADATA_COLUMNS
+                if col in segments_df.columns
+            },
         },
         schema={
-            "segment_id": pl.String,
-            "segment_ordinal": pl.Int64,
-            "section_ordinal": pl.Int64,
-            "code_id": pl.String,
-            "jurisdiction_id": pl.String,
-            "section_heading": pl.String,
-            "segment_text": pl.String,
-            "embedding_text": pl.String,
-            "embedding": POLARS_EMBEDDING_DTYPE,
+            **{
+                "segment_id": pl.String,
+                "segment_ordinal": pl.Int64,
+                "section_ordinal": pl.Int64,
+                "code_id": pl.String,
+                "jurisdiction_id": pl.String,
+                "section_heading": pl.String,
+                "segment_text": pl.String,
+                "embedding_text": pl.String,
+                "embedding": POLARS_EMBEDDING_DTYPE,
+            },
+            **{
+                col: segments_df.schema[col]
+                for col in SEGMENT_EMBEDDING_METADATA_COLUMNS
+                if col in segments_df.columns
+            },
         },
     )
 

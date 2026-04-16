@@ -19,6 +19,7 @@ from legiscope.parse.headings import (
     _get_heading_level_obj,
     _is_heading_element,
 )
+from legiscope.parse.regions import REGIONS_SCHEMA, build_regions, seed_region_records
 from legiscope.parse.scan import DEFAULT_SCAN_MAX_LINES, scan_legal_text
 
 if TYPE_CHECKING:
@@ -32,20 +33,24 @@ def _generate_frontmatter(
     structure: HeadingStructure,
     state: str,
     locality: str,
+    *,
+    code_start_output_line: int | None = None,
 ) -> str:
-    """
-    Generate YAML frontmatter for Markdown file.
+    """Generate YAML frontmatter for ``code.md``.
 
-    Create YAML frontmatter containing jurisdiction information, heading patterns,
-    and creation timestamp.
+    The frontmatter stores jurisdiction metadata, normalized heading patterns,
+    creation timestamp, and when available a ``code_start`` block linking the
+    detected body boundary across source and markdown line coordinates.
 
     Args:
-        structure: HeadingStructure from scan_legal_text analysis
-        state: Two-letter state abbreviation
-        locality: Locality name
+        structure: HeadingStructure from ``scan_legal_text`` analysis.
+        state: Two-letter state abbreviation.
+        locality: Locality name.
+        code_start_output_line: Absolute line number in ``code.md`` where the
+            detected code body begins, including frontmatter offset.
 
     Returns:
-        str: YAML frontmatter string with proper formatting
+        YAML frontmatter string with opening and closing markers.
     """
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
@@ -72,6 +77,16 @@ def _generate_frontmatter(
         ],
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+
+    if (
+        structure.code_start_element_id is not None
+        or structure.code_start_line is not None
+    ):
+        frontmatter_data["code_start"] = {
+            "element_id": structure.code_start_element_id,
+            "source_line": structure.code_start_line,
+            "output_line": code_start_output_line,
+        }
 
     try:
         yaml_content = yaml.dump(
@@ -169,23 +184,41 @@ def _convert_heading_to_markdown(
 
 def _process_markdown_elements(
     elements_df: pl.DataFrame,
-    compiled_patterns: list,
+    compiled_patterns: list[Any],
     structure: HeadingStructure,
-) -> tuple[list[str], list[dict[str, Any]]]:
-    """Process elements and convert headings to Markdown format.
+) -> tuple[list[str], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Convert source elements into markdown lines plus parse-side metadata.
 
     Returns:
-        Tuple of (converted_lines, heading_records) where heading_records
-        include element_id and output_line_number.
+        A tuple of ``(converted_lines, heading_records, element_records)``.
+        ``heading_records`` feed ``headings.parquet`` and ``element_records``
+        preserve per-element output coordinates for ``regions.parquet`` and
+        ``code_start`` frontmatter metadata.
     """
     from loguru import logger
 
     converted_lines: list[str] = []
     heading_records: list[dict[str, Any]] = []
+    element_records: list[dict[str, Any]] = []
 
     for row in elements_df.to_dicts():
         eid = row["element_id"]
         text = row["text"]
+        output_start_line = len(converted_lines) + 1
+        output_end_line = output_start_line
+        element_record: dict[str, Any] = {
+            "element_id": eid,
+            "start_line": row["start_line"],
+            "end_line": row["end_line"],
+            "text": text,
+            "output_start_line": output_start_line,
+            "output_end_line": output_end_line,
+            "is_heading": False,
+            "heading_level": None,
+            "section_type": None,
+            "section_number": None,
+            "heading_text": None,
+        }
 
         # Check if this element matches a heading pattern
         is_heading, heading_level = _is_heading_element(text, compiled_patterns)
@@ -202,6 +235,17 @@ def _process_markdown_elements(
                 heading_text, heading_level, structure
             )
             converted_lines.append(markdown_heading + "\n")
+            output_end_line = len(converted_lines)
+            element_record.update(
+                {
+                    "is_heading": True,
+                    "heading_level": heading_level,
+                    "section_type": hl_obj.type_label if hl_obj else None,
+                    "section_number": _extract_section_number(heading_text, hl_obj),
+                    "heading_text": heading_text.strip(),
+                    "output_end_line": output_end_line,
+                }
+            )
 
             # Record heading metadata
             output_line_number = len(converted_lines)
@@ -229,11 +273,14 @@ def _process_markdown_elements(
             paragraph_text = " ".join(line.strip() for line in lines if line.strip())
             if paragraph_text:
                 converted_lines.append(paragraph_text + "\n")
+                output_end_line = len(converted_lines)
+                element_record["output_end_line"] = output_end_line
 
         # Add blank line after each element for paragraph separation
         converted_lines.append("\n")
+        element_records.append(element_record)
 
-    return converted_lines, heading_records
+    return converted_lines, heading_records, element_records
 
 
 def _write_markdown_file(
@@ -267,10 +314,13 @@ def text2md(
     Read a legal text file and convert headings to Markdown format based on
     provided HeadingStructure analysis. Apply regex patterns to identify
     headings and replace them with appropriate Markdown prefixes.
-    Include YAML frontmatter with jurisdiction metadata and heading patterns.
+    Include YAML frontmatter with jurisdiction metadata, heading patterns, and
+    ``code_start`` coordinates when available.
 
     Writes ``headings.parquet`` alongside ``code.md`` with structured heading
-    metadata (element_id, line numbers, true levels, type labels, section numbers).
+    metadata (element_id, line numbers, true levels, type labels, section
+    numbers), and also writes ``regions.parquet`` with deterministic region-role
+    groupings used by later section/chunk normalization work.
 
     Args:
         structure: HeadingStructure from scan_legal_text analysis
@@ -297,19 +347,42 @@ def text2md(
     # Split input into elements
     elements_df = split_elements(input_path)
 
-    converted_lines, heading_records = _process_markdown_elements(
+    converted_lines, heading_records, element_records = _process_markdown_elements(
         elements_df, compiled_patterns, structure
     )
-    frontmatter = _generate_frontmatter(structure, state, locality)
+
+    code_start_output_line = None
+    if structure.code_start_element_id is not None:
+        for record in element_records:
+            if record["element_id"] == structure.code_start_element_id:
+                code_start_output_line = record["output_start_line"]
+                break
+
+    frontmatter = _generate_frontmatter(
+        structure,
+        state,
+        locality,
+        code_start_output_line=None,
+    )
 
     # Compute frontmatter line count to offset output_line_number
     frontmatter_line_count = frontmatter.count("\n")
+
+    if code_start_output_line is not None:
+        frontmatter = _generate_frontmatter(
+            structure,
+            state,
+            locality,
+            code_start_output_line=code_start_output_line + frontmatter_line_count,
+        )
+        frontmatter_line_count = frontmatter.count("\n")
 
     _write_markdown_file(output_path, frontmatter, converted_lines)
 
     # Build and write headings.parquet alongside the output markdown file
     output_dir = Path(output_path).parent
     headings_path = output_dir / "headings.parquet"
+    regions_path = output_dir / "regions.parquet"
 
     if heading_records:
         headings_df = pl.DataFrame(
@@ -332,12 +405,22 @@ def text2md(
 
     headings_df.write_parquet(headings_path)
 
+    regions_df = build_regions(
+        seed_region_records(element_records),
+        structure,
+        frontmatter_line_count=frontmatter_line_count,
+    )
+    if len(regions_df) == 0:
+        regions_df = pl.DataFrame(schema=REGIONS_SCHEMA)
+    regions_df.write_parquet(regions_path)
+
 
 def convert_to_markdown(code_ref: CodeRef) -> Path:
     """Convert a legal code's raw text to structured Markdown.
 
     Locates the raw text file under ``code_ref.full_data_dir``, analyses
-    heading structure via LLM, and writes ``code.md`` to the code directory.
+    heading structure via LLM, and writes parse-stage artifacts to the code
+    directory.
 
     File search order:
         1. ``{code_dir}/code.txt``
@@ -348,7 +431,9 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
         code_ref: Identifies the legal code to convert.
 
     Returns:
-        Path to the generated ``code.md`` file.
+        Path to the generated ``code.md`` file. Companion outputs
+        ``headings.parquet`` and ``regions.parquet`` are written to the same
+        directory.
 
     Raises:
         FileNotFoundError: If the code directory, raw directory, or a

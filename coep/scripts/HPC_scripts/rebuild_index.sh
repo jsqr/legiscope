@@ -3,8 +3,9 @@
 #
 # Run this on the login node (or an interactive session) after all SLURM
 # jurisdiction jobs have completed.  Each job rsyncs its embeddings.parquet
-# back to the shared project directory, so this script simply iterates over
-# them and calls the existing index.py for each.
+# back to the shared project directory. Each index.py run now replaces the
+# stored rows for that code before inserting the current embeddings, so this
+# script can safely rebuild in place without a global wipe.
 #
 # Usage:
 #   cd /gpfs/data/cerdalab/LegalAI/legiscope
@@ -13,7 +14,7 @@
 #   bash coep/scripts/HPC_scripts/rebuild_index.sh [--clean]
 #
 # Options:
-#   --clean   Delete the existing ChromaDB before rebuilding (recommended)
+#   --clean   Delete the existing ChromaDB before rebuilding (optional)
 set -euo pipefail
 
 # ── Environment setup (if not already activated) ──────────────────
@@ -40,7 +41,7 @@ for arg in "$@"; do
             echo ""
             echo "Rebuild the shared ChromaDB index from all embeddings.parquet files."
             echo ""
-            echo "  --clean   Remove existing ChromaDB before rebuilding (recommended)"
+            echo "  --clean   Remove existing ChromaDB before rebuilding"
             exit 0
             ;;
         *) echo "Unknown argument: $arg"; exit 1 ;;
@@ -63,6 +64,7 @@ fi
 
 echo "Found ${#EMB_FILES[@]} embeddings.parquet files"
 echo "ChromaDB target: ${CHROMA_DIR}"
+echo "Index mode: replace rows for each code_id before insert"
 echo "==========================================="
 
 # ── Index each jurisdiction ───────────────────────────────────────

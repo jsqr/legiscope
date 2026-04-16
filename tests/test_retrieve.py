@@ -682,6 +682,82 @@ class TestSectionRetrievalConfigBasics:
                 assert hasattr(results, "query_info")
                 assert len(results.sections) == 2
 
+    def test_retrieve_sections_prefers_chunks_when_metadata_available(self, tmp_path):
+        """Sibling chunks.parquet should drive retrieval context when chunk IDs exist."""
+        from unittest.mock import Mock, patch
+
+        import polars as pl
+        from chromadb.api.models.Collection import Collection
+
+        from legiscope.retrieve import retrieve_sections
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Section 1"],
+                "body_text": ["Full section content that should not be returned."],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(tmp_path / "sections.parquet")
+
+        pl.DataFrame(
+            {
+                "chunk_ordinal": [0],
+                "chunk_id": ["chunk-0"],
+                "section_ordinal": [0],
+                "section_id": ["s0"],
+                "heading_text": ["# Section 1"],
+                "body_text": ["Chunk-scoped content only."],
+                "heading_level": [1],
+                "parent_id": [None],
+                "line_number": [1],
+                "context_path": ["Section 1"],
+                "source_kind": ["section_subtree"],
+                "region_role": ["main_body"],
+                "retrieval_priority": [3],
+                "chunk_part": [1],
+                "chunk_count": [1],
+                "section_type": ["section"],
+                "section_number": ["1"],
+                "token_count": [12],
+            }
+        ).write_parquet(tmp_path / "chunks.parquet")
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["0"]],
+            "documents": [["seg1"]],
+            "metadatas": [
+                [
+                    {
+                        "chunk_id": "chunk-0",
+                        "chunk_ordinal": 0,
+                        "section_ordinal": 0,
+                        "segment_position": 0,
+                        "section_heading": "# Section 1",
+                        "section_level": 1,
+                    }
+                ]
+            ],
+            "distances": [[0.1]],
+        }
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_sections(
+                    mock_collection,
+                    str(tmp_path / "sections.parquet"),
+                    "test query",
+                )
+
+        assert len(results.sections) == 1
+        assert results.sections[0].section_id == "chunk-0"
+        assert results.sections[0].chunk_id == "chunk-0"
+        assert results.sections[0].body_text == "Chunk-scoped content only."
+
 
 class TestGetJurisdictionStats:
     """Test the get_jurisdiction_stats function."""

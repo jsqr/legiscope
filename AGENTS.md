@@ -201,7 +201,18 @@ query:                        # uses powerful model
     enabled: true
     exact_match_threshold: 1.0
     fuzzy_match_threshold: 0.9
+
+segmentation:
+    embedding_model_token_limit: 1024  # segment budget for embeddings
+    llm_context_limit: 32768           # completion context budget used to size derived chunks
 ```
+
+The segment stage now writes both canonical `sections.parquet` and derived
+`chunks.parquet`. Retrieval still receives the `sections.parquet` path at the
+public API, but `retrieve_sections()` automatically prefers sibling
+`chunks.parquet` when indexed metadata includes `chunk_id`, so relevance
+filtering and completion operate on chunk-sized context instead of full
+sections.
 
 Project code can also inject per-query guidance with
 `BatchQuerySettings.retrieval_guidance_provider`. The provider receives a
@@ -401,6 +412,7 @@ uv run python scripts/run_queries.py
 │       │   ├── scan.py          # LLM heading scanning, regex refinement, and normalized markdown prefixes
 │       │   ├── headings.py      # Heading models and pattern helpers
 │       │   ├── elements.py      # Raw text element splitting
+│       │   ├── regions.py       # Deterministic region-role classification for parse output
 │       │   └── find_code_start.py  # Locate start of code proper
 │       ├── config.py        # Infrastructure configuration (config.yaml)
 │       ├── params.py        # DVC params.yaml loader
@@ -408,9 +420,9 @@ uv run python scripts/run_queries.py
 │       ├── llm_config.py    # LLM configuration and client management
 │       ├── utils.py         # Core utility functions
 │       ├── embeddings.py    # Embedding generation and ChromaDB management
-│       ├── retrieve.py      # Information retrieval with HYDE and section-level search
+│       ├── retrieve.py      # Information retrieval with HYDE and chunk-backed context reconstruction
 │       ├── retrieval_guidance.py # Project-agnostic stage-specific query guidance hooks
-│       ├── segment.py       # Text segmentation utilities
+│       ├── segment.py       # Canonical sectioning plus derived chunk construction
 │       └── query.py         # Legal query processing with structured responses and consolidated debug exports
 ├── tests/               # Test files
 ├── scripts/             # DVC stage entry-point scripts and utilities
@@ -444,9 +456,12 @@ uv run python scripts/run_queries.py
 │   └── laws/                  # Per-code data directories
 │       └── {STATE}/{Locality}/{code-slug}/
 │           ├── raw/               # Raw source files
-│           ├── code.md            # Structured Markdown
+│           ├── code.md            # Structured Markdown with code_start frontmatter metadata
+│           ├── headings.parquet   # Heading hierarchy aligned to code.md lines
+│           ├── regions.parquet    # Deterministic region roles for parse output
 │           ├── sections.parquet   # Section hierarchy
-│           ├── segments.parquet   # Text segments
+│           ├── chunks.parquet     # Retrieval-oriented chunks derived from sections + chunkable regions
+│           ├── segments.parquet   # Embedding/search segments derived from chunks
 │           ├── embeddings.parquet # Embedding vectors
 │           ├── relations.parquet  # Intra-code relations
 │           └── external_references.parquet

@@ -117,6 +117,34 @@ class Config:
         return config[provider]["powerful_model"]
 
     @classmethod
+    def get_openai_served_model(cls) -> str:
+        """Return the single OpenAI/vLLM model expected by BigPurple jobs."""
+        provider = cls.get_llm_provider()
+        if provider != "openai":
+            raise ValueError(
+                "OpenAI served model is only defined when llm.default_provider is 'openai'"
+            )
+
+        params = load_params()
+        openai_models = params.get("llm", {}).get("providers", {}).get("openai", {})
+        fast_model = openai_models.get("fast", "")
+        powerful_model = openai_models.get("powerful", "")
+
+        if not fast_model and not powerful_model:
+            raise ValueError(
+                "params.yaml must define at least one openai model under llm.providers.openai"
+            )
+
+        if fast_model and powerful_model and fast_model != powerful_model:
+            raise ValueError(
+                "OpenAI fast and powerful models differ in params.yaml, but the current "
+                "BigPurple vLLM setup serves only one model per job. Set both to the same "
+                "model name or update the HPC serving strategy."
+            )
+
+        return powerful_model or fast_model
+
+    @classmethod
     def get_llm_params(cls, **kwargs) -> dict:
         """Get default LLM parameters with optional overrides.
 

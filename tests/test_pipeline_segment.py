@@ -11,7 +11,7 @@ import segment as pipeline_segment
 
 class TestSegmentMain:
     def test_calls_with_default_params(self, mock_cli_args, sample_code_ref):
-        """Uses default token_limit=1024 when params are empty."""
+        """Uses default token and context limits when params are empty."""
         mock_cli_args(
             [
                 "--state",
@@ -36,10 +36,13 @@ class TestSegmentMain:
 
         mock_segment.assert_called_once()
         _, kwargs = mock_segment.call_args
-        assert kwargs["token_limit"] == 1024
+        assert kwargs["embedding_model_token_limit"] == 1024
+        assert kwargs["llm_context_limit"] == 32768
 
-    def test_uses_custom_token_limit(self, mock_cli_args, sample_code_ref):
-        """Custom token_limit from params is forwarded."""
+    def test_uses_custom_embedding_model_token_limit(
+        self, mock_cli_args, sample_code_ref
+    ):
+        """Custom embedding_model_token_limit from params is forwarded."""
         mock_cli_args(
             [
                 "--state",
@@ -51,7 +54,7 @@ class TestSegmentMain:
             ]
         )
         mock_segment = MagicMock(return_value=(pl.DataFrame(), pl.DataFrame()))
-        params = {"segmentation": {"token_limit": 128}}
+        params = {"segmentation": {"embedding_model_token_limit": 128}}
 
         with (
             patch(
@@ -64,10 +67,11 @@ class TestSegmentMain:
             pipeline_segment.main()
 
         _, kwargs = mock_segment.call_args
-        assert kwargs["token_limit"] == 128
+        assert kwargs["embedding_model_token_limit"] == 128
+        assert kwargs["llm_context_limit"] == 32768
 
     def test_per_code_params_override(self, mock_cli_args, sample_code_ref):
-        """Per-code params.yaml override works for token_limit."""
+        """Per-code params.yaml override works for renamed segmentation limits."""
         mock_cli_args(
             [
                 "--state",
@@ -79,7 +83,12 @@ class TestSegmentMain:
             ]
         )
         mock_segment = MagicMock(return_value=(pl.DataFrame(), pl.DataFrame()))
-        params = {"segmentation": {"token_limit": 64}}
+        params = {
+            "segmentation": {
+                "embedding_model_token_limit": 64,
+                "llm_context_limit": 16000,
+            }
+        }
 
         with (
             patch(
@@ -92,7 +101,8 @@ class TestSegmentMain:
             pipeline_segment.main()
 
         _, kwargs = mock_segment.call_args
-        assert kwargs["token_limit"] == 64
+        assert kwargs["embedding_model_token_limit"] == 64
+        assert kwargs["llm_context_limit"] == 16000
 
     def test_passes_code_ref_to_segment(self, mock_cli_args, sample_code_ref):
         """The CodeRef is passed as the first positional arg."""

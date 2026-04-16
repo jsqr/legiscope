@@ -162,6 +162,10 @@ retrieval:
     threshold: 0.7
   debug: true
 
+segmentation:
+  embedding_model_token_limit: 1024
+  llm_context_limit: 32768
+
 query:
   validation:
     enabled: true
@@ -222,15 +226,17 @@ validate → parse → segment → embed → index → benchmark
 ```
 
 The `benchmark` stage depends on `index` (it reads from the ChromaDB index)
-and on `segment` outputs (`sections.parquet`).
+and on `segment` outputs. Query-time retrieval still receives the canonical
+`sections.parquet` path, but it automatically prefers sibling `chunks.parquet`
+when chunk metadata is present in indexed segment rows.
 
 ### Stage Details
 
 | Stage | Script | Inputs | Outputs | LLM Calls? |
 |-------|--------|--------|---------|-------------|
 | **validate** | inline bash | `src/legiscope/__init__.py` | `tmp/validate_import.ok` | No |
-| **parse** | `scripts/parse.py` | `raw/` directory (TXT files) | `code.md`, `headings.parquet` | Yes (heading scanning, regex refinement) |
-| **segment** | `scripts/segment.py` | `code.md`, `headings.parquet` | `sections.parquet`, `segments.parquet`, `relations.parquet`, `external_references.parquet` | No |
+| **parse** | `scripts/parse.py` | `raw/` directory (TXT files) | `code.md`, `headings.parquet`, `regions.parquet` | Yes (heading scanning, regex refinement) |
+| **segment** | `scripts/segment.py` | `code.md`, `headings.parquet`, `regions.parquet` (preferred) | `sections.parquet`, `chunks.parquet`, `segments.parquet`, `relations.parquet`, `external_references.parquet` | No |
 | **embed** | `scripts/embed.py` | `sections.parquet`, `segments.parquet` | `embeddings.parquet` | No (embedding model only) |
 | **index** | `scripts/index.py` | `embeddings.parquet` | ChromaDB collection (side effect) | No |
 | **benchmark** | `coep/scripts/benchmark_pipeline.py` | `sections.parquet`, `embeddings.parquet`, queries CSV, MonQcle CSV | `benchmark_results.csv`, `benchmark_metrics.json` | Yes (query + evaluation) |
@@ -240,6 +246,18 @@ returns candidate levels, `src/legiscope/parse/scan.py` can reorder explicit
 levels based on outline coverage, regenerate heading regexes from the example
 heading text, and then reset `markdown_prefix` from the normalized level order.
 This prevents stale model-supplied prefixes from surviving into `code.md`.
+The parse stage also persists `code_start` source/output coordinates in
+frontmatter and emits `regions.parquet` so downstream section/chunk logic can
+separate TOC, boilerplate, legal intro, annotation, and substantive body text.
+During segmentation, `segment_legal_code()` prefers `regions.parquet` to keep
+only canonical regions in `sections.parquet`; if regions are missing, it falls
+back to `code_start.output_line` from frontmatter. The same stage also derives
+`chunks.parquet` from the canonical section tree plus chunkable non-canonical
+regions, sizing chunks from `segmentation.llm_context_limit` so completion-time
+retrieval can fit several chunks in one LLM request.
+If validation later shows repeated ambiguous region cases, a narrow LLM
+verification step may be considered, but the current classifier stays
+rule-based for determinism and lower parse cost.
 
 ### Data Directory Layout
 
@@ -250,10 +268,12 @@ data/laws/PA/Philadelphia/municipal-code/
 ├── raw/                          # Input: original DOCX (and/or TXT) source files
 │   └── philadelphia-pa-1.docx     #   Naming convention: {city}-{state}-{number}.docx
 ├── code.txt                      # Intermediate: DOCX→TXT conversion output
-├── code.md                       # Parse output: structured Markdown
+├── code.md                       # Parse output: structured Markdown + code_start frontmatter
 ├── headings.parquet              # Parse output: heading hierarchy
-├── sections.parquet              # Segment output: section-level chunks
-├── segments.parquet              # Segment output: finer text segments
+├── regions.parquet               # Parse output: deterministic region roles
+├── sections.parquet              # Segment output: canonical section hierarchy
+├── chunks.parquet                # Segment output: retrieval-oriented chunks
+├── segments.parquet              # Segment output: embedding/search segments derived from chunks
 ├── relations.parquet             # Segment output: intra-code references
 ├── external_references.parquet   # Segment output: external references
 └── embeddings.parquet            # Embed output: embedding vectors

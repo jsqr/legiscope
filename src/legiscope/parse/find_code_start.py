@@ -3,12 +3,27 @@
 from __future__ import annotations
 
 import logging
+import re
+from typing import Any
 
 import polars as pl
 from instructor import Instructor
 from pydantic import BaseModel
 
+from legiscope.llm_config import Config
+
 logger = logging.getLogger(__name__)
+
+
+_SECTION_START_PAT = re.compile(
+    r"^(?:§\s*)?(?:[A-Z]-)?\d+(?:[-.]\d+)+\b|^(?:SECTION|SEC\.)\s+\d+",
+    re.IGNORECASE,
+)
+_TRANSITION_ANCHOR_PAT = re.compile(
+    r"(?:^|\n)(?:PREAMBLE|TITLE\s+[A-Z0-9IVXLCDM]+|ARTICLE\s+[A-Z0-9IVXLCDM]+|"
+    r"PART\s+[A-Z0-9IVXLCDM]+|DIVISION\s+\d+|BOOK\s+\d+)",
+    re.IGNORECASE,
+)
 
 
 # ── Models ─────────────────────────────────────────────────────────────
@@ -37,6 +52,134 @@ class _VerifyResult(BaseModel):
     reasoning: str
 
 
+def _nonempty_lines(text: str) -> list[str]:
+    """Return non-empty stripped lines from an element."""
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _has_substantial_prose(lines: list[str]) -> bool:
+    """Return True when trailing lines look like body prose rather than TOC entries."""
+    for line in lines:
+        words = line.split()
+        if len(words) >= 12:
+            return True
+        if len(line) >= 80 and any(char in line for char in ".;:"):
+            return True
+    return False
+
+
+def _looks_like_body_start_element(text: str) -> bool:
+    """Return True when an element begins a section and includes actual body prose."""
+    lines = _nonempty_lines(text)
+    if len(lines) < 2:
+        return False
+    return bool(
+        _SECTION_START_PAT.match(lines[0]) and _has_substantial_prose(lines[1:])
+    )
+
+
+def _contains_transition_anchor(text: str) -> bool:
+    """Return True when an element contains a top-level start marker."""
+    return bool(_TRANSITION_ANCHOR_PAT.search(text))
+
+
+def _verification_lookback_for_candidate(text: str) -> int:
+    """Choose a wider verification window for late section/body candidates."""
+    if _looks_like_body_start_element(text):
+        return 25
+    if _contains_transition_anchor(text):
+        return 8
+    return 12
+
+
+def _collect_focus_rows(
+    elements: pl.DataFrame,
+    candidate_id: int,
+    *,
+    lookback: int,
+    max_rows: int = 8,
+) -> list[dict[str, Any]]:
+    """Collect likely earlier-boundary rows to highlight for verification."""
+    lower_bound = max(0, candidate_id - lookback)
+    rows = elements.filter(
+        (pl.col("element_id") >= lower_bound) & (pl.col("element_id") <= candidate_id)
+    ).to_dicts()
+
+    focus_rows: list[dict[str, Any]] = []
+    for row in rows:
+        text = row["text"]
+        if _contains_transition_anchor(text) or _looks_like_body_start_element(text):
+            focus_rows.append(row)
+
+    deduped: list[dict[str, Any]] = []
+    seen_ids: set[int] = set()
+    for row in focus_rows[-max_rows:]:
+        element_id = row["element_id"]
+        if element_id in seen_ids:
+            continue
+        deduped.append(row)
+        seen_ids.add(element_id)
+    return deduped
+
+
+def _refine_code_start_candidate(
+    elements: pl.DataFrame,
+    candidate_id: int,
+    *,
+    lookback: int = 250,
+    forward_span: int = 6,
+) -> int:
+    """Backtrack late candidates to the earliest nearby structural transition.
+
+    The LLM occasionally returns a body section deep inside the document. This
+    refinement looks backward within a bounded window for the earliest section
+    element that starts a sustained run of body text, then optionally includes a
+    directly preceding PREAMBLE / ARTICLE / TITLE transition element.
+    """
+    if elements.height == 0:
+        return candidate_id
+
+    lower_bound = max(0, candidate_id - lookback)
+    window = elements.filter(
+        (pl.col("element_id") >= lower_bound) & (pl.col("element_id") <= candidate_id)
+    )
+    rows = window.to_dicts()
+    if not rows:
+        return candidate_id
+
+    first_body_id: int | None = None
+    for index, row in enumerate(rows):
+        if not _looks_like_body_start_element(row["text"]):
+            continue
+        following = rows[index : index + forward_span]
+        body_like_count = sum(
+            1
+            for following_row in following
+            if _looks_like_body_start_element(following_row["text"])
+        )
+        if body_like_count >= 2:
+            first_body_id = row["element_id"]
+            break
+
+    if first_body_id is None:
+        return candidate_id
+
+    refined_id = first_body_id
+    row_by_id = {row["element_id"]: row for row in rows}
+    for previous_id in range(
+        first_body_id - 1, max(lower_bound, first_body_id - 3) - 1, -1
+    ):
+        previous_row = row_by_id.get(previous_id)
+        if previous_row is None:
+            continue
+        if _contains_transition_anchor(previous_row["text"]):
+            refined_id = previous_id
+        else:
+            break
+
+    return refined_id
+
+
 # ── System prompts ─────────────────────────────────────────────────────
 
 _SCAN_SYSTEM = (
@@ -48,9 +191,16 @@ _SCAN_SYSTEM = (
     "CODE PROPER is the primary hierarchical structure — it typically begins with a top-level "
     "division (TITLE, CHAPTER, ARTICLE, PART, DIVISION) with low numbering (1, I, or A), "
     "followed by hierarchically numbered sections (e.g. '§ 1-1', 'Sec. 1.01').\n\n"
+    "Choose the EARLIEST element that begins the contiguous code structure, not merely the "
+    "first detailed section you notice. If a later section heading is part of the same run as "
+    "an earlier PREAMBLE / ARTICLE / TITLE / CHAPTER transition, the boundary is the earlier "
+    "transition element.\n\n"
     "IMPORTANT: A Table of Contents or section index that appears at the START of a title "
     "or chapter (e.g. '1-1-1: Title', 'Sec. 2.01 Purpose') IS part of the code proper, "
     "not preamble. These section listings belong to the hierarchical code structure.\n\n"
+    "Signals that the boundary is TOO LATE include: the proposed element is a body section "
+    "(for example '§ 1-100 ...') and earlier nearby elements already show PREAMBLE, ARTICLE I, "
+    "TITLE 1, CHAPTER 1, or TOC entries that clearly belong to the same code run.\n\n"
     "If the code proper starts within these elements, set found=true and return its element_id.\n"
     "If all elements shown are still preamble, set found=false."
 )
@@ -67,9 +217,15 @@ _VERIFY_SYSTEM = (
     "by hierarchically numbered sections. Look for where the primary numbering scheme begins. "
     "A Table of Contents or section index at the start of a title/chapter IS part of the "
     "code proper.\n\n"
+    "Choose the EARLIEST boundary for the contiguous code run. If the candidate is already a "
+    "section body entry but the BEFORE region contains an earlier PREAMBLE / ARTICLE / TITLE / "
+    "CHAPTER transition or TOC block that flows directly into those sections, the candidate is "
+    "too late.\n\n"
     "The BEFORE region should look like preamble (publisher info, preface, adopting "
     "ordinances, instructions). The CANDIDATE and AFTER regions should look like the "
     "primary hierarchical code structure.\n\n"
+    "Prefer earlier structural transition elements over later section elements when both belong "
+    "to the same continuous code run.\n\n"
     "If the proposed boundary is correct, set correct=true.\n"
     "If the actual start of the code proper is within the BEFORE sample, set correct=false "
     "and set adjusted_element_id to the element_id of the correct starting element.\n"
@@ -108,13 +264,12 @@ def find_content_start(
             {"role": "user", "content": numbered},
         ],
         response_model=ContentStart,
-        temperature=0.0,
-        max_retries=2,
+        **Config.get_llm_params(),
     )
     return max(0, min(result.line_number, len(lines) - 1))
 
 
-def _format_element(row: dict) -> str:
+def _format_element(row: dict[str, Any]) -> str:
     """Format a single element row for LLM display."""
     text = row["text"]
     preview = text[:200] + "..." if len(text) > 200 else text
@@ -149,8 +304,7 @@ def _forward_scan_start(
                 {"role": "user", "content": formatted},
             ],
             response_model=ScanResult,
-            temperature=0.0,
-            max_retries=2,
+            **Config.get_llm_params(),
         )
 
         if result.found and result.element_id is not None:
@@ -190,13 +344,18 @@ def _verify_code_start(
 ) -> _VerifyResult:
     """Verify and potentially adjust the scan result with one extra LLM call."""
     n = elements.height
+    candidate_row = elements.filter(pl.col("element_id") == candidate_id)
+    candidate_text = (
+        candidate_row.row(0, named=True)["text"] if candidate_row.height else ""
+    )
+    lookback = _verification_lookback_for_candidate(candidate_text)
 
     # Sample three regions
-    before_start = max(0, candidate_id - 5)
+    before_start = max(0, candidate_id - lookback)
     before_end = candidate_id
-    boundary_end = min(n, candidate_id + 3)
-    after_start = min(n, candidate_id + 8)
-    after_end = min(n, candidate_id + 13)
+    boundary_end = min(n, candidate_id + 5)
+    after_start = boundary_end
+    after_end = min(n, after_start + 8)
 
     before = elements.filter(
         (pl.col("element_id") >= before_start) & (pl.col("element_id") < before_end)
@@ -216,7 +375,16 @@ def _verify_code_start(
             reasoning="no preceding elements to verify against",
         )
 
+    focus_rows = _collect_focus_rows(elements, candidate_id, lookback=lookback)
+
     sections = []
+    if focus_rows:
+        fmt = "\n\n".join(_format_element(row) for row in focus_rows)
+        sections.append(
+            "=== LIKELY EARLIER BOUNDARY CANDIDATES ===\n"
+            "These are earlier elements that look like structural transitions or the first "
+            f"sustained body sections within the last {lookback} elements.\n{fmt}"
+        )
     if before.height > 0:
         fmt = "\n\n".join(
             _format_element(before.row(i, named=True)) for i in range(before.height)
@@ -243,8 +411,7 @@ def _verify_code_start(
             {"role": "user", "content": user_content},
         ],
         response_model=_VerifyResult,
-        temperature=0.0,
-        max_retries=2,
+        **Config.get_llm_params(),
     )
 
 
@@ -268,10 +435,24 @@ def find_code_start(
         verification = _verify_code_start(client, elements, candidate.element_id)
 
         if verification.correct:
+            refined_id = _refine_code_start_candidate(elements, candidate.element_id)
+            if refined_id != candidate.element_id:
+                row = elements.filter(pl.col("element_id") == refined_id).row(
+                    0, named=True
+                )
+                return CodeStartResult(
+                    element_id=refined_id,
+                    start_line=row["start_line"],
+                    reasoning=(
+                        f"{candidate.reasoning} Refined backward from element "
+                        f"{candidate.element_id} to {refined_id} based on sustained body text."
+                    ),
+                )
             return candidate
 
         if verification.adjusted_element_id is not None:
             adjusted_id = max(0, min(verification.adjusted_element_id, n - 1))
+            adjusted_id = _refine_code_start_candidate(elements, adjusted_id)
             row = elements.filter(pl.col("element_id") == adjusted_id).row(
                 0, named=True
             )

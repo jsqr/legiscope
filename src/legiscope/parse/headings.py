@@ -66,11 +66,17 @@ class HeadingLevel(BaseModel):
 
 
 class HeadingStructure(BaseModel):
-    """Complete heading structure analysis for legal text."""
+    """Complete heading structure analysis for legal text.
+
+    Stores the normalized heading hierarchy plus the detected start of the
+    substantive code body in source-element coordinates.
+    """
 
     levels: list[HeadingLevel] = Field(alias="heading_levels")
     total_levels: int
     file_sample_size: int
+    code_start_element_id: int | None = None
+    code_start_line: int | None = None
     toc_line_ranges: list[tuple[int, int]] = []
     outline_warnings: list[str] = []
     quality_score: float = 0.0

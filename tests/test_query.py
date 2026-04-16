@@ -649,8 +649,8 @@ class TestPrepareLegalContext:
         assert body_text in context
         assert "... [content truncated]" not in context
 
-    def test_matching_segments_included(self):
-        """Test that matching segments are included."""
+    def test_matching_segments_not_included(self):
+        """Completion context should include only chunk content, not matched segments."""
         section = SectionResult(
             section_id="s1",
             heading_text="Section 1",
@@ -671,9 +671,32 @@ class TestPrepareLegalContext:
 
         context = _prepare_legal_context([section])
 
-        assert "Matching Passages (1):" in context
-        assert "Relevant segment here." in context
-        assert "(score: 0.200)" in context
+        assert "Matching Passages (1):" not in context
+        assert "Relevant segment here." not in context
+        assert "(score: 0.200)" not in context
+        assert "Content: Start body. End body." in context
+
+    def test_context_path_and_region_role_included(self):
+        """Chunk provenance should be surfaced in the completion context."""
+        section = SectionResult(
+            section_id="c0",
+            heading_text="Legal Intro",
+            body_text="This ordinance was adopted by the council.",
+            heading_level=0,
+            parent_id=None,
+            matching_segments=[],
+            relevance_score=0.7,
+            segment_count=1,
+            context_path="Legal Intro",
+            source_kind="region",
+            region_role="legal_intro",
+        )
+
+        context = _prepare_legal_context([section])
+
+        assert "Context Path: Legal Intro" in context
+        assert "Source Kind: region" in context
+        assert "Region Role: legal_intro" in context
 
 
 class TestQueryConfig:

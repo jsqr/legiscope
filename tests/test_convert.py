@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
@@ -17,6 +18,7 @@ from pydantic import BaseModel
 from legiscope.parse.convert import text2md
 from legiscope.parse.find_code_start import ScanResult
 from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructure
+from legiscope.parse.regions import REGIONS_SCHEMA
 from legiscope.parse.scan import DEFAULT_TEMPERATURE, scan_legal_text
 from legiscope.utils import ask
 
@@ -147,6 +149,202 @@ def _make_mock_client(heading_structure_response):
 
 class TestScanLegalText:
     """Test cases for scan_legal_text function."""
+
+    def test_find_code_start_refines_late_section_candidate(self):
+        """Late LLM candidates should backtrack to the nearby structure transition."""
+        import polars as pl
+
+        from legiscope.parse.find_code_start import find_code_start
+
+        elements = pl.DataFrame(
+            [
+                {
+                    "element_id": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "n_lines": 1,
+                    "text": "TABLE OF CONTENTS",
+                },
+                {
+                    "element_id": 1,
+                    "start_line": 2,
+                    "end_line": 4,
+                    "n_lines": 3,
+                    "text": "APPENDIX\nCHAPTER A-1\nA-100 Certain Existing Departments",
+                },
+                {
+                    "element_id": 2,
+                    "start_line": 5,
+                    "end_line": 9,
+                    "n_lines": 5,
+                    "text": (
+                        "CHAPTER A-2\nA-200 Schedule\nPREAMBLE\n"
+                        "Grateful to God for the freedoms we enjoy.\n"
+                        "ARTICLE I\nPOWERS OF THE CITY"
+                    ),
+                },
+                {
+                    "element_id": 3,
+                    "start_line": 10,
+                    "end_line": 12,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 1-100. The City's Powers Defined.\n"
+                        "This section grants the City broad powers and authority over municipal affairs.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+                {
+                    "element_id": 4,
+                    "start_line": 13,
+                    "end_line": 15,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 1-101. Legislative Power.\n"
+                        "The legislative power of the City is vested in Council under this charter.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+                {
+                    "element_id": 5,
+                    "start_line": 16,
+                    "end_line": 17,
+                    "n_lines": 2,
+                    "text": "CHAPTER 1\nTHE COUNCIL",
+                },
+                {
+                    "element_id": 6,
+                    "start_line": 18,
+                    "end_line": 20,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 2-100. Number, Terms and Salaries of Councilmembers.\n"
+                        "The Council shall consist of the members prescribed by this charter.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+            ],
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+        mock_client = Mock()
+        mock_client.chat.completions.create.side_effect = [
+            ScanResult(found=True, element_id=6, reasoning="late section candidate"),
+            Mock(
+                correct=True, adjusted_element_id=None, reasoning="candidate accepted"
+            ),
+        ]
+
+        result = find_code_start(mock_client, elements)
+
+        assert result.element_id == 2
+        assert result.start_line == 5
+        assert "Refined backward" in result.reasoning
+
+    def test_verify_code_start_highlights_earlier_boundary_candidates(self):
+        """Verification should show broader prior context for late section candidates."""
+        import polars as pl
+
+        from legiscope.parse.find_code_start import _verify_code_start
+
+        elements = pl.DataFrame(
+            [
+                {
+                    "element_id": 0,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "n_lines": 1,
+                    "text": "TABLE OF CONTENTS",
+                },
+                {
+                    "element_id": 1,
+                    "start_line": 2,
+                    "end_line": 4,
+                    "n_lines": 3,
+                    "text": "APPENDIX\nCHAPTER A-1\nA-100 Certain Existing Departments",
+                },
+                {
+                    "element_id": 2,
+                    "start_line": 5,
+                    "end_line": 9,
+                    "n_lines": 5,
+                    "text": (
+                        "CHAPTER A-2\nA-200 Schedule\nPREAMBLE\n"
+                        "Grateful to God for the freedoms we enjoy.\n"
+                        "ARTICLE I\nPOWERS OF THE CITY"
+                    ),
+                },
+                {
+                    "element_id": 3,
+                    "start_line": 10,
+                    "end_line": 12,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 1-100. The City's Powers Defined.\n"
+                        "This section grants the City broad powers and authority over municipal affairs.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+                {
+                    "element_id": 4,
+                    "start_line": 13,
+                    "end_line": 15,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 1-101. Legislative Power.\n"
+                        "The legislative power of the City is vested in Council under this charter.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+                {
+                    "element_id": 5,
+                    "start_line": 16,
+                    "end_line": 17,
+                    "n_lines": 2,
+                    "text": "CHAPTER 1\nTHE COUNCIL",
+                },
+                {
+                    "element_id": 6,
+                    "start_line": 18,
+                    "end_line": 20,
+                    "n_lines": 3,
+                    "text": (
+                        "§ 2-100. Number, Terms and Salaries of Councilmembers.\n"
+                        "The Council shall consist of the members prescribed by this charter.\n"
+                        "Additional body text follows here."
+                    ),
+                },
+            ],
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+        mock_client = Mock()
+        mock_client.chat.completions.create.return_value = Mock(
+            correct=True,
+            adjusted_element_id=None,
+            reasoning="candidate accepted",
+        )
+
+        _verify_code_start(mock_client, elements, candidate_id=6)
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        messages = call_kwargs["messages"]
+        assert "EARLIEST boundary" in messages[0]["content"]
+        assert "LIKELY EARLIER BOUNDARY CANDIDATES" in messages[1]["content"]
+        assert "[2]" in messages[1]["content"]
+        assert "[3]" in messages[1]["content"]
 
     def test_scan_legal_text_success(self):
         """Test successful analysis of legal text with mock LLM response."""
@@ -372,6 +570,25 @@ Some body text here."""
 
 class TestText2Md:
     """Test cases for text2md function."""
+
+    @staticmethod
+    def _render_regions(input_text: str, structure: HeadingStructure) -> pl.DataFrame:
+        """Convert synthetic input text and return the generated regions table."""
+        import polars as pl
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        try:
+            with tempfile.TemporaryDirectory() as output_dir:
+                output_file = os.path.join(output_dir, "code.md")
+                text2md(structure, input_file, output_file, "PA", "Philadelphia")
+                return pl.read_parquet(os.path.join(output_dir, "regions.parquet"))
+        finally:
+            os.unlink(input_file)
 
     def test_text2md_basic_conversion(self):
         """Test basic heading conversion to Markdown."""
@@ -720,6 +937,528 @@ This is a test chapter."""
         finally:
             os.unlink(input_file)
             os.unlink(output_file)
+
+    def test_text2md_persists_code_start_metadata(self):
+        """code_start metadata should be preserved in frontmatter when available."""
+        input_text = """Published by Example Press
+
+ARTICLE I: TEST
+
+This charter is adopted pursuant to state law."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        with tempfile.NamedTemporaryFile(suffix=".md", delete=False) as f:
+            output_file = f.name
+
+        try:
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^ARTICLE\s+[IVXLCDM]+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="ARTICLE I: TEST",
+                        type_label="article",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=3,
+                code_start_element_id=1,
+                code_start_line=3,
+            )
+
+            text2md(structure, input_file, output_file, "PA", "Philadelphia")
+
+            with open(output_file, "r", encoding="utf-8") as f:
+                output_content = f.read()
+
+            output_lines = output_content.splitlines()
+            article_line = output_lines.index("# ARTICLE I: TEST") + 1
+
+            frontmatter_start = output_content.find("---")
+            frontmatter_end = output_content.find("---", frontmatter_start + 3)
+            frontmatter_yaml = output_content[frontmatter_start + 3 : frontmatter_end]
+            parsed_data = yaml.safe_load(frontmatter_yaml)
+
+            assert parsed_data["code_start"]["element_id"] == 1
+            assert parsed_data["code_start"]["source_line"] == 3
+            assert parsed_data["code_start"]["output_line"] == article_line
+        finally:
+            os.unlink(input_file)
+            os.unlink(output_file)
+
+    def test_text2md_writes_regions_parquet_with_roles(self):
+        """Converted output should include deterministic region roles."""
+        import polars as pl
+
+        input_text = """Published by: Example Press
+
+TABLE OF CONTENTS
+
+ARTICLE I GENERAL PROVISIONS
+
+1-100 Purpose
+
+PREAMBLE
+This charter is adopted pursuant to state law and becomes effective January 1, 2025.
+
+ARTICLE I GENERAL PROVISIONS
+
+1-100 Purpose
+
+This section establishes the purpose of the code and applies generally to the jurisdiction.
+
+ANNOTATION
+Notes about enactment history effective January 1, 2025."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            output_file = os.path.join(output_dir, "code.md")
+
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                        markdown_prefix="#",
+                        example_heading="ARTICLE I GENERAL PROVISIONS",
+                        type_label="article",
+                        number_regex=r"[IVXLCDM]+",
+                    ),
+                    HeadingLevel(
+                        level=2,
+                        regex_pattern=r"^\d+(?:-\d+)+(?:\s+.+)?$",
+                        markdown_prefix="##",
+                        example_heading="1-100 Purpose",
+                        type_label="section",
+                        number_regex=r"\d+(?:-\d+)+",
+                    ),
+                ],
+                total_levels=2,
+                file_sample_size=10,
+                code_start_element_id=2,
+                code_start_line=5,
+            )
+
+            text2md(structure, input_file, output_file, "PA", "Philadelphia")
+
+            regions_path = os.path.join(output_dir, "regions.parquet")
+            assert os.path.exists(regions_path)
+
+            regions_df = pl.read_parquet(regions_path)
+            for col, dtype in REGIONS_SCHEMA.items():
+                assert col in regions_df.columns
+                assert regions_df.schema[col] == dtype
+
+            roles = regions_df["region_role"].to_list()
+            assert roles == [
+                "publisher_boilerplate",
+                "toc",
+                "legal_intro",
+                "main_body",
+                "annotation",
+            ]
+
+            role_flags = {
+                row["region_role"]: (
+                    row["include_in_canonical_sections"],
+                    row["include_in_default_chunks"],
+                )
+                for row in regions_df.to_dicts()
+            }
+            assert role_flags["toc"] == (False, False)
+            assert role_flags["legal_intro"] == (False, True)
+            assert role_flags["main_body"] == (True, True)
+            assert role_flags["annotation"] == (False, True)
+
+        os.unlink(input_file)
+
+    def test_text2md_treats_toc_listings_as_toc_even_with_early_code_start(self):
+        """TOC-style entries before substantive prose should stay out of main body."""
+        import polars as pl
+
+        input_text = """ARTICLE I GENERAL PROVISIONS
+
+1-100 Purpose
+
+1-200 Definitions
+
+PREAMBLE
+This charter is adopted pursuant to state law and becomes effective January 1, 2025.
+
+1-100. Purpose
+
+This section establishes the purpose of the code and applies generally to the jurisdiction."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(input_text)
+            input_file = f.name
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            output_file = os.path.join(output_dir, "code.md")
+
+            structure = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                        markdown_prefix="#",
+                        example_heading="ARTICLE I GENERAL PROVISIONS",
+                        type_label="article",
+                        number_regex=r"[IVXLCDM]+",
+                    ),
+                    HeadingLevel(
+                        level=2,
+                        regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                        markdown_prefix="##",
+                        example_heading="1-100. Purpose",
+                        type_label="section",
+                        number_regex=r"\d+(?:-\d+)+",
+                    ),
+                ],
+                total_levels=2,
+                file_sample_size=7,
+                code_start_element_id=0,
+                code_start_line=1,
+            )
+
+            text2md(structure, input_file, output_file, "PA", "Philadelphia")
+
+            regions_df = pl.read_parquet(os.path.join(output_dir, "regions.parquet"))
+            roles = regions_df["region_role"].to_list()
+            assert roles == ["toc", "legal_intro", "main_body"]
+
+            toc_region = regions_df.to_dicts()[0]
+            assert toc_region["include_in_canonical_sections"] is False
+            assert toc_region["include_in_default_chunks"] is False
+            assert (
+                "toc-like" in toc_region["reason"]
+                or "navigation" in toc_region["reason"]
+            )
+
+        os.unlink(input_file)
+
+    def test_text2md_merges_annotation_runs_across_sources_purposes_and_notes(self):
+        """Adjacent annotation-like elements should collapse into one annotation region."""
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I MUNICIPAL AUTHORITY",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^CHAPTER\s+\d+(?:\s+.+)?$",
+                    markdown_prefix="##",
+                    example_heading="CHAPTER 1",
+                    type_label="chapter",
+                    number_regex=r"\d+",
+                ),
+                HeadingLevel(
+                    level=3,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="###",
+                    example_heading="1-101. General Corporate Powers.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=3,
+            file_sample_size=13,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        input_text = """FOREWORD
+This charter establishes a streamlined municipal framework and is adopted under state law.
+
+ARTICLE I MUNICIPAL AUTHORITY
+
+1-101. General Corporate Powers.
+
+The city may adopt local measures and administer municipal affairs consistent with state law.
+
+ANNOTATION
+
+Sources: Charter enabling statute, Section 8.
+
+Purposes: 1. This provision states the broad delegation of municipal authority.
+
+Law Department Note (2024): Editorial references were standardized in this reprint.
+
+Notes
+Approved by the voters at the 2024 general election.
+
+ARTICLE II COUNCIL
+
+CHAPTER 1
+
+2-100. Composition of the Council.
+
+The council consists of district and at-large members serving staggered terms."""
+
+        regions_df = self._render_regions(input_text, structure)
+        roles = regions_df["region_role"].to_list()
+        assert roles == ["legal_intro", "main_body", "annotation", "main_body"]
+
+        annotation_region = regions_df.to_dicts()[2]
+        assert annotation_region["element_count"] == 5
+        assert annotation_region["include_in_canonical_sections"] is False
+        assert annotation_region["include_in_default_chunks"] is True
+
+    def test_text2md_detects_unlabeled_structural_toc_with_dotted_leaders(self):
+        """Compact structural listings should be treated as TOC before body prose appears."""
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^TITLE\s+[A-Z0-9IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="TITLE I ORGANIZATION",
+                    type_label="title",
+                    number_regex=r"[A-Z0-9IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^CHAPTER\s+\d+(?:\s+.+)?$",
+                    markdown_prefix="##",
+                    example_heading="CHAPTER 1 COUNCIL",
+                    type_label="chapter",
+                    number_regex=r"\d+",
+                ),
+                HeadingLevel(
+                    level=3,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="###",
+                    example_heading="1-100. Membership.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=3,
+            file_sample_size=9,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        input_text = """TITLE I ORGANIZATION
+
+CHAPTER 1 Council ........ 1
+
+1-100 Membership ........ 3
+
+1-200 Procedure ........ 5
+
+INTRODUCTION
+This charter restates the organization of municipal government and clarifies local powers.
+
+TITLE I
+
+CHAPTER 1
+
+1-100. Membership.
+
+The council contains nine members chosen by district and citywide vote."""
+
+        regions_df = self._render_regions(input_text, structure)
+        roles = regions_df["region_role"].to_list()
+        assert roles == ["toc", "legal_intro", "main_body"]
+
+        toc_region = regions_df.to_dicts()[0]
+        assert toc_region["element_count"] == 4
+        assert toc_region["include_in_canonical_sections"] is False
+        assert toc_region["include_in_default_chunks"] is False
+
+    def test_text2md_keeps_structural_heading_chain_before_first_prose(self):
+        """A genuine heading chain before the first prose block should stay main body."""
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^TITLE\s+[A-Z0-9IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="TITLE I ORGANIZATION",
+                    type_label="title",
+                    number_regex=r"[A-Z0-9IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^CHAPTER\s+\d+(?:\s+.+)?$",
+                    markdown_prefix="##",
+                    example_heading="CHAPTER 1 COUNCIL",
+                    type_label="chapter",
+                    number_regex=r"\d+",
+                ),
+                HeadingLevel(
+                    level=3,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="###",
+                    example_heading="1-100. Membership.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=3,
+            file_sample_size=6,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        input_text = """TITLE I ORGANIZATION
+
+CHAPTER 1 COUNCIL
+
+1-100. Membership.
+
+The council contains nine members chosen by district and citywide vote."""
+
+        regions_df = self._render_regions(input_text, structure)
+        roles = regions_df["region_role"].to_list()
+        assert roles == ["main_body"]
+
+        region = regions_df.to_dicts()[0]
+        assert region["include_in_canonical_sections"] is True
+        assert region["include_in_default_chunks"] is True
+
+    def test_text2md_treats_heading_only_preamble_before_prose_as_legal_intro(self):
+        """A heading-only PREAMBLE element before prose should not be forced into TOC."""
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I GENERAL PROVISIONS",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^PREAMBLE$",
+                    markdown_prefix="##",
+                    example_heading="PREAMBLE",
+                    type_label="preamble",
+                    number_regex=None,
+                ),
+                HeadingLevel(
+                    level=3,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="###",
+                    example_heading="1-100. Purpose.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=3,
+            file_sample_size=6,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        input_text = """ARTICLE I GENERAL PROVISIONS
+
+PREAMBLE
+
+This charter is adopted pursuant to state law and becomes effective January 1, 2025.
+
+1-100. Purpose.
+
+This section establishes the purpose of the code."""
+
+        regions_df = self._render_regions(input_text, structure)
+        roles = regions_df["region_role"].to_list()
+        assert roles == ["main_body", "legal_intro", "main_body"]
+
+        intro_region = regions_df.to_dicts()[1]
+        assert intro_region["include_in_canonical_sections"] is False
+        assert intro_region["include_in_default_chunks"] is True
+
+    def test_text2md_handles_mixed_publisher_toc_intro_annotation_transitions(self):
+        """Mixed pre-body and annotation transitions should produce stable region boundaries."""
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I ADMINISTRATION",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="##",
+                    example_heading="1-100. Executive Branch.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=2,
+            file_sample_size=13,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        input_text = """Current through Ordinance 24-11.
+
+Online edition maintained by Civic Publishing.
+
+ARTICLE I ADMINISTRATION
+
+1-100 Executive Branch ........ 2
+
+PREFACE
+This compilation reorganizes prior enactments and restates the charter in contemporary order.
+
+ARTICLE I ADMINISTRATION
+
+1-100. Executive Branch.
+
+The executive authority is vested in a mayor and administrative departments.
+
+Law Department Note (2025): Cross-reference numbering was adjusted for clarity.
+
+Sources: Editorial compilation dated 2025.
+
+ARTICLE II AUDITING
+
+2-100. Fiscal Review.
+
+An independent auditor reviews annual accounts."""
+
+        regions_df = self._render_regions(input_text, structure)
+        roles = regions_df["region_role"].to_list()
+        assert roles == [
+            "publisher_boilerplate",
+            "toc",
+            "legal_intro",
+            "main_body",
+            "annotation",
+            "main_body",
+        ]
+
+        rows = regions_df.to_dicts()
+        assert rows[0]["include_in_default_chunks"] is False
+        assert rows[1]["include_in_canonical_sections"] is False
+        assert rows[3]["include_in_canonical_sections"] is True
+        assert rows[4]["include_in_default_chunks"] is True
 
     def test_text2md_paragraph_handling(self):
         """Test proper paragraph handling with single and double newlines."""
@@ -1237,6 +1976,112 @@ class TestScoreStructure:
         assert score < 0.8
         assert any("outline mismatch" in error.lower() for error in errors)
 
+    def test_multiline_heading_elements_are_scored_as_matches(self):
+        """Score evaluation should match multiline headings the same way conversion does."""
+        from legiscope.parse.scan import score_structure
+        import polars as pl
+
+        elements = pl.DataFrame(
+            [
+                {
+                    "element_id": 0,
+                    "start_line": 1,
+                    "end_line": 2,
+                    "n_lines": 2,
+                    "text": "CHAPTER 1\nTHE COUNCIL",
+                },
+                {
+                    "element_id": 1,
+                    "start_line": 3,
+                    "end_line": 3,
+                    "n_lines": 1,
+                    "text": "§ 1-100. The City's Powers Defined.",
+                },
+                {
+                    "element_id": 2,
+                    "start_line": 4,
+                    "end_line": 4,
+                    "n_lines": 1,
+                    "text": "Body text that is not a heading.",
+                },
+            ],
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^CHAPTER\s+\d+\s+.*$"],
+                    markdown_prefix="# ",
+                    example_heading="CHAPTER 1 THE COUNCIL",
+                    type_label="chapter",
+                    number_regex=r"\d+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_patterns=[r"^§\s*\d+(?:-\d+)+\.\s*.*$"],
+                    markdown_prefix="## ",
+                    example_heading="§ 1-100. The City's Powers Defined.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=2,
+            file_sample_size=elements.height,
+        )
+
+        score, errors = score_structure(elements, structure)
+
+        assert score >= 0.8
+        assert not any("low recall" in error.lower() for error in errors)
+
+    def test_sibling_ordering_resets_after_higher_level_heading(self):
+        """Chapter numbering should be allowed to restart under a new article."""
+        from legiscope.parse.scan import score_structure
+
+        lines = [
+            "ARTICLE I   FIRST ARTICLE",
+            "CHAPTER 10   LAST CHAPTER IN ARTICLE I",
+            "ARTICLE II   SECOND ARTICLE",
+            "CHAPTER 1   FIRST CHAPTER IN ARTICLE II",
+        ]
+        elements = self._make_elements(lines)
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^ARTICLE\s+[IVXLCDM]+(?:\s+.*)?$"],
+                    markdown_prefix="# ",
+                    example_heading="ARTICLE I   FIRST ARTICLE",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_patterns=[r"^CHAPTER\s+\d+(?:\s+.*)?$"],
+                    markdown_prefix="## ",
+                    example_heading="CHAPTER 10   LAST CHAPTER IN ARTICLE I",
+                    type_label="chapter",
+                    number_regex=r"\d+",
+                ),
+            ],
+            total_levels=2,
+            file_sample_size=len(lines),
+        )
+
+        score, errors = score_structure(elements, structure)
+
+        assert score >= 0.8
+        assert not any("out-of-order siblings" in error.lower() for error in errors)
+
 
 class TestScanNormalization:
     """Tests for scan-time normalization of heading structures."""
@@ -1284,3 +2129,27 @@ class TestScanNormalization:
         assert normalized.levels[1].markdown_prefix == "##"
         assert normalized.levels[2].type_label == "section"
         assert normalized.levels[2].markdown_prefix == "###"
+
+    def test_section_refinement_matches_toc_and_body_variants(self):
+        """Normalized section regexes should cover both TOC and body heading formats."""
+        from legiscope.parse.scan import _normalize_scanned_structure
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^\d+(?:-\d+)\s+.*$"],
+                    markdown_prefix="#",
+                    example_heading="1-100   The City's Powers Defined",
+                    type_label="section",
+                )
+            ],
+            total_levels=1,
+            file_sample_size=10,
+        )
+
+        normalized = _normalize_scanned_structure(structure)
+        section_pattern = re.compile(normalized.levels[0].regex_pattern, re.IGNORECASE)
+
+        assert section_pattern.match("1-100   The City's Powers Defined")
+        assert section_pattern.match("§ 1-100. The City's Powers Defined.")

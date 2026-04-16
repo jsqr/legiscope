@@ -9,6 +9,7 @@ import polars as pl
 from instructor import Instructor
 from instructor.core.exceptions import InstructorRetryException
 
+from legiscope.llm_config import Config
 from legiscope.params import load_params
 from legiscope.parse.elements import split_elements
 from legiscope.parse.find_code_start import find_code_start
@@ -23,7 +24,7 @@ DEFAULT_TEMPERATURE = _params.get("llm", {}).get(
     "temperature", 0.0
 )  # Low temperature for consistent legal text analysis
 DEFAULT_MAX_RETRIES = _params.get("llm", {}).get("max_retries", 3)
-SCAN_CREATE_MAX_RETRIES = min(DEFAULT_MAX_RETRIES, 2)
+SCAN_CREATE_MAX_RETRIES = DEFAULT_MAX_RETRIES
 
 
 # ── Heading-like line heuristics ───────────────────────────────────────
@@ -251,6 +252,30 @@ def _verify_compile_patterns(
     return compiled, warnings
 
 
+def _pattern_matches_element(pattern: "re.Pattern[str]", element_text: str) -> bool:
+    """Return True when a regex matches either the first line or joined element text."""
+    first_line = element_text.split("\n")[0].strip()
+    if first_line and pattern.match(first_line):
+        return True
+
+    joined = " ".join(element_text.split())
+    return bool(joined and pattern.match(joined))
+
+
+def _matched_levels_for_element(
+    element_text: str,
+    compiled: list[tuple[int, "re.Pattern[str]", str]],
+) -> list[int]:
+    """Return all heading levels whose regexes match an element."""
+    return sorted(
+        set(
+            level
+            for level, pattern, _ in compiled
+            if _pattern_matches_element(pattern, element_text)
+        )
+    )
+
+
 def _matched_element_ids_by_level(
     elements_df: pl.DataFrame,
     compiled: list[tuple[int, "re.Pattern[str]", str]],
@@ -259,12 +284,12 @@ def _matched_element_ids_by_level(
     matched_by_level: dict[int, set[int]] = {}
     for row in elements_df.to_dicts():
         eid = row["element_id"]
-        first_line = row["text"].split("\n")[0].strip()
+        element_text = row["text"]
+        first_line = element_text.split("\n")[0].strip()
         if not first_line:
             continue
-        for level, pattern, _ in compiled:
-            if pattern.match(first_line):
-                matched_by_level.setdefault(level, set()).add(eid)
+        for level in _matched_levels_for_element(element_text, compiled):
+            matched_by_level.setdefault(level, set()).add(eid)
     return matched_by_level
 
 
@@ -335,7 +360,7 @@ def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
                 if re.fullmatch(r"[IVXLCDM]+", token, re.IGNORECASE)
                 else r"\d+"
             )
-            level.regex_pattern = rf"^ARTICLE\s+{numeral_pattern}\s+.*$"
+            level.regex_pattern = rf"^ARTICLE\s+{numeral_pattern}(?:\s+.*)?$"
             level.regex_patterns = [level.regex_pattern]
             level.number_regex = numeral_pattern
         return
@@ -343,7 +368,7 @@ def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
     if label == "chapter":
         match = re.match(r"^CHAPTER\s+(\d+)\b", example, re.IGNORECASE)
         if match:
-            level.regex_pattern = r"^CHAPTER\s+\d+\s+.*$"
+            level.regex_pattern = r"^CHAPTER\s+\d+(?:\s+.*)?$"
             level.regex_patterns = [level.regex_pattern]
             level.number_regex = r"\d+"
         return
@@ -351,18 +376,17 @@ def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
     if label == "section":
         match = re.match(r"^(§\s*)?(\d+(?:-\d+)+)", example)
         if match:
-            has_section_symbol = bool(match.group(1))
             identifier = match.group(2)
             component_count = identifier.count("-")
-            prefix = r"^§\s*" if has_section_symbol else r"^"
+            prefix = r"^(?:§\s*)?"
             id_pattern = r"\d+" + (r"(?:-\d+)" * component_count)
             suffix = example[match.end() :]
             if suffix.lstrip().startswith("."):
-                ending = r"\.\s*.*$"
+                ending = r"(?:\.\s*.*|\s+.*)$"
             elif suffix.lstrip().startswith(":"):
-                ending = r":\s*.*$"
+                ending = r"(?:\:\s*.*|\s+.*)$"
             else:
-                ending = r"\s+.*$"
+                ending = r"(?:\.\s*.*|\:\s*.*|\s+.*)$"
             level.regex_pattern = prefix + id_pattern + ending
             level.regex_patterns = [level.regex_pattern]
             level.number_regex = id_pattern
@@ -406,12 +430,11 @@ def _check_completeness(
     ambiguous = 0
     for row in elements_df.to_dicts():
         eid = row["element_id"]
-        first_line = row["text"].split("\n")[0].strip()
+        element_text = row["text"]
+        first_line = element_text.split("\n")[0].strip()
         if not first_line:
             continue
-        matching_levels = sorted(
-            set(lvl for lvl, pat, _ in compiled if pat.match(first_line))
-        )
+        matching_levels = _matched_levels_for_element(element_text, compiled)
         if len(matching_levels) > 1:
             if ambiguous < 10:
                 warnings.append(
@@ -445,9 +468,7 @@ def _check_parent_child(
         return warnings
 
     # Collect IDs per level from element texts
-    element_texts = [
-        row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()
-    ]
+    element_rows = elements_df.to_dicts()
 
     level_ids: dict[int, list[str]] = {}
     for level in structure.levels:
@@ -461,9 +482,11 @@ def _check_parent_child(
         for _lvl, pat, _ in compiled:
             if _lvl != level.level:
                 continue
-            for text in element_texts:
-                if pat.match(text):
-                    nm = num_pat.search(text)
+            for row in element_rows:
+                element_text = row["text"]
+                first_line = element_text.split("\n")[0].strip()
+                if _pattern_matches_element(pat, element_text):
+                    nm = num_pat.search(first_line)
                     if nm:
                         ids.append(nm.group(0))
         level_ids[level.level] = ids
@@ -496,9 +519,7 @@ def _check_sibling_ordering(
 ) -> list[str]:
     """Check sibling ordering across element texts."""
     warnings: list[str] = []
-    element_texts = [
-        row["text"].split("\n")[0].strip() for row in elements_df.to_dicts()
-    ]
+    element_rows = elements_df.to_dicts()
 
     for level in structure.levels:
         if level.inferred or not level.number_regex:
@@ -509,13 +530,21 @@ def _check_sibling_ordering(
             continue
         prev_id: str | None = None
         prev_key: tuple[int | str, ...] | None = None
-        for text in element_texts:
-            matched_this_level = any(
-                _lvl == level.level and pat.match(text) for _lvl, pat, _ in compiled
-            )
+        for row in element_rows:
+            element_text = row["text"]
+            first_line = element_text.split("\n")[0].strip()
+            if not first_line:
+                continue
+
+            matching_levels = _matched_levels_for_element(element_text, compiled)
+            if any(matched_level < level.level for matched_level in matching_levels):
+                prev_id = None
+                prev_key = None
+
+            matched_this_level = level.level in matching_levels
             if not matched_this_level:
                 continue
-            nm = num_pat.search(text)
+            nm = num_pat.search(first_line)
             if not nm:
                 continue
             current_id = nm.group(0)
@@ -542,9 +571,10 @@ def verify_structure(
     warnings.extend(_check_parent_child(structure, compiled, elements_df))
     warnings.extend(_check_sibling_ordering(structure, compiled, elements_df))
 
-    all_text = "\n".join(elements_df["text"].to_list())
     for _lvl, pat, pat_str in compiled:
-        if len(pat.findall(all_text)) == 0:
+        if not any(
+            _pattern_matches_element(pat, row["text"]) for row in elements_df.to_dicts()
+        ):
             warnings.append(f"Pattern has 0 matches in full text: {pat_str[:70]}")
 
     return warnings
@@ -571,13 +601,14 @@ def score_structure(
     heading_like_count = 0
     heading_like_matched = 0
     for row in elements_df.to_dicts():
-        first_line = row["text"].split("\n")[0].strip()
+        element_text = row["text"]
+        first_line = element_text.split("\n")[0].strip()
         if not first_line:
             continue
         is_hl = is_heading_like(first_line)
         if is_hl:
             heading_like_count += 1
-        matching = sorted(set(lvl for lvl, pat, _ in compiled if pat.match(first_line)))
+        matching = _matched_levels_for_element(element_text, compiled)
         if len(matching) >= 1:
             matched_count += 1
             if is_hl:
@@ -606,12 +637,13 @@ def score_structure(
         )
 
     # Pattern validity (0.15) — fraction of non-inferred patterns matching >= 1 element
-    all_text = "\n".join(elements_df["text"].to_list())
     valid_patterns = 0
     total_patterns = 0
     for _lvl, pat, pat_str in compiled:
         total_patterns += 1
-        if pat.findall(all_text):
+        if any(
+            _pattern_matches_element(pat, row["text"]) for row in elements_df.to_dicts()
+        ):
             valid_patterns += 1
         else:
             errors.append(f"Pattern has 0 matches: {pat_str[:70]}")
@@ -672,12 +704,15 @@ def scan_headings(
     max_iterations: int = 5,
     score_threshold: float = 0.7,
 ) -> tuple[HeadingStructure, float, int]:
-    """Iteratively scan legal text with self-correcting feedback loop."""
+    """Iteratively scan legal text with a self-correcting feedback loop.
+
+    Returns the best normalized heading structure found, along with the score
+    and iteration count. The returned structure also includes the detected
+    ``code_start_element_id`` and ``code_start_line`` used by parse output.
+    """
     from loguru import logger
 
     if client is None:
-        from legiscope.llm_config import Config
-
         client = Config.get_powerful_client()
 
     if not os.path.exists(file_path):
@@ -733,8 +768,7 @@ def scan_headings(
                     {"role": "user", "content": user_prompt},
                 ],
                 response_model=HeadingStructure,
-                temperature=DEFAULT_TEMPERATURE,
-                max_retries=SCAN_CREATE_MAX_RETRIES,
+                **Config.get_llm_params(max_retries=SCAN_CREATE_MAX_RETRIES),
             )
             structure = _normalize_scanned_structure(structure)
         except Exception as exc:
@@ -788,6 +822,8 @@ def scan_headings(
     best_structure.outline_warnings = verification_warnings
     best_structure.quality_score = best_score
     best_structure.iterations = iteration  # type: ignore[possibly-undefined]
+    best_structure.code_start_element_id = code_start.element_id
+    best_structure.code_start_line = code_start.start_line
     if best_structure.total_levels != len(best_structure.levels):
         best_structure.total_levels = len(best_structure.levels)
     best_structure.file_sample_size = code_elements.height
@@ -803,7 +839,8 @@ def scan_legal_text(
 ) -> HeadingStructure:
     """Analyze legal text to identify heading structure and patterns.
 
-    Delegates to scan_headings() for self-correcting multi-pass analysis.
+    Delegates to ``scan_headings()`` for self-correcting multi-pass analysis
+    and returns a structure enriched with the detected start of code proper.
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")

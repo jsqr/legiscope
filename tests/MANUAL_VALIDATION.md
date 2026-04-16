@@ -34,7 +34,11 @@ Run the complete pipeline on the jurisdiction configured in `params.yaml`:
 **Verify:**
 - [ ] All 5 stages complete without error (parse, segment, embed, index, benchmark)
 - [ ] `data/laws/IL/WindyCity/municipal-code/code.md` is generated
-- [ ] `sections.parquet`, `segments.parquet`, `embeddings.parquet` exist
+- [ ] `data/laws/IL/WindyCity/municipal-code/headings.parquet` and `regions.parquet` are generated
+- [ ] `sections.parquet`, `chunks.parquet`, `segments.parquet`, `embeddings.parquet` exist
+- [ ] `sections.parquet` excludes TOC-only structural sections when `regions.parquet` is present
+- [ ] `chunks.parquet` retains legal-intro or annotation material that should stay retrievable
+- [ ] `chunks.parquet` does not include TOC/publisher navigation blocks
 - [ ] Log output shows segment/embedding counts
 
 ## MV-2: Incremental Indexing (Fresh Build)
@@ -71,7 +75,8 @@ Create a per-code params.yaml with a smaller token limit:
 ```bash
 cat > data/laws/IL/WindyCity/municipal-code/params.yaml << 'EOF'
 segmentation:
-  token_limit: 128
+    embedding_model_token_limit: 128
+    llm_context_limit: 32768
 EOF
 ```
 
@@ -82,8 +87,9 @@ uv run python scripts/segment.py --state IL --locality WindyCity --code-slug mun
 ```
 
 **Verify:**
-- [ ] More segments produced compared to default `token_limit: 1024`
-- [ ] Log confirms the smaller token_limit was used
+- [ ] More segments produced compared to default `embedding_model_token_limit: 1024`
+- [ ] `chunks.parquet` still exists and chunk sizes remain bounded for retrieval
+- [ ] Log confirms the smaller embedding-model token limit was used
 - [ ] Clean up: `rm data/laws/IL/WindyCity/municipal-code/params.yaml`
 
 ## MV-5: DVC Experiment with `-S` Flag
@@ -91,12 +97,12 @@ uv run python scripts/segment.py --state IL --locality WindyCity --code-slug mun
 Override a parameter via DVC experiment:
 
 ```bash
-dvc exp run -S segmentation.token_limit=128
+dvc exp run -S segmentation.embedding_model_token_limit=128
 ```
 
 **Verify:**
 - [ ] Experiment runs successfully
-- [ ] `dvc exp show` lists the experiment with `segmentation.token_limit=128`
+- [ ] `dvc exp show` lists the experiment with `segmentation.embedding_model_token_limit=128`
 - [ ] Different segment count compared to default
 
 ## MV-6: Error Handling — Missing Raw Files

@@ -56,7 +56,8 @@ embeddings:
 
 # Segmentation settings
 segmentation:
-  token_limit: 1024
+  embedding_model_token_limit: 1024
+  llm_context_limit: 32768
 
 # Retrieval: vector search and post-retrieval filtering
 retrieval:

@@ -13,10 +13,12 @@ The main functions are:
 
 from __future__ import annotations
 
+from pathlib import Path
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
+import yaml
 
 if TYPE_CHECKING:
     from legiscope.models import CodeRef
@@ -25,10 +27,35 @@ from legiscope.params import load_params
 
 _p = load_params()
 _seg = _p.get("segmentation", {})
-DEFAULT_TOKEN_LIMIT = int(_seg.get("token_limit", 1024))
+DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT = int(_seg.get("embedding_model_token_limit", 1024))
+DEFAULT_LLM_CONTEXT_LIMIT = int(_seg.get("llm_context_limit", 32768))
+DEFAULT_TARGET_RETRIEVED_CHUNKS = 5
+_CHUNK_CONTEXT_RESERVE_RATIO = 0.25
+_CHUNK_CONTEXT_RESERVE_MIN = 4000
 
 # Conservative token approximation that better handles number/punctuation-heavy text.
 _TOKEN_UNIT_PATTERN = re.compile(r"\d+|[A-Za-z]+(?:[-'][A-Za-z]+)*|[^\w\s]", re.UNICODE)
+
+CHUNKS_SCHEMA = {
+    "chunk_ordinal": pl.Int64,
+    "chunk_id": pl.String,
+    "section_ordinal": pl.Int64,
+    "section_id": pl.String,
+    "heading_text": pl.String,
+    "body_text": pl.String,
+    "heading_level": pl.Int64,
+    "parent_id": pl.String,
+    "line_number": pl.Int64,
+    "context_path": pl.String,
+    "source_kind": pl.String,
+    "region_role": pl.String,
+    "retrieval_priority": pl.Int64,
+    "chunk_part": pl.Int64,
+    "chunk_count": pl.Int64,
+    "section_type": pl.String,
+    "section_number": pl.String,
+    "token_count": pl.Int64,
+}
 
 
 def _normalize_segmentation_text(text: str) -> str:
@@ -378,7 +405,7 @@ def add_parent_relationships(df: pl.DataFrame) -> pl.DataFrame:
     # --- Compute children, depth, ancestor_path ---
 
     # Build index for fast lookup: section_ordinal -> section dict
-    by_ordinal: dict[int, dict] = {s["section_ordinal"]: s for s in sections}
+    by_ordinal: dict[int, dict[str, Any]] = {s["section_ordinal"]: s for s in sections}
 
     # Initialise children lists
     for section in sections:
@@ -467,7 +494,7 @@ def get_section_text(sections_df: pl.DataFrame, section_ordinal: int) -> str:
         KeyError: If the given ``section_ordinal`` is not in the DataFrame.
     """
     # Build a lookup dict for O(1) access
-    by_ordinal: dict[int, dict] = {
+    by_ordinal: dict[int, dict[str, Any]] = {
         row["section_ordinal"]: row for row in sections_df.to_dicts()
     }
 
@@ -490,9 +517,346 @@ def get_section_text(sections_df: pl.DataFrame, section_ordinal: int) -> str:
     return "\n\n".join(_expand(section_ordinal))
 
 
+def _derive_chunk_token_limit(
+    llm_context_limit: int,
+    target_retrieved_chunks: int = DEFAULT_TARGET_RETRIEVED_CHUNKS,
+) -> int:
+    """Derive a per-chunk budget from the downstream completion context limit.
+
+    The chunk budget is intentionally smaller than the model context window so
+    query completion can fit several retrieved chunks plus the system prompt,
+    user query, and answer budget in a single request.
+    """
+    if llm_context_limit <= 0:
+        raise ValueError("llm_context_limit must be positive")
+    if target_retrieved_chunks <= 0:
+        raise ValueError("target_retrieved_chunks must be positive")
+
+    reserved_tokens = max(
+        _CHUNK_CONTEXT_RESERVE_MIN,
+        int(llm_context_limit * _CHUNK_CONTEXT_RESERVE_RATIO),
+    )
+    usable_tokens = max(1, llm_context_limit - reserved_tokens)
+    return max(1, usable_tokens // target_retrieved_chunks)
+
+
+def _strip_heading_markers(heading_text: str | None) -> str:
+    """Return a heading without leading markdown markers."""
+    if not heading_text:
+        return ""
+    return re.sub(r"^#{1,6}\s+", "", heading_text).strip()
+
+
+def _strip_leading_heading(full_text: str, heading_text: str) -> str:
+    """Remove the first heading line from a section subtree render when present."""
+    if full_text.startswith(heading_text):
+        return full_text[len(heading_text) :].lstrip()
+    return full_text.strip()
+
+
+def _build_section_context_path(
+    section_row: dict[str, Any],
+    sections_by_ordinal: dict[int, dict[str, Any]],
+) -> str | None:
+    """Build a readable ancestor breadcrumb for a canonical section chunk."""
+    ancestor_path = section_row.get("ancestor_path")
+    if not ancestor_path:
+        heading = _strip_heading_markers(section_row.get("heading_text"))
+        return heading or None
+
+    headings: list[str] = []
+    for ordinal_text in str(ancestor_path).split("/"):
+        if not ordinal_text:
+            continue
+        ordinal = int(ordinal_text)
+        heading_text = _strip_heading_markers(
+            sections_by_ordinal.get(ordinal, {}).get("heading_text")
+        )
+        if heading_text:
+            headings.append(heading_text)
+
+    return " > ".join(headings) if headings else None
+
+
+def _split_chunk_body(
+    body_text: str,
+    heading_text: str,
+    chunk_token_limit: int,
+) -> list[str]:
+    """Split chunk body text while reserving room for the heading."""
+    if not body_text.strip():
+        return []
+
+    heading_tokens = _estimate_token_count(heading_text)
+    body_token_limit = max(20, chunk_token_limit - heading_tokens)
+    parts = segment_text(body_text, token_limit=body_token_limit)
+    if parts:
+        return parts
+
+    return [body_text.strip()]
+
+
+def build_chunks_df(
+    sections_df: pl.DataFrame,
+    code_ref: CodeRef,
+    code_md_content: str,
+    code_dir: Path,
+    llm_context_limit: int = DEFAULT_LLM_CONTEXT_LIMIT,
+) -> pl.DataFrame:
+    """Build retrieval-oriented chunks from canonical sections and chunkable regions.
+
+    Canonical section chunks preserve the legal heading tree and recurse to
+    smaller descendants when a full section subtree would exceed the derived
+    chunk budget. Non-canonical regions flagged for default chunking, such as
+    legal introductions and annotations, are added as auxiliary chunks so they
+    remain retrievable without polluting canonical section structure.
+    """
+    if not isinstance(sections_df, pl.DataFrame):
+        raise TypeError(
+            f"sections_df must be a polars DataFrame, got {type(sections_df)}"
+        )
+
+    if len(sections_df) == 0:
+        return pl.DataFrame(schema=CHUNKS_SCHEMA)
+
+    chunk_token_limit = _derive_chunk_token_limit(llm_context_limit)
+    sections_by_ordinal = {
+        row["section_ordinal"]: row
+        for row in sections_df.sort("section_ordinal").to_dicts()
+    }
+    chunk_records: list[dict[str, Any]] = []
+    subtree_cache: dict[int, str] = {}
+
+    def _render_subtree_text(section_ordinal: int) -> str:
+        cached = subtree_cache.get(section_ordinal)
+        if cached is not None:
+            return cached
+
+        section = sections_by_ordinal[section_ordinal]
+        parts: list[str] = []
+        heading_text = section.get("heading_text")
+        body_text = section.get("body_text")
+        if heading_text:
+            parts.append(heading_text)
+        if body_text:
+            parts.append(body_text)
+        for child in section.get("children") or []:
+            parts.append(_render_subtree_text(int(child)))
+
+        rendered = "\n\n".join(part for part in parts if part)
+        subtree_cache[section_ordinal] = rendered
+        return rendered
+
+    def _append_chunk_record(
+        *,
+        section_ordinal: int,
+        section_id: str | None,
+        heading_text: str,
+        body_text: str,
+        heading_level: int,
+        parent_id: str | None,
+        line_number: int,
+        context_path: str | None,
+        source_kind: str,
+        region_role: str | None,
+        retrieval_priority: int,
+        chunk_part: int,
+        chunk_count: int,
+        section_type: str | None,
+        section_number: str | None,
+    ) -> None:
+        clean_body = body_text.strip()
+        if not clean_body:
+            return
+
+        token_count = _estimate_token_count(f"{heading_text}\n\n{clean_body}".strip())
+        chunk_records.append(
+            {
+                "chunk_ordinal": -1,
+                "chunk_id": "",
+                "section_ordinal": section_ordinal,
+                "section_id": section_id,
+                "heading_text": heading_text,
+                "body_text": clean_body,
+                "heading_level": heading_level,
+                "parent_id": parent_id,
+                "line_number": line_number,
+                "context_path": context_path,
+                "source_kind": source_kind,
+                "region_role": region_role,
+                "retrieval_priority": retrieval_priority,
+                "chunk_part": chunk_part,
+                "chunk_count": chunk_count,
+                "section_type": section_type,
+                "section_number": section_number,
+                "token_count": token_count,
+            }
+        )
+
+    def _build_canonical_chunks(section_ordinal: int) -> None:
+        section = sections_by_ordinal[section_ordinal]
+        full_text = _render_subtree_text(section_ordinal)
+        context_path = _build_section_context_path(section, sections_by_ordinal)
+        if full_text and _estimate_token_count(full_text) <= chunk_token_limit:
+            chunk_body = _strip_leading_heading(full_text, section["heading_text"])
+            _append_chunk_record(
+                section_ordinal=section_ordinal,
+                section_id=section.get("section_id"),
+                heading_text=section["heading_text"],
+                body_text=chunk_body,
+                heading_level=section["heading_level"],
+                parent_id=section.get("parent_id"),
+                line_number=section["line_number"],
+                context_path=context_path,
+                source_kind="section_subtree",
+                region_role="main_body",
+                retrieval_priority=3,
+                chunk_part=1,
+                chunk_count=1,
+                section_type=section.get("section_type"),
+                section_number=section.get("section_number"),
+            )
+            return
+
+        own_body_text = section.get("body_text") or ""
+        if own_body_text.strip():
+            body_parts = _split_chunk_body(
+                own_body_text,
+                section["heading_text"],
+                chunk_token_limit,
+            )
+            total_parts = len(body_parts)
+            for index, part in enumerate(body_parts, start=1):
+                display_heading = section["heading_text"]
+                if total_parts > 1:
+                    display_heading = f"{display_heading} (Part {index})"
+                _append_chunk_record(
+                    section_ordinal=section_ordinal,
+                    section_id=section.get("section_id"),
+                    heading_text=display_heading,
+                    body_text=part,
+                    heading_level=section["heading_level"],
+                    parent_id=section.get("parent_id"),
+                    line_number=section["line_number"],
+                    context_path=context_path,
+                    source_kind=(
+                        "section_body" if total_parts == 1 else "section_body_split"
+                    ),
+                    region_role="main_body",
+                    retrieval_priority=3,
+                    chunk_part=index,
+                    chunk_count=total_parts,
+                    section_type=section.get("section_type"),
+                    section_number=section.get("section_number"),
+                )
+
+        for child in section.get("children") or []:
+            _build_canonical_chunks(int(child))
+
+    root_sections = (
+        sections_df.filter(pl.col("parent").is_null())
+        .sort("section_ordinal")
+        .get_column("section_ordinal")
+        .to_list()
+    )
+    for section_ordinal in root_sections:
+        _build_canonical_chunks(int(section_ordinal))
+
+    regions_path = code_dir / "regions.parquet"
+    if regions_path.exists():
+        regions_df = pl.read_parquet(regions_path)
+        required_columns = {
+            "region_id",
+            "output_start_line",
+            "output_end_line",
+            "region_role",
+            "include_in_canonical_sections",
+            "include_in_default_chunks",
+            "retrieval_priority",
+        }
+        if required_columns.issubset(set(regions_df.columns)):
+            code_lines = code_md_content.split("\n")
+            chunkable_regions = (
+                regions_df.filter(
+                    pl.col("include_in_default_chunks")
+                    & ~pl.col("include_in_canonical_sections")
+                )
+                .sort("output_start_line")
+                .to_dicts()
+            )
+            for row in chunkable_regions:
+                start_line = int(row["output_start_line"])
+                end_line = int(row["output_end_line"])
+                region_text = "\n".join(code_lines[start_line - 1 : end_line]).strip()
+                if not region_text:
+                    continue
+
+                nonempty_lines = [
+                    line.strip() for line in region_text.splitlines() if line.strip()
+                ]
+                if not nonempty_lines:
+                    continue
+
+                first_line = nonempty_lines[0]
+                heading_match = re.match(r"^(#{1,6})\s+(.+)$", first_line)
+                if heading_match:
+                    base_heading = first_line
+                    body_text = region_text[len(first_line) :].lstrip()
+                    heading_level = len(heading_match.group(1))
+                else:
+                    base_heading = str(row["region_role"]).replace("_", " ").title()
+                    body_text = region_text
+                    heading_level = 0
+
+                region_section_ordinal = -1 - int(row["region_id"])
+                body_parts = _split_chunk_body(
+                    body_text, base_heading, chunk_token_limit
+                )
+                total_parts = len(body_parts)
+                for index, part in enumerate(body_parts, start=1):
+                    display_heading = base_heading
+                    if total_parts > 1:
+                        display_heading = f"{display_heading} (Part {index})"
+                    _append_chunk_record(
+                        section_ordinal=region_section_ordinal,
+                        section_id=None,
+                        heading_text=display_heading,
+                        body_text=part,
+                        heading_level=heading_level,
+                        parent_id=None,
+                        line_number=start_line,
+                        context_path=_strip_heading_markers(base_heading)
+                        or base_heading,
+                        source_kind="region",
+                        region_role=str(row["region_role"]),
+                        retrieval_priority=int(row["retrieval_priority"]),
+                        chunk_part=index,
+                        chunk_count=total_parts,
+                        section_type=None,
+                        section_number=None,
+                    )
+
+    if not chunk_records:
+        return pl.DataFrame(schema=CHUNKS_SCHEMA)
+
+    ordered_records = sorted(
+        chunk_records,
+        key=lambda record: (
+            int(record["line_number"]),
+            int(record["retrieval_priority"]),
+            str(record["heading_text"]),
+        ),
+    )
+    for chunk_ordinal, record in enumerate(ordered_records):
+        record["chunk_ordinal"] = chunk_ordinal
+        record["chunk_id"] = code_ref.chunk_id(chunk_ordinal)
+
+    return pl.DataFrame(ordered_records, schema=CHUNKS_SCHEMA)
+
+
 def segment_text(
     text: str,
-    token_limit: int = DEFAULT_TOKEN_LIMIT,
+    token_limit: int = DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT,
 ) -> list[str]:
     """
     Segment text into chunks suitable for processing and analysis.
@@ -619,7 +983,7 @@ def segment_text(
 def create_segments_df(
     df: pl.DataFrame,
     text_column: str = "body_text",
-    token_limit: int = DEFAULT_TOKEN_LIMIT,
+    token_limit: int = DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT,
 ) -> pl.DataFrame:
     """
     Create a flattened DataFrame with one row per text segment.
@@ -687,6 +1051,15 @@ def create_segments_df(
             "code_id",
             "section_id",
             "parent_id",
+            "chunk_ordinal",
+            "chunk_id",
+            "context_path",
+            "source_kind",
+            "region_role",
+            "retrieval_priority",
+            "chunk_part",
+            "chunk_count",
+            "token_count",
         ]
         if col in df.columns
     ]
@@ -725,13 +1098,18 @@ def create_segments_df(
         # immediate heading cost only.
         if has_ancestor_path and row.get("ancestor_path"):
             ancestor_ordinals = [int(x) for x in row["ancestor_path"].split("/")]
-            heading_tokens = sum(
+            available_heading_tokens = sum(
                 _estimate_token_count(heading_text_by_ordinal[anc])
                 for anc in ancestor_ordinals
                 if anc in heading_text_by_ordinal and heading_text_by_ordinal[anc]
             )
+            heading_tokens = available_heading_tokens or _estimate_token_count(
+                row.get("context_path") or heading_text
+            )
         else:
-            heading_tokens = _estimate_token_count(heading_text)
+            heading_tokens = _estimate_token_count(
+                row.get("context_path") or heading_text
+            )
 
         # Ensure we always have a positive token limit for segmentation
         # If headings are long, we still need to segment body text into
@@ -753,7 +1131,7 @@ def create_segments_df(
         for segment_position, segment_content in enumerate(segments):
             word_count = len(segment_content.split())
 
-            segment_row: dict = {
+            segment_row: dict[str, Any] = {
                 "segment_ordinal": global_segment_idx,
                 "section_ordinal": section_idx,
                 "section_heading": heading_text,
@@ -823,9 +1201,102 @@ def parse_frontmatter(content: str) -> tuple[str, int]:
     return content, 0
 
 
+def parse_frontmatter_metadata(content: str) -> dict[str, Any]:
+    """Parse YAML frontmatter metadata from ``code.md`` content.
+
+    Args:
+        content: Full file content that may begin with YAML frontmatter.
+
+    Returns:
+        Parsed frontmatter mapping, or an empty dict when frontmatter is
+        missing, malformed, or not a mapping.
+    """
+    lines = content.split("\n")
+    if lines and lines[0].strip() == "---":
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                frontmatter_text = "\n".join(lines[1:i])
+                try:
+                    parsed = yaml.safe_load(frontmatter_text)
+                except yaml.YAMLError:
+                    return {}
+                return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _extract_code_start_output_line(frontmatter_metadata: dict[str, Any]) -> int | None:
+    """Return the absolute ``code_start.output_line`` when present and valid."""
+    code_start = frontmatter_metadata.get("code_start")
+    if not isinstance(code_start, dict):
+        return None
+
+    output_line = code_start.get("output_line")
+    if isinstance(output_line, int) and output_line > 0:
+        return output_line
+    if isinstance(output_line, str) and output_line.isdigit():
+        parsed = int(output_line)
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _filter_sections_for_canonical_build(
+    sections_df: pl.DataFrame,
+    code_dir: Path,
+    frontmatter_metadata: dict[str, Any],
+) -> pl.DataFrame:
+    """Exclude non-canonical parse regions before hierarchy construction.
+
+    Prefers ``regions.parquet`` when available so TOC and similar structural
+    navigation blocks can be excluded even if ``code_start`` is imprecise.
+    Falls back to ``code_start.output_line`` from frontmatter when region
+    metadata is unavailable.
+    """
+    if len(sections_df) == 0:
+        return sections_df
+
+    regions_path = code_dir / "regions.parquet"
+    if regions_path.exists():
+        regions_df = pl.read_parquet(regions_path)
+        required_columns = {
+            "output_start_line",
+            "output_end_line",
+            "include_in_canonical_sections",
+        }
+        if required_columns.issubset(set(regions_df.columns)):
+            included_ranges = [
+                (int(row["output_start_line"]), int(row["output_end_line"]))
+                for row in (
+                    regions_df.filter(pl.col("include_in_canonical_sections"))
+                    .sort("output_start_line")
+                    .select("output_start_line", "output_end_line")
+                    .to_dicts()
+                )
+                if row["output_start_line"] is not None
+                and row["output_end_line"] is not None
+            ]
+            if included_ranges:
+                predicate = None
+                for start_line, end_line in included_ranges:
+                    condition = (pl.col("line_number") >= start_line) & (
+                        pl.col("line_number") <= end_line
+                    )
+                    predicate = (
+                        condition if predicate is None else predicate | condition
+                    )
+                if predicate is not None:
+                    return sections_df.filter(predicate)
+
+    code_start_output_line = _extract_code_start_output_line(frontmatter_metadata)
+    if code_start_output_line is not None:
+        return sections_df.filter(pl.col("line_number") >= code_start_output_line)
+
+    return sections_df
+
+
 def segment_legal_code(
     code_ref: CodeRef,
-    token_limit: int = DEFAULT_TOKEN_LIMIT,
+    embedding_model_token_limit: int = DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT,
+    llm_context_limit: int = DEFAULT_LLM_CONTEXT_LIMIT,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Segment a legal code's Markdown into sections and segments.
 
@@ -834,6 +1305,7 @@ def segment_legal_code(
     Parquet files to the code's data directory:
 
     * ``sections.parquet``
+    * ``chunks.parquet``
     * ``segments.parquet``
     * ``relations.parquet`` (empty scaffold)
     * ``external_references.parquet`` (empty scaffold)
@@ -841,10 +1313,16 @@ def segment_legal_code(
     If ``headings.parquet`` exists alongside ``code.md``, the true
     structural heading level, ``section_type``, and ``section_number``
     are joined in from that file using line numbers.
+    If ``regions.parquet`` exists, only regions flagged for canonical section
+    building are kept before parent/child hierarchy construction. When region
+    metadata is unavailable, segmentation falls back to the absolute
+    ``code_start.output_line`` stored in ``code.md`` frontmatter.
 
     Args:
         code_ref: Identifies the legal code to segment.
-        token_limit: Maximum approximate tokens per segment.
+        embedding_model_token_limit: Maximum approximate tokens per embedding-ready
+            segment.
+        llm_context_limit: Downstream LLM context budget used to derive chunk size.
 
     Returns:
         Tuple of ``(sections_df, segments_df)``.
@@ -867,6 +1345,8 @@ def segment_legal_code(
     if not content.strip():
         raise ValueError(f"Markdown file is empty: {markdown_path}")
 
+    frontmatter_metadata = parse_frontmatter_metadata(content)
+
     # Strip YAML frontmatter and compute line offset
     body, frontmatter_line_count = parse_frontmatter(content)
 
@@ -877,6 +1357,12 @@ def segment_legal_code(
         sections_df = sections_df.with_columns(
             (pl.col("line_number") + frontmatter_line_count).alias("line_number")
         )
+
+    sections_df = _filter_sections_for_canonical_build(
+        sections_df,
+        code_dir,
+        frontmatter_metadata,
+    )
 
     # Join with headings.parquet to get true level and metadata
     headings_path = code_dir / "headings.parquet"
@@ -909,14 +1395,23 @@ def segment_legal_code(
     sections_df = add_parent_relationships(sections_df)
     sections_df = enrich_sections(sections_df, code_ref)
 
-    segments_df = create_segments_df(
+    chunks_df = build_chunks_df(
         sections_df,
+        code_ref,
+        content,
+        code_dir,
+        llm_context_limit=llm_context_limit,
+    )
+
+    segments_df = create_segments_df(
+        chunks_df,
         text_column="body_text",
-        token_limit=token_limit,
+        token_limit=embedding_model_token_limit,
     )
 
     # Write outputs
     sections_df.write_parquet(code_dir / "sections.parquet")
+    chunks_df.write_parquet(code_dir / "chunks.parquet")
     segments_df.write_parquet(code_dir / "segments.parquet")
     pl.DataFrame(schema=RELATIONS_SCHEMA).write_parquet(code_dir / "relations.parquet")
     pl.DataFrame(schema=EXTERNAL_REFERENCES_SCHEMA).write_parquet(

@@ -14,12 +14,12 @@ from legiscope.retrieval_guidance import RetrievalGuidance
 from legiscope.utils import ask, resolve_model_default
 
 
-def _retrieval_params() -> dict:
+def _retrieval_params() -> dict[str, Any]:
     p = load_params()
     return p.get("retrieval", {})
 
 
-def _llm_params() -> dict:
+def _llm_params() -> dict[str, Any]:
     p = load_params()
     return p.get("llm", {})
 
@@ -62,15 +62,23 @@ class QueryInfo:
     total_segments_found: int = 0
     unique_sections: int = 0
 
+    @property
+    def unique_chunks(self) -> int:
+        """Compatibility alias for chunk-backed retrieval flows."""
+        return self.unique_sections
+
 
 @dataclass
 class SectionResult:
-    """A section with matching segments from retrieval.
+    """A retrieval context unit with matching segments from semantic search.
 
     The relevance_score can come from:
     - Embedding distance (lower is better) from retrieve_sections()
     - LLM-assessed relevance score (higher is better, 0-1) from filter_sections()
     Check llm_assessed flag to determine which scoring method was used.
+
+    The class name is preserved for compatibility, but results may now be
+    backed by a derived chunk rather than a full canonical section.
     """
 
     section_id: str
@@ -81,6 +89,12 @@ class SectionResult:
     matching_segments: list[SegmentMatch]
     relevance_score: float
     segment_count: int
+    context_path: str | None = None
+    chunk_id: str | None = None
+    chunk_ordinal: int | None = None
+    source_kind: str | None = None
+    region_role: str | None = None
+    retrieval_priority: int | None = None
     llm_assessed: bool = (
         False  # True if relevance_score is from LLM, False if from embedding distance
     )
@@ -180,8 +194,8 @@ class RetrievalSettings:
     # Search parameters
     n_results: int = DEFAULT_N_RESULTS
     jurisdiction_id: str | None = None
-    where: dict | None = None
-    where_document: dict | None = None
+    where: dict[str, Any] | None = None
+    where_document: dict[str, Any] | None = None
 
     # HYDE query rewriting
     use_hyde: bool = False
@@ -715,11 +729,12 @@ def retrieve_sections(
     query_text: str,
     settings: SectionRetrievalSettings | None = None,
 ) -> SectionCollection:
-    """Retrieve sections by searching embeddings at segment level but returning full section context.
+    """Retrieve context units by searching embeddings at segment level.
 
     This function performs semantic search at the segment level for precision, then aggregates
-    the results by their parent sections to provide broader legal context. Each result includes
-    the full section content along with the specific matching segments.
+    the results by their parent retrieval units to provide broader legal context. When a sibling
+    ``chunks.parquet`` exists and the indexed segment metadata includes ``chunk_id``, retrieval
+    prefers chunk-backed context automatically. Otherwise it falls back to canonical sections.
 
     Args:
         collection: ChromaDB collection to query (required infrastructure)
@@ -728,7 +743,7 @@ def retrieve_sections(
         settings: Optional section retrieval settings (uses defaults if None)
 
     Returns:
-        SectionCollection: Section-level results with sections list and query info
+        SectionCollection: Context-level results with sections list and query info
 
     Raises:
         ValueError: If sections_parquet_path doesn't exist or required columns are missing
@@ -799,9 +814,17 @@ def retrieve_sections(
     total_segments_found = len(segment_results.ids[0])
     logger.info(f"Found {total_segments_found} segment results")
 
-    sections_to_segments = _group_segments_by_section(segment_results)
+    retrieval_path, key_column, using_chunks = _resolve_retrieval_artifact(
+        sections_path,
+        segment_results,
+    )
+
+    sections_to_segments = _group_segments_by_context_unit(
+        segment_results,
+        key_column=key_column,
+    )
     if not sections_to_segments:
-        logger.warning("No valid section references found in segment metadata")
+        logger.warning("No valid retrieval-unit references found in segment metadata")
         return SectionCollection(
             sections=[],
             query_info=QueryInfo(
@@ -812,9 +835,18 @@ def retrieve_sections(
             ),
         )
 
-    sections_dict = _load_section_data(sections_path, sections_to_segments)
+    sections_dict = _load_context_unit_data(
+        retrieval_path,
+        sections_to_segments,
+        key_column=key_column,
+    )
 
-    section_results = _build_section_results(sections_to_segments, sections_dict)
+    section_results = _build_section_results(
+        sections_to_segments,
+        sections_dict,
+        key_column=key_column,
+        using_chunks=using_chunks,
+    )
 
     return SectionCollection(
         sections=section_results,
@@ -930,6 +962,12 @@ def filter_sections(
                     matching_segments=section.matching_segments,
                     relevance_score=assessment.relevance_score,  # Use LLM score instead of distance
                     segment_count=section.segment_count,
+                    context_path=section.context_path,
+                    chunk_id=section.chunk_id,
+                    chunk_ordinal=section.chunk_ordinal,
+                    source_kind=section.source_kind,
+                    region_role=section.region_role,
+                    retrieval_priority=section.retrieval_priority,
                     llm_assessed=True,
                 )
                 filtered_sections.append(updated_section)
@@ -995,10 +1033,38 @@ def _create_empty_results(
     )
 
 
-def _group_segments_by_section(
+def _segment_results_have_chunk_metadata(segment_results: SegmentCollection) -> bool:
+    """Return whether the indexed metadata includes chunk identifiers."""
+    if not segment_results.metadatas or not segment_results.metadatas[0]:
+        return False
+
+    return any(
+        metadata and metadata.get("chunk_id")
+        for metadata in segment_results.metadatas[0]
+    )
+
+
+def _resolve_retrieval_artifact(
+    sections_path: Path,
     segment_results: SegmentCollection,
-) -> dict[int, list[dict[str, Any]]]:
-    """Group segment results by their parent section references."""
+) -> tuple[Path, str, bool]:
+    """Choose the parquet artifact used to rebuild higher-level retrieval context."""
+    if sections_path.name == "chunks.parquet":
+        return sections_path, "chunk_id", True
+
+    chunks_path = sections_path.with_name("chunks.parquet")
+    if chunks_path.exists() and _segment_results_have_chunk_metadata(segment_results):
+        return chunks_path, "chunk_id", True
+
+    return sections_path, "section_ordinal", False
+
+
+def _group_segments_by_context_unit(
+    segment_results: SegmentCollection,
+    *,
+    key_column: str,
+) -> dict[Any, list[dict[str, Any]]]:
+    """Group segment results by chunk when available, else by canonical section."""
     logger.debug("Step 2: Processing segment results")
 
     segment_ids = segment_results.ids[0]
@@ -1008,8 +1074,7 @@ def _group_segments_by_section(
         segment_results.metadatas[0] if segment_results.metadatas else None
     )
 
-    # Group segments by section_ordinal
-    sections_to_segments: dict[int, list[dict[str, Any]]] = {}
+    sections_to_segments: dict[Any, list[dict[str, Any]]] = {}
 
     for i, seg_id in enumerate(segment_ids):
         metadata = (
@@ -1018,9 +1083,9 @@ def _group_segments_by_section(
             else {}
         )
 
-        section_ordinal = metadata.get("section_ordinal")
-        if section_ordinal is None:
-            logger.warning(f"Segment {seg_id} missing section_ordinal in metadata")
+        group_key = metadata.get(key_column)
+        if group_key is None:
+            logger.warning(f"Segment {seg_id} missing {key_column} in metadata")
             continue
 
         segment_data = {
@@ -1030,33 +1095,35 @@ def _group_segments_by_section(
             "segment_position": metadata.get("segment_position", 0),
             "section_heading": metadata.get("section_heading", ""),
             "section_level": metadata.get("section_level", 1),
+            "chunk_id": metadata.get("chunk_id"),
+            "chunk_ordinal": metadata.get("chunk_ordinal"),
         }
 
-        # Group by section
-        if section_ordinal not in sections_to_segments:
-            sections_to_segments[section_ordinal] = []
-        sections_to_segments[section_ordinal].append(segment_data)
+        if group_key not in sections_to_segments:
+            sections_to_segments[group_key] = []
+        sections_to_segments[group_key].append(segment_data)
 
     unique_sections = len(sections_to_segments)
-    logger.info(f"Grouped segments into {unique_sections} unique sections")
+    logger.info(f"Grouped segments into {unique_sections} unique retrieval units")
 
     return sections_to_segments
 
 
-def _load_section_data(
-    sections_path: Path, sections_to_segments: dict[int, list[dict[str, Any]]]
-) -> dict[int, dict[str, Any]]:
-    """Load and validate section data from parquet file."""
-    logger.debug("Step 3: Loading sections data from parquet")
+def _load_context_unit_data(
+    sections_path: Path,
+    sections_to_segments: dict[Any, list[dict[str, Any]]],
+    *,
+    key_column: str,
+) -> dict[Any, dict[str, Any]]:
+    """Load and validate chunk or section context data from parquet."""
+    logger.debug("Step 3: Loading retrieval context data from parquet")
 
     try:
-        # Load sections DataFrame
         sections_df = pl.read_parquet(sections_path)
-        logger.debug(f"Loaded {len(sections_df)} sections from parquet")
+        logger.debug(f"Loaded {len(sections_df)} rows from parquet")
 
-        # Validate required columns exist
         required_columns = {
-            "section_ordinal",
+            key_column,
             "heading_text",
             "body_text",
             "heading_level",
@@ -1064,49 +1131,57 @@ def _load_section_data(
         missing_columns = required_columns - set(sections_df.columns)
         if missing_columns:
             logger.error(
-                f"Sections parquet missing required columns: {missing_columns}"
+                f"Retrieval parquet missing required columns: {missing_columns}"
             )
             raise ValueError(
-                f"Sections parquet missing required columns: {missing_columns}"
+                f"Retrieval parquet missing required columns: {missing_columns}"
             )
 
-        # Filter to only sections we have results for
         section_ordinals = list(sections_to_segments.keys())
         filtered_sections_df = sections_df.filter(
-            pl.col("section_ordinal").is_in(section_ordinals)
+            pl.col(key_column).is_in(section_ordinals)
         )
 
-        logger.debug(f"Filtered to {len(filtered_sections_df)} matching sections")
+        logger.debug(f"Filtered to {len(filtered_sections_df)} matching rows")
 
-        # Convert to dictionary for easier lookup
         sections_dict = {}
         for row in filtered_sections_df.to_dicts():
-            sections_dict[row["section_ordinal"]] = row
+            sections_dict[row[key_column]] = row
 
         return sections_dict
 
     except Exception as e:
-        logger.error(f"Failed to load sections parquet: {str(e)}")
-        raise ValueError(f"Failed to load sections parquet: {str(e)}") from e
+        logger.error(f"Failed to load retrieval parquet: {str(e)}")
+        raise ValueError(f"Failed to load retrieval parquet: {str(e)}") from e
 
 
 def _build_section_results(
-    sections_to_segments: dict[int, list[dict[str, Any]]],
-    sections_dict: dict[int, dict[str, Any]],
+    sections_to_segments: dict[Any, list[dict[str, Any]]],
+    sections_dict: dict[Any, dict[str, Any]],
+    *,
+    key_column: str,
+    using_chunks: bool,
 ) -> list[SectionResult]:
-    """Build final section results with relevance scores and matching segments."""
-    logger.debug("Step 4: Building section-level results")
+    """Build final retrieval results with relevance scores and matching segments."""
+    logger.debug("Step 4: Building context-level results")
 
     section_results = []
 
     for section_ordinal, segments in sections_to_segments.items():
-        # Get section data
         section_data = sections_dict.get(section_ordinal)
         if not section_data:
             logger.warning(
-                f"Section ordinal {section_ordinal} not found in parquet data"
+                f"Retrieval unit {section_ordinal} not found in parquet data"
             )
             continue
+
+        section_identifier = (
+            section_data.get("chunk_id")
+            if using_chunks
+            else section_data.get("section_id", str(section_ordinal))
+        )
+        if section_identifier is None:
+            section_identifier = str(section_ordinal)
 
         # Calculate relevance score (best segment distance)
         best_distance = min(seg["distance"] for seg in segments)
@@ -1128,7 +1203,7 @@ def _build_section_results(
         ]
 
         section_result = SectionResult(
-            section_id=section_data.get("section_id", str(section_ordinal)),
+            section_id=str(section_identifier),
             heading_text=section_data["heading_text"],
             body_text=section_data["body_text"],
             heading_level=section_data["heading_level"],
@@ -1136,6 +1211,22 @@ def _build_section_results(
             matching_segments=matching_segments,
             relevance_score=best_distance,
             segment_count=len(segments),
+            context_path=section_data.get("context_path"),
+            chunk_id=section_data.get("chunk_id") if key_column == "chunk_id" else None,
+            chunk_ordinal=section_data.get("chunk_ordinal")
+            if key_column == "chunk_id"
+            else None,
+            source_kind=section_data.get("source_kind")
+            if key_column == "chunk_id"
+            else None,
+            region_role=section_data.get("region_role")
+            if key_column == "chunk_id"
+            else None,
+            retrieval_priority=(
+                section_data.get("retrieval_priority")
+                if key_column == "chunk_id"
+                else None
+            ),
         )
 
         section_results.append(section_result)
@@ -1143,5 +1234,5 @@ def _build_section_results(
     # Sort sections by relevance score (best first)
     section_results.sort(key=lambda x: x.relevance_score)
 
-    logger.info(f"Returning {len(section_results)} sections with context")
+    logger.info(f"Returning {len(section_results)} retrieval units with context")
     return section_results

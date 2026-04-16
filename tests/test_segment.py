@@ -1,17 +1,25 @@
 """Tests for legiscope.segment module."""
 
+from pathlib import Path
+
+import legiscope.segment as segment_mod
 import polars as pl
 import pytest
 
 from legiscope.models import CodeRef, JurisdictionRef
+from legiscope.parse.convert import text2md
+from legiscope.parse.headings import HeadingLevel, HeadingStructure
 from legiscope.segment import (
+    _derive_chunk_token_limit,
     _estimate_token_count,
     _split_by_token_budget,
     add_parent_relationships,
+    build_chunks_df,
     create_segments_df,
     divide_into_sections,
     enrich_sections,
     get_section_text,
+    segment_legal_code,
     segment_text,
 )
 
@@ -418,6 +426,302 @@ Content 3."""
         assert parents[1] == 0  # First H2 parent is H1
         assert parents[2] == 0  # Second H2 parent is H1
         assert parents[3] == 0  # Third H2 parent is H1
+
+
+class TestSegmentLegalCodeCanonicalFiltering:
+    """Regression tests for filtering canonical sections by parse-region metadata."""
+
+    @staticmethod
+    def _write_parse_outputs(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        input_text: str,
+        structure: HeadingStructure,
+    ) -> CodeRef:
+        """Generate code.md/headings/regions artifacts in a temporary laws dir."""
+        base_laws_dir = tmp_path / "laws"
+        monkeypatch.setattr("legiscope.models.laws_dir", lambda: base_laws_dir)
+
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="PA", locality="TestCity"),
+            code_slug="municipal-code",
+        )
+        code_dir = code_ref.full_data_dir
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        input_path = code_dir / "code.txt"
+        input_path.write_text(input_text, encoding="utf-8")
+        text2md(
+            structure,
+            str(input_path),
+            str(code_dir / "code.md"),
+            "PA",
+            "TestCity",
+        )
+        return code_ref
+
+    def test_segment_legal_code_excludes_toc_sections_using_regions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """regions.parquet should exclude TOC headings from canonical sections."""
+        input_text = """ARTICLE I GUIDE TO THE CHARTER
+
+1-100 Purpose
+
+1-200 Definitions
+
+PREAMBLE
+This charter establishes the basic organization of city government under state law.
+
+ARTICLE I
+
+1-100. Purpose.
+
+This section sets out the basic powers of the city.
+
+ARTICLE II
+
+2-100. Council.
+
+The council exercises legislative authority through local ordinances."""
+
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I GUIDE TO THE CHARTER",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="##",
+                    example_heading="1-100. Purpose.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=2,
+            file_sample_size=10,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        code_ref = TestSegmentLegalCodeCanonicalFiltering._write_parse_outputs(
+            tmp_path,
+            monkeypatch,
+            input_text,
+            structure,
+        )
+        sections_df, _ = segment_legal_code(code_ref, embedding_model_token_limit=128)
+
+        assert sections_df["heading_text"].to_list() == [
+            "# ARTICLE I",
+            "## 1-100. Purpose.",
+            "# ARTICLE II",
+            "## 2-100. Council.",
+        ]
+
+    def test_segment_legal_code_writes_chunks_with_legal_intro_regions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """chunks.parquet should retain legal intro material but not TOC blocks."""
+        input_text = """TABLE OF CONTENTS
+
+ARTICLE I GUIDE TO THE CHARTER
+
+1-100 Purpose
+
+PREAMBLE
+This charter establishes the basic organization of city government under state law.
+
+ARTICLE I
+
+1-100. Purpose.
+
+This section sets out the basic powers of the city."""
+
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I GUIDE TO THE CHARTER",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="##",
+                    example_heading="1-100. Purpose.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=2,
+            file_sample_size=10,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        code_ref = TestSegmentLegalCodeCanonicalFiltering._write_parse_outputs(
+            tmp_path,
+            monkeypatch,
+            input_text,
+            structure,
+        )
+        _, segments_df = segment_legal_code(
+            code_ref,
+            embedding_model_token_limit=128,
+            llm_context_limit=32768,
+        )
+
+        chunks_path = code_ref.full_data_dir / "chunks.parquet"
+        assert chunks_path.exists()
+
+        chunks_df = pl.read_parquet(chunks_path)
+        assert "chunk_id" in chunks_df.columns
+        assert "region_role" in chunks_df.columns
+        assert "source_kind" in chunks_df.columns
+        assert "chunk_id" in segments_df.columns
+
+        intro_chunks = chunks_df.filter(pl.col("region_role") == "legal_intro")
+        assert len(intro_chunks) == 1
+        assert (
+            "This charter establishes the basic organization"
+            in intro_chunks["body_text"][0]
+        )
+
+        all_chunk_text = "\n".join(chunks_df["body_text"].fill_null("").to_list())
+        assert "GUIDE TO THE CHARTER" not in all_chunk_text
+
+
+class TestBuildChunks:
+    """Unit tests for derived chunk construction."""
+
+    def test_chunk_budget_depends_only_on_llm_context_limit(self, monkeypatch):
+        """Derived chunk size should be independent of embedding segment limits."""
+        monkeypatch.setattr(
+            segment_mod,
+            "DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT",
+            20000,
+        )
+        assert _derive_chunk_token_limit(32768) == 4915
+
+    def test_build_chunks_splits_oversized_section_body(self, tmp_path: Path):
+        """Oversized section bodies should split into multiple derived chunks."""
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="PA", locality="TestCity"),
+            code_slug="municipal-code",
+        )
+        code_dir = tmp_path / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        long_body = " ".join(["word"] * 1800)
+        markdown_text = f"""# ARTICLE I
+
+## 1-100. Purpose.
+
+{long_body}
+
+## 1-200. Scope.
+
+Short supporting text."""
+
+        sections_df = divide_into_sections(markdown_text)
+        sections_df = add_parent_relationships(sections_df)
+        sections_df = enrich_sections(sections_df, code_ref)
+
+        chunks_df = build_chunks_df(
+            sections_df,
+            code_ref,
+            markdown_text,
+            code_dir,
+            llm_context_limit=3000,
+        )
+
+        split_chunks = chunks_df.filter(pl.col("source_kind") == "section_body_split")
+        assert len(split_chunks) >= 2
+        assert split_chunks["chunk_count"].min() >= 2
+        assert split_chunks["chunk_id"].n_unique() == len(split_chunks)
+
+    def test_segment_legal_code_falls_back_to_code_start_without_regions(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """When regions.parquet is absent, code_start.output_line should gate sections."""
+        input_text = """ARTICLE I GUIDE TO THE CHARTER
+
+1-100 Purpose
+
+1-200 Definitions
+
+PREAMBLE
+This charter establishes the basic organization of city government under state law.
+
+ARTICLE I
+
+1-100. Purpose.
+
+This section sets out the basic powers of the city.
+
+ARTICLE II
+
+2-100. Council.
+
+The council exercises legislative authority through local ordinances."""
+
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I GUIDE TO THE CHARTER",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="##",
+                    example_heading="1-100. Purpose.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=2,
+            file_sample_size=10,
+            code_start_element_id=4,
+            code_start_line=10,
+        )
+
+        code_ref = TestSegmentLegalCodeCanonicalFiltering._write_parse_outputs(
+            tmp_path,
+            monkeypatch,
+            input_text,
+            structure,
+        )
+        (code_ref.full_data_dir / "regions.parquet").unlink()
+
+        sections_df, _ = segment_legal_code(code_ref, embedding_model_token_limit=128)
+
+        assert sections_df["heading_text"].to_list() == [
+            "# ARTICLE I",
+            "## 1-100. Purpose.",
+            "# ARTICLE II",
+            "## 2-100. Council.",
+        ]
 
     def test_level_jumps(self):
         """Test handling of level jumps (H1 -> H3 -> H2)."""

@@ -41,11 +41,13 @@ def main() -> None:
 
     params = load_params(code_ref.full_data_dir)
     seg_params = params.get("segmentation", {})
-    token_limit = seg_params.get("token_limit", 1024)
+    embedding_model_token_limit = seg_params.get("embedding_model_token_limit", 1024)
+    llm_context_limit = seg_params.get("llm_context_limit", 32768)
 
     sections_df, segments_df = segment_legal_code(
         code_ref,
-        token_limit=token_limit,
+        embedding_model_token_limit=embedding_model_token_limit,
+        llm_context_limit=llm_context_limit,
     )
 
     logger.info(
