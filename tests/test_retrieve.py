@@ -758,6 +758,73 @@ class TestSectionRetrievalConfigBasics:
         assert results.sections[0].chunk_id == "chunk-0"
         assert results.sections[0].body_text == "Chunk-scoped content only."
 
+    def test_retrieve_sections_lexically_reranks_exact_anchor_matches(self, tmp_path):
+        """Hybrid retrieval should boost the section that contains exact legal anchors."""
+        from unittest.mock import Mock, patch
+
+        import polars as pl
+        from chromadb.api.models.Collection import Collection
+
+        from legiscope.retrieve import SectionRetrievalSettings, retrieve_sections
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "section_id": ["s0", "s1"],
+                "heading_text": ["# General zoning", "# Drug paraphernalia"],
+                "body_text": [
+                    "Accessory-use regulations for commercial zoning districts.",
+                    "It is unlawful to offer for sale or sell drug paraphernalia.",
+                ],
+                "heading_level": [1, 1],
+                "parent_id": [None, None],
+                "context_path": ["Title 14 > Zoning", "Title 9 > Chapter 9-600"],
+            }
+        ).write_parquet(tmp_path / "sections.parquet")
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["0", "1"]],
+            "documents": [["seg zoning", "seg paraphernalia"]],
+            "metadatas": [
+                [
+                    {
+                        "section_ordinal": 0,
+                        "segment_position": 0,
+                        "section_heading": "# General zoning",
+                        "section_level": 1,
+                    },
+                    {
+                        "section_ordinal": 1,
+                        "segment_position": 0,
+                        "section_heading": "# Drug paraphernalia",
+                        "section_level": 1,
+                    },
+                ]
+            ],
+            "distances": [[0.05, 0.2]],
+        }
+
+        settings = SectionRetrievalSettings(
+            n_results=1,
+            lexical_query_text="drug paraphernalia offer for sale",
+            anchor_terms=["drug paraphernalia", "offer for sale"],
+        )
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_sections(
+                    mock_collection,
+                    str(tmp_path / "sections.parquet"),
+                    "semantic query text",
+                    settings,
+                )
+
+        assert results.sections[0].section_id == "s1"
+        assert mock_collection.query.call_args.kwargs["n_results"] == 3
+
 
 class TestGetJurisdictionStats:
     """Test the get_jurisdiction_stats function."""
@@ -892,8 +959,8 @@ class TestFilterSections:
                 assert result.sections[0].llm_assessed is True
                 assert result.filtering_metadata.filtered_count == 1
 
-    def test_filter_sections_requires_relevance_score_threshold(self):
-        """Sections below the graded relevance threshold should be filtered out."""
+    def test_filter_sections_keeps_relevant_sections_when_confidence_clears_threshold(self):
+        """A high-confidence relevant section should survive even if the score is slightly lower."""
         from unittest.mock import Mock, patch
 
         from legiscope.retrieve import (
@@ -938,11 +1005,11 @@ class TestFilterSections:
                     mock_client, input_results, "query", confidence_threshold=0.7
                 )
 
-                assert len(result.sections) == 0
-                assert result.filtering_metadata.filtered_count == 0
+                assert len(result.sections) == 1
+                assert result.filtering_metadata.filtered_count == 1
 
-    def test_filter_sections_requires_confidence_threshold(self):
-        """Sections below the confidence threshold should be filtered out."""
+    def test_filter_sections_keeps_relevant_sections_when_score_clears_threshold(self):
+        """A high-score relevant section should survive even if confidence is lower."""
         from unittest.mock import Mock, patch
 
         from legiscope.retrieve import (
@@ -987,8 +1054,80 @@ class TestFilterSections:
                     mock_client, input_results, "query", confidence_threshold=0.7
                 )
 
-                assert len(result.sections) == 0
-                assert result.filtering_metadata.filtered_count == 0
+                assert len(result.sections) == 1
+                assert result.filtering_metadata.filtered_count == 1
+
+    def test_filter_sections_backfills_relevant_sections_when_scores_are_borderline(self):
+        """Soft filtering should retain a small evidence set when all relevant scores are borderline."""
+        from unittest.mock import Mock, patch
+
+        from legiscope.retrieve import (
+            QueryInfo,
+            RelevanceAssessment,
+            SectionCollection,
+            SectionResult,
+            filter_sections,
+        )
+
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="H1",
+                body_text="B1",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.1,
+                segment_count=1,
+            ),
+            SectionResult(
+                section_id="s2",
+                heading_text="H2",
+                body_text="B2",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.2,
+                segment_count=1,
+            ),
+        ]
+
+        input_results = SectionCollection(
+            sections=sections, query_info=QueryInfo(original_query="query")
+        )
+
+        mock_assessments = [
+            RelevanceAssessment(
+                is_relevant=True,
+                relevance_score=0.64,
+                confidence=0.62,
+                reasoning="Useful but not confidently above threshold",
+            ),
+            RelevanceAssessment(
+                is_relevant=True,
+                relevance_score=0.61,
+                confidence=0.6,
+                reasoning="Also useful but borderline",
+            ),
+        ]
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=mock_assessments):
+            with (
+                patch("pathlib.Path.mkdir"),
+                patch("legiscope.retrieve.pl.DataFrame.write_csv"),
+            ):
+                mock_client = Mock(spec=Instructor)
+                result = filter_sections(
+                    mock_client, input_results, "query", confidence_threshold=0.7
+                )
+
+                assert len(result.sections) == 2
+                assert result.filtering_metadata.filtered_count == 2
+                keep_reasons = {
+                    row["section_id"]: row["keep_reason"]
+                    for row in result.filtering_metadata.assessments
+                }
+                assert keep_reasons == {"s1": "backfill", "s2": "backfill"}
 
     def test_filter_sections_sorting(self):
         """Test that results are sorted by LLM relevance score."""

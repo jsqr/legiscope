@@ -186,11 +186,20 @@ run_dvc_exp_push() {
     local repo_dir="$1"
     local push_cache="${DVC_PUSH_CACHE:-0}"
 
-    if [[ "${push_cache,,}" == "0" || "${push_cache,,}" == "false" || "${push_cache,,}" == "no" ]]; then
-        dvc -C "$repo_dir" exp push origin --no-cache
-    else
-        dvc -C "$repo_dir" exp push origin
+    if [[ ! -d "$repo_dir/.git" ]]; then
+        echo "ERROR: Cannot push DVC experiment; repo_dir is not a git worktree: $repo_dir" >&2
+        return 1
     fi
+
+    pushd "$repo_dir" >/dev/null || return 1
+    if [[ "${push_cache,,}" == "0" || "${push_cache,,}" == "false" || "${push_cache,,}" == "no" ]]; then
+        dvc exp push origin --no-cache
+    else
+        dvc exp push origin
+    fi
+    local status=$?
+    popd >/dev/null || true
+    return "$status"
 }
 
 remove_shared_code_artifacts() {

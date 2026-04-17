@@ -231,14 +231,15 @@ def melt_monqcle_to_long(
     Transform wide-format MonQcle data to long format for joining with query results.
 
     The MonQcle data has variables as columns (e.g., dp_law, dp_type, etc.).
-    This melts it to long format with columns: variable_name, ground_truth
+    This melts it to long format with columns: variable_name, ground_truth,
+    ground_truth_citation
 
     Args:
         monqcle_row: Single-row DataFrame from MonQcle
         variable_names: List of variable names to extract (from queries file)
 
     Returns:
-        DataFrame with variable_name and ground_truth columns
+        DataFrame with variable_name, ground_truth, and ground_truth_citation columns
     """
     # Get the columns that exist in the MonQcle data
     available_cols = set(monqcle_row.columns)
@@ -259,12 +260,23 @@ def melt_monqcle_to_long(
 
     for var_name in valid_variables:
         value = row_dict.get(var_name, None)
+        citation_value = row_dict.get(f"_citations_{var_name}", None)
         # Convert MonQcle's "-" placeholder to None/empty
         if value == "-" or value is None:
             ground_truth = ""
         else:
             ground_truth = str(value)
-        records.append({"variable_name": var_name, "ground_truth": ground_truth})
+        if citation_value == "-" or citation_value is None:
+            ground_truth_citation = ""
+        else:
+            ground_truth_citation = str(citation_value)
+        records.append(
+            {
+                "variable_name": var_name,
+                "ground_truth": ground_truth,
+                "ground_truth_citation": ground_truth_citation,
+            }
+        )
 
     result = pl.DataFrame(records)
     logger.info(f"Melted {len(result)} variables to long format")
@@ -313,16 +325,43 @@ def expand_combined_variables(
 
     for var_name in combined_vars:
         parts: list[str] = []
+        citation_parts: list[str] = []
         for col, label in _COMBINED_VARIABLE_SOURCES[var_name]:
             val = row_dict.get(col)
             val_str = str(val) if val not in [None, "-"] else ""
             parts.append(f"{label}: {val_str}")
+            citation_col = f"_citations_{col}"
+            citation_val = row_dict.get(citation_col)
+            citation_str = (
+                str(citation_val) if citation_val not in [None, "-"] else ""
+            )
+            if citation_str:
+                citation_parts.append(f"{label}: {citation_str}")
         combined_truth = "\n".join(parts).strip()
+        combined_citation = "\n".join(citation_parts).strip()
         new_cols.append(pl.lit(combined_truth).alias(var_name))
+        new_cols.append(pl.lit(combined_citation).alias(f"_citations_{var_name}"))
 
     monqcle_row = monqcle_row.with_columns(new_cols)
     logger.info(f"Added combined columns to MonQcle data: {combined_vars}")
     return monqcle_row
+
+
+def prioritize_ground_truth_matches(results_df: pl.DataFrame) -> pl.DataFrame:
+    """Keep rows with matched ground truth first while preserving query order within groups."""
+    required_columns = {"ground_truth_available", "benchmark_row_id"}
+    missing_columns = required_columns.difference(results_df.columns)
+    if missing_columns:
+        raise ValueError(
+            "Results dataframe is missing required ordering columns: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    return results_df.sort(
+        by=["ground_truth_available", "benchmark_row_id"],
+        descending=[True, False],
+        nulls_last=True,
+    )
 
 
 def jurisdiction_id_to_monqcle_name(jurisdiction_id: str) -> str:

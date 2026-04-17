@@ -15,6 +15,7 @@ from coep.src.eval import (
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
+    prioritize_ground_truth_matches,
 )
 
 
@@ -103,13 +104,29 @@ class TestMonqcleMelting:
         assert len(result) == 2
         assert result.schema["variable_name"] == pl.String
         assert result.schema["ground_truth"] == pl.String
+        assert result.schema["ground_truth_citation"] == pl.String
 
         # Check content
         var1_row = result.filter(pl.col("variable_name") == "var1")
         assert var1_row["ground_truth"][0] == "answer1"
+        assert var1_row["ground_truth_citation"][0] == ""
 
         var2_row = result.filter(pl.col("variable_name") == "var2")
         assert var2_row["ground_truth"][0] == "answer2"
+        assert var2_row["ground_truth_citation"][0] == ""
+
+    def test_melt_includes_ground_truth_citations_when_present(self):
+        """Citation companion columns should be propagated into long-format output."""
+        row = pl.DataFrame(
+            {
+                "var1": ["answer1"],
+                "_citations_var1": ["Section 1"],
+            }
+        )
+
+        result = melt_monqcle_to_long(row, ["var1"])
+
+        assert result["ground_truth_citation"][0] == "Section 1"
 
     def test_melt_null_values(self):
         """Test handling of null/dash values."""
@@ -119,6 +136,14 @@ class TestMonqcleMelting:
 
         assert result.filter(pl.col("variable_name") == "var1")["ground_truth"][0] == ""
         assert result.filter(pl.col("variable_name") == "var2")["ground_truth"][0] == ""
+        assert (
+            result.filter(pl.col("variable_name") == "var1")["ground_truth_citation"][0]
+            == ""
+        )
+        assert (
+            result.filter(pl.col("variable_name") == "var2")["ground_truth_citation"][0]
+            == ""
+        )
 
     def test_melt_missing_columns(self):
         """Test behavior when requested variables are missing from data."""
@@ -153,12 +178,31 @@ class TestCombinedVariableExpansion:
 
         assert "dp_collected_combined" in result.columns
         assert "dp_state_fed_combined" in result.columns
+        assert "_citations_dp_collected_combined" in result.columns
+        assert "_citations_dp_state_fed_combined" in result.columns
         assert (
             result["dp_collected_combined"][0]
             == "Collected: Yes\nValid/Imp: By officer"
         )
         assert result["dp_state_fed_combined"][0] == (
             "References state/federal law: Yes\nCitation: 21 U.S.C. 863"
+        )
+
+    def test_expand_combined_variables_propagates_source_citations(self):
+        """Combined variables should carry merged citation provenance when available."""
+        row = pl.DataFrame(
+            {
+                "dp_collected": ["Yes"],
+                "dp_valid_imp": ["By officer"],
+                "_citations_dp_collected": ["Header note"],
+                "_citations_dp_valid_imp": ["Edition footer"],
+            }
+        )
+
+        result = expand_combined_variables(row, ["dp_collected_combined"])
+
+        assert result["_citations_dp_collected_combined"][0] == (
+            "Collected: Header note\nValid/Imp: Edition footer"
         )
 
     def test_expand_handles_dash_and_none_values(self):
@@ -181,6 +225,29 @@ class TestCombinedVariableExpansion:
         result = expand_combined_variables(row, ["var1"])
 
         assert result.equals(row)
+
+
+class TestBenchmarkResultOrdering:
+    """Test ordering of benchmark result rows after the left join."""
+
+    def test_prioritize_ground_truth_matches_places_scored_rows_first(self):
+        results = pl.DataFrame(
+            {
+                "benchmark_row_id": [2, 0, 3, 1],
+                "variable_name": ["var_missing_1", "var_scored_1", "var_missing_2", "var_scored_2"],
+                "ground_truth_available": [False, True, False, True],
+            }
+        )
+
+        ordered = prioritize_ground_truth_matches(results)
+
+        assert ordered["variable_name"].to_list() == [
+            "var_scored_1",
+            "var_scored_2",
+            "var_missing_1",
+            "var_missing_2",
+        ]
+        assert ordered["benchmark_row_id"].to_list() == [0, 1, 2, 3]
 
 
 class TestEvaluator:

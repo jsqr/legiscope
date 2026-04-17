@@ -95,6 +95,39 @@ _RETRIEVAL_OVERRIDE_BY_VARIABLE = {
 }
 
 
+_EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE = {
+    "dp_exempt_sygen_activity": ["Syringes, generally"],
+    "dp_exempt_sy_ssp_activity": [
+        "Syringes from syringe services, harm reduction programs, or supervised use sites"
+    ],
+    "dp_exempt_can_activity": [
+        "Paraphernalia for consumption of cannabis, generally",
+        "Paraphernalia for consumption of cannabis, generally or medical use",
+    ],
+    "dp_exempt_DCEgen_activity": ["Drug codeing/testing equipment, generally"],
+    "dp_exempt_fentDCE_activity": [
+        "Drug codeing/testing equipment for fentanyl or fentanyl analogues"
+    ],
+    "dp_exempt_xyDCE_activity": ["Drug codeing/testing equipment for xylazine"],
+    "dp_exempt_DCE_ssp_activity": [
+        "Drug codeing equipment, in the context of syringe services, harm reduction programs, or supervised use sites"
+    ],
+    "dp_exempt_fentDCE_ssp_activity": [
+        "Fentanyl codeing/testing equipment specifically, in the context of syringe services, harm reduction programs, or supervised use sites"
+    ],
+    "dp_exempt_xyDCE_ssp_activity": [
+        "Xylazine codeing/testing equipment specifically, in the context syringe services, harm reduction programs, or supervised use sites"
+    ],
+    "dp_exempt_SEgen_activity": ["Pipes/smoking equipment, generally"],
+    "dp_exempt_SE_ssp_activity": [
+        "Pipes/smoking equipment, in the context syringe services, harm reduction programs, or supervised use sites"
+    ],
+    "dp_exempt_unspec_ssp_activity": [
+        "Unspecified or other paraphernalia, in the context of syringe services, harm reduction programs, or supervised use sites"
+    ],
+}
+
+
 _FAMILY_BY_VARIABLE = {
     "dp_law": "existence_scope",
     "dp_enacted": "date_enactment",
@@ -550,9 +583,52 @@ def _merge_guidance(
 def _build_query_context(request: RetrievalGuidanceRequest) -> str:
     """Build concise legal-scope context for ambiguous subquestions."""
     prepend_text = (request.metadata.get("prepend_text") or "").strip()
+    context_parts = []
     if prepend_text:
-        return prepend_text.rstrip(". ") + "."
-    return _DEFAULT_QUERY_CONTEXT
+        context_parts.append(prepend_text.rstrip(". ") + ".")
+    else:
+        context_parts.append(_DEFAULT_QUERY_CONTEXT)
+
+    prior_answers = request.metadata.get("prior_answers") or {}
+    if (
+        isinstance(prior_answers, dict)
+        and _FAMILY_BY_VARIABLE.get(request.variable_name or "")
+        == "exemption_activity_scope"
+    ):
+        exemption_answer = prior_answers.get("dp_exemption", {})
+        activity_answer = prior_answers.get("dp_activity", {})
+        exemption_short_answer = (
+            exemption_answer.get("short_answer")
+            if isinstance(exemption_answer, dict)
+            else None
+        )
+        activity_short_answer = (
+            activity_answer.get("short_answer")
+            if isinstance(activity_answer, dict)
+            else None
+        )
+
+        if exemption_short_answer:
+            context_parts.append(
+                f"Previously coded exemption answer: {exemption_short_answer}."
+            )
+        if activity_short_answer:
+            context_parts.append(
+                f"Previously coded prohibited activities: {activity_short_answer}."
+            )
+
+        expected_labels = _EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE.get(
+            request.variable_name or "",
+            [],
+        )
+        if expected_labels:
+            context_parts.append(
+                "This subquestion is only in scope if the earlier exemption answer included: "
+                + " OR ".join(expected_labels)
+                + "."
+            )
+
+    return " ".join(context_parts)
 
 
 def _build_retrieval_instructions(

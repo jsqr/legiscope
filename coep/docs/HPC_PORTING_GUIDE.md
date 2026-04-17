@@ -1316,7 +1316,7 @@ bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh
 # On your local machine: sync the active query CSV, MonQcle CSV, and DOCX files.
 ./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx
 
-# On your local machine: pull benchmark CSV + metrics back from BigPurple.
+# On your local machine: pull the latest timestamped benchmark CSV + metrics back from BigPurple.
 ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh --netid <netid> --jurisdiction PA-Philadelphia --open
 ```
 
@@ -1657,7 +1657,7 @@ After all 50 SLURM jobs finish:
 | **BigPurple: Aggregate results** | `python coep/scripts/HPC_scripts/aggregate_results.py --docx-dir /gpfs/data/cerdalab/LegalAI/docx_sources --check-slurm` |
 | **BigPurple: Rebuild shared index** | `bash coep/scripts/HPC_scripts/rebuild_index.sh --clean` |
 | **Local: Sync inputs to HPC** | `./coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx` |
-| **Local: Pull one jurisdiction's benchmark CSV** | `./coep/scripts/HPC_scripts/pull_bigpurple_results.sh --netid <netid> --jurisdiction PA-Philadelphia --open` |
+| **Local: Pull one jurisdiction's latest timestamped benchmark CSV** | `./coep/scripts/HPC_scripts/pull_bigpurple_results.sh --netid <netid> --jurisdiction PA-Philadelphia --open` |
 
 ---
 

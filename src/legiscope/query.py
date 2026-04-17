@@ -509,6 +509,7 @@ def query_legal_documents(
     retrieval_results: SectionCollection,
     query: str,
     settings: QuerySettings,
+    query_metadata: dict[str, Any] | None = None,
     debug_dir: Path | None = None,
     query_index: int = 0,
     debug_timestamp: str | None = None,
@@ -635,13 +636,8 @@ def query_legal_documents(
                                 assessment.get("reasoning"),
                                 DEBUG_REASONING_LIMIT,
                             ),
-                            "kept": bool(
-                                assessment.get("is_relevant")
-                                and (assessment.get("relevance_score") or 0)
-                                >= settings.relevance_threshold
-                                and (assessment.get("confidence") or 0)
-                                >= settings.relevance_threshold
-                            ),
+                            "kept": bool(assessment.get("kept")),
+                            "keep_reason": assessment.get("keep_reason"),
                         }
                     )
 
@@ -694,7 +690,11 @@ def query_legal_documents(
 
     full_context = _prepare_legal_context(sections)
 
-    system_prompt, user_prompt = _build_legal_prompts(query, full_context)
+    system_prompt, user_prompt = _build_legal_prompts(
+        query,
+        full_context,
+        query_metadata=query_metadata,
+    )
 
     if debug_capture is not None:
         debug_capture["query"].update(
@@ -923,11 +923,19 @@ def run_queries(
     retrieval_debug_rows: list[dict[str, Any]] = []
     relevance_debug_rows: list[dict[str, Any]] = []
     query_debug_rows: list[dict[str, Any]] = []
+    prior_answers: dict[str, dict[str, Any]] = {}
     for i, query_input in enumerate(query_inputs):
         query_text = query_input.question.strip()
         if not query_text:
             logger.warning(f"Skipping empty query at index {i}")
             continue
+
+        effective_query_metadata = dict(query_input.metadata)
+        if prior_answers:
+            effective_query_metadata["prior_answers"] = {
+                variable_name: payload.copy()
+                for variable_name, payload in prior_answers.items()
+            }
 
         start_time = time.time()
         logger.info(
@@ -942,7 +950,7 @@ def run_queries(
             settings=settings,
             start_time=start_time,
             variable_name=query_input.variable_name,
-            query_metadata=query_input.metadata,
+            query_metadata=effective_query_metadata,
             debug_dir=settings.debug_dir,
             query_index=i,
         )
@@ -966,6 +974,17 @@ def run_queries(
             query_debug_rows.append(query_debug_row)
 
         results.append(result)
+
+        if query_input.variable_name and not str(result["short_answer"]).startswith(
+            "Error:"
+        ):
+            prior_answers[query_input.variable_name] = {
+                "short_answer": result["short_answer"],
+                "raw_short_answer": result.get("raw_short_answer")
+                or result["short_answer"],
+                "reasoning": result["reasoning"],
+                "citations": result["citations"],
+            }
 
         if "Error:" not in result["short_answer"]:
             logger.info(
@@ -1025,7 +1044,69 @@ def _prepare_legal_context(sections: list[SectionResult]) -> str:
     return "\n".join(context_sections)
 
 
-def _build_legal_prompts(query: str, full_context: str) -> tuple[str, str]:
+def _build_structured_answer_contract(
+    query_metadata: dict[str, Any] | None,
+) -> str | None:
+    """Build prompt instructions for structured benchmark-facing short answers."""
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return None
+
+    coding_instructions = str(metadata.get("coding_instructions") or "").strip()
+    prior_answers = metadata.get("prior_answers") or {}
+
+    lines = [
+        "The `short_answer` field is benchmark-facing and must satisfy the declared response contract exactly.",
+        f"Declared response options: {response_options}",
+        "Put explanation, caveats, and nuance in `reasoning`, not in `short_answer`.",
+    ]
+
+    if " AND/OR " in response_options:
+        lines.append(
+            "For multi-select fields, use only the declared option text, join selections with ` AND/OR `, and preserve the declared order."
+        )
+    elif response_options == "Yes, <citation> OR No":
+        lines.append(
+            "For this field, `short_answer` must be exactly `Yes, <citation>` or exactly `No`."
+        )
+    elif response_options == "Yes OR No":
+        lines.append(
+            "For this field, `short_answer` must be exactly `Yes` or exactly `No`."
+        )
+    elif _is_status_date_response_options(response_options):
+        lines.append(
+            "For this field, use the declared status label exactly and format any date as `MM/DD/YYYY`."
+        )
+    elif _is_scalar_date_response_options(response_options):
+        lines.append(
+            "For this field, `short_answer` must be either `MM/DD/YYYY` or `Unknown`."
+        )
+    elif " OR " in response_options:
+        lines.append(
+            "For this field, `short_answer` must be exactly one declared option and must not contain extra prose."
+        )
+
+    if coding_instructions:
+        lines.append("Apply these coding instructions exactly: " + coding_instructions)
+
+    if prior_answers:
+        lines.append("Prior structured answers for dependency context:")
+        for variable_name, payload in prior_answers.items():
+            if not isinstance(payload, dict):
+                continue
+            answer = payload.get("short_answer") or payload.get("raw_short_answer")
+            if answer:
+                lines.append(f"- {variable_name}: {answer}")
+
+    return "\n".join(lines)
+
+
+def _build_legal_prompts(
+    query: str,
+    full_context: str,
+    query_metadata: dict[str, Any] | None = None,
+) -> tuple[str, str]:
     """Build system and user prompts for legal query processing."""
     system_prompt = """You are a lawyer specializing in municipal law and regulations.
 Your task is to analyze the provided legal context and answer the user's question accurately.
@@ -1057,6 +1138,12 @@ Return your answer **as JSON only** with this exact structure:
 }
 
 Do not include any additional text outside the JSON object."""
+
+    structured_contract = _build_structured_answer_contract(query_metadata)
+    if structured_contract:
+        system_prompt = (
+            f"{system_prompt}\n\nStructured answer contract:\n{structured_contract}"
+        )
 
     user_prompt = f"""Please answer the following legal question based on the provided municipal code context:
 
@@ -1120,8 +1207,9 @@ def _build_relevance_debug_prompt(query: str, settings: QuerySettings) -> str:
             lines.append("Anchor terms: " + ", ".join(guidance.anchor_terms))
 
     lines.append(
-        "Thresholds: is_relevant must be true, relevance_score >= "
-        f"{settings.relevance_threshold:.2f}, confidence >= {settings.relevance_threshold:.2f}"
+        "Thresholds: keep when is_relevant is true and either relevance_score or confidence "
+        f"is at least {settings.relevance_threshold:.2f}; backfill preserves a small relevant "
+        "evidence set if the filter would otherwise collapse."
     )
 
     return "\n".join(lines)
@@ -1436,25 +1524,29 @@ def _normalize_multi_select_answer(answer: str, response_options: str) -> str:
     if not normalized_answer:
         return answer.strip()
 
-    exclusive_options = [
-        option
-        for option in options
-        if _normalize_option_text(option) in {"none", "not specified"}
-    ]
-    for option in exclusive_options:
-        normalized_option = _normalize_option_text(option)
-        if normalized_option and re.search(
-            rf"\b{re.escape(normalized_option)}\b", normalized_answer
-        ):
-            return option
-
+    remainder = f" {normalized_answer} "
     matches = []
     for option in options:
         normalized_option = _normalize_option_text(option)
-        if not normalized_option or normalized_option in {"none", "not specified"}:
+        if not normalized_option:
             continue
-        if normalized_option in normalized_answer:
+        pattern = rf"(?<![a-z0-9]){re.escape(normalized_option)}(?![a-z0-9])"
+        if re.search(pattern, remainder):
             matches.append(option)
+            remainder = re.sub(pattern, " ", remainder)
+
+    remainder = re.sub(r"\b(?:and|or)\b", " ", remainder)
+    remainder = re.sub(r"\s+", " ", remainder).strip()
+    if remainder:
+        return answer.strip()
+
+    exclusive_options = [
+        option
+        for option in matches
+        if _normalize_option_text(option) in {"none", "not specified"}
+    ]
+    if exclusive_options:
+        return exclusive_options[0]
 
     if matches:
         return " AND/OR ".join(matches)
@@ -1474,7 +1566,7 @@ def _normalize_single_choice_answer(answer: str, response_options: str) -> str:
         option
         for option in options
         if _normalize_option_text(option)
-        and _normalize_option_text(option) in normalized_answer
+        and normalized_answer == _normalize_option_text(option)
     ]
     if len(matches) == 1:
         return matches[0]
@@ -1556,6 +1648,7 @@ def _process_single_query_with_error_handling(
         # llm is guaranteed to be set by BatchQuerySettings.__post_init__
         llm = cast(LLMConfig, settings.llm)
         debug_timestamp = settings.debug_timestamp or _debug_timestamp()
+        metadata = query_metadata or {}
         retrieval_guidance = None
         base_debug_row = _base_debug_row(
             query,
@@ -1574,7 +1667,7 @@ def _process_single_query_with_error_handling(
             request = RetrievalGuidanceRequest(
                 query=query,
                 variable_name=variable_name,
-                metadata=query_metadata or {},
+                metadata=metadata,
             )
             retrieval_guidance = settings.retrieval_guidance_provider(request)
 
@@ -1639,6 +1732,8 @@ def _process_single_query_with_error_handling(
             use_hyde=settings.use_hyde,
             hyde_client=llm.client if settings.use_hyde else None,
             hyde_model=llm.model,
+            lexical_query_text=str(metadata.get("query_text") or query),
+            anchor_terms=anchor_terms,
         )
 
         retrieval_results = retrieve_sections(
@@ -1683,19 +1778,27 @@ def _process_single_query_with_error_handling(
             retrieval_results,
             completion_query,
             query_settings,
+            query_metadata=metadata,
             debug_dir=debug_dir,
             query_index=query_index,
             debug_timestamp=debug_timestamp,
             debug_capture=debug_capture,
         )
 
-        normalized_short_answer = _normalize_structured_short_answer(
-            query_response.short_answer,
-            variable_name,
-            query_metadata,
+        raw_short_answer = query_response.short_answer
+        has_structured_response_options = bool(
+            _clean_response_options(metadata.get("response_options"))
         )
-        if normalized_short_answer != query_response.short_answer:
-            query_debug_row["raw_short_answer"] = query_response.short_answer
+        normalized_short_answer = _normalize_structured_short_answer(
+            raw_short_answer,
+            variable_name,
+            metadata,
+        )
+        if has_structured_response_options:
+            query_debug_row["raw_short_answer"] = raw_short_answer
+            query_debug_row["short_answer"] = normalized_short_answer
+
+        if normalized_short_answer != raw_short_answer:
             query_debug_row["short_answer"] = normalized_short_answer
             query_response = query_response.model_copy(
                 update={"short_answer": normalized_short_answer}
@@ -1703,7 +1806,7 @@ def _process_single_query_with_error_handling(
 
         processing_time = time.time() - start_time
 
-        return {
+        result = {
             "query": query,
             "short_answer": query_response.short_answer,
             "reasoning": query_response.reasoning,
@@ -1721,6 +1824,11 @@ def _process_single_query_with_error_handling(
             "_debug_relevance_row": relevance_debug_row,
             "_debug_query_row": query_debug_row,
         }
+
+        if has_structured_response_options:
+            result["raw_short_answer"] = raw_short_answer
+
+        return result
 
     except Exception as e:
         processing_time = time.time() - start_time

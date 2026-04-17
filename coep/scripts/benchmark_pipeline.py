@@ -50,6 +50,7 @@ from coep.src.eval import (
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
+    prioritize_ground_truth_matches,
 )
 from coep.src.query import adjust_drug_paraphernalia_queries
 from coep.src.retrieval_guidance import get_drug_paraphernalia_retrieval_guidance
@@ -183,7 +184,23 @@ def main():
     # =========================================================================
     logger.info("Joining generated answers with ground truth...")
 
-    joined_df = gen_results_df.join(ground_truth_df, on="variable_name", how="left")
+    joined_df = (
+        gen_results_df.join(ground_truth_df, on="variable_name", how="left")
+        .with_row_count("benchmark_row_id")
+        .with_columns(
+            (
+                pl.col("ground_truth").is_not_null()
+                & (pl.col("ground_truth").str.strip_chars() != "")
+                & (pl.col("ground_truth") != "-")
+            ).alias("ground_truth_available")
+        )
+        .with_columns(
+            pl.when(pl.col("ground_truth_available"))
+            .then(pl.lit("scored"))
+            .otherwise(pl.lit("missing_ground_truth"))
+            .alias("evaluation_status")
+        )
+    )
 
     if debug_enabled and debug_dir:
         query_stage_path = debug_dir / f"query_stage_{timestamp}.csv"
@@ -194,6 +211,7 @@ def main():
                 for col in [
                     "variable_name",
                     "ground_truth",
+                    "ground_truth_citation",
                     "comprehensive_answer",
                 ]
                 if col in joined_df.columns
@@ -213,11 +231,7 @@ def main():
                 )
 
     # Check for missing ground truth (Null, empty, or "-")
-    missing_truth = joined_df.filter(
-        pl.col("ground_truth").is_null()
-        | (pl.col("ground_truth").str.strip_chars() == "")
-        | (pl.col("ground_truth") == "-")
-    )
+    missing_truth = joined_df.filter(~pl.col("ground_truth_available"))
     if len(missing_truth) > 0:
         logger.warning(
             f"{len(missing_truth)} queries have no ground truth: "
@@ -230,18 +244,14 @@ def main():
     logger.info("Evaluating generated answers against ground truth...")
 
     # Filter to only rows with ground truth for evaluation
-    eval_df = joined_df.filter(
-        pl.col("ground_truth").is_not_null()
-        & (pl.col("ground_truth") != "")
-        & (pl.col("ground_truth") != "-")
-    )
+    eval_input_df = joined_df.filter(pl.col("ground_truth_available"))
 
-    if len(eval_df) == 0:
+    if len(eval_input_df) == 0:
         logger.error("No rows with ground truth to evaluate!")
         sys.exit(1)
 
     # Construct comprehensive answer context for evaluation
-    eval_df = eval_df.with_columns(
+    eval_scored_df = eval_input_df.with_columns(
         pl.concat_str(
             [
                 pl.col("short_answer"),
@@ -253,30 +263,50 @@ def main():
         ).alias("comprehensive_answer")
     )
 
-    eval_df = evaluator.evaluate_batch(
-        eval_df,
+    eval_scored_df = evaluator.evaluate_batch(
+        eval_scored_df,
         question_col="query",
         answer_col="comprehensive_answer",
         truth_col="ground_truth",
     )
 
-    # Add jurisdiction metadata
-    eval_df = eval_df.with_columns(pl.lit(jurisdiction_id).alias("jurisdiction_id"))
+    final_df = joined_df.join(
+        eval_scored_df.select(
+            [
+                "benchmark_row_id",
+                "comprehensive_answer",
+                "eval_score",
+                "eval_reason",
+                "eval_label",
+            ]
+        ),
+        on="benchmark_row_id",
+        how="left",
+    ).with_columns(pl.lit(jurisdiction_id).alias("jurisdiction_id"))
+    final_df = prioritize_ground_truth_matches(final_df)
 
     # =========================================================================
     # Step 8: Compute Summary Metrics
     # =========================================================================
-    avg_score = eval_df["eval_score"].mean()
-    correct_count = eval_df.filter(pl.col("eval_label") == "Correct").height
-    partial_count = eval_df.filter(pl.col("eval_label") == "Partially Correct").height
-    incorrect_count = eval_df.filter(pl.col("eval_label") == "Incorrect").height
-    total_count = eval_df.height
-    accuracy_rate = (correct_count / total_count) * 100 if total_count > 0 else 0
+    avg_score = eval_scored_df["eval_score"].mean()
+    correct_count = eval_scored_df.filter(pl.col("eval_label") == "Correct").height
+    partial_count = eval_scored_df.filter(
+        pl.col("eval_label") == "Partially Correct"
+    ).height
+    incorrect_count = eval_scored_df.filter(
+        pl.col("eval_label") == "Incorrect"
+    ).height
+    processed_count = final_df.height
+    scored_count = eval_scored_df.height
+    unscored_count = processed_count - scored_count
+    accuracy_rate = (correct_count / scored_count) * 100 if scored_count > 0 else 0
 
     print("\n" + "=" * 60)
     print("BENCHMARK COMPLETED")
     print("=" * 60)
-    print(f"Total Questions Evaluated: {total_count}")
+    print(f"Total Queries Processed: {processed_count}")
+    print(f"Queries Scored Against Ground Truth: {scored_count}")
+    print(f"Queries Unscored (missing/excluded ground truth): {unscored_count}")
     print(f"Average Quality Score: {avg_score:.2f} / 10")
     print(f"Correct: {correct_count} ({accuracy_rate:.1f}%)")
     print(f"Partially Correct: {partial_count}")
@@ -289,11 +319,11 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Write DVC-tracked output (deterministic path)
-    eval_df.write_csv(str(output_path))
+    final_df.write_csv(str(output_path))
     logger.info(f"Results saved to {output_path}")
 
     # Write timestamped copy for historical reference
-    eval_df.write_csv(str(timestamped_path))
+    final_df.write_csv(str(timestamped_path))
     logger.info(f"Timestamped copy saved to {timestamped_path}")
 
     # Write DVC metrics JSON
@@ -304,7 +334,10 @@ def main():
         "correct": correct_count,
         "partially_correct": partial_count,
         "incorrect": incorrect_count,
-        "total": total_count,
+        "processed_queries": processed_count,
+        "scored_queries": scored_count,
+        "unscored_queries": unscored_count,
+        "total": scored_count,
     }
     metrics_path.write_text(json.dumps(metrics, indent=2))
     logger.info(f"Metrics saved to {metrics_path}")

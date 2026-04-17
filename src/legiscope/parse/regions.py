@@ -58,6 +58,14 @@ _TOC_STRUCTURAL_PAT = re.compile(
     r"^(?:TITLE|CHAPTER|ARTICLE|PART|DIVISION|BOOK)\s+[A-Z0-9IVXLCDM]+\b",
     re.IGNORECASE,
 )
+_TOC_PAGE_TRAILER_PAT = re.compile(
+    r"(?:\.{2,}\s*\d+\s*$|\bpage\s+\d+\s*$|\bp\.\s*\d+\s*$)",
+    re.IGNORECASE,
+)
+_SECTION_START_PAT = re.compile(
+    r"^(?:§\s*)?(?:[A-Z]-)?\d+(?:[-.]\d+)+\b|^(?:SECTION|SEC\.)\s+\d+",
+    re.IGNORECASE,
+)
 
 
 def _nonempty_lines(text: str) -> list[str]:
@@ -133,10 +141,20 @@ def _looks_like_toc_listing(text: str) -> bool:
 
     matched_lines = sum(1 for line in lines if _TOC_STRUCTURAL_PAT.match(line))
     if matched_lines == len(lines) and matched_lines > 0:
-        return True
+        if len(lines) > 1:
+            return True
+
+        first_line = lines[0]
+        return bool(
+            _TOC_PAGE_TRAILER_PAT.search(first_line)
+            or _SECTION_START_PAT.match(first_line)
+        )
 
     first_line = lines[0]
-    return bool(_TOC_STRUCTURAL_PAT.match(first_line))
+    return bool(
+        _TOC_PAGE_TRAILER_PAT.search(first_line)
+        or (len(lines) == 1 and _SECTION_START_PAT.match(first_line))
+    )
 
 
 def _heading_identity(record: dict[str, Any]) -> tuple[int | None, str]:

@@ -17,6 +17,7 @@ from legiscope.query import (
     format_query_response,
     _validate_supporting_passages,
     _prepare_legal_context,
+    _build_legal_prompts,
     _normalize_structured_short_answer,
     load_queries,
     QueryInput,
@@ -134,6 +135,47 @@ class TestStructuredShortAnswerNormalization:
         )
 
         assert normalized == "Sales AND/OR Use"
+
+    def test_does_not_coerce_multi_select_with_extra_prose(self):
+        normalized = _normalize_structured_short_answer(
+            "The ordinance prohibits sales and use.",
+            "multi_select_field",
+            {
+                "response_options": ("Responses: Sales AND/OR Use AND/OR Possession"),
+            },
+        )
+
+        assert normalized == "The ordinance prohibits sales and use."
+
+    def test_does_not_coerce_single_choice_with_extra_prose(self):
+        normalized = _normalize_structured_short_answer(
+            "The best label is Misdemeanor.",
+            "single_choice_field",
+            {
+                "response_options": "Responses: Civil OR Misdemeanor OR Felony",
+            },
+        )
+
+        assert normalized == "The best label is Misdemeanor."
+
+
+class TestPromptContracts:
+    """Prompt-building regressions for structured benchmark answers."""
+
+    def test_build_legal_prompts_includes_structured_answer_contract(self):
+        system_prompt, _user_prompt = _build_legal_prompts(
+            "Which activities are prohibited?",
+            "Section 1: sell or use drug paraphernalia.",
+            query_metadata={
+                "response_options": "Responses: Sales AND/OR Use AND/OR Possession",
+                "coding_instructions": "Use only the exact response labels.",
+            },
+        )
+
+        assert "Structured answer contract:" in system_prompt
+        assert "Declared response options: Sales AND/OR Use AND/OR Possession" in system_prompt
+        assert "join selections with ` AND/OR `" in system_prompt
+        assert "Apply these coding instructions exactly" in system_prompt
 
 
 class TestLoadQueries:
@@ -1496,3 +1538,93 @@ class TestBatchQueryConfigBasics:
         assert results_df[0, "short_answer"] == "Known, 03/19/2024"
         assert query_debug[0, "short_answer"] == "Known, 03/19/2024"
         assert query_debug[0, "raw_short_answer"] == "Known; March 19, 2024"
+
+    def test_run_queries_carries_prior_answers_into_guidance_requests(self, tmp_path):
+        """Later structured queries should receive earlier answers through metadata."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        captured_prior_answers = []
+
+        def provider(request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            captured_prior_answers.append(request.metadata.get("prior_answers"))
+            return None
+
+        mock_responses = [
+            LegalQueryResponse(
+                short_answer="Sales AND/OR Use",
+                reasoning="Activities are listed explicitly.",
+                citations=[],
+                supporting_passages=[],
+                confidence=0.8,
+                limitations="None",
+            ),
+            LegalQueryResponse(
+                short_answer="Use",
+                reasoning="The exemption tracks the previously coded activity.",
+                citations=[],
+                supporting_passages=[],
+                confidence=0.8,
+                limitations="None",
+            ),
+        ]
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=[(mock_responses[0], []), (mock_responses[1], [])],
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    retrieval_guidance_provider=provider,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Which activities are prohibited?",
+                            variable_name="dp_activity",
+                            metadata={
+                                "response_options": (
+                                    "Responses: Sales AND/OR Use AND/OR Possession"
+                                )
+                            },
+                        ),
+                        QueryInput(
+                            question="If cannabis paraphernalia is exempted, which activities are exempted?",
+                            variable_name="dp_exempt_can_activity",
+                            metadata={
+                                "response_options": (
+                                    "Responses: Possession AND/OR Use AND/OR Distribution AND/OR Sales AND/OR Other"
+                                )
+                            },
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert captured_prior_answers[0] is None
+        assert captured_prior_answers[1] is not None
+        assert captured_prior_answers[1]["dp_activity"]["short_answer"] == "Sales AND/OR Use"

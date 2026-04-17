@@ -79,6 +79,32 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert "Relevant legal anchors and terms" in guidance.completion_instructions
 
+    def test_exemption_activity_guidance_uses_prior_answer_context(self):
+        request = RetrievalGuidanceRequest(
+            query="If cannabis paraphernalia is exempted, which activities are exempted?",
+            variable_name="dp_exempt_can_activity",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance that prohibits "
+                    "drug paraphernalia-related activities."
+                ),
+                "prior_answers": {
+                    "dp_exemption": {
+                        "short_answer": "Paraphernalia for consumption of cannabis, generally or medical use"
+                    },
+                    "dp_activity": {"short_answer": "Sales AND/OR Use"},
+                },
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.shared_context is not None
+        assert "Previously coded exemption answer" in guidance.shared_context
+        assert "Previously coded prohibited activities: Sales AND/OR Use." in guidance.shared_context
+        assert "only in scope if the earlier exemption answer included" in guidance.shared_context
+
     def test_returns_guidance_for_existence_variable(self):
         request = RetrievalGuidanceRequest(
             query="Does a law exist?",

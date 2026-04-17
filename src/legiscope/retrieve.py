@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -34,6 +35,39 @@ DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
 DEFAULT_HYDE_ENABLED = _rp.get("hyde", {}).get("enabled", False)
 DEFAULT_RELEVANCE_FILTER_ENABLED = _rp.get("relevance_filter", {}).get("enabled", False)
 DEFAULT_RELEVANCE_THRESHOLD = _rp.get("relevance_filter", {}).get("threshold", 0.5)
+DEFAULT_LEXICAL_OVERFETCH_FACTOR = max(
+    1, int(_rp.get("lexical_overfetch_factor", 3))
+)
+DEFAULT_RELEVANCE_MIN_KEEP = max(
+    1, int(_rp.get("relevance_filter", {}).get("min_keep", 2))
+)
+
+_LEXICAL_TOKEN_PAT = re.compile(r"[A-Za-z0-9]+")
+_LEXICAL_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "any",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "if",
+    "in",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "this",
+    "to",
+    "with",
+}
 
 
 # ============================================================================
@@ -169,6 +203,8 @@ class RetrievalSettings:
         hyde_model: LLM model to use for HYDE rewriting
         embedding_client: Embedding client for generating query embeddings
         embedding_model: Embedding model name
+        lexical_query_text: Optional raw query text used for lexical reranking
+        anchor_terms: Optional exact-match anchors used for lexical reranking
 
     Example:
         >>> from legiscope.llm_config import Config
@@ -205,6 +241,10 @@ class RetrievalSettings:
     # Embedding generation
     embedding_client: Any = None
     embedding_model: str | None = None
+
+    # Hybrid retrieval hints
+    lexical_query_text: str | None = None
+    anchor_terms: list[str] = field(default_factory=list)
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -518,6 +558,173 @@ Provide:
         raise
 
 
+def _normalize_lexical_text(text: str) -> str:
+    """Normalize text for exact-anchor lexical matching."""
+    return re.sub(r"\s+", " ", text.casefold()).strip()
+
+
+def _tokenize_lexical_text(text: str) -> list[str]:
+    """Tokenize text for lightweight lexical overlap scoring."""
+    tokens = []
+    for token in _LEXICAL_TOKEN_PAT.findall(text.casefold()):
+        if len(token) <= 1 or token in _LEXICAL_STOPWORDS:
+            continue
+        tokens.append(token)
+    return list(dict.fromkeys(tokens))
+
+
+def _section_lexical_blob(section: SectionResult) -> tuple[str, set[str], str]:
+    """Build normalized lexical search text for a retrieval context unit."""
+    parts = [
+        section.heading_text,
+        section.context_path or "",
+        section.body_text,
+        section.section_id,
+    ]
+    if section.matching_segments:
+        parts.extend(segment.segment_text for segment in section.matching_segments[:2])
+
+    normalized_text = _normalize_lexical_text("\n".join(part for part in parts if part))
+    heading_text = _normalize_lexical_text(
+        " ".join(
+            part
+            for part in [section.heading_text, section.context_path or "", section.section_id]
+            if part
+        )
+    )
+    token_set = set(_tokenize_lexical_text(normalized_text))
+    return normalized_text, token_set, heading_text
+
+
+def _lexical_match_score(
+    section: SectionResult,
+    query_text: str,
+    anchor_terms: list[str],
+) -> float:
+    """Score a section using exact-anchor and token-overlap lexical signals."""
+    normalized_text, token_set, heading_text = _section_lexical_blob(section)
+    if not normalized_text:
+        return 0.0
+
+    query_tokens = _tokenize_lexical_text(query_text)
+    token_score = 0.0
+    if query_tokens:
+        token_hits = sum(1 for token in query_tokens if token in token_set)
+        token_score = token_hits / len(query_tokens)
+
+    normalized_anchors = [
+        _normalize_lexical_text(term) for term in anchor_terms if term and term.strip()
+    ]
+    anchor_score = 0.0
+    heading_anchor_score = 0.0
+    if normalized_anchors:
+        anchor_hits = sum(1 for term in normalized_anchors if term in normalized_text)
+        heading_anchor_hits = sum(
+            1 for term in normalized_anchors if term in heading_text
+        )
+        anchor_score = anchor_hits / len(normalized_anchors)
+        heading_anchor_score = heading_anchor_hits / len(normalized_anchors)
+
+    exact_query_phrase = 0.0
+    normalized_query = _normalize_lexical_text(query_text)
+    if normalized_query and normalized_query in normalized_text:
+        exact_query_phrase = 1.0
+
+    return min(
+        1.0,
+        (0.4 * token_score)
+        + (0.4 * anchor_score)
+        + (0.15 * heading_anchor_score)
+        + (0.05 * exact_query_phrase),
+    )
+
+
+def _section_retrieval_sort_key(
+    section: SectionResult,
+    query_text: str,
+    anchor_terms: list[str],
+) -> tuple[float, float, float, int]:
+    """Build a hybrid sort key that blends semantic and lexical signals."""
+    lexical_score = _lexical_match_score(section, query_text, anchor_terms)
+    semantic_score = 1.0 / (1.0 + max(section.relevance_score, 0.0))
+    combined_score = (0.65 * semantic_score) + (0.35 * lexical_score)
+    if section.retrieval_priority is not None:
+        combined_score += 0.02 * section.retrieval_priority
+    return (
+        combined_score,
+        lexical_score,
+        semantic_score,
+        section.segment_count,
+    )
+
+
+def _rerank_section_results(
+    section_results: list[SectionResult],
+    query_text: str,
+    anchor_terms: list[str],
+) -> list[SectionResult]:
+    """Rerank section results using lexical cues without changing their payload."""
+    if not section_results:
+        return section_results
+
+    normalized_query = (query_text or "").strip()
+    normalized_anchors = [term for term in anchor_terms if term and term.strip()]
+    if not normalized_query and not normalized_anchors:
+        return section_results
+
+    return sorted(
+        section_results,
+        key=lambda section: _section_retrieval_sort_key(
+            section,
+            normalized_query,
+            normalized_anchors,
+        ),
+        reverse=True,
+    )
+
+
+def _assessment_passes_threshold(
+    assessment: RelevanceAssessment,
+    threshold: float,
+) -> bool:
+    """Use a soft gate so one weaker score does not drop clearly useful text."""
+    if not assessment.is_relevant:
+        return False
+    return (
+        assessment.relevance_score >= threshold
+        or assessment.confidence >= threshold
+    )
+
+
+def _assessment_rank(assessment: RelevanceAssessment) -> float:
+    """Build a stable ranking score for kept or backfilled relevance hits."""
+    return (0.7 * assessment.relevance_score) + (0.3 * assessment.confidence)
+
+
+def _updated_section_with_assessment(
+    section: SectionResult,
+    assessment: RelevanceAssessment,
+) -> SectionResult:
+    """Copy a section and replace the retrieval score with the LLM relevance score."""
+    return SectionResult(
+        section_id=section.section_id,
+        heading_text=section.heading_text,
+        body_text=section.body_text,
+        heading_level=section.heading_level,
+        parent_id=section.parent_id,
+        matching_segments=section.matching_segments,
+        relevance_score=assessment.relevance_score,
+        segment_count=section.segment_count,
+        context_path=section.context_path,
+        chunk_id=section.chunk_id,
+        chunk_ordinal=section.chunk_ordinal,
+        source_kind=section.source_kind,
+        region_role=section.region_role,
+        retrieval_priority=section.retrieval_priority,
+        llm_assessed=True,
+    )
+
+
 def retrieve_segments(
     collection: Any,  # chromadb.Collection
     query_text: str,
@@ -616,9 +823,19 @@ def retrieve_segments(
     # Cast to Any to satisfy ChromaDB typing expectations (avoids invariant list/ndarray mismatch)
     query_embeddings_any = cast(Any, query_embeddings_list)
 
+    query_n_results = settings.n_results
+    if settings.lexical_query_text or settings.anchor_terms:
+        query_n_results = min(
+            max(
+                settings.n_results,
+                settings.n_results * DEFAULT_LEXICAL_OVERFETCH_FACTOR,
+            ),
+            100,
+        )
+
     results = collection.query(
         query_embeddings=query_embeddings_any,
-        n_results=settings.n_results,
+        n_results=query_n_results,
         where=combined_where,
         where_document=settings.where_document,
     )
@@ -847,6 +1064,11 @@ def retrieve_sections(
         key_column=key_column,
         using_chunks=using_chunks,
     )
+    section_results = _rerank_section_results(
+        section_results,
+        settings.lexical_query_text or query_text,
+        settings.anchor_terms,
+    )
 
     return SectionCollection(
         sections=section_results,
@@ -910,6 +1132,7 @@ def filter_sections(
     logger.info(f"Filtering {original_count} sections for query: '{query[:30]}...'")
 
     filtered_sections = []
+    assessed_sections: list[tuple[SectionResult, RelevanceAssessment]] = []
     assessments = []
 
     # Assess relevance for each section
@@ -932,6 +1155,12 @@ def filter_sections(
                 model,
                 retrieval_guidance=retrieval_guidance,
             )
+            assessed_sections.append((section, assessment))
+
+            keep_by_threshold = _assessment_passes_threshold(
+                assessment,
+                confidence_threshold,
+            )
 
             # Store assessment for metadata
             assessments.append(
@@ -942,35 +1171,19 @@ def filter_sections(
                     "relevance_score": assessment.relevance_score,
                     "confidence": assessment.confidence,
                     "reasoning": assessment.reasoning,
+                    "kept": keep_by_threshold,
+                    "keep_reason": (
+                        "threshold"
+                        if keep_by_threshold
+                        else "below_threshold"
+                    ),
                 }
             )
 
-            # Keep sections only when the LLM marks them relevant and both graded
-            # relevance and confidence clear the configured threshold.
-            if (
-                assessment.is_relevant
-                and assessment.relevance_score >= confidence_threshold
-                and assessment.confidence >= confidence_threshold
-            ):
-                # Update section with LLM relevance score for ranking
-                updated_section = SectionResult(
-                    section_id=section.section_id,
-                    heading_text=section.heading_text,
-                    body_text=section.body_text,
-                    heading_level=section.heading_level,
-                    parent_id=section.parent_id,
-                    matching_segments=section.matching_segments,
-                    relevance_score=assessment.relevance_score,  # Use LLM score instead of distance
-                    segment_count=section.segment_count,
-                    context_path=section.context_path,
-                    chunk_id=section.chunk_id,
-                    chunk_ordinal=section.chunk_ordinal,
-                    source_kind=section.source_kind,
-                    region_role=section.region_role,
-                    retrieval_priority=section.retrieval_priority,
-                    llm_assessed=True,
+            if keep_by_threshold:
+                filtered_sections.append(
+                    _updated_section_with_assessment(section, assessment)
                 )
-                filtered_sections.append(updated_section)
                 logger.debug(
                     f"Section {i} kept: relevant={assessment.is_relevant}, "
                     f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
@@ -985,6 +1198,34 @@ def filter_sections(
             logger.error(f"Error assessing section {i}: {str(e)}")
             continue
 
+    target_keep = min(DEFAULT_RELEVANCE_MIN_KEEP, len(assessed_sections))
+    if len(filtered_sections) < target_keep:
+        kept_ids = {section.section_id for section in filtered_sections}
+        backfill_candidates = [
+            (
+                _assessment_rank(assessment),
+                _updated_section_with_assessment(section, assessment),
+            )
+            for section, assessment in assessed_sections
+            if assessment.is_relevant and section.section_id not in kept_ids
+        ]
+        backfill_candidates.sort(key=lambda item: item[0], reverse=True)
+
+        for _, section in backfill_candidates:
+            filtered_sections.append(section)
+            kept_ids.add(section.section_id)
+            for assessment_row in assessments:
+                if assessment_row["section_id"] == section.section_id:
+                    assessment_row["kept"] = True
+                    assessment_row["keep_reason"] = "backfill"
+                    break
+            logger.debug(
+                "Backfilled section {} after soft relevance collapse",
+                section.section_id,
+            )
+            if len(filtered_sections) >= target_keep:
+                break
+
     filtered_count = len(filtered_sections)
     reduction_percentage = (
         ((original_count - filtered_count) / original_count * 100)
@@ -994,7 +1235,13 @@ def filter_sections(
 
     # Sort sections by LLM relevance score (higher is better)
     # This is different from embedding distance (lower is better)
-    filtered_sections.sort(key=lambda x: x.relevance_score, reverse=True)
+    filtered_sections.sort(
+        key=lambda section: (
+            section.relevance_score,
+            section.segment_count,
+        ),
+        reverse=True,
+    )
 
     logger.info(
         f"Filtering complete: {original_count} -> {filtered_count} sections "

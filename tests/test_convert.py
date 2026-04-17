@@ -21,6 +21,8 @@ from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructu
 from legiscope.parse.regions import REGIONS_SCHEMA
 from legiscope.parse.scan import (
     DEFAULT_TEMPERATURE,
+    _apply_example_based_pattern_refinement,
+    _sample_diagnostics,
     _select_scan_sample,
     scan_legal_text,
     score_structure,
@@ -430,6 +432,121 @@ class TestScanLegalText:
         assert result.element_id == 4
         assert result.start_line == 5
 
+    def test_find_code_start_advances_past_long_toc_and_split_body_start(self):
+        """Long TOCs should not trap the start boundary before a split section/body pair."""
+        import polars as pl
+
+        from legiscope.parse.find_code_start import find_code_start
+
+        rows = [
+            {
+                "element_id": 0,
+                "start_line": 1,
+                "end_line": 1,
+                "n_lines": 1,
+                "text": "TABLE OF CONTENTS",
+            },
+            {
+                "element_id": 1,
+                "start_line": 2,
+                "end_line": 2,
+                "n_lines": 1,
+                "text": "PREAMBLE",
+            },
+        ]
+
+        line_number = 3
+        for element_id in range(2, 610):
+            rows.append(
+                {
+                    "element_id": element_id,
+                    "start_line": line_number,
+                    "end_line": line_number,
+                    "n_lines": 1,
+                    "text": f"§ 1-{element_id:03d} Purpose",
+                }
+            )
+            line_number += 1
+
+        rows.extend(
+            [
+                {
+                    "element_id": 610,
+                    "start_line": line_number,
+                    "end_line": line_number,
+                    "n_lines": 1,
+                    "text": "ARTICLE II",
+                },
+                {
+                    "element_id": 611,
+                    "start_line": line_number + 1,
+                    "end_line": line_number + 1,
+                    "n_lines": 1,
+                    "text": "CHAPTER 1",
+                },
+                {
+                    "element_id": 612,
+                    "start_line": line_number + 2,
+                    "end_line": line_number + 2,
+                    "n_lines": 1,
+                    "text": "§ 2-100. Composition of Council.",
+                },
+                {
+                    "element_id": 613,
+                    "start_line": line_number + 3,
+                    "end_line": line_number + 3,
+                    "n_lines": 1,
+                    "text": (
+                        "The Council shall consist of district and at-large members and "
+                        "exercise legislative authority under this charter."
+                    ),
+                },
+                {
+                    "element_id": 614,
+                    "start_line": line_number + 4,
+                    "end_line": line_number + 4,
+                    "n_lines": 1,
+                    "text": "§ 2-101. Terms of Office.",
+                },
+                {
+                    "element_id": 615,
+                    "start_line": line_number + 5,
+                    "end_line": line_number + 5,
+                    "n_lines": 1,
+                    "text": (
+                        "Councilmembers serve staggered four-year terms and remain subject "
+                        "to the provisions of this charter."
+                    ),
+                },
+            ]
+        )
+
+        elements = pl.DataFrame(
+            rows,
+            schema={
+                "element_id": pl.Int64,
+                "start_line": pl.Int64,
+                "end_line": pl.Int64,
+                "n_lines": pl.Int64,
+                "text": pl.String,
+            },
+        )
+
+        mock_client = Mock()
+        mock_client.chat.completions.create.side_effect = [
+            ScanResult(found=True, element_id=1, reasoning="early preamble candidate"),
+            Mock(
+                correct=True,
+                adjusted_element_id=None,
+                reasoning="candidate accepted",
+            ),
+        ]
+
+        result = find_code_start(mock_client, elements)
+
+        assert result.element_id == 610
+        assert result.start_line == line_number
+
     def test_verify_prompt_treats_toc_as_navigation_not_boundary(self):
         """Verification prompt should explicitly reject TOC/index boundaries."""
         import polars as pl
@@ -670,6 +787,95 @@ Some body text here."""
 
         finally:
             os.unlink(test_file)
+
+    def test_scan_legal_text_reduces_sample_after_timeout(self):
+        """Timeout retries should shrink the representative sample before retrying."""
+        sample_blocks = []
+        for index in range(1, 261):
+            sample_blocks.append(
+                f"CHAPTER {index}\n"
+                "This chapter contains enough substantive text to remain a distinct "
+                "element during scan testing and retry backoff validation."
+            )
+        sample_text = "\n\n".join(sample_blocks)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+[A-Z0-9IVXLCDM.-]+(?:\s+.*)?$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1",
+                        type_label="chapter",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=260,
+            )
+
+            mock_client = Mock()
+            mock_client.chat.completions.create.side_effect = [
+                ScanResult(found=True, element_id=0, reasoning="Start of document"),
+                TimeoutError("request timed out"),
+                mock_response,
+            ]
+
+            with patch("legiscope.parse.scan.score_structure", return_value=(0.95, [])):
+                scan_legal_text(mock_client, test_file)
+
+            first_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs[
+                "messages"
+            ][1]["content"]
+            second_prompt = mock_client.chat.completions.create.call_args_list[2].kwargs[
+                "messages"
+            ][1]["content"]
+
+            assert "These are 200 representative elements" in first_prompt
+            assert "These are 150 representative elements" in second_prompt
+
+        finally:
+            os.unlink(test_file)
+
+    def test_sample_diagnostics_avoids_double_counting_heading_like_rows(self):
+        """Heading-like diagnostics should count each sampled row only once."""
+        import polars as pl
+
+        sample = pl.DataFrame(
+            [
+                {"element_id": 0, "text": "TITLE I GENERAL PROVISIONS", "n_lines": 1},
+                {"element_id": 1, "text": "CHAPTER 1", "n_lines": 1},
+                {"element_id": 2, "text": "MISCELLANEOUS PROVISIONS", "n_lines": 1},
+                {"element_id": 3, "text": "This is ordinary body text.", "n_lines": 1},
+            ]
+        )
+
+        diagnostics = _sample_diagnostics(sample)
+
+        assert diagnostics["title"] == 1
+        assert diagnostics["chapter"] == 1
+        assert diagnostics["heading_like"] == 3
+
+    def test_example_refinement_supports_hyphenated_chapter_identifiers(self):
+        """Chapter refinement should preserve hyphenated chapter numbers."""
+        level = HeadingLevel(
+            level=1,
+            regex_pattern=r"^CHAPTER\s+.+$",
+            markdown_prefix="#",
+            example_heading="CHAPTER 9-600 DRUG PARAPHERNALIA",
+            type_label="chapter",
+        )
+
+        _apply_example_based_pattern_refinement(level)
+
+        assert re.match(level.regex_pattern, "CHAPTER 9-600 DRUG PARAPHERNALIA")
+        assert level.number_regex == r"[A-Z0-9IVXLCDM]+(?:[-.][A-Z0-9IVXLCDM]+)*"
 
     def test_scan_legal_text_invalid_regex_produces_warnings(self):
         """Test that invalid regex patterns produce warnings and low quality score."""

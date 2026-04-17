@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pull_bigpurple_results.sh — Pull benchmark and pipeline artifacts from BigPurple.
+# pull_bigpurple_results.sh — Pull timestamped benchmark and pipeline artifacts from BigPurple.
 
 set -euo pipefail
 
@@ -14,7 +14,6 @@ LOCAL_DIR="${LOCAL_PROJECT_ROOT}/data/output"
 LOCAL_LAWS_DIR="${LOCAL_PROJECT_ROOT}/data/laws"
 SSH_JUMP=""
 DRY_RUN=false
-INCLUDE_TIMESTAMPED=false
 INCLUDE_CODE_ARTIFACTS=false
 SKIP_BENCHMARK=false
 CODE_SLUG="municipal-code"
@@ -25,8 +24,11 @@ usage() {
 Usage: pull_bigpurple_results.sh --netid NETID --jurisdiction STATE-Locality [options]
 
 Pull benchmark artifacts for a jurisdiction from BigPurple onto your local
-machine. Optionally also pull code.md, sections.parquet, and headings.parquet
-from the jurisdiction's data/laws directory.
+machine. Benchmark downloads use timestamped benchmark_results_*.csv files as
+the primary result artifact. Optionally also pull the jurisdiction's source
+and pipeline artifacts from data/laws for debugging and inspection, including
+code.md, code.txt, raw inputs, headings/regions, sections/chunks/segments,
+relations/external references, and embeddings when present.
 
 Required:
   --netid NETID               BigPurple username
@@ -37,15 +39,18 @@ Options:
   --project-root PATH         Remote repo path (default: /gpfs/data/cerdalab/LegalAI/legiscope)
     --local-dir PATH            Local output root for downloaded benchmark files
                                                             (default: <repo>/data/output)
-    --include-code-artifacts    Also pull code.md, sections.parquet, and headings.parquet
+    --include-code-artifacts    Also pull source and pipeline artifacts from
+                                                            data/laws for debugging and inspection
     --code-slug SLUG            Code slug under data/laws (default: municipal-code)
     --laws-local-dir PATH       Local data/laws root for pulled code artifacts
                                                             (default: <repo>/data/laws)
     --skip-benchmark            Skip benchmark artifact download and only pull
                                                             requested code artifacts
   --ssh-jump TARGET           Optional SSH jump host, e.g. user@gw.hpc.nyu.edu
-  --include-timestamped       Also pull benchmark_results_*.csv copies
-  --open                      Open benchmark_results.csv after download
+    --include-timestamped       Backward-compatible no-op; timestamped results
+                                                            are pulled by default
+    --open                      Open the newest local benchmark_results_*.csv
+                                                            after download
   --dry-run                   Print commands and preview rsync actions
   -h, --help                  Show this help
 
@@ -58,8 +63,8 @@ Examples:
   ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
     --netid tmh8501 \
     --jurisdiction PA-Philadelphia \
-    --local-dir ~/Downloads/legiscope-results \
-    --include-timestamped
+        --local-dir ~/Downloads/legiscope-results \
+        --include-code-artifacts
 
     ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
         --netid tmh8501 \
@@ -112,7 +117,6 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --include-timestamped)
-            INCLUDE_TIMESTAMPED=true
             shift
             ;;
         --open)
@@ -175,6 +179,26 @@ open_file() {
     fi
 }
 
+latest_timestamped_benchmark_file() {
+    local target_dir="$1"
+
+    find "$target_dir" -maxdepth 1 -type f -name 'benchmark_results_*.csv' | sort | tail -n 1
+}
+
+report_local_artifact_status() {
+    local file_path="$1"
+    local label="$2"
+    local required="${3:-false}"
+
+    if [[ -e "$file_path" ]]; then
+        say "${label}: ok"
+    elif [[ "$required" == true ]]; then
+        die "download completed but required artifact is missing locally: ${file_path}"
+    else
+        say "${label}: missing"
+    fi
+}
+
 [[ -n "$NETID" ]] || die "--netid is required"
 [[ -n "$JURISDICTION" ]] || die "--jurisdiction is required"
 [[ "$JURISDICTION" == *-* ]] || die "--jurisdiction must look like STATE-Locality"
@@ -218,14 +242,17 @@ fi
 say ""
 
 REMOTE_BENCHMARK_CHECK_CMD=$(cat <<EOF
-test -d '${REMOTE_OUTPUT_DIR}' \
-    -a -f '${REMOTE_OUTPUT_DIR}/benchmark_results.csv'
+test -d '${REMOTE_OUTPUT_DIR}' && \
+find '${REMOTE_OUTPUT_DIR}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' | grep -q .
 EOF
 )
 
 REMOTE_CODE_CHECK_CMD=$(cat <<EOF
 test -d '${REMOTE_CODE_DIR}' \
     -a -f '${REMOTE_CODE_DIR}/code.md' \
+    -a -f '${REMOTE_CODE_DIR}/regions.parquet' \
+    -a -f '${REMOTE_CODE_DIR}/chunks.parquet' \
+    -a -f '${REMOTE_CODE_DIR}/segments.parquet' \
     -a -f '${REMOTE_CODE_DIR}/sections.parquet' \
     -a -f '${REMOTE_CODE_DIR}/headings.parquet'
 EOF
@@ -265,14 +292,10 @@ fi
 
 RSYNC_FILTERS=(
     --include='*/'
-    --include='benchmark_results.csv'
+    --include='benchmark_results_*.csv'
     --include='benchmark_metrics.json'
     --include='debug/***'
 )
-
-if [[ "$INCLUDE_TIMESTAMPED" == true ]]; then
-    RSYNC_FILTERS+=(--include='benchmark_results_*.csv')
-fi
 
 RSYNC_FILTERS+=(--exclude='*')
 
@@ -288,8 +311,16 @@ fi
 if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
     say ">>> Pulling code artifacts"
     rsync "${RSYNC_ARGS[@]}" \
+        --include='raw/***' \
+        --include='code.txt' \
         --include='code.md' \
+        --include='regions.parquet' \
         --include='sections.parquet' \
+        --include='chunks.parquet' \
+        --include='segments.parquet' \
+        --include='relations.parquet' \
+        --include='external_references.parquet' \
+        --include='embeddings.parquet' \
         --include='headings.parquet' \
         --exclude='*' \
         -e "$RSYNC_RSH" \
@@ -307,7 +338,8 @@ if [[ "$DRY_RUN" == true ]]; then
     fi
 else
     if [[ "$SKIP_BENCHMARK" == false ]]; then
-        [[ -f "${LOCAL_TARGET_DIR}/benchmark_results.csv" ]] || die "download completed but benchmark_results.csv is missing locally"
+        latest_timestamped_csv="$(latest_timestamped_benchmark_file "${LOCAL_TARGET_DIR}")"
+        [[ -n "$latest_timestamped_csv" ]] || die "download completed but no benchmark_results_*.csv files were found locally"
         if [[ -f "${LOCAL_TARGET_DIR}/benchmark_metrics.json" ]]; then
             say "benchmark_metrics.json: ok"
         else
@@ -319,24 +351,36 @@ else
         else
             say "debug artifacts: not present"
         fi
-        say "benchmark_results.csv: ok"
+        say "latest benchmark csv: ${latest_timestamped_csv}"
         say "benchmark path: ${LOCAL_TARGET_DIR}"
     fi
 
     if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-        [[ -f "${LOCAL_CODE_DIR}/code.md" ]] || die "download completed but code.md is missing locally"
-        [[ -f "${LOCAL_CODE_DIR}/sections.parquet" ]] || die "download completed but sections.parquet is missing locally"
-        [[ -f "${LOCAL_CODE_DIR}/headings.parquet" ]] || die "download completed but headings.parquet is missing locally"
-        say "code.md: ok"
-        say "sections.parquet: ok"
-        say "headings.parquet: ok"
+        report_local_artifact_status "${LOCAL_CODE_DIR}/code.md" "code.md" true
+        report_local_artifact_status "${LOCAL_CODE_DIR}/code.txt" "code.txt"
+        report_local_artifact_status "${LOCAL_CODE_DIR}/headings.parquet" "headings.parquet" true
+        report_local_artifact_status "${LOCAL_CODE_DIR}/regions.parquet" "regions.parquet" true
+        report_local_artifact_status "${LOCAL_CODE_DIR}/sections.parquet" "sections.parquet" true
+        report_local_artifact_status "${LOCAL_CODE_DIR}/chunks.parquet" "chunks.parquet" true
+        report_local_artifact_status "${LOCAL_CODE_DIR}/segments.parquet" "segments.parquet" true
+        report_local_artifact_status "${LOCAL_CODE_DIR}/relations.parquet" "relations.parquet"
+        report_local_artifact_status "${LOCAL_CODE_DIR}/external_references.parquet" "external_references.parquet"
+        report_local_artifact_status "${LOCAL_CODE_DIR}/embeddings.parquet" "embeddings.parquet"
+        if [[ -d "${LOCAL_CODE_DIR}/raw" ]]; then
+            raw_file_count=$(find "${LOCAL_CODE_DIR}/raw" -type f | wc -l | tr -d ' ')
+            say "raw inputs: ${raw_file_count} file(s)"
+        else
+            say "raw inputs: missing"
+        fi
         say "code artifact path: ${LOCAL_CODE_DIR}"
     fi
 fi
 
 if [[ "$OPEN_AFTER" == true && "$DRY_RUN" == false && "$SKIP_BENCHMARK" == false ]]; then
-    say ">>> Opening benchmark_results.csv"
-    open_file "${LOCAL_TARGET_DIR}/benchmark_results.csv"
+    latest_timestamped_csv="$(latest_timestamped_benchmark_file "${LOCAL_TARGET_DIR}")"
+    [[ -n "$latest_timestamped_csv" ]] || die "cannot open benchmark results because no benchmark_results_*.csv files were downloaded"
+    say ">>> Opening latest timestamped benchmark results"
+    open_file "$latest_timestamped_csv"
 fi
 
 say ""

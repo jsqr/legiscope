@@ -26,6 +26,10 @@ _TOC_STRUCTURAL_PAT = re.compile(
     r"^(?:TITLE|CHAPTER|ARTICLE|PART|DIVISION|BOOK)\s+[A-Z0-9IVXLCDM]+\b",
     re.IGNORECASE,
 )
+_TOC_PAGE_TRAILER_PAT = re.compile(
+    r"(?:\.{2,}\s*\d+\s*$|\bpage\s+\d+\s*$|\bp\.\s*\d+\s*$)",
+    re.IGNORECASE,
+)
 _TRANSITION_ANCHOR_PAT = re.compile(
     r"(?:^|\n)(?:PREAMBLE|TITLE\s+[A-Z0-9IVXLCDM]+|ARTICLE\s+[A-Z0-9IVXLCDM]+|"
     r"CHAPTER\s+[A-Z0-9IVXLCDM.-]+|PART\s+[A-Z0-9IVXLCDM]+|DIVISION\s+\d+|BOOK\s+\d+)",
@@ -85,9 +89,20 @@ def _looks_like_toc_listing(text: str) -> bool:
 
     matched_lines = sum(1 for line in lines if _TOC_STRUCTURAL_PAT.match(line))
     if matched_lines == len(lines) and matched_lines > 0:
-        return True
+        if len(lines) > 1:
+            return True
 
-    return bool(_TOC_STRUCTURAL_PAT.match(lines[0]))
+        first_line = lines[0]
+        return bool(
+            _TOC_PAGE_TRAILER_PAT.search(first_line)
+            or _SECTION_START_PAT.match(first_line)
+        )
+
+    first_line = lines[0]
+    return bool(
+        _TOC_PAGE_TRAILER_PAT.search(first_line)
+        or (len(lines) == 1 and _SECTION_START_PAT.match(first_line))
+    )
 
 
 def _is_navigation_element(text: str) -> bool:
@@ -105,9 +120,42 @@ def _looks_like_body_start_element(text: str) -> bool:
     )
 
 
+def _looks_like_heading_only_section_element(text: str) -> bool:
+    """Return True for section-heading elements whose body prose is split out."""
+    lines = _nonempty_lines(text)
+    if not lines:
+        return False
+    if not _SECTION_START_PAT.match(lines[0]):
+        return False
+    return not _has_substantial_prose(lines[1:])
+
+
+def _is_body_prose_element(text: str) -> bool:
+    """Return True when an element contains substantive prose and is not navigation."""
+    lines = _nonempty_lines(text)
+    if not lines:
+        return False
+    return _has_substantial_prose(lines) and not _is_navigation_element(text)
+
+
+def _looks_like_split_body_start(current_text: str, next_text: str) -> bool:
+    """Return True when a section heading is followed by body prose in the next element."""
+    return _looks_like_heading_only_section_element(
+        current_text
+    ) and _is_body_prose_element(next_text)
+
+
 def _contains_transition_anchor(text: str) -> bool:
     """Return True when an element contains a top-level start marker."""
     return bool(_TRANSITION_ANCHOR_PAT.search(text))
+
+
+def _starts_with_transition_anchor(text: str) -> bool:
+    """Return True when the first non-empty line is a transition anchor."""
+    lines = _nonempty_lines(text)
+    if not lines:
+        return False
+    return bool(_TRANSITION_ANCHOR_PAT.search(lines[0]))
 
 
 def _is_substantive_transition_anchor(text: str) -> bool:
@@ -116,6 +164,61 @@ def _is_substantive_transition_anchor(text: str) -> bool:
     if not lines or not _contains_transition_anchor(text):
         return False
     return _has_substantial_prose(lines[1:])
+
+
+def _is_body_start_row(rows: list[dict[str, Any]], index: int) -> bool:
+    """Return True when a row starts substantive code, including split heading/body pairs."""
+    text = rows[index]["text"]
+    if _looks_like_body_start_element(text):
+        return True
+    if index + 1 >= len(rows):
+        return False
+    return _looks_like_split_body_start(text, rows[index + 1]["text"])
+
+
+def _starts_navigation_run(
+    rows: list[dict[str, Any]],
+    index: int,
+    *,
+    lookahead: int = 12,
+    min_navigation_rows: int = 4,
+) -> bool:
+    """Return True when an anchor is followed by a sustained navigation run."""
+    nav_count = 0
+    upper_bound = min(len(rows), index + lookahead + 1)
+    for next_index in range(index + 1, upper_bound):
+        if _is_body_start_row(rows, next_index) or _is_substantive_transition_anchor(
+            rows[next_index]["text"]
+        ):
+            return False
+        if _is_navigation_element(rows[next_index]["text"]):
+            nav_count += 1
+
+    return nav_count >= min_navigation_rows
+
+
+def _backtrack_opening_chain(
+    rows: list[dict[str, Any]],
+    start_index: int,
+    *,
+    stop_index: int,
+) -> int:
+    """Backtrack from a body anchor to the earliest contiguous opening heading chain."""
+    refined_id = rows[start_index]["element_id"]
+    for previous_index in range(start_index - 1, stop_index, -1):
+        previous_text = rows[previous_index]["text"]
+        if _is_navigation_element(previous_text):
+            break
+        if _is_body_start_row(rows, previous_index) or _is_substantive_transition_anchor(
+            previous_text
+        ):
+            refined_id = rows[previous_index]["element_id"]
+            continue
+        if _starts_with_transition_anchor(previous_text):
+            refined_id = rows[previous_index]["element_id"]
+            continue
+        break
+    return refined_id
 
 
 def _verification_lookback_for_candidate(text: str) -> int:
@@ -182,15 +285,27 @@ def _refine_code_start_candidate(
     if not rows:
         return candidate_id
 
+    candidate_index = next(
+        (index for index, row in enumerate(rows) if row["element_id"] == candidate_id),
+        None,
+    )
+    if candidate_index is None:
+        return candidate_id
+    if not (
+        _is_body_start_row(rows, candidate_index)
+        or _is_substantive_transition_anchor(rows[candidate_index]["text"])
+    ):
+        return candidate_id
+
     first_body_id: int | None = None
     for index, row in enumerate(rows):
-        if not _looks_like_body_start_element(row["text"]):
+        if not _is_body_start_row(rows, index):
             continue
         following = rows[index : index + forward_span]
         body_like_count = sum(
             1
-            for following_row in following
-            if _looks_like_body_start_element(following_row["text"])
+            for offset, _ in enumerate(following)
+            if _is_body_start_row(rows, index + offset)
         )
         if body_like_count >= 2:
             first_body_id = row["element_id"]
@@ -199,20 +314,10 @@ def _refine_code_start_candidate(
     if first_body_id is None:
         return candidate_id
 
-    refined_id = first_body_id
-    row_by_id = {row["element_id"]: row for row in rows}
-    for previous_id in range(
-        first_body_id - 1, max(lower_bound, first_body_id - 3) - 1, -1
-    ):
-        previous_row = row_by_id.get(previous_id)
-        if previous_row is None:
-            continue
-        if _is_substantive_transition_anchor(previous_row["text"]):
-            refined_id = previous_id
-        else:
-            break
-
-    return refined_id
+    first_body_index = next(
+        index for index, row in enumerate(rows) if row["element_id"] == first_body_id
+    )
+    return _backtrack_opening_chain(rows, first_body_index, stop_index=-1)
 
 
 def _advance_past_toc_candidate(
@@ -220,7 +325,7 @@ def _advance_past_toc_candidate(
     candidate_id: int,
     *,
     lookback: int = 250,
-    lookahead: int = 500,
+    lookahead: int | None = None,
 ) -> int:
     """Move a candidate out of a TOC/navigation run to the first substantive code block.
 
@@ -233,7 +338,11 @@ def _advance_past_toc_candidate(
         return candidate_id
 
     lower_bound = max(0, candidate_id - lookback)
-    upper_bound = min(elements.height - 1, candidate_id + lookahead)
+    max_element_id = int(elements["element_id"].max())
+    if lookahead is None:
+        upper_bound = max_element_id
+    else:
+        upper_bound = min(max_element_id, candidate_id + lookahead)
     window = elements.filter(
         (pl.col("element_id") >= lower_bound) & (pl.col("element_id") <= upper_bound)
     )
@@ -249,69 +358,52 @@ def _advance_past_toc_candidate(
         return candidate_id
 
     candidate_text = rows[candidate_index]["text"]
+    candidate_in_navigation_run = _is_navigation_element(candidate_text) or (
+        _contains_transition_anchor(candidate_text)
+        and _starts_navigation_run(rows, candidate_index)
+    )
     toc_anchor_index: int | None = None
     for index in range(candidate_index, -1, -1):
         text = rows[index]["text"]
-        if _is_navigation_element(text):
+        if _is_navigation_element(text) or (
+            _contains_transition_anchor(text) and _starts_navigation_run(rows, index)
+        ):
             toc_anchor_index = index
             break
-        if _looks_like_body_start_element(text) or _is_substantive_transition_anchor(
-            text
-        ):
+        if _is_body_start_row(rows, index) or _is_substantive_transition_anchor(text):
             break
 
     if (
         toc_anchor_index is None
-        and (
-            _looks_like_body_start_element(candidate_text)
-            or _is_substantive_transition_anchor(candidate_text)
-        )
-        and not _is_navigation_element(candidate_text)
+        and (_is_body_start_row(rows, candidate_index) or _is_substantive_transition_anchor(candidate_text))
+        and not candidate_in_navigation_run
     ):
         return candidate_id
 
     if toc_anchor_index is None:
-        if not _is_navigation_element(rows[candidate_index]["text"]):
+        if not candidate_in_navigation_run:
             return candidate_id
         toc_anchor_index = candidate_index
 
     body_anchor_index: int | None = None
     for index in range(toc_anchor_index + 1, len(rows)):
-        text = rows[index]["text"]
-        if _is_navigation_element(text):
-            continue
-
-        if _looks_like_body_start_element(text):
+        if _is_body_start_row(rows, index):
             body_anchor_index = index
             break
 
-    if body_anchor_index is None:
-        for index in range(toc_anchor_index + 1, len(rows)):
-            text = rows[index]["text"]
-            if _is_navigation_element(text):
-                continue
-            if _is_substantive_transition_anchor(text):
-                body_anchor_index = index
-                break
+        text = rows[index]["text"]
+        if _is_navigation_element(text):
+            continue
+        if _is_substantive_transition_anchor(text):
+            body_anchor_index = index
+            break
 
     if body_anchor_index is not None:
-        refined_id = rows[body_anchor_index]["element_id"]
-        for previous_index in range(body_anchor_index - 1, toc_anchor_index, -1):
-            previous_text = rows[previous_index]["text"]
-            if _looks_like_body_start_element(
-                previous_text
-            ) or _is_substantive_transition_anchor(previous_text):
-                refined_id = rows[previous_index]["element_id"]
-                continue
-            if body_anchor_index - previous_index == 1 and _contains_transition_anchor(
-                previous_text
-            ):
-                refined_id = rows[previous_index]["element_id"]
-                continue
-            if _is_navigation_element(previous_text):
-                continue
-            break
-        return refined_id
+        return _backtrack_opening_chain(
+            rows,
+            body_anchor_index,
+            stop_index=toc_anchor_index,
+        )
 
     return candidate_id
 

@@ -206,11 +206,26 @@ def _sample_diagnostics(elements_df: pl.DataFrame) -> dict[str, int]:
         first_line = row["text"].split("\n")[0].strip()
         diagnostics["chars"] += len(first_line)
         label = _classify_scan_candidate(first_line)
-        if label in diagnostics:
+        if label in diagnostics and label != "heading_like":
             diagnostics[label] += 1
-        if is_heading_like(first_line):
+        if label == "heading_like" or is_heading_like(first_line):
             diagnostics["heading_like"] += 1
     return diagnostics
+
+
+def _reduce_sample_count_after_generation_failure(
+    sample_count: int,
+    exc: Exception,
+) -> int:
+    """Shrink the sample after generation failures so retries are materially different."""
+    if _is_context_length_error(exc):
+        return max(60, int(sample_count * 0.6))
+
+    lowered = str(exc).lower()
+    if "timed out" in lowered or "timeout" in lowered:
+        return max(80, int(sample_count * 0.75))
+
+    return max(100, sample_count - 40)
 
 
 def _is_context_length_error(exc: Exception) -> bool:
@@ -493,11 +508,18 @@ def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
         return
 
     if label == "chapter":
-        match = re.match(r"^CHAPTER\s+(\d+)\b", example, re.IGNORECASE)
+        match = re.match(
+            r"^CHAPTER\s+([A-Z0-9IVXLCDM]+(?:[-.][A-Z0-9IVXLCDM]+)*)\b",
+            example,
+            re.IGNORECASE,
+        )
         if match:
-            level.regex_pattern = r"^CHAPTER\s+\d+(?:\s+.*)?$"
+            number_pattern = r"[A-Z0-9IVXLCDM]+(?:[-.][A-Z0-9IVXLCDM]+)*"
+            level.regex_pattern = (
+                rf"^CHAPTER\s+{number_pattern}(?:\s+.*)?$"
+            )
             level.regex_patterns = [level.regex_pattern]
-            level.number_regex = r"\d+"
+            level.number_regex = number_pattern
         return
 
     if label == "section":
@@ -932,15 +954,17 @@ def scan_headings(
                 generation_feedback[0],
             )
             error_feedback = generation_feedback
-            if _is_context_length_error(exc):
-                reduced_sample_count = max(50, sample_count - 50)
-                if reduced_sample_count < sample_count:
-                    logger.warning(
-                        "Reducing sample_count from {} to {} after context-length failure",
-                        sample_count,
-                        reduced_sample_count,
-                    )
-                    sample_count = reduced_sample_count
+            reduced_sample_count = _reduce_sample_count_after_generation_failure(
+                sample_count,
+                exc,
+            )
+            if reduced_sample_count < sample_count:
+                logger.warning(
+                    "Reducing sample_count from {} to {} after generation failure",
+                    sample_count,
+                    reduced_sample_count,
+                )
+                sample_count = reduced_sample_count
             continue
 
         # Phase 3: Evaluate on full code elements
@@ -960,7 +984,7 @@ def scan_headings(
             break
 
         error_feedback = errors
-        sample_count += 100
+    sample_count = min(code_elements.height, sample_count + 50)
 
     if best_structure is None:
         detail = " ".join(last_generation_error).strip()
