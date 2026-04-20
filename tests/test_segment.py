@@ -654,6 +654,94 @@ Short supporting text."""
         assert split_chunks["chunk_count"].min() >= 2
         assert split_chunks["chunk_id"].n_unique() == len(split_chunks)
 
+    def test_build_chunks_packs_short_paragraphs_up_to_budget(self, tmp_path: Path):
+        """Short neighboring paragraphs should share chunk budget before splitting."""
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="PA", locality="PackedTown"),
+            code_slug="municipal-code",
+        )
+        code_dir = tmp_path / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        paragraph = " ".join(["word"] * 18)
+        body_text = "\n\n".join([paragraph] * 5)
+        markdown_text = f"""# ARTICLE I
+
+## 1-100. Purpose.
+
+{body_text}
+"""
+
+        sections_df = divide_into_sections(markdown_text)
+        sections_df = add_parent_relationships(sections_df)
+        sections_df = enrich_sections(sections_df, code_ref)
+
+        chunks_df = build_chunks_df(
+            sections_df,
+            code_ref,
+            markdown_text,
+            code_dir,
+            llm_context_limit=4400,
+        )
+
+        split_chunks = chunks_df.filter(pl.col("source_kind") == "section_body_split")
+        assert len(split_chunks) == 2
+        assert split_chunks["chunk_count"].to_list() == [2, 2]
+        assert split_chunks["body_text"][0].count("\n\n") >= 2
+
+    def test_build_chunks_packs_adjacent_child_sections_up_to_budget(
+        self, tmp_path: Path
+    ):
+        """Oversized parents should pack adjacent child sections before recursing deeper."""
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="PA", locality="PackedTown"),
+            code_slug="municipal-code",
+        )
+        code_dir = tmp_path / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        section_body = " ".join(["word"] * 20)
+        markdown_text = f"""# ARTICLE I
+
+## 1-100. Purpose.
+
+{section_body}
+
+## 1-200. Scope.
+
+{section_body}
+
+## 1-300. Definitions.
+
+{section_body}
+
+## 1-400. Administration.
+
+{section_body}
+"""
+
+        sections_df = divide_into_sections(markdown_text)
+        sections_df = add_parent_relationships(sections_df)
+        sections_df = enrich_sections(sections_df, code_ref)
+
+        chunks_df = build_chunks_df(
+            sections_df,
+            code_ref,
+            markdown_text,
+            code_dir,
+            llm_context_limit=4400,
+        )
+
+        packed_chunks = chunks_df.filter(
+            pl.col("source_kind") == "section_packed_split"
+        )
+        assert len(packed_chunks) == 2
+        assert packed_chunks["chunk_count"].to_list() == [2, 2]
+        assert "## 1-100. Purpose." in packed_chunks["body_text"][0]
+        assert "## 1-200. Scope." in packed_chunks["body_text"][0]
+        assert "## 1-300. Definitions." in packed_chunks["body_text"][1]
+        assert "## 1-400. Administration." in packed_chunks["body_text"][1]
+
     def test_segment_legal_code_falls_back_to_code_start_without_regions(
         self,
         tmp_path: Path,
@@ -1448,7 +1536,7 @@ class TestCreateSegmentsDf:
             assert _estimate_token_count(row["segment_text"]) <= 50
 
     def test_paragraph_preservation_in_flat_format(self):
-        """Test that paragraph boundaries are preserved in flat format."""
+        """Flat-format segmentation should pack short adjacent paragraphs when possible."""
         text = """First paragraph with content.
 
 Second paragraph here.
@@ -1466,18 +1554,81 @@ Third paragraph content."""
 
         result = create_segments_df(df, token_limit=100)
 
-        # Should have 3 segments (one per paragraph)
-        assert len(result) == 3
+        # All three paragraphs should pack into one retrieval segment.
+        assert len(result) == 1
 
-        # Check each segment contains expected paragraph
+        # Check packed segment contains all paragraphs in order.
         segment_texts = result["segment_text"].to_list()
         assert "First paragraph" in segment_texts[0]
-        assert "Second paragraph" in segment_texts[1]
-        assert "Third paragraph" in segment_texts[2]
+        assert "Second paragraph" in segment_texts[0]
+        assert "Third paragraph" in segment_texts[0]
 
         # All segments should belong to same section
         section_refs = result["section_ordinal"].to_list()
         assert all(ref == 0 for ref in section_refs)
+
+    def test_create_segments_df_packs_adjacent_paragraphs_under_limit(self):
+        """Retrieval segments should pack adjacent paragraphs up to the effective budget."""
+        paragraph = " ".join(["alpha"] * 12) + "."
+        text = "\n\n".join([paragraph] * 4)
+
+        df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_level": [2],
+                "heading_text": ["## Section"],
+                "body_text": [text],
+            }
+        )
+
+        result = create_segments_df(df, token_limit=16)
+
+        # create_segments_df enforces a minimum effective body budget of 20 tokens,
+        # so this lower token limit still permits only one paragraph per segment.
+        assert len(result) == 4
+        for row in result.to_dicts():
+            assert _estimate_token_count(row["segment_text"]) <= 16
+
+        packed = create_segments_df(df, token_limit=32)
+        assert len(packed) == 2
+        assert packed["segment_text"][0].count("alpha") == 24
+        assert packed["segment_text"][1].count("alpha") == 24
+
+    def test_create_segments_df_prefers_internal_section_boundaries(self):
+        """Packed chunk bodies should prefer embedded markdown section boundaries."""
+        text = """## 1-100. Purpose.
+
+Purpose text for the first section.
+
+## 1-200. Scope.
+
+Scope text for the second section.
+
+## 1-300. Definitions.
+
+Definitions text for the third section."""
+
+        df = pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_level": [1],
+                "heading_text": ["# ARTICLE I"],
+                "body_text": [text],
+                "source_kind": ["section_packed_split"],
+            }
+        )
+
+        result = create_segments_df(df, token_limit=40)
+
+        assert len(result) == 2
+        assert "## 1-100. Purpose." in result["segment_text"][0]
+        assert "## 1-200. Scope." in result["segment_text"][0]
+        assert "## 1-300. Definitions." in result["segment_text"][1]
+        adjusted_limit = max(20, 40 - _estimate_token_count("# ARTICLE I"))
+        assert all(
+            _estimate_token_count(text) <= adjusted_limit
+            for text in result["segment_text"].to_list()
+        )
 
     def test_mixed_scenarios_flat_format(self):
         """Test mixed scenarios with various section lengths."""

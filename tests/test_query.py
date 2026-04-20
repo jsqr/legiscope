@@ -29,6 +29,7 @@ from legiscope.query import (
     DEFAULT_RELEVANCE_THRESHOLD,
     DEFAULT_N_RESULTS,
     DEFAULT_HYDE_ENABLED,
+    DEFAULT_LEXICAL_RERANKING_ENABLED,
     DEFAULT_VALIDATION_ENABLED,
 )
 from legiscope.retrieval_guidance import RetrievalGuidance, RetrievalGuidanceRequest
@@ -173,7 +174,10 @@ class TestPromptContracts:
         )
 
         assert "Structured answer contract:" in system_prompt
-        assert "Declared response options: Sales AND/OR Use AND/OR Possession" in system_prompt
+        assert (
+            "Declared response options: Sales AND/OR Use AND/OR Possession"
+            in system_prompt
+        )
         assert "join selections with ` AND/OR `" in system_prompt
         assert "Apply these coding instructions exactly" in system_prompt
 
@@ -842,6 +846,7 @@ class TestBatchQueryConfig:
             assert settings.llm is not None  # Should be set by __post_init__
             assert settings.n_results == DEFAULT_N_RESULTS
             assert settings.use_hyde == DEFAULT_HYDE_ENABLED
+            assert settings.use_lexical_reranking == DEFAULT_LEXICAL_RERANKING_ENABLED
             mock_client.assert_called_once()
 
     def test_with_custom_llm(self):
@@ -858,12 +863,14 @@ class TestBatchQueryConfig:
             llm=llm_config,
             n_results=20,
             use_hyde=True,
+            use_lexical_reranking=True,
             filter_relevance=True,
             relevance_threshold=0.8,
         )
 
         assert settings.n_results == 20
         assert settings.use_hyde is True
+        assert settings.use_lexical_reranking is True
         assert settings.filter_relevance is True
         assert settings.relevance_threshold == 0.8
 
@@ -901,6 +908,7 @@ class TestBatchQueryConfig:
 
         assert settings.n_results == DEFAULT_N_RESULTS
         assert settings.use_hyde == DEFAULT_HYDE_ENABLED
+        assert settings.use_lexical_reranking == DEFAULT_LEXICAL_RERANKING_ENABLED
         assert settings.filter_relevance == DEFAULT_RELEVANCE_FILTER_ENABLED
         assert settings.relevance_threshold == DEFAULT_RELEVANCE_THRESHOLD
         assert settings.validate_supporting_passages == DEFAULT_VALIDATION_ENABLED
@@ -912,6 +920,7 @@ class TestBatchQueryConfig:
             llm=mock_llm,
             n_results=20,
             use_hyde=True,
+            use_lexical_reranking=True,
             filter_relevance=True,
             relevance_threshold=0.8,
             validate_supporting_passages=False,
@@ -919,6 +928,7 @@ class TestBatchQueryConfig:
 
         assert settings.n_results == 20
         assert settings.use_hyde is True
+        assert settings.use_lexical_reranking is True
         assert settings.filter_relevance is True
         assert settings.relevance_threshold == 0.8
         assert settings.validate_supporting_passages is False
@@ -1199,6 +1209,62 @@ class TestBatchQueryConfigBasics:
                 assert len(captured_guidance) == 1
                 assert captured_guidance[0] is not None
                 assert captured_guidance[0].guidance_topic == "date"
+
+    def test_run_queries_propagates_lexical_reranking_flag(self, tmp_path):
+        """Batch settings should pass the lexical reranking toggle into retrieval settings."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="test query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="Test answer",
+            reasoning="Test reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        with patch(
+            "legiscope.query.retrieve_sections", return_value=retrieval_results
+        ) as mock_retrieve:
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(mock_response, []),
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    use_lexical_reranking=True,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[QueryInput(question="query1", variable_name="dp_enacted")],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        retrieval_settings = mock_retrieve.call_args.kwargs["settings"]
+        assert retrieval_settings.use_lexical_reranking is True
 
     def test_run_queries_uses_retrieval_and_completion_query_variants(self, tmp_path):
         """Per-query guidance should split retrieval text from completion text."""
@@ -1627,4 +1693,7 @@ class TestBatchQueryConfigBasics:
 
         assert captured_prior_answers[0] is None
         assert captured_prior_answers[1] is not None
-        assert captured_prior_answers[1]["dp_activity"]["short_answer"] == "Sales AND/OR Use"
+        assert (
+            captured_prior_answers[1]["dp_activity"]["short_answer"]
+            == "Sales AND/OR Use"
+        )

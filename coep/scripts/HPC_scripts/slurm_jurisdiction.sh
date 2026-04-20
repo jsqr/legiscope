@@ -101,6 +101,7 @@ SHARED_CODE_DIR="${PROJECT_DIR}/${CODE_DIR_REL}"
 SHARED_OUTPUT_DIR="${PROJECT_DIR}/${OUTPUT_DIR_REL}"
 CURRENT_STAGE="setup"
 VLLM_PID=""
+CHECKPOINT_SYNC_DONE=0
 
 resolve_tmp_root() {
     local candidate
@@ -265,6 +266,21 @@ sync_checkpoint_artifacts() {
     if [[ -d "${WORK_DIR}/${OUTPUT_DIR_REL}" ]]; then
         sync_output_artifacts "$reason"
     fi
+
+    CHECKPOINT_SYNC_DONE=1
+}
+
+handle_termination_signal() {
+    local signal_name="$1"
+
+    echo "Received ${signal_name} during stage '${CURRENT_STAGE}'; attempting checkpoint sync before termination..."
+
+    if [[ "$CHECKPOINT_SYNC_DONE" -eq 0 ]]; then
+        sync_checkpoint_artifacts "signal-${signal_name,,}-${CURRENT_STAGE}" || true
+    fi
+
+    trap - TERM INT
+    exit 143
 }
 
 cleanup_on_exit() {
@@ -274,7 +290,7 @@ cleanup_on_exit() {
         kill "$VLLM_PID" 2>/dev/null || true
     fi
 
-    if [[ "$exit_code" -ne 0 ]]; then
+    if [[ "$exit_code" -ne 0 && "$CHECKPOINT_SYNC_DONE" -eq 0 ]]; then
         echo "Job failed during stage '${CURRENT_STAGE}' (exit ${exit_code}); attempting checkpoint sync before exit..."
         sync_checkpoint_artifacts "failure-${CURRENT_STAGE}" || true
     fi
@@ -308,6 +324,8 @@ cd "$WORK_DIR"
 export PYTHONPATH="$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 trap 'cleanup_on_exit "$?"' EXIT
+trap 'handle_termination_signal TERM' TERM
+trap 'handle_termination_signal INT' INT
 
 # Load environment variables (.env has API keys including OPENROUTER_API_KEY)
 if [[ -f .env ]]; then

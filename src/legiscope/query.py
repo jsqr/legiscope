@@ -66,6 +66,9 @@ DEFAULT_LLM_TIMEOUT_SECONDS = float(_lp.get("timeout", 300))
 
 # Retrieval-phase settings (single source of truth from retrieval section)
 DEFAULT_HYDE_ENABLED: bool = _rp.get("hyde", {}).get("enabled", False)
+DEFAULT_LEXICAL_RERANKING_ENABLED: bool = _rp.get("lexical_reranking", {}).get(
+    "enabled", False
+)
 DEFAULT_RELEVANCE_FILTER_ENABLED: bool = _rp.get("relevance_filter", {}).get(
     "enabled", False
 )
@@ -211,6 +214,7 @@ class BatchQuerySettings:
         llm: LLM configuration (defaults to fast client if None)
         n_results: Number of results to retrieve per query
         use_hyde: Whether to apply HYDE query rewriting
+        use_lexical_reranking: Whether retrieval may overfetch and rerank using lexical hints
         filter_relevance: Whether to filter sections by relevance
         relevance_threshold: Minimum confidence for relevance filtering
         retrieval_guidance_provider: Optional project-owned hook that maps a
@@ -252,6 +256,7 @@ class BatchQuerySettings:
     # Retrieval settings
     n_results: int = DEFAULT_N_RESULTS
     use_hyde: bool = DEFAULT_HYDE_ENABLED
+    use_lexical_reranking: bool = DEFAULT_LEXICAL_RERANKING_ENABLED
 
     # Query processing
     filter_relevance: bool = DEFAULT_RELEVANCE_FILTER_ENABLED
@@ -359,7 +364,7 @@ class LegalQueryResponse(BaseModel):
         description="Detailed explanation of the legal reasoning used to arrive at the answer"
     )
     citations: list[str] = Field(
-        description="List of specific legal sections or provisions that support the answer"
+        description="List of specific legal provisions, headings, or cited sections that support the answer"
     )
     supporting_passages: list[str] = Field(
         description="Direct excerpts from the retrieved legal text that support the reasoning"
@@ -384,7 +389,7 @@ def _validate_supporting_passages(
     Validate that supporting passages exist in retrieved text with fuzzy matching.
 
     This function guards against LLM hallucination or distortion by verifying that
-    each supporting passage in the response actually appears in the retrieved sections.
+    each supporting passage in the response actually appears in the retrieved context units.
     It uses both exact substring matching and fuzzy matching to detect near-misses.
 
     Args:
@@ -408,7 +413,7 @@ def _validate_supporting_passages(
         f"Validating {len(response.supporting_passages)} supporting passages against retrieved text"
     )
 
-    # Collect text from matching sections and segments only
+    # Collect text from matching retrieval units and segments only
     all_texts = []
     for section in sections:
         if section.body_text:
@@ -573,20 +578,20 @@ def query_legal_documents(
     # Extract and validate sections from retrieval results
     sections = retrieval_results.sections
     if not sections:
-        logger.warning("No sections found in retrieval results")
+        logger.warning("No retrieval units found in retrieval results")
         if debug_capture is not None:
             debug_capture.setdefault("relevance", {})["stage_status"] = "no_sections"
             debug_capture.setdefault("query", {})["stage_status"] = "no_sections"
         return LegalQueryResponse(
             short_answer="I cannot answer your question as no relevant legal provisions were found.",
-            reasoning="The search did not return any legal sections that address your query.",
+            reasoning="The search did not return any relevant retrieval units that address your query.",
             citations=[],
             supporting_passages=[],
             confidence=0.0,
             limitations="No relevant legal information was available to answer query.",
         ), []
 
-    logger.info(f"Found {len(sections)} relevant sections to analyze")
+    logger.info(f"Found {len(sections)} relevant retrieval units to analyze")
 
     if debug_capture is not None:
         debug_capture.setdefault("relevance", {})
@@ -605,7 +610,7 @@ def query_legal_documents(
         assert settings.filter_llm is not None
         try:
             logger.debug(
-                f"Filtering for relevant sections using model: {settings.filter_llm.model}",
+                f"Filtering for relevant retrieval units using model: {settings.filter_llm.model}",
                 f" temperature: {settings.filter_llm.temperature}",
             )
             filtered_results = filter_sections(
@@ -646,13 +651,15 @@ def query_legal_documents(
                         "stage_status": "completed",
                         "original_section_count": filtered_results.filtering_metadata.original_count,
                         "filtered_section_count": filtered_results.filtering_metadata.filtered_count,
+                        "original_retrieval_unit_count": filtered_results.filtering_metadata.original_count,
+                        "filtered_retrieval_unit_count": filtered_results.filtering_metadata.filtered_count,
                         "relevance_assessments": _json_debug(assessments),
                     }
                 )
 
         except Exception:
             sections = retrieval_results.sections
-            logger.warning("Retrieved section relevance filtering failed.")
+            logger.warning("Retrieved retrieval-unit relevance filtering failed.")
             if debug_capture is not None:
                 debug_capture["relevance"].update(
                     {
@@ -666,22 +673,25 @@ def query_legal_documents(
             {
                 "original_section_count": len(retrieval_results.sections),
                 "filtered_section_count": len(retrieval_results.sections),
+                "original_retrieval_unit_count": len(retrieval_results.sections),
+                "filtered_retrieval_unit_count": len(retrieval_results.sections),
                 "relevance_assessments": "[]",
             }
         )
 
     if not sections:
-        logger.warning("All sections filtered out as irrelevant")
+        logger.warning("All retrieval units filtered out as irrelevant")
         if debug_capture is not None:
             debug_capture["query"].update(
                 {
                     "stage_status": "no_sections_after_filtering",
                     "sections_used_for_completion": 0,
+                    "retrieval_units_used_for_completion": 0,
                 }
             )
         return LegalQueryResponse(
             short_answer="I cannot answer your question as no relevant legal provisions were found after filtering.",
-            reasoning="The search returned legal sections, but all were determined to be irrelevant to your specific query.",
+            reasoning="The search returned legal retrieval units, but all were determined to be irrelevant to your specific query.",
             citations=[],
             supporting_passages=[],
             confidence=0.0,
@@ -701,7 +711,11 @@ def query_legal_documents(
             {
                 "stage_status": "completed",
                 "sections_used_for_completion": len(sections),
+                "retrieval_units_used_for_completion": len(sections),
                 "final_section_headings": _json_debug(
+                    [section.heading_text for section in sections[:DEBUG_SECTION_LIMIT]]
+                ),
+                "final_retrieval_unit_headings": _json_debug(
                     [section.heading_text for section in sections[:DEBUG_SECTION_LIMIT]]
                 ),
                 "llm_system_prompt": system_prompt,
@@ -851,7 +865,7 @@ def run_queries(
     """
     Run multiple queries against a jurisdiction and compile results in a structured DataFrame.
 
-    Processes a list of queries by retrieving relevant sections for each query and
+    Processes a list of queries by retrieving relevant context units for each query and
     generating structured legal responses. Results are compiled into a DataFrame for
     easy analysis and comparison.
 
@@ -872,7 +886,8 @@ def run_queries(
             - supporting_passages: List of supporting passages (as string)
             - confidence: Confidence score (0-1)
             - limitations: Any limitations or caveats
-            - sections_found: Number of relevant sections found
+            - sections_found: Compatibility alias for number of relevant retrieval units found
+            - retrieval_units_found: Number of relevant retrieval units found
             - segments_found: Number of matching segments found
             - processing_time: Time taken to process query (in seconds)
             - ... plus any metadata fields present in input
@@ -989,7 +1004,7 @@ def run_queries(
         if "Error:" not in result["short_answer"]:
             logger.info(
                 f"Query {i + 1} completed - confidence: {result['confidence']:.2f}, "
-                f"sections: {result['sections_found']}, time: {result['processing_time']:.2f}s"
+                f"retrieval units: {result['sections_found']}, time: {result['processing_time']:.2f}s"
             )
 
     _write_stage_debug_csv(
@@ -1015,13 +1030,13 @@ def run_queries(
 
 
 def _prepare_legal_context(sections: list[SectionResult]) -> str:
-    """Prepare formatted context from sections for LLM processing."""
-    context_sections = []
+    """Prepare formatted context from retrieved context units for LLM processing."""
+    context_units = []
     for i, section in enumerate(sections):
-        # Build section parts as a list for efficient concatenation
+        # Build context-unit parts as a list for efficient concatenation
         # Start with metadata
         section_parts = [
-            f"\nSection {i + 1}: {section.heading_text}",
+            f"\nRetrieval Unit {i + 1}: {section.heading_text}",
             f"Relevance Score: {section.relevance_score:.3f}",
         ]
 
@@ -1039,9 +1054,9 @@ def _prepare_legal_context(sections: list[SectionResult]) -> str:
         else:
             section_parts.append("Content: [No body text]")
 
-        context_sections.append("\n".join(section_parts))
+        context_units.append("\n".join(section_parts))
 
-    return "\n".join(context_sections)
+    return "\n".join(context_units)
 
 
 def _build_structured_answer_contract(
@@ -1114,12 +1129,12 @@ Your task is to analyze the provided legal context and answer the user's questio
 Guidelines for your analysis:
 1. Provide a direct, concise answer to the user's question
 2. Explain your legal reasoning clearly and thoroughly
-3. Cite specific sections or provisions that support your answer
+3. Cite specific provisions or headings that support your answer
 4. Include direct excerpts from the legal text that support your reasoning
 5. Assess your confidence based on the available evidence
 6. Note any limitations or gaps in the available information
 
-When citing sections, use the section headings provided in the context. When including
+When citing legal authority, use the provision or heading labels provided in the context. When including
 supporting passages, use direct quotes from the legal text that most strongly support
 your reasoning.
 
@@ -1218,7 +1233,7 @@ def _build_relevance_debug_prompt(query: str, settings: QuerySettings) -> str:
 def _summarize_retrieved_sections(
     sections: list[SectionResult],
 ) -> tuple[str, str]:
-    """Summarize top sections and matching segments for retrieval-stage debug rows."""
+    """Summarize top retrieval units and matching segments for retrieval-stage debug rows."""
     section_summaries = []
     segment_summaries = []
 
@@ -1730,6 +1745,7 @@ def _process_single_query_with_error_handling(
             n_results=settings.n_results,
             jurisdiction_id=jurisdiction_id,
             use_hyde=settings.use_hyde,
+            use_lexical_reranking=settings.use_lexical_reranking,
             hyde_client=llm.client if settings.use_hyde else None,
             hyde_model=llm.model,
             lexical_query_text=str(metadata.get("query_text") or query),
@@ -1754,8 +1770,10 @@ def _process_single_query_with_error_handling(
                 "stage_status": "completed",
                 "rewritten_query": query_info.rewritten_query,
                 "sections_found": sections_found,
+                "retrieval_units_found": sections_found,
                 "segments_found": segments_found,
                 "retrieved_sections": retrieved_sections,
+                "retrieved_retrieval_units": retrieved_sections,
                 "retrieved_segments": retrieved_segments,
             }
         )
@@ -1817,6 +1835,7 @@ def _process_single_query_with_error_handling(
             "confidence": query_response.confidence,
             "limitations": query_response.limitations,
             "sections_found": sections_found,
+            "retrieval_units_found": sections_found,
             "segments_found": segments_found,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": str(similarity_scores),
@@ -1854,6 +1873,7 @@ def _process_single_query_with_error_handling(
             "confidence": 0.0,
             "limitations": f"Processing failed due to error: {str(e)}",
             "sections_found": 0,
+            "retrieval_units_found": 0,
             "segments_found": 0,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": "[]",
@@ -1877,6 +1897,7 @@ def _compile_query_results(results: list[dict[str, Any]]) -> pl.DataFrame:
                 "confidence": pl.Float64,
                 "limitations": pl.Utf8,
                 "sections_found": pl.Int64,
+                "retrieval_units_found": pl.Int64,
                 "segments_found": pl.Int64,
                 "processing_time": pl.Float64,
                 "supporting_passage_validation_scores": pl.Utf8,

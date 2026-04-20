@@ -589,11 +589,267 @@ def _split_chunk_body(
 
     heading_tokens = _estimate_token_count(heading_text)
     body_token_limit = max(20, chunk_token_limit - heading_tokens)
-    parts = segment_text(body_text, token_limit=body_token_limit)
+    parts = _split_text_to_budget(body_text, token_limit=body_token_limit)
     if parts:
         return parts
 
     return [body_text.strip()]
+
+
+def _split_text_to_budget(text: str, token_limit: int) -> list[str]:
+    """Pack adjacent paragraphs up to a token budget before splitting harder.
+
+    This is intentionally more aggressive than ``segment_text()`` for derived
+    chunk construction: short neighboring paragraphs should share a chunk when
+    the combined text still fits the retrieval budget.
+    """
+    if token_limit <= 0:
+        raise ValueError("token_limit must be positive")
+
+    normalized_text = _normalize_segmentation_text(text)
+    paragraphs = [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", normalized_text.strip())
+        if paragraph.strip()
+    ]
+    if not paragraphs:
+        return [normalized_text.strip()] if normalized_text.strip() else []
+
+    packed_parts: list[str] = []
+    current_parts: list[str] = []
+    current_tokens = 0
+
+    def _flush_current() -> None:
+        nonlocal current_parts, current_tokens
+        if not current_parts:
+            return
+        packed_parts.append("\n\n".join(current_parts).strip())
+        current_parts = []
+        current_tokens = 0
+
+    for paragraph in paragraphs:
+        paragraph_parts = [paragraph]
+        if _estimate_token_count(paragraph) > token_limit:
+            paragraph_parts = segment_text(paragraph, token_limit=token_limit)
+            if not paragraph_parts:
+                paragraph_parts = _split_by_token_budget(paragraph, token_limit)
+
+        for part in paragraph_parts:
+            part_text = part.strip()
+            if not part_text:
+                continue
+
+            part_tokens = _estimate_token_count(part_text)
+            if current_parts and current_tokens + part_tokens > token_limit:
+                _flush_current()
+
+            current_parts.append(part_text)
+            current_tokens += part_tokens
+
+    _flush_current()
+    return packed_parts
+
+
+def _pack_ordered_units(units: list[str], token_limit: int) -> list[str]:
+    """Pack pre-ordered text units into as few budget-fitting chunks as possible."""
+    if token_limit <= 0:
+        raise ValueError("token_limit must be positive")
+
+    packed_units: list[str] = []
+    current_units: list[str] = []
+    current_tokens = 0
+
+    def _flush_current() -> None:
+        nonlocal current_units, current_tokens
+        if not current_units:
+            return
+        packed_units.append("\n\n".join(current_units).strip())
+        current_units = []
+        current_tokens = 0
+
+    for unit in units:
+        unit_text = unit.strip()
+        if not unit_text:
+            continue
+
+        candidate_parts = [unit_text]
+        if _estimate_token_count(unit_text) > token_limit:
+            candidate_parts = _split_text_to_budget(unit_text, token_limit)
+
+        for candidate in candidate_parts:
+            candidate_text = candidate.strip()
+            if not candidate_text:
+                continue
+
+            candidate_tokens = _estimate_token_count(candidate_text)
+            if current_units and current_tokens + candidate_tokens > token_limit:
+                _flush_current()
+
+            current_units.append(candidate_text)
+            current_tokens += candidate_tokens
+
+    _flush_current()
+    return packed_units
+
+
+def _split_markdown_section_units(text: str) -> list[str]:
+    """Split text into markdown-heading-delimited section units when present."""
+    normalized_text = _normalize_segmentation_text(text).strip()
+    if not normalized_text:
+        return []
+
+    heading_pattern = re.compile(r"(?m)^#{1,6}\s+.+$")
+    matches = list(heading_pattern.finditer(normalized_text))
+    if len(matches) <= 1:
+        return [normalized_text]
+
+    units: list[str] = []
+    if matches[0].start() > 0:
+        preamble = normalized_text[: matches[0].start()].strip()
+        if preamble:
+            units.append(preamble)
+
+    for index, match in enumerate(matches):
+        start = match.start()
+        end = (
+            matches[index + 1].start()
+            if index + 1 < len(matches)
+            else len(normalized_text)
+        )
+        block = normalized_text[start:end].strip()
+        if block:
+            units.append(block)
+
+    return units or [normalized_text]
+
+
+def _split_paragraph_units(text: str) -> list[str]:
+    """Split text into non-empty paragraph units."""
+    normalized_text = _normalize_segmentation_text(text).strip()
+    if not normalized_text:
+        return []
+
+    return [
+        paragraph.strip()
+        for paragraph in re.split(r"\n\s*\n", normalized_text)
+        if paragraph.strip()
+    ]
+
+
+def _split_sentence_units(text: str) -> list[str]:
+    """Split text into sentence-like units, preserving punctuation when possible."""
+    normalized_text = _normalize_segmentation_text(text).strip()
+    if not normalized_text:
+        return []
+
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", normalized_text)
+        if sentence.strip()
+    ]
+    return sentences or [normalized_text]
+
+
+def _segment_text_for_retrieval(
+    text: str,
+    token_limit: int,
+    *,
+    boundary_level: str = "section",
+) -> list[str]:
+    """Segment text for retrieval with strongest possible natural boundaries.
+
+    Boundary preference order is:
+    1. section breaks (markdown headings inside a packed chunk body)
+    2. paragraph breaks
+    3. sentence breaks
+    4. raw token-budget fallback
+
+    Adjacent units at the current boundary level are packed together when the
+    combined text still fits under ``token_limit``.
+    """
+    if not isinstance(text, str):
+        raise TypeError(f"text must be a string, got {type(text)}")
+
+    if not isinstance(token_limit, (int, float)) or token_limit <= 0:
+        raise ValueError(f"token_limit must be a positive number, got {token_limit}")
+
+    normalized_text = _normalize_segmentation_text(text).strip()
+    if not normalized_text:
+        return []
+
+    if _estimate_token_count(normalized_text) <= token_limit:
+        return [normalized_text]
+
+    next_level = {
+        "section": "paragraph",
+        "paragraph": "sentence",
+        "sentence": "token",
+        "token": None,
+    }
+    joiner = {
+        "section": "\n\n",
+        "paragraph": "\n\n",
+        "sentence": " ",
+    }
+
+    if boundary_level == "token":
+        return [
+            chunk.strip()
+            for chunk in _split_by_token_budget(normalized_text, int(token_limit))
+            if chunk.strip()
+        ]
+
+    splitters = {
+        "section": _split_markdown_section_units,
+        "paragraph": _split_paragraph_units,
+        "sentence": _split_sentence_units,
+    }
+    units = splitters[boundary_level](normalized_text)
+    if len(units) <= 1:
+        return _segment_text_for_retrieval(
+            normalized_text,
+            token_limit,
+            boundary_level=next_level[boundary_level] or "token",
+        )
+
+    packed_segments: list[str] = []
+    current_units: list[str] = []
+    current_tokens = 0
+    current_joiner = joiner[boundary_level]
+
+    def _flush_current() -> None:
+        nonlocal current_units, current_tokens
+        if not current_units:
+            return
+        packed_segments.append(current_joiner.join(current_units).strip())
+        current_units = []
+        current_tokens = 0
+
+    for unit in units:
+        unit_text = unit.strip()
+        if not unit_text:
+            continue
+
+        unit_tokens = _estimate_token_count(unit_text)
+        if unit_tokens > token_limit:
+            _flush_current()
+            packed_segments.extend(
+                _segment_text_for_retrieval(
+                    unit_text,
+                    token_limit,
+                    boundary_level=next_level[boundary_level] or "token",
+                )
+            )
+            continue
+
+        if current_units and current_tokens + unit_tokens > token_limit:
+            _flush_current()
+
+        current_units.append(unit_text)
+        current_tokens += unit_tokens
+
+    _flush_current()
+    return packed_segments
 
 
 def build_chunks_df(
@@ -607,9 +863,12 @@ def build_chunks_df(
 
     Canonical section chunks preserve the legal heading tree and recurse to
     smaller descendants when a full section subtree would exceed the derived
-    chunk budget. Non-canonical regions flagged for default chunking, such as
-    legal introductions and annotations, are added as auxiliary chunks so they
-    remain retrievable without polluting canonical section structure.
+    chunk budget. When a section is too large, adjacent child subtrees that do
+    fit within the remaining body budget are packed together under the parent
+    heading before falling back to child-level recursion. Non-canonical regions
+    flagged for default chunking, such as legal introductions and annotations,
+    are added as auxiliary chunks so they remain retrievable without polluting
+    canonical section structure.
     """
     if not isinstance(sections_df, pl.DataFrame):
         raise TypeError(
@@ -718,15 +977,35 @@ def build_chunks_df(
             )
             return
 
+        heading_tokens = _estimate_token_count(section["heading_text"])
+        body_token_limit = max(20, chunk_token_limit - heading_tokens)
         own_body_text = section.get("body_text") or ""
-        if own_body_text.strip():
-            body_parts = _split_chunk_body(
-                own_body_text,
-                section["heading_text"],
-                chunk_token_limit,
+        pending_units: list[tuple[str, bool]] = []
+
+        def _flush_pending_units() -> None:
+            nonlocal pending_units
+            if not pending_units:
+                return
+
+            packed_bodies = _pack_ordered_units(
+                [text for text, _ in pending_units],
+                body_token_limit,
             )
-            total_parts = len(body_parts)
-            for index, part in enumerate(body_parts, start=1):
+            includes_child_content = any(
+                include_child for _, include_child in pending_units
+            )
+            total_parts = len(packed_bodies)
+            source_kind = (
+                "section_packed"
+                if includes_child_content and total_parts == 1
+                else "section_packed_split"
+                if includes_child_content
+                else "section_body"
+                if total_parts == 1
+                else "section_body_split"
+            )
+
+            for index, part in enumerate(packed_bodies, start=1):
                 display_heading = section["heading_text"]
                 if total_parts > 1:
                     display_heading = f"{display_heading} (Part {index})"
@@ -739,9 +1018,7 @@ def build_chunks_df(
                     parent_id=section.get("parent_id"),
                     line_number=section["line_number"],
                     context_path=context_path,
-                    source_kind=(
-                        "section_body" if total_parts == 1 else "section_body_split"
-                    ),
+                    source_kind=source_kind,
                     region_role="main_body",
                     retrieval_priority=3,
                     chunk_part=index,
@@ -750,8 +1027,30 @@ def build_chunks_df(
                     section_number=section.get("section_number"),
                 )
 
+            pending_units = []
+
+        if own_body_text.strip():
+            for body_part in _split_chunk_body(
+                own_body_text,
+                section["heading_text"],
+                chunk_token_limit,
+            ):
+                pending_units.append((body_part, False))
+
         for child in section.get("children") or []:
-            _build_canonical_chunks(int(child))
+            child_ordinal = int(child)
+            child_full_text = _render_subtree_text(child_ordinal)
+            if (
+                child_full_text
+                and _estimate_token_count(child_full_text) <= body_token_limit
+            ):
+                pending_units.append((child_full_text, True))
+                continue
+
+            _flush_pending_units()
+            _build_canonical_chunks(child_ordinal)
+
+        _flush_pending_units()
 
     root_sections = (
         sections_df.filter(pl.col("parent").is_null())
@@ -988,7 +1287,7 @@ def create_segments_df(
     """
     Create a flattened DataFrame with one row per text segment.
 
-    Process text column of each section and split it into segments,
+    Process text column of each section and split it into retrieval-oriented segments,
     returning a flattened DataFrame where each row represents a single segment
     with rich metadata for embedding preparation and analysis.
 
@@ -1024,6 +1323,8 @@ def create_segments_df(
         - Empty or null text results in no segments for that section
         - Segments are ordered sequentially across all sections
         - Preserves all section context for each segment
+        - Packs adjacent units when they still fit under the embedding budget
+        - Respects section breaks over paragraph breaks, and paragraph breaks over sentence breaks
         - Ideal for direct insertion into vector databases or embedding pipelines
         - Each segment can be processed independently for parallel processing
     """
@@ -1118,8 +1419,10 @@ def create_segments_df(
         min_tokens = 20
         adjusted_token_limit = max(min_tokens, token_limit - heading_tokens)
 
-        # Create segments for non-empty text
-        segments = segment_text(text, adjusted_token_limit)
+        # Create retrieval-oriented segments for non-empty text.
+        # Prefer section and paragraph boundaries, but pack adjacent units when
+        # the combined text still fits the effective embedding budget.
+        segments = _segment_text_for_retrieval(text, adjusted_token_limit)
 
         # Validate that no segment exceeds the adjusted token limit
         for segment in segments:

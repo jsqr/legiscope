@@ -455,6 +455,7 @@ class TestSectionRetrievalConfig:
             SectionRetrievalSettings,
             DEFAULT_N_RESULTS,
             DEFAULT_HYDE_ENABLED,
+            DEFAULT_LEXICAL_RERANKING_ENABLED,
         )
 
         settings = SectionRetrievalSettings()
@@ -462,6 +463,7 @@ class TestSectionRetrievalConfig:
         # All inherited from RetrievalSettings
         assert settings.n_results == DEFAULT_N_RESULTS
         assert settings.use_hyde == DEFAULT_HYDE_ENABLED
+        assert settings.use_lexical_reranking == DEFAULT_LEXICAL_RERANKING_ENABLED
 
     def test_missing_parquet_path_raises_error(self):
         """Test that sections_parquet_path is now a function parameter."""
@@ -496,6 +498,14 @@ class TestSectionRetrievalConfig:
         assert settings.n_results == 20
         assert settings.use_hyde is True
         assert settings.hyde_client is mock_client
+
+    def test_can_enable_lexical_reranking_explicitly(self):
+        """Lexical reranking remains available behind an explicit settings flag."""
+        from legiscope.retrieve import SectionRetrievalSettings
+
+        settings = SectionRetrievalSettings(use_lexical_reranking=True)
+
+        assert settings.use_lexical_reranking is True
 
 
 class TestRetrievalConfigBasics:
@@ -758,8 +768,10 @@ class TestSectionRetrievalConfigBasics:
         assert results.sections[0].chunk_id == "chunk-0"
         assert results.sections[0].body_text == "Chunk-scoped content only."
 
-    def test_retrieve_sections_lexically_reranks_exact_anchor_matches(self, tmp_path):
-        """Hybrid retrieval should boost the section that contains exact legal anchors."""
+    def test_retrieve_sections_keeps_semantic_order_when_lexical_hints_present(
+        self, tmp_path
+    ):
+        """Lexical hints should not change ordering when lexical reranking is disabled."""
         from unittest.mock import Mock, patch
 
         import polars as pl
@@ -822,6 +834,152 @@ class TestSectionRetrievalConfigBasics:
                     settings,
                 )
 
+        assert len(results.sections) == 1
+        assert results.sections[0].section_id == "s0"
+        assert mock_collection.query.call_args.kwargs["n_results"] == 1
+
+    def test_retrieve_sections_caps_overfetched_retrieval_units(self, tmp_path):
+        """Lexical hints should not trigger overfetch when lexical reranking is disabled."""
+        from unittest.mock import Mock, patch
+
+        import polars as pl
+        from chromadb.api.models.Collection import Collection
+
+        from legiscope.retrieve import SectionRetrievalSettings, retrieve_sections
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0, 1, 2, 3, 4, 5],
+                "section_id": [f"s{i}" for i in range(6)],
+                "heading_text": [f"# Section {i}" for i in range(6)],
+                "body_text": [f"Content {i}" for i in range(6)],
+                "heading_level": [1, 1, 1, 1, 1, 1],
+                "parent_id": [None, None, None, None, None, None],
+            }
+        ).write_parquet(tmp_path / "sections.parquet")
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [[str(i) for i in range(6)]],
+            "documents": [[f"seg{i}" for i in range(6)]],
+            "metadatas": [
+                [
+                    {
+                        "section_ordinal": i,
+                        "segment_position": 0,
+                        "section_heading": f"# Section {i}",
+                        "section_level": 1,
+                    }
+                    for i in range(6)
+                ]
+            ],
+            "distances": [[0.01, 0.02, 0.03, 0.04, 0.05, 0.06]],
+        }
+
+        settings = SectionRetrievalSettings(
+            n_results=2,
+            lexical_query_text="section content",
+            anchor_terms=["content"],
+        )
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_sections(
+                    mock_collection,
+                    str(tmp_path / "sections.parquet"),
+                    "semantic query text",
+                    settings,
+                )
+
+        assert len(results.sections) == 2
+        assert results.query_info.total_segments_found == 6
+        assert results.query_info.unique_sections == 2
+        assert [section.section_id for section in results.sections] == ["s0", "s1"]
+        assert mock_collection.query.call_args.kwargs["n_results"] == 2
+
+    def test_retrieve_sections_lexically_reranks_when_enabled(self, tmp_path):
+        """Enabled lexical reranking should overfetch, rerank, and keep the top semantic+lexical result."""
+        from unittest.mock import Mock, patch
+
+        import polars as pl
+        from chromadb.api.models.Collection import Collection
+
+        from legiscope.retrieve import SectionRetrievalSettings, retrieve_sections
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0, 1, 2],
+                "section_id": ["s0", "s1", "s2"],
+                "heading_text": [
+                    "# General zoning",
+                    "# Drug paraphernalia",
+                    "# Licensing",
+                ],
+                "body_text": [
+                    "Accessory-use regulations for commercial zoning districts.",
+                    "It is unlawful to offer for sale or sell drug paraphernalia.",
+                    "General licensing provisions.",
+                ],
+                "heading_level": [1, 1, 1],
+                "parent_id": [None, None, None],
+                "context_path": [
+                    "Title 14 > Zoning",
+                    "Title 9 > Chapter 9-600",
+                    "Title 3 > Licensing",
+                ],
+            }
+        ).write_parquet(tmp_path / "sections.parquet")
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["0", "1", "2"]],
+            "documents": [["seg zoning", "seg paraphernalia", "seg licensing"]],
+            "metadatas": [
+                [
+                    {
+                        "section_ordinal": 0,
+                        "segment_position": 0,
+                        "section_heading": "# General zoning",
+                        "section_level": 1,
+                    },
+                    {
+                        "section_ordinal": 1,
+                        "segment_position": 0,
+                        "section_heading": "# Drug paraphernalia",
+                        "section_level": 1,
+                    },
+                    {
+                        "section_ordinal": 2,
+                        "segment_position": 0,
+                        "section_heading": "# Licensing",
+                        "section_level": 1,
+                    },
+                ]
+            ],
+            "distances": [[0.05, 0.2, 0.4]],
+        }
+
+        settings = SectionRetrievalSettings(
+            n_results=1,
+            lexical_query_text="drug paraphernalia offer for sale",
+            anchor_terms=["drug paraphernalia", "offer for sale"],
+            use_lexical_reranking=True,
+        )
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_sections(
+                    mock_collection,
+                    str(tmp_path / "sections.parquet"),
+                    "semantic query text",
+                    settings,
+                )
+
+        assert len(results.sections) == 1
         assert results.sections[0].section_id == "s1"
         assert mock_collection.query.call_args.kwargs["n_results"] == 3
 
@@ -959,7 +1117,9 @@ class TestFilterSections:
                 assert result.sections[0].llm_assessed is True
                 assert result.filtering_metadata.filtered_count == 1
 
-    def test_filter_sections_keeps_relevant_sections_when_confidence_clears_threshold(self):
+    def test_filter_sections_keeps_relevant_sections_when_confidence_clears_threshold(
+        self,
+    ):
         """A high-confidence relevant section should survive even if the score is slightly lower."""
         from unittest.mock import Mock, patch
 
@@ -1057,7 +1217,9 @@ class TestFilterSections:
                 assert len(result.sections) == 1
                 assert result.filtering_metadata.filtered_count == 1
 
-    def test_filter_sections_backfills_relevant_sections_when_scores_are_borderline(self):
+    def test_filter_sections_backfills_relevant_sections_when_scores_are_borderline(
+        self,
+    ):
         """Soft filtering should retain a small evidence set when all relevant scores are borderline."""
         from unittest.mock import Mock, patch
 

@@ -209,9 +209,9 @@ def _backtrack_opening_chain(
         previous_text = rows[previous_index]["text"]
         if _is_navigation_element(previous_text):
             break
-        if _is_body_start_row(rows, previous_index) or _is_substantive_transition_anchor(
-            previous_text
-        ):
+        if _is_body_start_row(
+            rows, previous_index
+        ) or _is_substantive_transition_anchor(previous_text):
             refined_id = rows[previous_index]["element_id"]
             continue
         if _starts_with_transition_anchor(previous_text):
@@ -375,7 +375,10 @@ def _advance_past_toc_candidate(
 
     if (
         toc_anchor_index is None
-        and (_is_body_start_row(rows, candidate_index) or _is_substantive_transition_anchor(candidate_text))
+        and (
+            _is_body_start_row(rows, candidate_index)
+            or _is_substantive_transition_anchor(candidate_text)
+        )
         and not candidate_in_navigation_run
     ):
         return candidate_id

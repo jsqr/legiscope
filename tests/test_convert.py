@@ -833,9 +833,9 @@ Some body text here."""
             first_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs[
                 "messages"
             ][1]["content"]
-            second_prompt = mock_client.chat.completions.create.call_args_list[2].kwargs[
-                "messages"
-            ][1]["content"]
+            second_prompt = mock_client.chat.completions.create.call_args_list[
+                2
+            ].kwargs["messages"][1]["content"]
 
             assert "These are 200 representative elements" in first_prompt
             assert "These are 150 representative elements" in second_prompt

@@ -234,7 +234,12 @@ class TestBenchmarkResultOrdering:
         results = pl.DataFrame(
             {
                 "benchmark_row_id": [2, 0, 3, 1],
-                "variable_name": ["var_missing_1", "var_scored_1", "var_missing_2", "var_scored_2"],
+                "variable_name": [
+                    "var_missing_1",
+                    "var_scored_1",
+                    "var_missing_2",
+                    "var_scored_2",
+                ],
                 "ground_truth_available": [False, True, False, True],
             }
         )

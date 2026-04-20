@@ -61,9 +61,13 @@ segmentation:
 
 # Retrieval: vector search and post-retrieval filtering
 retrieval:
-  n_results: 20
+  n_results: 10
   distance_metric: l2
-  debug: true
+  debug: true  
+
+  lexical_overfetch_factor: 3
+  lexical_reranking:
+    enabled: false
 
   # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:

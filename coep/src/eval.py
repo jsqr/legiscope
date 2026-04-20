@@ -332,9 +332,7 @@ def expand_combined_variables(
             parts.append(f"{label}: {val_str}")
             citation_col = f"_citations_{col}"
             citation_val = row_dict.get(citation_col)
-            citation_str = (
-                str(citation_val) if citation_val not in [None, "-"] else ""
-            )
+            citation_str = str(citation_val) if citation_val not in [None, "-"] else ""
             if citation_str:
                 citation_parts.append(f"{label}: {citation_str}")
         combined_truth = "\n".join(parts).strip()

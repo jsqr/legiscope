@@ -515,9 +515,7 @@ def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
         )
         if match:
             number_pattern = r"[A-Z0-9IVXLCDM]+(?:[-.][A-Z0-9IVXLCDM]+)*"
-            level.regex_pattern = (
-                rf"^CHAPTER\s+{number_pattern}(?:\s+.*)?$"
-            )
+            level.regex_pattern = rf"^CHAPTER\s+{number_pattern}(?:\s+.*)?$"
             level.regex_patterns = [level.regex_pattern]
             level.number_regex = number_pattern
         return

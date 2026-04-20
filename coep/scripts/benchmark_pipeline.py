@@ -293,9 +293,7 @@ def main():
     partial_count = eval_scored_df.filter(
         pl.col("eval_label") == "Partially Correct"
     ).height
-    incorrect_count = eval_scored_df.filter(
-        pl.col("eval_label") == "Incorrect"
-    ).height
+    incorrect_count = eval_scored_df.filter(pl.col("eval_label") == "Incorrect").height
     processed_count = final_df.height
     scored_count = eval_scored_df.height
     unscored_count = processed_count - scored_count

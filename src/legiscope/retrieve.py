@@ -35,8 +35,9 @@ DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
 DEFAULT_HYDE_ENABLED = _rp.get("hyde", {}).get("enabled", False)
 DEFAULT_RELEVANCE_FILTER_ENABLED = _rp.get("relevance_filter", {}).get("enabled", False)
 DEFAULT_RELEVANCE_THRESHOLD = _rp.get("relevance_filter", {}).get("threshold", 0.5)
-DEFAULT_LEXICAL_OVERFETCH_FACTOR = max(
-    1, int(_rp.get("lexical_overfetch_factor", 3))
+DEFAULT_LEXICAL_OVERFETCH_FACTOR = max(1, int(_rp.get("lexical_overfetch_factor", 3)))
+DEFAULT_LEXICAL_RERANKING_ENABLED = bool(
+    _rp.get("lexical_reranking", {}).get("enabled", False)
 )
 DEFAULT_RELEVANCE_MIN_KEEP = max(
     1, int(_rp.get("relevance_filter", {}).get("min_keep", 2))
@@ -160,7 +161,7 @@ class SegmentCollection:
 
 @dataclass
 class SectionCollection:
-    """A collection of sections with optional filtering metadata.
+    """A collection of retrieval context units with optional filtering metadata.
 
     Can represent results from retrieval, filtering, or both operations.
     """
@@ -203,8 +204,9 @@ class RetrievalSettings:
         hyde_model: LLM model to use for HYDE rewriting
         embedding_client: Embedding client for generating query embeddings
         embedding_model: Embedding model name
-        lexical_query_text: Optional raw query text used for lexical reranking
-        anchor_terms: Optional exact-match anchors used for lexical reranking
+        lexical_query_text: Optional raw query text retained for optional lexical scoring
+        anchor_terms: Optional exact-match anchors retained for optional lexical scoring
+        use_lexical_reranking: Whether lexical hints may affect retrieval ordering
 
     Example:
         >>> from legiscope.llm_config import Config
@@ -225,6 +227,9 @@ class RetrievalSettings:
         >>> # Use with different queries
         >>> results1 = retrieve_segments(collection, "parking regulations", settings)
         >>> results2 = retrieve_segments(collection, "zoning laws", settings)
+
+    Lexical scoring helpers remain available for future use, but lexical reranking
+    is disabled by default so retrieval order follows semantic vector similarity.
     """
 
     # Search parameters
@@ -245,6 +250,7 @@ class RetrievalSettings:
     # Hybrid retrieval hints
     lexical_query_text: str | None = None
     anchor_terms: list[str] = field(default_factory=list)
+    use_lexical_reranking: bool = DEFAULT_LEXICAL_RERANKING_ENABLED
 
     def __post_init__(self):
         """Validate configuration after initialization."""
@@ -257,11 +263,11 @@ class RetrievalSettings:
 
 @dataclass
 class SectionRetrievalSettings(RetrievalSettings):
-    """Settings for section-level retrieval operations.
+    """Settings for retrieval-context reconstruction operations.
 
     Extends RetrievalSettings with section-specific behavior. This is used
     for retrieve_sections() which performs segment-level search but returns
-    full section context.
+    full retrieval-unit context.
 
     Note: sections_parquet_path is now a parameter to retrieve_sections(),
     not part of settings, as it's infrastructure (data source path).
@@ -588,7 +594,11 @@ def _section_lexical_blob(section: SectionResult) -> tuple[str, set[str], str]:
     heading_text = _normalize_lexical_text(
         " ".join(
             part
-            for part in [section.heading_text, section.context_path or "", section.section_id]
+            for part in [
+                section.heading_text,
+                section.context_path or "",
+                section.section_id,
+            ]
             if part
         )
     )
@@ -690,10 +700,7 @@ def _assessment_passes_threshold(
     """Use a soft gate so one weaker score does not drop clearly useful text."""
     if not assessment.is_relevant:
         return False
-    return (
-        assessment.relevance_score >= threshold
-        or assessment.confidence >= threshold
-    )
+    return assessment.relevance_score >= threshold or assessment.confidence >= threshold
 
 
 def _assessment_rank(assessment: RelevanceAssessment) -> float:
@@ -824,7 +831,9 @@ def retrieve_segments(
     query_embeddings_any = cast(Any, query_embeddings_list)
 
     query_n_results = settings.n_results
-    if settings.lexical_query_text or settings.anchor_terms:
+    if settings.use_lexical_reranking and (
+        settings.lexical_query_text or settings.anchor_terms
+    ):
         query_n_results = min(
             max(
                 settings.n_results,
@@ -1000,6 +1009,9 @@ def retrieve_sections(
         ...     "where can I park my car",
         ...     settings
         ... )
+
+    Lexical reranking is disabled by default, so these results preserve semantic
+    vector ordering unless ``use_lexical_reranking=True`` is set explicitly.
     """
     # Validation
     if not query_text or not query_text.strip():
@@ -1064,11 +1076,19 @@ def retrieve_sections(
         key_column=key_column,
         using_chunks=using_chunks,
     )
-    section_results = _rerank_section_results(
-        section_results,
-        settings.lexical_query_text or query_text,
-        settings.anchor_terms,
-    )
+    if settings.use_lexical_reranking:
+        section_results = _rerank_section_results(
+            section_results,
+            settings.lexical_query_text or query_text,
+            settings.anchor_terms,
+        )
+
+    if len(section_results) > settings.n_results:
+        logger.info(
+            "Capping retrieval units from "
+            f"{len(section_results)} to requested top {settings.n_results}"
+        )
+        section_results = section_results[: settings.n_results]
 
     return SectionCollection(
         sections=section_results,
@@ -1089,15 +1109,15 @@ def filter_sections(
     model: str | None = None,
     retrieval_guidance: RetrievalGuidance | None = None,
 ) -> SectionCollection:
-    """Filter section collection by relevance using LLM-powered assessment.
+    """Filter retrieved context units by relevance using LLM-powered assessment.
 
-    Applies relevance assessment to each section using LLM analysis and filters
-    out sections that are not relevant or fall below the minimum relevance/confidence
+    Applies relevance assessment to each retrieval unit using LLM analysis and filters
+    out context units that are not relevant or fall below the minimum relevance/confidence
     threshold.
 
     Args:
         client: Instructor client for LLM-powered relevance assessment
-        sections_results: Section collection from retrieve_sections or previous filter
+        sections_results: Retrieval-unit collection from retrieve_sections or previous filter
         query: Original query used for retrieval
         confidence_threshold: Minimum relevance score and confidence score for
             relevance (0-1). Defaults to 0.7
@@ -1106,7 +1126,7 @@ def filter_sections(
             the relevance prompt
 
     Returns:
-        SectionCollection: Filtered collection with sections list, query info, and filtering metadata
+        SectionCollection: Filtered collection with retrieval units, query info, and filtering metadata
 
     Raises:
         ValueError: If sections_results structure is invalid or client is missing
@@ -1115,7 +1135,7 @@ def filter_sections(
         results = retrieve_sections(collection, "parking rules", sections_parquet_path)
         filtered = filter_sections(client, results, "parking rules", confidence_threshold=0.7)
         print(f"Filtered from {filtered.filtering_metadata.original_count} "
-              f"to {filtered.filtering_metadata.filtered_count} sections")
+              f"to {filtered.filtering_metadata.filtered_count} retrieval units")
     """
     # Validation (expected user errors - don't log)
     if sections_results is None:
@@ -1129,22 +1149,24 @@ def filter_sections(
         raise ValueError("sections must be a list")
 
     original_count = len(sections)
-    logger.info(f"Filtering {original_count} sections for query: '{query[:30]}...'")
+    logger.info(
+        f"Filtering {original_count} retrieval units for query: '{query[:30]}...'"
+    )
 
     filtered_sections = []
     assessed_sections: list[tuple[SectionResult, RelevanceAssessment]] = []
     assessments = []
 
-    # Assess relevance for each section
+    # Assess relevance for each retrieval unit
     for i, section in enumerate(sections):
         try:
-            # Prepare section text for LLM assessment
+            # Prepare retrieval-unit text for LLM assessment
             heading_text = section.heading_text
             body_text = section.body_text
             section_text = f"{heading_text}\n\n{body_text}".strip()
 
             if not section_text:
-                logger.warning(f"Section {i} has no text content, skipping")
+                logger.warning(f"Retrieval unit {i} has no text content, skipping")
                 continue
 
             # Assess relevance using LLM
@@ -1173,9 +1195,7 @@ def filter_sections(
                     "reasoning": assessment.reasoning,
                     "kept": keep_by_threshold,
                     "keep_reason": (
-                        "threshold"
-                        if keep_by_threshold
-                        else "below_threshold"
+                        "threshold" if keep_by_threshold else "below_threshold"
                     ),
                 }
             )
@@ -1185,17 +1205,17 @@ def filter_sections(
                     _updated_section_with_assessment(section, assessment)
                 )
                 logger.debug(
-                    f"Section {i} kept: relevant={assessment.is_relevant}, "
+                    f"Retrieval unit {i} kept: relevant={assessment.is_relevant}, "
                     f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
                 )
             else:
                 logger.debug(
-                    f"Section {i} filtered: relevant={assessment.is_relevant}, "
+                    f"Retrieval unit {i} filtered: relevant={assessment.is_relevant}, "
                     f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
                 )
 
         except Exception as e:
-            logger.error(f"Error assessing section {i}: {str(e)}")
+            logger.error(f"Error assessing retrieval unit {i}: {str(e)}")
             continue
 
     target_keep = min(DEFAULT_RELEVANCE_MIN_KEEP, len(assessed_sections))
@@ -1220,7 +1240,7 @@ def filter_sections(
                     assessment_row["keep_reason"] = "backfill"
                     break
             logger.debug(
-                "Backfilled section {} after soft relevance collapse",
+                "Backfilled retrieval unit {} after soft relevance collapse",
                 section.section_id,
             )
             if len(filtered_sections) >= target_keep:
@@ -1233,7 +1253,7 @@ def filter_sections(
         else 0
     )
 
-    # Sort sections by LLM relevance score (higher is better)
+    # Sort retrieval units by LLM relevance score (higher is better)
     # This is different from embedding distance (lower is better)
     filtered_sections.sort(
         key=lambda section: (
@@ -1244,7 +1264,7 @@ def filter_sections(
     )
 
     logger.info(
-        f"Filtering complete: {original_count} -> {filtered_count} sections "
+        f"Filtering complete: {original_count} -> {filtered_count} retrieval units "
         f"({reduction_percentage:.1f}% reduction), ranked by LLM relevance score"
     )
 
@@ -1478,7 +1498,7 @@ def _build_section_results(
 
         section_results.append(section_result)
 
-    # Sort sections by relevance score (best first)
+    # Sort retrieval units by relevance score (best first)
     section_results.sort(key=lambda x: x.relevance_score)
 
     logger.info(f"Returning {len(section_results)} retrieval units with context")

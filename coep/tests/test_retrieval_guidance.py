@@ -102,8 +102,14 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.shared_context is not None
         assert "Previously coded exemption answer" in guidance.shared_context
-        assert "Previously coded prohibited activities: Sales AND/OR Use." in guidance.shared_context
-        assert "only in scope if the earlier exemption answer included" in guidance.shared_context
+        assert (
+            "Previously coded prohibited activities: Sales AND/OR Use."
+            in guidance.shared_context
+        )
+        assert (
+            "only in scope if the earlier exemption answer included"
+            in guidance.shared_context
+        )
 
     def test_returns_guidance_for_existence_variable(self):
         request = RetrievalGuidanceRequest(
