@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -842,6 +843,57 @@ Some body text here."""
 
         finally:
             os.unlink(test_file)
+
+    def test_scan_legal_text_writes_heading_scan_debug_artifact(self):
+        """Scan debug output should preserve per-iteration generated structures and scores."""
+        sample_text = """CHAPTER 1: GENERAL PROVISIONS
+
+This chapter contains general provisions.
+"""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            debug_path = f"{test_file}.heading_scan_debug.json"
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+:\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1: GENERAL PROVISIONS",
+                    ),
+                ],
+                total_levels=1,
+                file_sample_size=10,
+            )
+
+            mock_client = _make_mock_client(mock_response)
+            with patch("legiscope.parse.scan.score_structure", return_value=(0.95, [])):
+                result = scan_legal_text(
+                    mock_client,
+                    test_file,
+                    debug_output_path=debug_path,
+                )
+
+            payload = json.loads(open(debug_path, encoding="utf-8").read())
+
+            assert result.iterations == 1
+            assert payload["best_iteration"] == 1
+            assert payload["best_score"] == 0.95
+            assert len(payload["iterations"]) == 1
+            assert payload["iterations"][0]["status"] == "scored"
+            assert payload["iterations"][0]["generated_structure"]["heading_levels"][0][
+                "example_heading"
+            ] == "CHAPTER 1: GENERAL PROVISIONS"
+        finally:
+            os.unlink(test_file)
+            if os.path.exists(debug_path):
+                os.unlink(debug_path)
 
     def test_sample_diagnostics_avoids_double_counting_heading_like_rows(self):
         """Heading-like diagnostics should count each sampled row only once."""

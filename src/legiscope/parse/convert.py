@@ -200,6 +200,8 @@ def _process_markdown_elements(
     converted_lines: list[str] = []
     heading_records: list[dict[str, Any]] = []
     element_records: list[dict[str, Any]] = []
+    heading_count = 0
+    heading_log_interval = 500
 
     for row in elements_df.to_dicts():
         eid = row["element_id"]
@@ -224,6 +226,7 @@ def _process_markdown_elements(
         is_heading, heading_level = _is_heading_element(text, compiled_patterns)
 
         if is_heading and heading_level is not None:
+            heading_count += 1
             # For multiline headings, join all lines
             hl_obj = _get_heading_level_obj(heading_level, structure)
             if hl_obj and hl_obj.multiline and "\n" in text:
@@ -261,11 +264,9 @@ def _process_markdown_elements(
                     "heading_text": heading_text.strip(),
                 }
             )
-
-            if (len(heading_records) % 50) == 0:
+            if heading_count % heading_log_interval == 0:
                 logger.debug(
-                    f"Element {eid} (heading #{len(heading_records)}): "
-                    f"Converted to level {heading_level} heading"
+                    f"Converted {heading_count} headings to markdown so far"
                 )
         else:
             # Body element — write as paragraph text
@@ -279,6 +280,9 @@ def _process_markdown_elements(
         # Add blank line after each element for paragraph separation
         converted_lines.append("\n")
         element_records.append(element_record)
+
+    if heading_count >= heading_log_interval:
+        logger.debug(f"Converted {heading_count} headings to markdown total")
 
     return converted_lines, heading_records, element_records
 
@@ -432,7 +436,7 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
 
     Returns:
         Path to the generated ``code.md`` file. Companion outputs
-        ``headings.parquet`` and ``regions.parquet`` are written to the same
+        ``headings.parquet``, ``regions.parquet``, and ``heading_scan_debug.json`` are written to the same
         directory.
 
     Raises:
@@ -474,6 +478,7 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
         client=client,
         file_path=str(input_path),
         max_lines=DEFAULT_SCAN_MAX_LINES,
+        debug_output_path=code_dir / "heading_scan_debug.json",
     )
 
     output_path = code_dir / "code.md"

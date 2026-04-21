@@ -4,7 +4,7 @@ This module implements LLM-as-a-judge patterns to score generated answers
 against ground truth human-authored answers.
 """
 
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import polars as pl
 from loguru import logger
@@ -12,6 +12,17 @@ from polars import DataFrame
 from pydantic import BaseModel, Field, model_validator
 
 from legiscope.utils import LLMConfig
+
+
+EvaluationErrorType: TypeAlias = Literal[
+    "none",
+    "abstention",
+    "retrieval_failure",
+    "reasoning_error",
+    "hallucination",
+    "output_contract_error",
+    "other",
+]
 
 
 class EvaluationResult(BaseModel):
@@ -30,6 +41,14 @@ class EvaluationResult(BaseModel):
     accuracy_label: Literal["Correct", "Partially Correct", "Incorrect"] = Field(
         ..., description="Categorical label for the accuracy of the response."
     )
+    error_type: EvaluationErrorType = Field(
+        ...,
+        description=(
+            "Primary failure category for imperfect answers. Use `none` for correct answers, "
+            "or one of: abstention, retrieval_failure, reasoning_error, hallucination, "
+            "output_contract_error, other."
+        ),
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -37,7 +56,7 @@ class EvaluationResult(BaseModel):
         if not isinstance(data, dict):
             return data
 
-        expected_keys = {"score", "reasoning", "accuracy_label"}
+        expected_keys = {"score", "reasoning", "accuracy_label", "error_type"}
         if expected_keys.intersection(data):
             return data
 
@@ -97,6 +116,7 @@ class Evaluator:
         1. Accuracy: Does it convey the same legal facts as the ground truth?
         2. Completeness: Does it cover all aspects mentioned in the ground truth?
         3. Hallucinations: Does it include false information not present in the ground truth?
+        4. Failure mode: If the answer is not correct, what is the primary error type?
 
         Assign a score from 0 to 10, where:
         - 10: Perfect match in facts and nuance.
@@ -111,9 +131,17 @@ class Evaluator:
 
                 OUTPUT REQUIREMENTS:
                 - Return exactly one JSON object representing an EvaluationResult instance.
-                - Use these exact top-level keys: `score`, `reasoning`, `accuracy_label`.
+                                - Use these exact top-level keys: `score`, `reasoning`, `accuracy_label`, `error_type`.
                 - `score` must be an integer from 0 to 10.
                 - `accuracy_label` must be one of: `Correct`, `Partially Correct`, `Incorrect`.
+                                - `error_type` must be one of:
+                                    - `none` for correct answers with no material failure
+                                    - `abstention` when the system declines to answer or says it cannot answer
+                                    - `retrieval_failure` when the answer appears limited by missing or filtered-out evidence
+                                    - `reasoning_error` when evidence exists but the answer extracts or combines it incorrectly
+                                    - `hallucination` when the answer invents unsupported facts
+                                    - `output_contract_error` when the answer violates the required response format
+                                    - `other` for any remaining failure mode
                 - Do not return JSON Schema or metadata.
                 - Never include keys like `description`, `properties`, `title`, `type`, `required`, or `$defs`.
                 - Do not wrap the answer inside `properties` or any other container.
@@ -123,7 +151,8 @@ class Evaluator:
                 {{
                     "score": 0,
                     "reasoning": "...",
-                    "accuracy_label": "Incorrect"
+                    "accuracy_label": "Incorrect",
+                    "error_type": "other"
                 }}
         """
 
@@ -142,6 +171,7 @@ class Evaluator:
                 score=0,
                 reasoning=f"Evaluation execution failed: {e}",
                 accuracy_label="Incorrect",
+                error_type="other",
             )
 
     def evaluate_batch(
@@ -153,6 +183,7 @@ class Evaluator:
         scores = []
         reasons = []
         labels = []
+        error_types = []
 
         logger.info(f"Starting evaluation of {len(df)} records...")
 
@@ -165,6 +196,7 @@ class Evaluator:
             scores.append(result.score)
             reasons.append(result.reasoning)
             labels.append(result.accuracy_label)
+            error_types.append(result.error_type)
 
         # Add evaluation columns to the dataframe
         return df.with_columns(
@@ -172,6 +204,7 @@ class Evaluator:
                 pl.Series("eval_score", scores),
                 pl.Series("eval_reason", reasons),
                 pl.Series("eval_label", labels),
+                pl.Series("eval_error_type", error_types),
             ]
         )
 

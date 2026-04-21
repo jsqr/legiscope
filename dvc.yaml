@@ -53,6 +53,7 @@ stages:
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/code.md
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/headings.parquet
             - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/regions.parquet
+            - data/laws/${jurisdiction.state}/${jurisdiction.locality}/${jurisdiction.code_slug}/heading_scan_debug.json
 
     segment:
         cmd: >-

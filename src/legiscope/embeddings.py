@@ -47,6 +47,17 @@ def _get_batch_log_interval() -> int:
     return interval
 
 
+def _should_log_batch_progress(
+    *, batch_index: int, total_batches: int, log_interval: int
+) -> bool:
+    """Return whether a batch-progress log should be emitted."""
+    if total_batches <= 1:
+        return False
+
+    current_batch = batch_index + 1
+    return current_batch % log_interval == 0 or current_batch == total_batches
+
+
 def _get_chroma_batch_size() -> int:
     """Read Chroma write batch size from ``params.yaml`` with fallback."""
     from legiscope.params import load_params
@@ -530,9 +541,6 @@ def _generate_embeddings_openrouter(
     embeddings_list: list[list[float]] = []
     total_batches = (len(texts) + batch_size - 1) // batch_size
     log_interval = _get_batch_log_interval()
-    logger.info(
-        f"Processing {len(texts)} texts in {total_batches} batches of {batch_size} (OpenRouter)"
-    )
 
     for batch_num in range(total_batches):
         start_idx = batch_num * batch_size
@@ -546,7 +554,11 @@ def _generate_embeddings_openrouter(
         batch_embeddings = [list(item.embedding) for item in response.data]
         embeddings_list.extend(batch_embeddings)
 
-        if _should_log_embedding_progress(
+        if _should_log_batch_progress(
+            batch_index=batch_num,
+            total_batches=total_batches,
+            log_interval=log_interval,
+        ) and _should_log_embedding_progress(
             previous_count=start_idx,
             current_count=end_idx,
             total_count=len(texts),
@@ -756,6 +768,7 @@ def _add_documents_to_collection(
     """
     batch_size = _get_chroma_batch_size()
     total_batches = (len(ids) + batch_size - 1) // batch_size
+    log_interval = _get_batch_log_interval()
     logger.info(f"Adding {len(ids)} documents to collection in {total_batches} batches")
 
     for i in range(0, len(ids), batch_size):
@@ -770,9 +783,16 @@ def _add_documents_to_collection(
             else None
         )
 
-        logger.debug(
-            f"Adding batch {i // batch_size + 1}/{total_batches} ({len(batch_ids)} documents)"
-        )
+        batch_index = i // batch_size
+        if _should_log_batch_progress(
+            batch_index=batch_index,
+            total_batches=total_batches,
+            log_interval=log_interval,
+        ):
+            logger.debug(
+                f"Added {end_idx}/{len(ids)} documents "
+                f"(batch {batch_index + 1}/{total_batches})"
+            )
 
         collection.add(
             ids=batch_ids,

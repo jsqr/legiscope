@@ -11,7 +11,9 @@ Loading strategy:
 
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import yaml
@@ -22,6 +24,10 @@ from loguru import logger
 # ---------------------------------------------------------------------------
 
 _PARAMS_FILENAME = "params.yaml"
+_GLOBAL_PARAMS_CACHE: dict[str, Any] | None = None
+_GLOBAL_PARAMS_CACHE_SOURCE: str | None = None
+_GLOBAL_PARAMS_CACHE_LOCK = Lock()
+_GLOBAL_PARAMS_LOGGED_SOURCES: set[str] = set()
 
 
 def _find_params_path() -> Path:
@@ -48,6 +54,44 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _log_params_load_once(message: str) -> None:
+    """Log params load source once per process to avoid repeated noise."""
+    if message in _GLOBAL_PARAMS_LOGGED_SOURCES:
+        return
+    logger.debug(message)
+    _GLOBAL_PARAMS_LOGGED_SOURCES.add(message)
+
+
+def _load_global_params_uncached() -> tuple[dict[str, Any], str]:
+    """Load global params without cache and return the source description."""
+    try:
+        import dvc.api
+
+        return dvc.api.params_show(), "Loaded params via dvc.api.params_show()"
+    except Exception:
+        path = _find_params_path()
+        with open(path) as f:
+            params = yaml.safe_load(f) or {}
+        return params, f"Loaded params from {path}"
+
+
+def _load_global_params() -> dict[str, Any]:
+    """Load and cache global params for the current process."""
+    global _GLOBAL_PARAMS_CACHE, _GLOBAL_PARAMS_CACHE_SOURCE
+
+    if _GLOBAL_PARAMS_CACHE is not None:
+        return deepcopy(_GLOBAL_PARAMS_CACHE)
+
+    with _GLOBAL_PARAMS_CACHE_LOCK:
+        if _GLOBAL_PARAMS_CACHE is None:
+            params, source = _load_global_params_uncached()
+            _GLOBAL_PARAMS_CACHE = params
+            _GLOBAL_PARAMS_CACHE_SOURCE = source
+            _log_params_load_once(source)
+
+    return deepcopy(_GLOBAL_PARAMS_CACHE)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -64,18 +108,7 @@ def load_params(code_data_dir: str | Path | None = None) -> dict[str, Any]:
     Returns:
         Merged parameter dictionary.
     """
-    # --- Try DVC first ---------------------------------------------------
-    try:
-        import dvc.api
-
-        params = dvc.api.params_show()
-        logger.debug("Loaded params via dvc.api.params_show()")
-    except Exception:
-        # DVC not available or not in a DVC repo – fall back to direct load
-        path = _find_params_path()
-        with open(path) as f:
-            params = yaml.safe_load(f) or {}
-        logger.debug(f"Loaded params from {path}")
+    params = _load_global_params()
 
     # --- Per-code overrides ----------------------------------------------
     if code_data_dir is not None:
@@ -84,6 +117,6 @@ def load_params(code_data_dir: str | Path | None = None) -> dict[str, Any]:
             with open(override_path) as f:
                 overrides = yaml.safe_load(f) or {}
             params = _deep_merge(params, overrides)
-            logger.debug(f"Merged per-code overrides from {override_path}")
+            _log_params_load_once(f"Merged per-code overrides from {override_path}")
 
     return params

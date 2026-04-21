@@ -36,6 +36,12 @@ references under `refs/exps/` — no manual branches needed.
 The OpenRouter API is used for embeddings (embed stage); vLLM handles all LLM
 calls (parse heading scanning, benchmark querying, and LLM-as-judge evaluation).
 
+On BigPurple, the validated vLLM + torch environment can still emit repeated
+startup warnings from deprecated `cuda.cudart` / `cuda.nvrtc` aliases and
+vLLM FLA tensor-format notices. Repo launcher scripts now suppress those
+specific warnings with `PYTHONWARNINGS` because they are noisy but not
+actionable for the pinned HPC build.
+
 To **re-run benchmarking only** (e.g., with different retrieval settings or a
 different model), first rebuild the shared ChromaDB index with
 `bash coep/scripts/HPC_scripts/rebuild_index.sh --clean`, then submit a lighter

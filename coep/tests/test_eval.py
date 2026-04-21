@@ -266,6 +266,7 @@ class TestEvaluator:
                 "score": 0,
                 "reasoning": "The generated answer is incorrect.",
                 "accuracy_label": "Incorrect",
+                "error_type": "retrieval_failure",
             },
             "title": "EvaluationResult",
             "type": "object",
@@ -276,6 +277,7 @@ class TestEvaluator:
         assert result.score == 0
         assert result.reasoning == "The generated answer is incorrect."
         assert result.accuracy_label == "Incorrect"
+        assert result.error_type == "retrieval_failure"
 
     def test_evaluate_response(self):
         """Test single response evaluation with mocked LLM."""
@@ -293,7 +295,10 @@ class TestEvaluator:
 
             # Setup mock response
             expected_result = EvaluationResult(
-                score=10, reasoning="Perfect match", accuracy_label="Correct"
+                score=10,
+                reasoning="Perfect match",
+                accuracy_label="Correct",
+                error_type="none",
             )
             mock_client.chat.completions.create.return_value = expected_result
 
@@ -319,7 +324,10 @@ class TestEvaluator:
 
             # Mock successful response
             mock_client.chat.completions.create.return_value = EvaluationResult(
-                score=10, reasoning="Good", accuracy_label="Correct"
+                score=10,
+                reasoning="Good",
+                accuracy_label="Correct",
+                error_type="none",
             )
 
             df = pl.DataFrame({"q": ["q1"], "a": ["a1"], "truth": ["t1"]})
@@ -331,5 +339,7 @@ class TestEvaluator:
             assert "eval_score" in result_df.columns
             assert "eval_reason" in result_df.columns
             assert "eval_label" in result_df.columns
+            assert "eval_error_type" in result_df.columns
             assert result_df["eval_score"][0] == 10
             assert result_df["eval_label"][0] == "Correct"
+            assert result_df["eval_error_type"][0] == "none"

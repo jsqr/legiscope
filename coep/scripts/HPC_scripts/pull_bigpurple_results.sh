@@ -27,7 +27,8 @@ Pull benchmark artifacts for a jurisdiction from BigPurple onto your local
 machine. Benchmark downloads use timestamped benchmark_results_*.csv files as
 the primary result artifact. Optionally also pull the jurisdiction's source
 and pipeline artifacts from data/laws for debugging and inspection, including
-code.md, code.txt, raw inputs, headings/regions, sections/chunks/segments,
+code.md, code.txt, raw inputs, heading scan debug output, headings/regions,
+sections/chunks/segments,
 relations/external references, and embeddings when present.
 
 Required:
@@ -250,6 +251,7 @@ EOF
 REMOTE_CODE_CHECK_CMD=$(cat <<EOF
 test -d '${REMOTE_CODE_DIR}' \
     -a -f '${REMOTE_CODE_DIR}/code.md' \
+    -a -f '${REMOTE_CODE_DIR}/heading_scan_debug.json' \
     -a -f '${REMOTE_CODE_DIR}/regions.parquet' \
     -a -f '${REMOTE_CODE_DIR}/chunks.parquet' \
     -a -f '${REMOTE_CODE_DIR}/segments.parquet' \
@@ -314,6 +316,7 @@ if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
         --include='raw/***' \
         --include='code.txt' \
         --include='code.md' \
+        --include='heading_scan_debug.json' \
         --include='regions.parquet' \
         --include='sections.parquet' \
         --include='chunks.parquet' \

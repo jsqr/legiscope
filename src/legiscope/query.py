@@ -2,6 +2,7 @@
 Query processing module for the legiscope package.
 """
 
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 import json
@@ -52,6 +53,15 @@ def _retrieval_params() -> dict[str, Any]:
 def _debug_timestamp() -> str:
     """Return a compact debug timestamp with minute-level precision."""
     return datetime.now().strftime("%Y%m%d_%H%M")
+
+
+_RESULT_QUERY_METADATA_EXCLUDE_KEYS = {
+    "coding_instructions",
+    "prior_answers",
+    "query_text",
+    "question_number",
+    "response_options",
+}
 
 
 # Constants for query processing — read from params.yaml
@@ -311,6 +321,8 @@ def load_queries(
     except Exception as e:
         raise ValueError(f"Error reading queries file: {e}")
 
+    df = _normalize_query_input_df(df)
+
     # Validate consistency between adjust_for_dataset and query_adjuster
     if adjust_for_dataset and query_adjuster is None:
         raise ValueError(
@@ -326,6 +338,7 @@ def load_queries(
     if adjust_for_dataset and not df.is_empty():
         assert query_adjuster is not None
         df = query_adjuster(df)
+        df = _normalize_query_input_df(df)
 
     # Check for question column after adjuster (adjuster may create it)
     if "question" not in df.columns:
@@ -352,6 +365,71 @@ def load_queries(
         )
 
     return [_row_to_input(row) for row in df.to_dicts()]
+
+
+def _column_is_effectively_empty(series: pl.Series) -> bool:
+    """Return whether a query-input column carries no meaningful values."""
+    non_null_values = [value for value in series.to_list() if value is not None]
+    if not non_null_values:
+        return True
+
+    return all(isinstance(value, str) and not value.strip() for value in non_null_values)
+
+
+def _normalize_query_input_df(df: pl.DataFrame) -> pl.DataFrame:
+    """Drop noisy query CSV columns and normalize header whitespace."""
+    if df.is_empty() and not df.columns:
+        return df
+
+    rename_map = {column: column.strip() for column in df.columns if column != column.strip()}
+    if rename_map:
+        stripped_columns = [rename_map.get(column, column) for column in df.columns]
+        duplicate_columns = [
+            column_name
+            for column_name, count in Counter(stripped_columns).items()
+            if count > 1
+        ]
+        if duplicate_columns:
+            raise ValueError(
+                "Query CSV contains duplicate column names after trimming whitespace: "
+                f"{duplicate_columns}"
+            )
+        df = df.rename(rename_map)
+
+    columns_to_drop: list[str] = []
+    for column in df.columns:
+        normalized = column.strip().lower()
+        if not normalized:
+            columns_to_drop.append(column)
+            continue
+        if normalized.startswith("_duplicated_"):
+            columns_to_drop.append(column)
+            continue
+        if "deprecated" in normalized:
+            columns_to_drop.append(column)
+            continue
+        if column in {"question", "variable_name"}:
+            continue
+        if _column_is_effectively_empty(df.get_column(column)):
+            columns_to_drop.append(column)
+
+    if columns_to_drop:
+        df = df.drop(columns_to_drop)
+
+    return df
+
+
+def _serialize_result_query_metadata(metadata: dict[str, Any] | None) -> str:
+    """Serialize query metadata for result exports without flattening every field."""
+    if not metadata:
+        return "{}"
+    return json.dumps(metadata, ensure_ascii=True, sort_keys=True)
+
+
+def _is_abstention_response(short_answer: str | None) -> bool:
+    """Return whether a short answer is one of the benchmark abstention fallbacks."""
+    normalized = str(short_answer or "").strip().lower()
+    return normalized.startswith("i cannot answer your question")
 
 
 class LegalQueryResponse(BaseModel):
@@ -974,8 +1052,18 @@ def run_queries(
         if query_input.variable_name:
             result["variable_name"] = query_input.variable_name
 
+        result["query_metadata"] = _serialize_result_query_metadata(
+            query_input.metadata
+        )
+
         if query_input.metadata:
-            result.update(query_input.metadata)
+            result.update(
+                {
+                    key: value
+                    for key, value in query_input.metadata.items()
+                    if key not in _RESULT_QUERY_METADATA_EXCLUDE_KEYS
+                }
+            )
 
         retrieval_debug_row = result.pop("_debug_retrieval_row", None)
         relevance_debug_row = result.pop("_debug_relevance_row", None)
@@ -1839,6 +1927,19 @@ def _process_single_query_with_error_handling(
             "segments_found": segments_found,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": str(similarity_scores),
+            "retrieval_stage_status": retrieval_debug_row.get("stage_status"),
+            "relevance_stage_status": relevance_debug_row.get("stage_status"),
+            "query_stage_status": query_debug_row.get("stage_status"),
+            "no_retrieval_units_found": query_debug_row.get("stage_status")
+            == "no_sections",
+            "all_retrieval_units_filtered_out": query_debug_row.get("stage_status")
+            == "no_sections_after_filtering",
+            "generated_abstention": _is_abstention_response(
+                query_response.short_answer
+            ),
+            "generated_error_response": str(query_response.short_answer).startswith(
+                "Error:"
+            ),
             "_debug_retrieval_row": retrieval_debug_row,
             "_debug_relevance_row": relevance_debug_row,
             "_debug_query_row": query_debug_row,
@@ -1877,6 +1978,13 @@ def _process_single_query_with_error_handling(
             "segments_found": 0,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": "[]",
+            "retrieval_stage_status": retrieval_debug_row.get("stage_status"),
+            "relevance_stage_status": relevance_debug_row.get("stage_status"),
+            "query_stage_status": query_debug_row.get("stage_status"),
+            "no_retrieval_units_found": False,
+            "all_retrieval_units_filtered_out": False,
+            "generated_abstention": False,
+            "generated_error_response": True,
             "_debug_retrieval_row": retrieval_debug_row,
             "_debug_relevance_row": relevance_debug_row,
             "_debug_query_row": query_debug_row,
@@ -1901,6 +2009,13 @@ def _compile_query_results(results: list[dict[str, Any]]) -> pl.DataFrame:
                 "segments_found": pl.Int64,
                 "processing_time": pl.Float64,
                 "supporting_passage_validation_scores": pl.Utf8,
+                "retrieval_stage_status": pl.Utf8,
+                "relevance_stage_status": pl.Utf8,
+                "query_stage_status": pl.Utf8,
+                "no_retrieval_units_found": pl.Boolean,
+                "all_retrieval_units_filtered_out": pl.Boolean,
+                "generated_abstention": pl.Boolean,
+                "generated_error_response": pl.Boolean,
             }
         )
 

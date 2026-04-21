@@ -21,7 +21,9 @@ Usage:
 """
 
 import argparse
+import ast
 import json
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -54,6 +56,161 @@ from coep.src.eval import (
 )
 from coep.src.query import adjust_drug_paraphernalia_queries
 from coep.src.retrieval_guidance import get_drug_paraphernalia_retrieval_guidance
+
+
+_BENCHMARK_RESULT_QUERY_COLUMNS_TO_DROP = [
+    "coding_instructions",
+    "query_text",
+    "question_number",
+    "response_options",
+]
+
+
+def _should_drop_benchmark_output_column(column_name: str) -> bool:
+    """Return whether a benchmark output column should be removed as export noise."""
+    normalized = column_name.strip().lower()
+
+    if column_name in _BENCHMARK_RESULT_QUERY_COLUMNS_TO_DROP:
+        return True
+    if not normalized:
+        return True
+    if normalized.startswith("_duplicated_"):
+        return True
+    if "deprecated" in normalized:
+        return True
+
+    return False
+
+
+def _drop_redundant_query_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Drop query subfields already captured in the composed query and metadata."""
+    columns_to_drop = [
+        column for column in df.columns if _should_drop_benchmark_output_column(column)
+    ]
+    if not columns_to_drop:
+        return df
+    return df.drop(columns_to_drop)
+
+
+def _ensure_generation_outcome_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Ensure benchmark exports always carry comparable query-outcome flags."""
+    derived_columns: list[pl.Expr] = []
+
+    if "generated_abstention" not in df.columns:
+        derived_columns.append(
+            pl.col("short_answer")
+            .cast(pl.Utf8)
+            .str.to_lowercase()
+            .str.starts_with("i cannot answer your question")
+            .alias("generated_abstention")
+        )
+
+    if "generated_error_response" not in df.columns:
+        derived_columns.append(
+            pl.col("short_answer")
+            .cast(pl.Utf8)
+            .str.starts_with("Error:")
+            .alias("generated_error_response")
+        )
+
+    if "no_retrieval_units_found" not in df.columns:
+        derived_columns.append(
+            pl.col("query_stage_status")
+            .cast(pl.Utf8)
+            .eq("no_sections")
+            .alias("no_retrieval_units_found")
+        )
+
+    if "all_retrieval_units_filtered_out" not in df.columns:
+        derived_columns.append(
+            pl.col("query_stage_status")
+            .cast(pl.Utf8)
+            .eq("no_sections_after_filtering")
+            .alias("all_retrieval_units_filtered_out")
+        )
+
+    if not derived_columns:
+        return df
+
+    return df.with_columns(derived_columns)
+
+
+def _has_supporting_passage_validation_drift(value: object) -> bool:
+    """Return True when any supporting-passage validation score falls below 0.9."""
+    if value is None:
+        return False
+
+    scores = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        try:
+            scores = ast.literal_eval(stripped)
+        except (SyntaxError, ValueError):
+            return False
+
+    if not isinstance(scores, (list, tuple)):
+        return False
+
+    for score in scores:
+        try:
+            if float(score) < 0.9:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _ensure_supporting_passage_validation_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Ensure benchmark exports surface supporting-passage validation drift."""
+    if "supporting_passage_validation_drift" in df.columns:
+        return df
+    if "supporting_passage_validation_scores" not in df.columns:
+        return df
+
+    return df.with_columns(
+        pl.col("supporting_passage_validation_scores")
+        .map_elements(
+            _has_supporting_passage_validation_drift,
+            return_dtype=pl.Boolean,
+        )
+        .alias("supporting_passage_validation_drift")
+    )
+
+
+def _summarize_eval_error_types(df: pl.DataFrame) -> dict[str, int]:
+    """Return compact counts for evaluation error types."""
+    if "eval_error_type" not in df.columns or df.is_empty():
+        return {}
+
+    counts: dict[str, int] = {}
+    for row in df.group_by("eval_error_type").len().iter_rows(named=True):
+        error_type = str(row["eval_error_type"] or "")
+        counts[error_type] = int(row["len"])
+    return counts
+
+
+def _materialize_benchmark_outputs(
+    *,
+    final_df: pl.DataFrame,
+    output_path: Path,
+    timestamped_path: Path,
+    metrics: dict[str, object],
+    metrics_path: Path,
+) -> None:
+    """Write benchmark outputs and ensure the canonical DVC out is materialized."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    final_df.write_csv(str(output_path))
+    logger.info(f"Results saved to {output_path}")
+
+    if timestamped_path != output_path:
+        shutil.copy2(output_path, timestamped_path)
+        logger.info(f"Timestamped copy saved to {timestamped_path}")
+
+    metrics_path.write_text(json.dumps(metrics, indent=2))
+    logger.info(f"Metrics saved to {metrics_path}")
 
 
 def main():
@@ -178,6 +335,8 @@ def main():
         jurisdiction_id=jurisdiction_id,
         settings=query_settings,
     )
+    gen_results_df = _ensure_generation_outcome_columns(gen_results_df)
+    gen_results_df = _ensure_supporting_passage_validation_columns(gen_results_df)
 
     # =========================================================================
     # Step 6: Join with Ground Truth
@@ -186,7 +345,7 @@ def main():
 
     joined_df = (
         gen_results_df.join(ground_truth_df, on="variable_name", how="left")
-        .with_row_count("benchmark_row_id")
+        .with_row_index("benchmark_row_id")
         .with_columns(
             (
                 pl.col("ground_truth").is_not_null()
@@ -278,12 +437,14 @@ def main():
                 "eval_score",
                 "eval_reason",
                 "eval_label",
+                "eval_error_type",
             ]
         ),
         on="benchmark_row_id",
         how="left",
     ).with_columns(pl.lit(jurisdiction_id).alias("jurisdiction_id"))
     final_df = prioritize_ground_truth_matches(final_df)
+    final_df = _drop_redundant_query_columns(final_df)
 
     # =========================================================================
     # Step 8: Compute Summary Metrics
@@ -297,7 +458,17 @@ def main():
     processed_count = final_df.height
     scored_count = eval_scored_df.height
     unscored_count = processed_count - scored_count
+    no_retrieval_units_count = final_df.filter(pl.col("no_retrieval_units_found")).height
+    filtered_out_all_units_count = final_df.filter(
+        pl.col("all_retrieval_units_filtered_out")
+    ).height
+    abstention_count = final_df.filter(pl.col("generated_abstention")).height
+    error_response_count = final_df.filter(pl.col("generated_error_response")).height
+    supporting_passage_validation_drift_count = final_df.filter(
+        pl.col("supporting_passage_validation_drift")
+    ).height
     accuracy_rate = (correct_count / scored_count) * 100 if scored_count > 0 else 0
+    eval_error_type_counts = _summarize_eval_error_types(eval_scored_df)
 
     print("\n" + "=" * 60)
     print("BENCHMARK COMPLETED")
@@ -314,17 +485,6 @@ def main():
     # =========================================================================
     # Step 9: Save Results
     # =========================================================================
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Write DVC-tracked output (deterministic path)
-    final_df.write_csv(str(output_path))
-    logger.info(f"Results saved to {output_path}")
-
-    # Write timestamped copy for historical reference
-    final_df.write_csv(str(timestamped_path))
-    logger.info(f"Timestamped copy saved to {timestamped_path}")
-
-    # Write DVC metrics JSON
     metrics = {
         "jurisdiction_id": jurisdiction_id,
         "avg_score": round(avg_score, 4) if avg_score is not None else None,
@@ -335,10 +495,21 @@ def main():
         "processed_queries": processed_count,
         "scored_queries": scored_count,
         "unscored_queries": unscored_count,
+        "queries_with_no_retrieval_units": no_retrieval_units_count,
+        "queries_filtered_to_zero_units": filtered_out_all_units_count,
+        "abstained_queries": abstention_count,
+        "error_response_queries": error_response_count,
+        "supporting_passage_validation_drift_queries": supporting_passage_validation_drift_count,
+        "eval_error_type_counts": eval_error_type_counts,
         "total": scored_count,
     }
-    metrics_path.write_text(json.dumps(metrics, indent=2))
-    logger.info(f"Metrics saved to {metrics_path}")
+    _materialize_benchmark_outputs(
+        final_df=final_df,
+        output_path=output_path,
+        timestamped_path=timestamped_path,
+        metrics=metrics,
+        metrics_path=metrics_path,
+    )
 
 
 if __name__ == "__main__":

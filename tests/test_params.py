@@ -2,9 +2,21 @@
 
 from unittest.mock import patch
 
+import pytest
 import yaml
 
 from legiscope import params
+
+
+@pytest.fixture(autouse=True)
+def reset_params_cache():
+    """Reset global params cache so each test can control load behavior."""
+    with (
+        patch.object(params, "_GLOBAL_PARAMS_CACHE", None),
+        patch.object(params, "_GLOBAL_PARAMS_CACHE_SOURCE", None),
+        patch.object(params, "_GLOBAL_PARAMS_LOGGED_SOURCES", set()),
+    ):
+        yield
 
 
 class TestLoadParams:
@@ -84,3 +96,16 @@ class TestDVCFallback:
         with patch("dvc.api.params_show", return_value=fake_params):
             p = params.load_params()
             assert p["llm"]["default_provider"] == "dvc-test"
+
+    def test_caches_global_params_between_calls(self):
+        """Global params should load once per process and return deep copies."""
+        fake_params = {"llm": {"default_provider": "cached-provider"}}
+
+        with patch("dvc.api.params_show", return_value=fake_params) as mock_params_show:
+            first = params.load_params()
+            second = params.load_params()
+
+        assert mock_params_show.call_count == 1
+        assert first == second
+        assert first is not second
+        assert first["llm"] is not second["llm"]

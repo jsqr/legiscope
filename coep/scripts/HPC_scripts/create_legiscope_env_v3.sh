@@ -42,11 +42,89 @@ TORCH_VERSION="2.10.0"
 TORCHVISION_VERSION="0.25.0"
 TORCHAUDIO_VERSION="2.10.0"
 VLLM_BUILD_LOG="$TMPDIR/vllm-build-${SLURM_JOB_ID:-manual}.log"
+VLLM_RUNTIME_CONSTRAINTS="$TMPDIR/vllm-runtime-constraints-${SLURM_JOB_ID:-manual}.txt"
 mkdir -p "$TMPDIR"
 export TMPDIR
 
 # Prevent ~/.local/lib/python*/site-packages/ from shadowing conda packages
 export PYTHONNOUSERSITE=1
+
+write_vllm_runtime_constraints() {
+    python <<'PY' > "$VLLM_RUNTIME_CONSTRAINTS"
+import importlib.metadata as metadata
+
+packages = [
+    "vllm",
+    "torch",
+    "torchvision",
+    "torchaudio",
+    "transformers",
+    "tokenizers",
+    "triton",
+    "xformers",
+    "flashinfer-python",
+    "flash-attn",
+    "cuda-python",
+    "numpy",
+]
+
+for package_name in packages:
+    try:
+        version = metadata.version(package_name)
+    except metadata.PackageNotFoundError:
+        continue
+    print(f"{package_name}=={version}")
+PY
+}
+
+print_runtime_pin_status() {
+    if [[ -f "$VLLM_RUNTIME_CONSTRAINTS" ]]; then
+        echo "  Runtime constraints recorded at: $VLLM_RUNTIME_CONSTRAINTS"
+        sed 's/^/    /' "$VLLM_RUNTIME_CONSTRAINTS"
+    else
+        echo "  Runtime constraints file not found: $VLLM_RUNTIME_CONSTRAINTS"
+    fi
+}
+
+probe_known_warning_sources() {
+    echo ""
+    echo ">>> Step 6a: Probing known warning sources"
+    python <<'PY'
+import importlib
+import warnings
+
+checks = [
+    ("cuda.cudart", FutureWarning),
+    ("cuda.nvrtc", FutureWarning),
+]
+
+for module_name, category in checks:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", category)
+        try:
+            importlib.import_module(module_name)
+        except Exception as exc:
+            print(f"  {module_name}: import skipped ({exc})")
+            continue
+
+    matching = [warning for warning in caught if issubclass(warning.category, category)]
+    if matching:
+        print(f"  {module_name}: still emits {len(matching)} {category.__name__}(s)")
+        print(f"    first warning: {matching[0].message}")
+    else:
+        print(f"  {module_name}: no {category.__name__} emitted on direct import")
+
+for module_name in ("flashinfer", "fla"):
+    try:
+        module = importlib.import_module(module_name)
+    except Exception as exc:
+        print(f"  {module_name}: not importable ({exc})")
+        continue
+
+    version = getattr(module, "__version__", "unknown")
+    print(f"  {module_name}: importable (version {version})")
+PY
+}
 
 echo "============================================"
 echo "  Creating legiscope_env_v3 (vLLM 0.19.0)"
@@ -267,6 +345,11 @@ if torch.cuda.is_available():
 import transformers; print(f'  Transformers: {transformers.__version__}')
 "
 
+echo ""
+echo "  Capturing runtime constraints before installing project dependencies..."
+write_vllm_runtime_constraints
+print_runtime_pin_status
+
 # ── Step 4: Verify Qwen3.5 is natively supported ────────────────
 echo ""
 echo ">>> Step 4: Checking native Qwen3.5 support..."
@@ -299,7 +382,7 @@ echo ">>> Step 5: Installing project dependencies"
 # mistralai <2.0 pin: v2.x is a namespace package (no __init__.py),
 # breaks instructor which does 'from mistralai import Mistral'.
 # mistral_common (vLLM dep) does NOT depend on mistralai — no conflict.
-pip install --no-cache-dir \
+pip install --no-cache-dir -c "$VLLM_RUNTIME_CONSTRAINTS" \
     "torch==${TORCH_VERSION}" \
     "torchvision==${TORCHVISION_VERSION}" \
     "torchaudio==${TORCHAUDIO_VERSION}" \
@@ -328,6 +411,11 @@ print('    from mistralai import Mistral: OK')
 import instructor
 print(f'    instructor {instructor.__version__}: OK')
 "
+
+echo ""
+echo "  Re-checking runtime constraints after project dependency install..."
+write_vllm_runtime_constraints
+print_runtime_pin_status
 
 # ── Step 6: Full validation ──────────────────────────────────────
 echo ""
@@ -364,6 +452,12 @@ print()
 
 print('All imports successful.')
 "
+
+probe_known_warning_sources
+
+echo ""
+echo "  Running pip check to catch resolver drift..."
+pip check
 
 # ── Step 7: vLLM model config check ─────────────────────────────
 echo ""

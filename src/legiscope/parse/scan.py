@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
+from pathlib import Path
 
 import polars as pl
 from instructor import Instructor
@@ -294,6 +296,40 @@ def _generation_feedback_from_exception(exc: Exception) -> list[str]:
         )
 
     return feedback[:5]
+
+
+def _serialize_heading_structure(structure: HeadingStructure) -> dict[str, object]:
+    """Serialize a heading structure for debug artifacts."""
+    return structure.model_dump(mode="json", by_alias=True)
+
+
+def _write_scan_debug_artifact(
+    *,
+    debug_output_path: str | Path,
+    file_path: str,
+    code_elements_height: int,
+    code_start_element_id: int | None,
+    code_start_line: int | None,
+    best_iteration: int,
+    best_score: float,
+    iteration_records: list[dict[str, object]],
+) -> None:
+    """Persist per-iteration heading scan diagnostics for later audit/debug use."""
+    payload = {
+        "file_path": file_path,
+        "code_elements": code_elements_height,
+        "code_start": {
+            "element_id": code_start_element_id,
+            "source_line": code_start_line,
+        },
+        "best_iteration": best_iteration,
+        "best_score": best_score,
+        "iterations": iteration_records,
+    }
+
+    output_path = Path(debug_output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(payload, indent=2))
 
 
 # ── System prompt ──────────────────────────────────────────────────────
@@ -855,6 +891,7 @@ def scan_headings(
     client: Instructor | None = None,
     max_iterations: int = 5,
     score_threshold: float = 0.7,
+    debug_output_path: str | Path | None = None,
 ) -> tuple[HeadingStructure, float, int]:
     """Iteratively scan legal text with a self-correcting feedback loop.
 
@@ -884,7 +921,9 @@ def scan_headings(
     error_feedback: list[str] = []
     best_structure: HeadingStructure | None = None
     best_score = 0.0
+    best_iteration = 0
     last_generation_error: list[str] = []
+    iteration_records: list[dict[str, object]] = []
 
     for iteration in range(1, max_iterations + 1):
         logger.info(
@@ -911,6 +950,14 @@ def scan_headings(
             sample_stats["notes"],
             sample_stats["heading_like"],
         )
+        iteration_record: dict[str, object] = {
+            "iteration": iteration,
+            "sample_count": sample_count,
+            "sampled_elements": sample_elements.height,
+            "sample_element_start_id": sample_element_ids[0],
+            "sample_element_end_id": sample_element_ids[-1],
+            "sample_diagnostics": dict(sample_stats),
+        }
 
         # Phase 2: LLM call
         user_prompt = (
@@ -951,6 +998,13 @@ def scan_headings(
                 iteration,
                 generation_feedback[0],
             )
+            iteration_record.update(
+                {
+                    "status": "generation_error",
+                    "generation_feedback": generation_feedback,
+                }
+            )
+            iteration_records.append(iteration_record)
             error_feedback = generation_feedback
             reduced_sample_count = _reduce_sample_count_after_generation_failure(
                 sample_count,
@@ -972,11 +1026,22 @@ def scan_headings(
             outline_elements_df=sample_elements,
         )
         logger.info(f"Iteration {iteration}: score={score:.3f}, errors={len(errors)}")
+        iteration_record.update(
+            {
+                "status": "scored",
+                "score": score,
+                "error_count": len(errors),
+                "errors": errors,
+                "generated_structure": _serialize_heading_structure(structure),
+            }
+        )
+        iteration_records.append(iteration_record)
 
         if score > best_score or best_structure is None:
             best_score = score
             best_structure = structure
             best_structure.toc_line_ranges = []
+            best_iteration = iteration
 
         if score >= score_threshold:
             break
@@ -999,14 +1064,26 @@ def scan_headings(
     verification_warnings = verify_structure(best_structure, code_elements)
     best_structure.outline_warnings = verification_warnings
     best_structure.quality_score = best_score
-    best_structure.iterations = iteration  # type: ignore[possibly-undefined]
+    best_structure.iterations = best_iteration
     best_structure.code_start_element_id = code_start.element_id
     best_structure.code_start_line = code_start.start_line
     if best_structure.total_levels != len(best_structure.levels):
         best_structure.total_levels = len(best_structure.levels)
     best_structure.file_sample_size = code_elements.height
 
-    return best_structure, best_score, iteration  # type: ignore[possibly-undefined]
+    if debug_output_path is not None:
+        _write_scan_debug_artifact(
+            debug_output_path=debug_output_path,
+            file_path=file_path,
+            code_elements_height=code_elements.height,
+            code_start_element_id=code_start.element_id,
+            code_start_line=code_start.start_line,
+            best_iteration=best_iteration,
+            best_score=best_score,
+            iteration_records=iteration_records,
+        )
+
+    return best_structure, best_score, best_iteration
 
 
 def scan_legal_text(
@@ -1014,6 +1091,7 @@ def scan_legal_text(
     file_path: str,
     max_lines: int = DEFAULT_SCAN_MAX_LINES,
     model: str | None = None,
+    debug_output_path: str | Path | None = None,
 ) -> HeadingStructure:
     """Analyze legal text to identify heading structure and patterns.
 
@@ -1030,5 +1108,6 @@ def scan_legal_text(
         client=client,
         max_iterations=5,
         score_threshold=0.7,
+        debug_output_path=debug_output_path,
     )
     return structure

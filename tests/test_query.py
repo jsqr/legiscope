@@ -2,6 +2,7 @@
 Tests for the query module.
 """
 
+import json
 import os
 import tempfile
 import pytest
@@ -33,7 +34,13 @@ from legiscope.query import (
     DEFAULT_VALIDATION_ENABLED,
 )
 from legiscope.retrieval_guidance import RetrievalGuidance, RetrievalGuidanceRequest
-from legiscope.retrieve import SectionResult, SegmentMatch, SectionCollection, QueryInfo
+from legiscope.retrieve import (
+    FilteringMetadata,
+    QueryInfo,
+    SectionCollection,
+    SectionResult,
+    SegmentMatch,
+)
 
 
 class TestQueryInput:
@@ -287,6 +294,21 @@ class TestLoadQueries:
             )
             assert queries[0].question == "PREFIX: Question 1"
             assert queries[1].question == "PREFIX: Question 2"
+        finally:
+            os.unlink(temp_path)
+
+    def test_load_queries_drops_noisy_and_empty_metadata_columns(self):
+        """Blank, duplicated, deprecated, and all-empty columns should be discarded at load time."""
+        csv_content = """question,variable_name,category,,_duplicated_0,Deprecated,all_empty\nQ1,v1,general,,noise,legacy,\n"""
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write(csv_content)
+            temp_path = f.name
+
+        try:
+            queries = load_queries(temp_path, adjust_for_dataset=False)
+            assert len(queries) == 1
+            assert queries[0].metadata == {"category": "general"}
         finally:
             os.unlink(temp_path)
 
@@ -1697,3 +1719,147 @@ class TestBatchQueryConfigBasics:
             captured_prior_answers[1]["dp_activity"]["short_answer"]
             == "Sales AND/OR Use"
         )
+
+    def test_run_queries_serializes_query_metadata_without_flattening_query_subfields(
+        self, tmp_path
+    ):
+        """Benchmark-facing results should keep one metadata blob without redundant query columns."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="Known, 03/19/2024",
+            reasoning="Test reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(mock_response, []),
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(llm=llm_config)
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="full completion query",
+                            variable_name="status_date_field",
+                            metadata={
+                                "question_number": "Q1.4",
+                                "query_text": "What is the current-through date of the ordinance?",
+                                "response_options": (
+                                    "Responses: Known, <current through date published in ordinance> "
+                                    "OR Partially known, <partial current through date published in ordinance "
+                                    "(month or day imputed)> OR Unknown, <date of data collection>"
+                                ),
+                                "coding_instructions": "Use exact response labels.",
+                                "query_family": "status",
+                            },
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert "query_metadata" in results_df.columns
+        assert "query_family" in results_df.columns
+        assert results_df[0, "query_family"] == "status"
+        assert "question_number" not in results_df.columns
+        assert "query_text" not in results_df.columns
+        assert "response_options" not in results_df.columns
+        assert "coding_instructions" not in results_df.columns
+
+        metadata = json.loads(results_df[0, "query_metadata"])
+        assert metadata["question_number"] == "Q1.4"
+        assert metadata["query_text"] == "What is the current-through date of the ordinance?"
+        assert metadata["query_family"] == "status"
+
+    def test_run_queries_surfaces_filtered_out_retrieval_units(self, tmp_path):
+        """Benchmark-facing results should expose when relevance filtering removes all units."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s1",
+                    heading_text="# Test",
+                    body_text="Content",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="query",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        filtered_results = SectionCollection(
+            sections=[],
+            query_info=retrieval_results.query_info,
+            filtering_metadata=FilteringMetadata(
+                original_count=1,
+                filtered_count=0,
+                threshold=0.7,
+                assessments=[],
+            ),
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch("legiscope.query.filter_sections", return_value=filtered_results):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    filter_relevance=True,
+                    relevance_threshold=0.7,
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[QueryInput(question="query1", variable_name="dp_enacted")],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert results_df[0, "query_stage_status"] == "no_sections_after_filtering"
+        assert results_df[0, "all_retrieval_units_filtered_out"] is True
+        assert results_df[0, "generated_abstention"] is True
