@@ -63,6 +63,45 @@ _RESULT_QUERY_METADATA_EXCLUDE_KEYS = {
     "response_options",
 }
 
+_PRIOR_ANSWER_ALLOWED_KEYS = {
+    "short_answer",
+    "raw_short_answer",
+}
+
+
+def _sanitize_prior_answer_payload(payload: Any) -> dict[str, str] | None:
+    """Keep only compact answer summaries for downstream dependency context."""
+    if not isinstance(payload, dict):
+        return None
+
+    sanitized: dict[str, str] = {}
+    for key in _PRIOR_ANSWER_ALLOWED_KEYS:
+        value = payload.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            sanitized[key] = text
+
+    if "short_answer" in sanitized and "raw_short_answer" not in sanitized:
+        sanitized["raw_short_answer"] = sanitized["short_answer"]
+
+    return sanitized or None
+
+
+def _sanitize_prior_answers(prior_answers: Any) -> dict[str, dict[str, str]]:
+    """Strip retrieval-heavy upstream state before attaching prior answers."""
+    if not isinstance(prior_answers, dict):
+        return {}
+
+    sanitized_prior_answers: dict[str, dict[str, str]] = {}
+    for variable_name, payload in prior_answers.items():
+        clean_payload = _sanitize_prior_answer_payload(payload)
+        if clean_payload:
+            sanitized_prior_answers[str(variable_name)] = clean_payload
+
+    return sanitized_prior_answers
+
 
 # Constants for query processing — read from params.yaml
 _qp = _query_params()
@@ -1024,11 +1063,18 @@ def run_queries(
             continue
 
         effective_query_metadata = dict(query_input.metadata)
+        sanitized_input_prior_answers = _sanitize_prior_answers(
+            effective_query_metadata.get("prior_answers")
+        )
+        if sanitized_input_prior_answers:
+            effective_query_metadata["prior_answers"] = sanitized_input_prior_answers
+        else:
+            effective_query_metadata.pop("prior_answers", None)
+
         if prior_answers:
-            effective_query_metadata["prior_answers"] = {
-                variable_name: payload.copy()
-                for variable_name, payload in prior_answers.items()
-            }
+            effective_query_metadata["prior_answers"] = _sanitize_prior_answers(
+                prior_answers
+            )
 
         start_time = time.time()
         logger.info(
@@ -1081,13 +1127,15 @@ def run_queries(
         if query_input.variable_name and not str(result["short_answer"]).startswith(
             "Error:"
         ):
-            prior_answers[query_input.variable_name] = {
-                "short_answer": result["short_answer"],
-                "raw_short_answer": result.get("raw_short_answer")
-                or result["short_answer"],
-                "reasoning": result["reasoning"],
-                "citations": result["citations"],
-            }
+            clean_prior_answer = _sanitize_prior_answer_payload(
+                {
+                    "short_answer": result["short_answer"],
+                    "raw_short_answer": result.get("raw_short_answer")
+                    or result["short_answer"],
+                }
+            )
+            if clean_prior_answer is not None:
+                prior_answers[query_input.variable_name] = clean_prior_answer
 
         if "Error:" not in result["short_answer"]:
             logger.info(

@@ -32,6 +32,20 @@ DEFAULT_LLM_CONTEXT_LIMIT = int(_seg.get("llm_context_limit", 32768))
 DEFAULT_TARGET_RETRIEVED_CHUNKS = 5
 _CHUNK_CONTEXT_RESERVE_RATIO = 0.25
 _CHUNK_CONTEXT_RESERVE_MIN = 4000
+_MAJOR_BOUNDARY_SECTION_TYPES = {
+    "appendix",
+    "article",
+    "book",
+    "chapter",
+    "division",
+    "part",
+    "section_group",
+    "subarticle",
+    "subchapter",
+    "subpart",
+    "subtitle",
+    "title",
+}
 
 # Conservative token approximation that better handles number/punctuation-heavy text.
 _TOKEN_UNIT_PATTERN = re.compile(r"\d+|[A-Za-z]+(?:[-'][A-Za-z]+)*|[^\w\s]", re.UNICODE)
@@ -589,7 +603,7 @@ def _split_chunk_body(
 
     heading_tokens = _estimate_token_count(heading_text)
     body_token_limit = max(20, chunk_token_limit - heading_tokens)
-    parts = _split_text_to_budget(body_text, token_limit=body_token_limit)
+    parts = _segment_text_for_retrieval(body_text, token_limit=body_token_limit)
     if parts:
         return parts
 
@@ -690,6 +704,46 @@ def _pack_ordered_units(units: list[str], token_limit: int) -> list[str]:
 
     _flush_current()
     return packed_units
+
+
+def _normalize_section_type(section_type: Any) -> str | None:
+    """Return a normalized structural section type when available."""
+    if section_type is None:
+        return None
+
+    normalized = str(section_type).strip().casefold()
+    return normalized or None
+
+
+def _infer_section_type_from_heading(heading_text: Any) -> str | None:
+    """Infer a structural section type from heading text when metadata is absent."""
+    if not isinstance(heading_text, str):
+        return None
+
+    stripped_heading = re.sub(r"^#{1,6}\s*", "", heading_text).strip().casefold()
+    if not stripped_heading:
+        return None
+
+    leading_label = re.split(r"[\s:.-]+", stripped_heading, maxsplit=1)[0]
+    if leading_label in _MAJOR_BOUNDARY_SECTION_TYPES:
+        return leading_label
+
+    return None
+
+
+def _resolved_section_type(section_row: dict[str, Any]) -> str | None:
+    """Return explicit section_type or a heading-derived fallback."""
+    normalized_type = _normalize_section_type(section_row.get("section_type"))
+    if normalized_type is not None:
+        return normalized_type
+
+    return _infer_section_type_from_heading(section_row.get("heading_text"))
+
+
+def _is_major_boundary_section(section_row: dict[str, Any]) -> bool:
+    """Return whether a node represents a high-level structural boundary."""
+    normalized_type = _resolved_section_type(section_row)
+    return normalized_type in _MAJOR_BOUNDARY_SECTION_TYPES
 
 
 def _split_markdown_section_units(text: str) -> list[str]:
@@ -861,14 +915,15 @@ def build_chunks_df(
 ) -> pl.DataFrame:
     """Build retrieval-oriented chunks from canonical sections and chunkable regions.
 
-    Canonical section chunks preserve the legal heading tree and recurse to
-    smaller descendants when a full section subtree would exceed the derived
-    chunk budget. When a section is too large, adjacent child subtrees that do
-    fit within the remaining body budget are packed together under the parent
-    heading before falling back to child-level recursion. Non-canonical regions
-    flagged for default chunking, such as legal introductions and annotations,
-    are added as auxiliary chunks so they remain retrievable without polluting
-    canonical section structure.
+    Retrieval chunks are built top-down from the heading hierarchy. For each
+    subtree, the builder first tries to emit the largest section heading whose
+    full subtree still fits the derived chunk budget. If a subtree is too large,
+    the builder descends one level and only packs consecutive child subtrees
+    that remain inside the current parent's boundary. Oversized leaf sections
+    split only within that section. Non-canonical regions flagged for default
+    chunking, such as legal introductions and annotations, are added as
+    auxiliary chunks so they remain retrievable without polluting canonical
+    section structure.
     """
     if not isinstance(sections_df, pl.DataFrame):
         raise TypeError(
@@ -952,35 +1007,68 @@ def build_chunks_df(
             }
         )
 
-    def _build_canonical_chunks(section_ordinal: int) -> None:
+    def _emit_anchor_chunks(section_ordinal: int) -> None:
         section = sections_by_ordinal[section_ordinal]
-        full_text = _render_subtree_text(section_ordinal)
+        full_text = _render_subtree_text(section_ordinal).strip()
+        if not full_text:
+            return
+
         context_path = _build_section_context_path(section, sections_by_ordinal)
-        if full_text and _estimate_token_count(full_text) <= chunk_token_limit:
-            chunk_body = _strip_leading_heading(full_text, section["heading_text"])
+        chunk_body = _strip_leading_heading(full_text, section["heading_text"])
+        body_parts = _split_chunk_body(
+            chunk_body,
+            section["heading_text"],
+            chunk_token_limit,
+        )
+        if not body_parts:
+            return
+
+        has_children = bool(section.get("children"))
+        total_parts = len(body_parts)
+        if total_parts == 1:
+            source_kind = "section_subtree" if has_children else "section_body"
+        else:
+            source_kind = "section_subtree_split" if has_children else "section_body_split"
+
+        for index, part in enumerate(body_parts, start=1):
+            display_heading = section["heading_text"]
+            if total_parts > 1:
+                display_heading = f"{display_heading} (Part {index})"
             _append_chunk_record(
                 section_ordinal=section_ordinal,
                 section_id=section.get("section_id"),
-                heading_text=section["heading_text"],
-                body_text=chunk_body,
+                heading_text=display_heading,
+                body_text=part,
                 heading_level=section["heading_level"],
                 parent_id=section.get("parent_id"),
                 line_number=section["line_number"],
                 context_path=context_path,
-                source_kind="section_subtree",
+                source_kind=source_kind,
                 region_role="main_body",
-                retrieval_priority=3,
-                chunk_part=1,
-                chunk_count=1,
-                section_type=section.get("section_type"),
+                retrieval_priority=4,
+                chunk_part=index,
+                chunk_count=total_parts,
+                section_type=_resolved_section_type(section),
                 section_number=section.get("section_number"),
             )
+
+    def _build_localized_chunks(section_ordinal: int) -> None:
+        section = sections_by_ordinal[section_ordinal]
+        full_text = _render_subtree_text(section_ordinal).strip()
+        if full_text and _estimate_token_count(full_text) <= chunk_token_limit:
+            _emit_anchor_chunks(section_ordinal)
+            return
+
+        children = section.get("children") or []
+        if not children:
+            _emit_anchor_chunks(section_ordinal)
             return
 
         heading_tokens = _estimate_token_count(section["heading_text"])
         body_token_limit = max(20, chunk_token_limit - heading_tokens)
         own_body_text = section.get("body_text") or ""
         pending_units: list[tuple[str, bool]] = []
+        context_path = _build_section_context_path(section, sections_by_ordinal)
 
         def _flush_pending_units() -> None:
             nonlocal pending_units
@@ -1004,6 +1092,7 @@ def build_chunks_df(
                 if total_parts == 1
                 else "section_body_split"
             )
+            retrieval_priority = 2 if _is_major_boundary_section(section) else 3
 
             for index, part in enumerate(packed_bodies, start=1):
                 display_heading = section["heading_text"]
@@ -1020,10 +1109,10 @@ def build_chunks_df(
                     context_path=context_path,
                     source_kind=source_kind,
                     region_role="main_body",
-                    retrieval_priority=3,
+                    retrieval_priority=retrieval_priority,
                     chunk_part=index,
                     chunk_count=total_parts,
-                    section_type=section.get("section_type"),
+                    section_type=_resolved_section_type(section),
                     section_number=section.get("section_number"),
                 )
 
@@ -1037,9 +1126,16 @@ def build_chunks_df(
             ):
                 pending_units.append((body_part, False))
 
-        for child in section.get("children") or []:
+        for child in children:
             child_ordinal = int(child)
-            child_full_text = _render_subtree_text(child_ordinal)
+            child_section = sections_by_ordinal[child_ordinal]
+            child_full_text = _render_subtree_text(child_ordinal).strip()
+
+            if _is_major_boundary_section(child_section):
+                _flush_pending_units()
+                _build_localized_chunks(child_ordinal)
+                continue
+
             if (
                 child_full_text
                 and _estimate_token_count(child_full_text) <= body_token_limit
@@ -1048,7 +1144,7 @@ def build_chunks_df(
                 continue
 
             _flush_pending_units()
-            _build_canonical_chunks(child_ordinal)
+            _build_localized_chunks(child_ordinal)
 
         _flush_pending_units()
 
@@ -1059,7 +1155,7 @@ def build_chunks_df(
         .to_list()
     )
     for section_ordinal in root_sections:
-        _build_canonical_chunks(int(section_ordinal))
+        _build_localized_chunks(int(section_ordinal))
 
     regions_path = code_dir / "regions.parquet"
     if regions_path.exists():

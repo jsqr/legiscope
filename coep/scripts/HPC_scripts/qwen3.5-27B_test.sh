@@ -45,6 +45,9 @@ export PYTHONWARNINGS="${PYTHONWARNINGS:+${PYTHONWARNINGS},}${KNOWN_VLLM_WARNING
 conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
 
 export HF_HOME=/gpfs/scratch/$USER/hf_cache
+unset TRANSFORMERS_CACHE
+unset VLLM_PROJECT
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." 2>/dev/null && pwd || true)"
@@ -100,7 +103,9 @@ python -m vllm.entrypoints.openai.api_server \
     --api-key "$API_KEY" \
     --served-model-name "$MODEL_ID" \
     --download-dir /gpfs/scratch/"$USER"/hf_cache \
+    --generation-config vllm \
     --tensor-parallel-size "$VLLM_TP_SIZE" \
+    --disable-custom-all-reduce \
     --reasoning-parser qwen3 \
     --default-chat-template-kwargs '{"enable_thinking": false}' \
     --language-model-only \

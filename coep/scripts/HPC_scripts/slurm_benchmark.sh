@@ -47,6 +47,7 @@ conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
 export HF_HOME=/gpfs/scratch/$USER/hf_cache
 unset TRANSFORMERS_CACHE
 unset VLLM_PROJECT
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 GITHUB_SSH_REMOTE="${GITHUB_SSH_REMOTE:-git@github.com:jsqr/legiscope.git}"
 CURRENT_STAGE="setup"
 

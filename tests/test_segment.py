@@ -692,7 +692,7 @@ Short supporting text."""
     def test_build_chunks_packs_adjacent_child_sections_up_to_budget(
         self, tmp_path: Path
     ):
-        """Oversized parents should pack adjacent child sections before recursing deeper."""
+        """Adjacent child sections should pack under the parent when it is too large."""
         code_ref = CodeRef(
             jurisdiction=JurisdictionRef(state="PA", locality="PackedTown"),
             code_slug="municipal-code",
@@ -732,15 +732,134 @@ Short supporting text."""
             llm_context_limit=4400,
         )
 
-        packed_chunks = chunks_df.filter(
-            pl.col("source_kind") == "section_packed_split"
+        section_chunks = chunks_df.filter(pl.col("source_kind") == "section_packed_split")
+        assert len(section_chunks) == 2
+        assert section_chunks["heading_text"].to_list() == [
+            "# ARTICLE I (Part 1)",
+            "# ARTICLE I (Part 2)",
+        ]
+        assert section_chunks["chunk_count"].to_list() == [2, 2]
+        assert section_chunks["section_type"].to_list() == ["article", "article"]
+
+        bodies = section_chunks["body_text"].to_list()
+        assert "## 1-100. Purpose." in bodies[0]
+        assert "## 1-200. Scope." in bodies[0]
+        assert "## 1-300. Definitions." in bodies[1]
+        assert "## 1-400. Administration." in bodies[1]
+
+    def test_build_chunks_does_not_pack_across_chapter_boundaries(self, tmp_path: Path):
+        """When a title is too large, chapter boundaries should remain separate."""
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="PA", locality="BoundaryTown"),
+            code_slug="municipal-code",
         )
-        assert len(packed_chunks) == 2
-        assert packed_chunks["chunk_count"].to_list() == [2, 2]
-        assert "## 1-100. Purpose." in packed_chunks["body_text"][0]
-        assert "## 1-200. Scope." in packed_chunks["body_text"][0]
-        assert "## 1-300. Definitions." in packed_chunks["body_text"][1]
-        assert "## 1-400. Administration." in packed_chunks["body_text"][1]
+        code_dir = tmp_path / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        section_body = " ".join(["word"] * 18)
+        markdown_text = f"""# TITLE I
+
+## CHAPTER 1
+
+### 1-100. Purpose.
+
+{section_body}
+
+### 1-200. Scope.
+
+{section_body}
+
+## CHAPTER 2
+
+### 2-100. Purpose.
+
+{section_body}
+
+### 2-200. Scope.
+
+{section_body}
+"""
+
+        sections_df = divide_into_sections(markdown_text)
+        sections_df = add_parent_relationships(sections_df)
+        sections_df = enrich_sections(sections_df, code_ref)
+
+        chunks_df = build_chunks_df(
+            sections_df,
+            code_ref,
+            markdown_text,
+            code_dir,
+            llm_context_limit=4300,
+        )
+
+        section_chunks = chunks_df.filter(pl.col("source_kind") == "section_subtree")
+        assert len(section_chunks) == 2
+        assert section_chunks["heading_text"].to_list() == [
+            "## CHAPTER 1",
+            "## CHAPTER 2",
+        ]
+        assert section_chunks["section_type"].to_list() == ["chapter", "chapter"]
+
+        first_body, second_body = section_chunks["body_text"].to_list()
+        assert "### 1-100. Purpose." in first_body
+        assert "### 1-200. Scope." in first_body
+        assert "### 2-100. Purpose." not in first_body
+        assert "### 2-100. Purpose." in second_body
+        assert "### 2-200. Scope." in second_body
+
+    def test_build_chunks_prefers_largest_fitting_ancestor(self, tmp_path: Path):
+        """If the full ancestor subtree fits, it should become the chunk target."""
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="PA", locality="AncestorTown"),
+            code_slug="municipal-code",
+        )
+        code_dir = tmp_path / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        section_body = " ".join(["word"] * 18)
+        markdown_text = f"""# TITLE I
+
+## CHAPTER 1
+
+### 1-100. Purpose.
+
+{section_body}
+
+### 1-200. Scope.
+
+{section_body}
+
+## CHAPTER 2
+
+### 2-100. Purpose.
+
+{section_body}
+
+### 2-200. Scope.
+
+{section_body}
+"""
+
+        sections_df = divide_into_sections(markdown_text)
+        sections_df = add_parent_relationships(sections_df)
+        sections_df = enrich_sections(sections_df, code_ref)
+
+        chunks_df = build_chunks_df(
+            sections_df,
+            code_ref,
+            markdown_text,
+            code_dir,
+            llm_context_limit=4700,
+        )
+
+        section_chunks = chunks_df.filter(pl.col("source_kind") == "section_subtree")
+        assert len(section_chunks) == 1
+        assert section_chunks["heading_text"].to_list() == ["# TITLE I"]
+        assert section_chunks["section_type"].to_list() == ["title"]
+
+        body_text = section_chunks["body_text"].item(0)
+        assert "## CHAPTER 1" in body_text
+        assert "## CHAPTER 2" in body_text
 
     def test_segment_legal_code_falls_back_to_code_start_without_regions(
         self,

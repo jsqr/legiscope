@@ -1660,7 +1660,9 @@ class TestBatchQueryConfigBasics:
                 short_answer="Sales AND/OR Use",
                 reasoning="Activities are listed explicitly.",
                 citations=[],
-                supporting_passages=[],
+                supporting_passages=[
+                    "Quoted upstream passage that should not be forwarded downstream."
+                ],
                 confidence=0.8,
                 limitations="None",
             ),
@@ -1719,6 +1721,96 @@ class TestBatchQueryConfigBasics:
             captured_prior_answers[1]["dp_activity"]["short_answer"]
             == "Sales AND/OR Use"
         )
+        assert captured_prior_answers[1]["dp_activity"] == {
+            "short_answer": "Sales AND/OR Use",
+            "raw_short_answer": "Sales AND/OR Use",
+        }
+
+    def test_run_queries_sanitizes_preexisting_prior_answers_metadata(self, tmp_path):
+        """Input metadata prior_answers should drop retrieval-heavy upstream fields."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        captured_prior_answers = []
+
+        def provider(request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            captured_prior_answers.append(request.metadata.get("prior_answers"))
+            return None
+
+        response = LegalQueryResponse(
+            short_answer="Use",
+            reasoning="The answer is not important for this regression.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(response, []),
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    retrieval_guidance_provider=provider,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="What is the exemption scope?",
+                            variable_name="dp_exempt_can_activity",
+                            metadata={
+                                "prior_answers": {
+                                    "dp_exemption": {
+                                        "short_answer": "Yes",
+                                        "raw_short_answer": "Yes",
+                                        "supporting_passages": [
+                                            "Large upstream passage that should be removed"
+                                        ],
+                                        "retrieved_sections": [
+                                            "Very long retrieved section summary"
+                                        ],
+                                        "reasoning": "This should not be forwarded.",
+                                    }
+                                }
+                            },
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert captured_prior_answers == [
+            {
+                "dp_exemption": {
+                    "short_answer": "Yes",
+                    "raw_short_answer": "Yes",
+                }
+            }
+        ]
 
     def test_run_queries_serializes_query_metadata_without_flattening_query_subfields(
         self, tmp_path

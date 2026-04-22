@@ -768,6 +768,83 @@ class TestSectionRetrievalConfigBasics:
         assert results.sections[0].chunk_id == "chunk-0"
         assert results.sections[0].body_text == "Chunk-scoped content only."
 
+    def test_retrieve_sections_keeps_chunk_heading_for_chunk_match(self, tmp_path):
+        """Chunk-backed retrieval should keep the chunk's stored heading text."""
+        from unittest.mock import Mock, patch
+
+        import polars as pl
+        from chromadb.api.models.Collection import Collection
+
+        from legiscope.retrieve import retrieve_sections
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["### CHAPTER 39"],
+                "body_text": ["Chapter intro."],
+                "heading_level": [3],
+                "parent_id": [None],
+            }
+        ).write_parquet(tmp_path / "sections.parquet")
+
+        pl.DataFrame(
+            {
+                "chunk_ordinal": [0],
+                "chunk_id": ["chunk-0"],
+                "section_ordinal": [0],
+                "section_id": ["s0"],
+                "heading_text": ["### CHAPTER 39"],
+                "body_text": [
+                    "#### § 6-301. Purpose.\n\nPurpose text.\n\n#### § 6-302. Scope.\n\nScope text."
+                ],
+                "heading_level": [3],
+                "parent_id": [None],
+                "line_number": [1],
+                "context_path": ["TITLE 6 > CHAPTER 39"],
+                "source_kind": ["section_neighborhood"],
+                "region_role": ["main_body"],
+                "retrieval_priority": [4],
+                "chunk_part": [1],
+                "chunk_count": [1],
+                "section_type": ["chapter"],
+                "section_number": ["39"],
+                "token_count": [40],
+            }
+        ).write_parquet(tmp_path / "chunks.parquet")
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["0"]],
+            "documents": [["#### § 6-302. Scope.\n\nScope text."]],
+            "metadatas": [
+                [
+                    {
+                        "chunk_id": "chunk-0",
+                        "chunk_ordinal": 0,
+                        "section_ordinal": 0,
+                        "segment_position": 1,
+                        "section_heading": "### CHAPTER 39",
+                        "section_level": 3,
+                    }
+                ]
+            ],
+            "distances": [[0.1]],
+        }
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_sections(
+                    mock_collection,
+                    str(tmp_path / "sections.parquet"),
+                    "scope query",
+                )
+
+        assert len(results.sections) == 1
+        assert results.sections[0].heading_text == "### CHAPTER 39"
+        assert results.sections[0].heading_level == 3
+
     def test_retrieve_sections_keeps_semantic_order_when_lexical_hints_present(
         self, tmp_path
     ):
