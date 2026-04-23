@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time as time_module
 from datetime import date, datetime, time
 from dataclasses import dataclass
 from enum import Enum
@@ -31,6 +32,8 @@ _p = load_params()
 # Batch processing constants
 CHROMA_BATCH_SIZE = 100  # Fallback Chroma write batch size when params are unavailable
 BATCH_LOG_INTERVAL = 100  # Fallback log progress interval when config is unavailable
+EMBEDDING_REQUEST_MAX_RETRIES = 3
+EMBEDDING_REQUEST_RETRY_BASE_DELAY_SECONDS = 1.0
 
 
 def _get_batch_log_interval() -> int:
@@ -45,6 +48,38 @@ def _get_batch_log_interval() -> int:
     if not isinstance(interval, int) or interval <= 0:
         return BATCH_LOG_INTERVAL
     return interval
+
+
+def _get_embedding_request_max_retries() -> int:
+    """Read request retry count for embedding API calls with fallback."""
+    try:
+        params = load_params()
+    except FileNotFoundError:
+        return EMBEDDING_REQUEST_MAX_RETRIES
+
+    retries = params.get("embeddings", {}).get(
+        "request_max_retries",
+        params.get("max_retries", EMBEDDING_REQUEST_MAX_RETRIES),
+    )
+    if not isinstance(retries, int) or retries < 0:
+        return EMBEDDING_REQUEST_MAX_RETRIES
+    return retries
+
+
+def _get_embedding_request_retry_base_delay_seconds() -> float:
+    """Read base backoff delay for embedding API retries with fallback."""
+    try:
+        params = load_params()
+    except FileNotFoundError:
+        return EMBEDDING_REQUEST_RETRY_BASE_DELAY_SECONDS
+
+    delay = params.get("embeddings", {}).get(
+        "request_retry_base_delay_seconds",
+        EMBEDDING_REQUEST_RETRY_BASE_DELAY_SECONDS,
+    )
+    if not isinstance(delay, (int, float)) or delay <= 0:
+        return EMBEDDING_REQUEST_RETRY_BASE_DELAY_SECONDS
+    return float(delay)
 
 
 def _should_log_batch_progress(
@@ -520,6 +555,88 @@ def _generate_embeddings_ollama(
     return embeddings_list
 
 
+def _is_retryable_embedding_error(exc: Exception) -> bool:
+    """Return whether an embedding request error is likely transient."""
+    message = str(exc).lower()
+    retryable_fragments = (
+        "connection error",
+        "connection reset",
+        "connection refused",
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "remote protocol error",
+        "server disconnected",
+        "service unavailable",
+        "too many requests",
+    )
+    if any(fragment in message for fragment in retryable_fragments):
+        return True
+
+    try:
+        import httpx
+    except ImportError:
+        httpx = None
+
+    if httpx is not None and isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadTimeout,
+            httpx.RemoteProtocolError,
+        ),
+    ):
+        return True
+
+    try:
+        from openai import (
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+        )
+    except ImportError:
+        return False
+
+    return isinstance(
+        exc,
+        (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError),
+    )
+
+
+def _request_openai_compatible_embeddings(
+    *,
+    client,
+    model: str,
+    batch_texts: list[str],
+    provider_label: str,
+    batch_number: int,
+    total_batches: int,
+):
+    """Execute one OpenAI-compatible embedding request with bounded retries."""
+    max_retries = _get_embedding_request_max_retries()
+    base_delay = _get_embedding_request_retry_base_delay_seconds()
+
+    attempt = 0
+    while True:
+        try:
+            return client.embeddings.create(model=model, input=batch_texts)
+        except Exception as exc:
+            if not _is_retryable_embedding_error(exc) or attempt >= max_retries:
+                raise
+
+            delay = base_delay * (2**attempt)
+            logger.warning(
+                f"Transient {provider_label} embedding error for batch "
+                f"{batch_number}/{total_batches} with {len(batch_texts)} texts; "
+                f"retrying in {delay:.1f}s "
+                f"(attempt {attempt + 1}/{max_retries}): {exc}"
+            )
+            time_module.sleep(delay)
+            attempt += 1
+
+
 def _generate_embeddings_openrouter(
     client, texts: list[str], model: str, batch_size: int = 100
 ) -> list[list[float]]:
@@ -547,7 +664,34 @@ def _generate_embeddings_openrouter(
         end_idx = min(start_idx + batch_size, len(texts))
         batch_texts = texts[start_idx:end_idx]
 
-        response = client.embeddings.create(model=model, input=batch_texts)
+        try:
+            response = _request_openai_compatible_embeddings(
+                client=client,
+                model=model,
+                batch_texts=batch_texts,
+                provider_label="OpenAI-compatible",
+                batch_number=batch_num + 1,
+                total_batches=total_batches,
+            )
+        except Exception as exc:
+            if _is_retryable_embedding_error(exc) and len(batch_texts) > 1:
+                split_batch_size = max(1, len(batch_texts) // 2)
+                logger.warning(
+                    f"OpenAI-compatible embedding batch {batch_num + 1}/{total_batches} "
+                    f"still failed after retries; retrying with smaller batch size "
+                    f"{split_batch_size} for these {len(batch_texts)} texts"
+                )
+                embeddings_list.extend(
+                    _generate_embeddings_openrouter(
+                        client,
+                        batch_texts,
+                        model,
+                        batch_size=split_batch_size,
+                    )
+                )
+                continue
+            raise
+
         if response is None or not hasattr(response, "data") or len(response.data) == 0:
             logger.error(f"Failed to get embeddings for batch {batch_num + 1}")
             raise ValueError(f"Failed to get embeddings for batch {batch_num + 1}")

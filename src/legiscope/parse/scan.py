@@ -28,6 +28,60 @@ DEFAULT_TEMPERATURE = _params.get("llm", {}).get(
 DEFAULT_MAX_RETRIES = _params.get("llm", {}).get("max_retries", 3)
 DEFAULT_LLM_TIMEOUT_SECONDS = float(_params.get("llm", {}).get("timeout", 300))
 SCAN_CREATE_MAX_RETRIES = DEFAULT_MAX_RETRIES
+DEFAULT_SCAN_INITIAL_SAMPLE_COUNT = 200
+DEFAULT_SCAN_SCORE_THRESHOLD = 0.7
+DEFAULT_SCAN_MAX_ITERATIONS = 5
+
+
+def _get_scan_params() -> dict[str, object]:
+    """Return parse-scan-specific params with sane fallbacks."""
+    try:
+        params = load_params()
+    except FileNotFoundError:
+        return {}
+    return params.get("parse", {}).get("scan", {}) or {}
+
+
+def _get_scan_initial_sample_count() -> int:
+    """Return the initial representative element sample size for scan_headings."""
+    value = _get_scan_params().get(
+        "initial_sample_count", DEFAULT_SCAN_INITIAL_SAMPLE_COUNT
+    )
+    if not isinstance(value, int) or value <= 0:
+        return DEFAULT_SCAN_INITIAL_SAMPLE_COUNT
+    return value
+
+
+def _get_scan_max_iterations() -> int:
+    """Return the maximum number of scan refinement iterations."""
+    value = _get_scan_params().get("max_iterations", DEFAULT_SCAN_MAX_ITERATIONS)
+    if not isinstance(value, int) or value <= 0:
+        return DEFAULT_SCAN_MAX_ITERATIONS
+    return value
+
+
+def _get_scan_score_threshold() -> float:
+    """Return the early-stop score threshold for scan refinement."""
+    value = _get_scan_params().get("score_threshold", DEFAULT_SCAN_SCORE_THRESHOLD)
+    if not isinstance(value, (int, float)) or value <= 0:
+        return DEFAULT_SCAN_SCORE_THRESHOLD
+    return float(value)
+
+
+def _get_scan_create_max_retries() -> int:
+    """Return scan-stage LLM retry count, falling back to the global setting."""
+    value = _get_scan_params().get("max_retries", DEFAULT_MAX_RETRIES)
+    if not isinstance(value, int) or value < 0:
+        return DEFAULT_MAX_RETRIES
+    return value
+
+
+def _get_scan_timeout_seconds() -> float:
+    """Return scan-stage LLM timeout in seconds, falling back to the global setting."""
+    value = _get_scan_params().get("timeout", DEFAULT_LLM_TIMEOUT_SECONDS)
+    if not isinstance(value, (int, float)) or value <= 0:
+        return DEFAULT_LLM_TIMEOUT_SECONDS
+    return float(value)
 
 
 # ── Heading-like line heuristics ───────────────────────────────────────
@@ -49,7 +103,38 @@ _DASH_SECTION_PAT = re.compile(r"^[-\u2013\u2014=_]{3,}\s*$")
 _TITLE_HEADING_PAT = re.compile(r"^TITLE\b", re.IGNORECASE)
 _ARTICLE_HEADING_PAT = re.compile(r"^ARTICLE\b", re.IGNORECASE)
 _CHAPTER_HEADING_PAT = re.compile(r"^CHAPTER\b", re.IGNORECASE)
+_APPENDIX_HEADING_PAT = re.compile(r"^APPENDIX\b", re.IGNORECASE)
+_PREAMBLE_HEADING_PAT = re.compile(r"^PREAMBLE\b", re.IGNORECASE)
+_ANNOTATION_HEADING_PAT = re.compile(r"^ANNOTATION\b", re.IGNORECASE)
 _NOTES_HEADING_PAT = re.compile(r"^NOTES$", re.IGNORECASE)
+_COMPOUND_IDENTIFIER_HEADING_PAT = re.compile(
+    r"^(?:§\s*)?[A-Z0-9]+(?:[-.][A-Z0-9]+)+\b",
+    re.IGNORECASE,
+)
+
+
+def _is_excluded_from_heading_like_recall(line: str) -> bool:
+    """Return True for heading-like lines that are usually non-structural."""
+    stripped = line.strip()
+    if not stripped:
+        return False
+    return bool(
+        _PAREN_LABEL_PAT.match(stripped)
+        or _NUMBERED_HEADING_PAT.match(stripped)
+        or _DASH_SECTION_PAT.match(stripped)
+        or _ANNOTATION_HEADING_PAT.match(stripped)
+        or _NOTES_HEADING_PAT.match(stripped)
+    )
+
+
+def _counts_toward_heading_like_recall(line: str) -> bool:
+    """Return True for heading-like lines that should count toward recall."""
+    stripped = line.strip()
+    return bool(
+        stripped
+        and is_heading_like(stripped)
+        and not _is_excluded_from_heading_like_recall(stripped)
+    )
 
 
 def is_heading_like(line: str) -> bool:
@@ -99,6 +184,102 @@ def _format_raw_elements(elements_df: pl.DataFrame) -> str:
     return "\n".join(parts)
 
 
+def _variant_signature_for_line(line: str) -> str | None:
+    """Return a coarse signature for a structural heading variant."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+
+    if _TITLE_HEADING_PAT.match(stripped):
+        token = _extract_identifier_token(stripped, "TITLE")
+        if token and "." in token:
+            return "title_decimal"
+        return "title_plain"
+
+    if _ARTICLE_HEADING_PAT.match(stripped):
+        token = _extract_identifier_token(stripped, "ARTICLE")
+        if token is None:
+            return "article"
+        if re.fullmatch(r"[IVXLCDM]+", token, re.IGNORECASE):
+            return "article_roman"
+        if re.search(r"[-.]", token):
+            return "article_compound"
+        return "article_plain"
+
+    if _CHAPTER_HEADING_PAT.match(stripped):
+        token = _extract_identifier_token(stripped, "CHAPTER")
+        if token and re.search(r"[-.]", token):
+            return "chapter_compound"
+        return "chapter_plain"
+
+    if _APPENDIX_HEADING_PAT.match(stripped):
+        token = _extract_identifier_token(stripped, "APPENDIX")
+        return "appendix_token" if token else "appendix_plain"
+
+    if _PREAMBLE_HEADING_PAT.match(stripped):
+        return "preamble"
+
+    if _SECTION_SYMBOL_PAT.match(stripped):
+        token = _extract_identifier_token(stripped)
+        if token and re.search(r"[-.]", token):
+            return "section_symbol_compound"
+        return "section_symbol"
+
+    if re.match(r"^SECTION\b", stripped, re.IGNORECASE):
+        token = _extract_identifier_token(stripped, "SECTION")
+        if token and re.search(r"[-.]", token):
+            return "section_keyword_compound"
+        return "section_keyword"
+
+    if _COMPOUND_IDENTIFIER_HEADING_PAT.match(stripped):
+        token = _extract_identifier_token(stripped)
+        if token and token[:1].isalpha():
+            return "bare_compound_alpha"
+        return "bare_compound_numeric"
+
+    return None
+
+
+def _build_scan_variant_guidance(elements_df: pl.DataFrame) -> str:
+    """Summarize structural format variants visible in the sample for the LLM."""
+    grouped_examples: dict[str, dict[str, str]] = {}
+    display_order = ["title", "article", "chapter", "section", "appendix"]
+
+    for row in elements_df.to_dicts():
+        first_line = row["text"].split("\n")[0].strip()
+        label = _classify_scan_candidate(first_line)
+        if label not in {"title", "article", "chapter", "section", "appendix", "compound_id"}:
+            continue
+        group_label = "section" if label == "compound_id" else label
+        signature = _variant_signature_for_line(first_line)
+        if signature is None:
+            continue
+        examples_for_group = grouped_examples.setdefault(group_label, {})
+        examples_for_group.setdefault(signature, first_line)
+
+    lines: list[str] = []
+    for group_label in display_order:
+        variants = grouped_examples.get(group_label, {})
+        if len(variants) < 2:
+            continue
+        variant_examples = "; ".join(
+            f"`{example[:90]}`" for example in list(variants.values())[:4]
+        )
+        lines.append(
+            f"- {group_label}: {variant_examples}"
+        )
+
+    if not lines:
+        return ""
+
+    return (
+        "FORMAT VARIANTS SEEN IN SAMPLE:\n"
+        "If multiple examples below belong to the same logical heading level, keep one level and put the alternate regexes in `regex_patterns` instead of creating separate levels.\n"
+        + "\n".join(lines)
+        + "\n"
+    )
+
+
 def _classify_scan_candidate(line: str) -> str:
     """Classify a first-line heading candidate for sampling diagnostics."""
     stripped = line.strip()
@@ -110,11 +291,19 @@ def _classify_scan_candidate(line: str) -> str:
         return "article"
     if _CHAPTER_HEADING_PAT.match(stripped):
         return "chapter"
+    if _APPENDIX_HEADING_PAT.match(stripped):
+        return "appendix"
+    if _PREAMBLE_HEADING_PAT.match(stripped):
+        return "preamble"
     if _SECTION_SYMBOL_PAT.match(stripped):
         return "section"
+    if _ANNOTATION_HEADING_PAT.match(stripped):
+        return "annotation"
     if _NOTES_HEADING_PAT.match(stripped):
         return "notes"
-    if is_heading_like(stripped):
+    if _COMPOUND_IDENTIFIER_HEADING_PAT.match(stripped):
+        return "compound_id"
+    if _counts_toward_heading_like_recall(stripped):
         return "heading_like"
     return "other"
 
@@ -138,6 +327,30 @@ def _select_scan_sample(code_elements: pl.DataFrame, sample_count: int) -> pl.Da
         if len(selected_ids) < target_count:
             selected_ids.add(element_id)
 
+    def add_spaced_rows(candidate_rows: list[dict[str, object]], quota: int) -> None:
+        if quota <= 0 or not candidate_rows or len(selected_ids) >= target_count:
+            return
+
+        available = [
+            row for row in candidate_rows if row["element_id"] not in selected_ids
+        ]
+        if not available:
+            return
+
+        take_count = min(quota, len(available), target_count - len(selected_ids))
+        if take_count <= 0:
+            return
+
+        if len(available) <= take_count:
+            for row in available:
+                add_element_id(row["element_id"])
+            return
+
+        max_index = len(available) - 1
+        for offset in range(take_count):
+            index = round(offset * max_index / max(1, take_count - 1))
+            add_element_id(available[index]["element_id"])
+
     front_quota = min(target_count, max(50, target_count // 2))
     for row in rows[:front_quota]:
         add_element_id(row["element_id"])
@@ -146,39 +359,30 @@ def _select_scan_sample(code_elements: pl.DataFrame, sample_count: int) -> pl.Da
         "title": max(4, target_count // 25),
         "article": max(4, target_count // 25),
         "chapter": max(6, target_count // 20),
+        "section": max(4, target_count // 30),
+        "compound_id": max(4, target_count // 25),
+        "appendix": min(3, max(1, target_count // 60)),
+        "preamble": 1,
     }
 
     for class_name, quota in class_quotas.items():
-        added_for_class = 0
-        for row in rows[front_quota:]:
-            first_line = row["text"].split("\n")[0].strip()
-            if _classify_scan_candidate(first_line) != class_name:
-                continue
-            if row["element_id"] in selected_ids:
-                continue
-            add_element_id(row["element_id"])
-            added_for_class += 1
-            if added_for_class >= quota or len(selected_ids) >= target_count:
-                break
+        class_rows = [
+            row
+            for row in rows[front_quota:]
+            if _classify_scan_candidate(row["text"].split("\n")[0].strip())
+            == class_name
+        ]
+        add_spaced_rows(class_rows, quota)
 
     heading_like_rows = [
         row
         for row in rows
-        if is_heading_like(row["text"].split("\n")[0].strip())
-        and not _NOTES_HEADING_PAT.match(row["text"].split("\n")[0].strip())
+        if _classify_scan_candidate(row["text"].split("\n")[0].strip())
+        == "heading_like"
     ]
     remaining = target_count - len(selected_ids)
     if remaining > 0 and heading_like_rows:
-        if len(heading_like_rows) <= remaining:
-            for row in heading_like_rows:
-                add_element_id(row["element_id"])
-        else:
-            max_index = len(heading_like_rows) - 1
-            for offset in range(remaining * 2):
-                if len(selected_ids) >= target_count:
-                    break
-                index = round(offset * max_index / max(1, remaining * 2 - 1))
-                add_element_id(heading_like_rows[index]["element_id"])
+        add_spaced_rows(heading_like_rows, remaining)
 
     if len(selected_ids) < target_count:
         max_index = len(rows) - 1
@@ -200,6 +404,10 @@ def _sample_diagnostics(elements_df: pl.DataFrame) -> dict[str, int]:
         "article": 0,
         "chapter": 0,
         "section": 0,
+        "appendix": 0,
+        "preamble": 0,
+        "compound_id": 0,
+        "annotation": 0,
         "notes": 0,
         "heading_like": 0,
         "chars": 0,
@@ -210,7 +418,7 @@ def _sample_diagnostics(elements_df: pl.DataFrame) -> dict[str, int]:
         label = _classify_scan_candidate(first_line)
         if label in diagnostics and label != "heading_like":
             diagnostics[label] += 1
-        if label == "heading_like" or is_heading_like(first_line):
+        if label == "heading_like" or _counts_toward_heading_like_recall(first_line):
             diagnostics["heading_like"] += 1
     return diagnostics
 
@@ -360,6 +568,12 @@ RULES:
 3. INFERRED LEVELS: if compound identifiers (e.g. 7-4-010) imply a parent that
    never appears as a heading, mark it `inferred: true` with empty `regex_patterns`.
    Inferred parents get LOWER level numbers than the children they were deduced from.
+
+3a. VARIANT CONSOLIDATION: if the same logical heading level appears in multiple
+    text forms, keep it as one level and place the alternate regexes in
+    `regex_patterns`. Do not split levels solely because one example uses Roman
+    numerals, another uses alphanumeric identifiers, or one form has punctuation
+    like `§`, `.`, or `-`.
 
 4. REGEX PATTERNS:
    - Anchor with `^`, single-line only (no `\\n`)
@@ -524,55 +738,152 @@ def _identifier_sort_key(identifier: str) -> tuple[int | str, ...] | None:
     return tuple(key)
 
 
-def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
-    """Tighten obvious article/chapter/section regexes using the example heading."""
-    example = level.example_heading.strip()
-    label = level.type_label.lower().strip()
+def _dedupe_patterns(patterns: list[str]) -> list[str]:
+    """Preserve pattern order while removing duplicates and blanks."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for pattern in patterns:
+        stripped = pattern.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        ordered.append(stripped)
+    return ordered
 
-    if label == "article":
-        match = re.match(r"^ARTICLE\s+([IVXLCDM]+|\d+)\b", example, re.IGNORECASE)
-        if match:
-            token = match.group(1)
-            numeral_pattern = (
-                r"[IVXLCDM]+"
-                if re.fullmatch(r"[IVXLCDM]+", token, re.IGNORECASE)
-                else r"\d+"
-            )
-            level.regex_pattern = rf"^ARTICLE\s+{numeral_pattern}(?:\s+.*)?$"
-            level.regex_patterns = [level.regex_pattern]
-            level.number_regex = numeral_pattern
-        return
 
-    if label == "chapter":
+def _extract_identifier_token(example: str, keyword: str | None = None) -> str | None:
+    """Extract the first identifier token from a heading example."""
+    if keyword is not None:
         match = re.match(
-            r"^CHAPTER\s+([A-Z0-9IVXLCDM]+(?:[-.][A-Z0-9IVXLCDM]+)*)\b",
+            rf"^{re.escape(keyword)}\s+([A-Z0-9]+(?:[-.][A-Z0-9]+)*)\.?(?=\s|$)",
             example,
             re.IGNORECASE,
         )
-        if match:
-            number_pattern = r"[A-Z0-9IVXLCDM]+(?:[-.][A-Z0-9IVXLCDM]+)*"
-            level.regex_pattern = rf"^CHAPTER\s+{number_pattern}(?:\s+.*)?$"
-            level.regex_patterns = [level.regex_pattern]
-            level.number_regex = number_pattern
+    else:
+        match = re.match(
+            r"^(?:§\s*)?([A-Z0-9]+(?:[-.][A-Z0-9]+)*)\.?(?=\s|$)",
+            example,
+            re.IGNORECASE,
+        )
+    if not match:
+        return None
+    return match.group(1).rstrip(".:;")
+
+
+def _identifier_pattern_from_token(token: str) -> str:
+    """Generalize a heading identifier token into a regex fragment."""
+    cleaned = token.strip().upper().rstrip(".:;")
+    if not cleaned:
+        return r"[A-Z0-9]+(?:[-.][A-Z0-9]+)*"
+    if re.fullmatch(r"[IVXLCDM]+", cleaned, re.IGNORECASE):
+        return r"[IVXLCDM]+"
+    if re.fullmatch(r"\d+(?:\.\d+)*", cleaned):
+        return r"\d+(?:\.\d+)*"
+    if re.fullmatch(r"[A-Z]", cleaned, re.IGNORECASE):
+        return r"[A-Z]"
+    if re.fullmatch(r"[A-Z]+", cleaned, re.IGNORECASE):
+        return r"[A-Z]+"
+    if re.fullmatch(r"[A-Z0-9]+(?:[-.][A-Z0-9]+)+", cleaned, re.IGNORECASE):
+        return r"[A-Z0-9]+(?:[-.][A-Z0-9]+)+"
+    if re.fullmatch(r"[A-Z0-9]+", cleaned, re.IGNORECASE):
+        return r"[A-Z0-9]+"
+    return r"[A-Z0-9]+(?:[-.][A-Z0-9]+)*"
+
+
+def _update_level_patterns(
+    level: HeadingLevel,
+    refined_patterns: list[str],
+    *,
+    number_regex: str | None = None,
+) -> None:
+    """Merge refined patterns ahead of existing variants for a level."""
+    existing_patterns = list(level.regex_patterns or [])
+    if level.regex_pattern:
+        existing_patterns.insert(0, level.regex_pattern)
+
+    merged = _dedupe_patterns(refined_patterns + existing_patterns)
+    if merged:
+        level.regex_patterns = merged
+        level.regex_pattern = merged[0]
+    if number_regex is not None:
+        level.number_regex = number_regex
+
+
+def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
+    """Tighten obvious heading regexes using the example heading without losing variants."""
+    example = level.example_heading.strip()
+    label = level.type_label.lower().strip()
+
+    if label == "title":
+        token = _extract_identifier_token(example, "TITLE")
+        if token:
+            number_pattern = _identifier_pattern_from_token(token)
+            _update_level_patterns(
+                level,
+                [rf"^TITLE\s+{number_pattern}\.?(?:\s+.*)?$"],
+                number_regex=number_pattern,
+            )
         return
 
-    if label == "section":
-        match = re.match(r"^(§\s*)?(\d+(?:-\d+)+)", example)
-        if match:
-            identifier = match.group(2)
-            component_count = identifier.count("-")
-            prefix = r"^(?:§\s*)?"
-            id_pattern = r"\d+" + (r"(?:-\d+)" * component_count)
-            suffix = example[match.end() :]
-            if suffix.lstrip().startswith("."):
-                ending = r"(?:\.\s*.*|\s+.*)$"
-            elif suffix.lstrip().startswith(":"):
-                ending = r"(?:\:\s*.*|\s+.*)$"
-            else:
-                ending = r"(?:\.\s*.*|\:\s*.*|\s+.*)$"
-            level.regex_pattern = prefix + id_pattern + ending
-            level.regex_patterns = [level.regex_pattern]
-            level.number_regex = id_pattern
+    if label == "article":
+        token = _extract_identifier_token(example, "ARTICLE")
+        if token:
+            number_pattern = _identifier_pattern_from_token(token)
+            _update_level_patterns(
+                level,
+                [rf"^ARTICLE\s+{number_pattern}\.?(?:\s+.*)?$"],
+                number_regex=number_pattern,
+            )
+        return
+
+    if label == "chapter":
+        token = _extract_identifier_token(example, "CHAPTER")
+        if token:
+            number_pattern = _identifier_pattern_from_token(token)
+            _update_level_patterns(
+                level,
+                [rf"^CHAPTER\s+{number_pattern}\.?(?:\s+.*)?$"],
+                number_regex=number_pattern,
+            )
+        return
+
+    if label in {"section", "code_section"}:
+        if re.match(r"^SECTION\b", example, re.IGNORECASE):
+            token = _extract_identifier_token(example, "SECTION")
+            if token:
+                number_pattern = _identifier_pattern_from_token(token)
+                _update_level_patterns(
+                    level,
+                    [rf"^SECTION\s+{number_pattern}\.?(?:\s+.*)?$"],
+                    number_regex=number_pattern,
+                )
+            return
+
+        token = _extract_identifier_token(example)
+        if token:
+            number_pattern = _identifier_pattern_from_token(token)
+            _update_level_patterns(
+                level,
+                [
+                    rf"^(?:§\s*)?{number_pattern}(?:\.\s*.*|\:\s*.*|\s+.*)$"
+                ],
+                number_regex=number_pattern,
+            )
+        return
+
+    if label == "appendix" or _APPENDIX_HEADING_PAT.match(example):
+        token = _extract_identifier_token(example, "APPENDIX")
+        if token:
+            number_pattern = _identifier_pattern_from_token(token)
+            refined = rf"^APPENDIX\s+{number_pattern}\.?(?:\s+.*)?$"
+        else:
+            refined = r"^APPENDIX(?:\s+.*)?$"
+            number_pattern = None
+        _update_level_patterns(level, [refined], number_regex=number_pattern)
+        return
+
+    if label == "preamble" or _PREAMBLE_HEADING_PAT.match(example):
+        _update_level_patterns(level, [r"^PREAMBLE(?:\s+.*)?$"])
 
 
 def _normalize_scanned_structure(structure: HeadingStructure) -> HeadingStructure:
@@ -790,7 +1101,7 @@ def score_structure(
         first_line = element_text.split("\n")[0].strip()
         if not first_line:
             continue
-        is_hl = is_heading_like(first_line)
+        is_hl = _counts_toward_heading_like_recall(first_line)
         if is_hl:
             heading_like_count += 1
         matching = _matched_levels_for_element(element_text, compiled)
@@ -889,8 +1200,8 @@ def score_structure(
 def scan_headings(
     file_path: str,
     client: Instructor | None = None,
-    max_iterations: int = 5,
-    score_threshold: float = 0.7,
+    max_iterations: int | None = None,
+    score_threshold: float | None = None,
     debug_output_path: str | Path | None = None,
 ) -> tuple[HeadingStructure, float, int]:
     """Iteratively scan legal text with a self-correcting feedback loop.
@@ -903,6 +1214,11 @@ def scan_headings(
 
     if client is None:
         client = Config.get_powerful_client()
+
+    if max_iterations is None:
+        max_iterations = _get_scan_max_iterations()
+    if score_threshold is None:
+        score_threshold = _get_scan_score_threshold()
 
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -917,7 +1233,9 @@ def scan_headings(
     logger.info(f"Code starts at element {code_start.element_id}")
     code_elements = elements_df.filter(pl.col("element_id") >= code_start.element_id)
 
-    sample_count = 200
+    sample_count = _get_scan_initial_sample_count()
+    llm_timeout_seconds = _get_scan_timeout_seconds()
+    scan_create_max_retries = _get_scan_create_max_retries()
     error_feedback: list[str] = []
     best_structure: HeadingStructure | None = None
     best_score = 0.0
@@ -934,6 +1252,7 @@ def scan_headings(
         scan_count = min(sample_count, code_elements.height)
         sample_elements = _select_scan_sample(code_elements, scan_count)
         raw_text = _format_raw_elements(sample_elements)
+        variant_guidance = _build_scan_variant_guidance(sample_elements)
         sample_stats = _sample_diagnostics(sample_elements)
         sample_element_ids = sample_elements["element_id"].to_list()
         logger.info(
@@ -967,10 +1286,15 @@ def scan_headings(
             f"({code_elements.height} total).\n"
             f"Identify which elements are headings, group by level, create regex "
             f"patterns, and list element ids in outline_line_numbers.\n"
+            f"When the same logical level appears in multiple observed formats, return "
+            f"multiple entries in `regex_patterns` for that level instead of splitting it "
+            f"into separate levels.\n"
             f"Only use the provided element ids in outline_line_numbers.\n"
             f"Return a single JSON object only. Use `heading_levels` as the top-level "
             f"array key. Do not return schema keys like `$defs` or `properties`.\n"
         )
+        if variant_guidance:
+            user_prompt += f"\n{variant_guidance}"
         if error_feedback:
             feedback_text = "\n".join(f"- {e}" for e in error_feedback[:20])
             user_prompt += (
@@ -985,8 +1309,8 @@ def scan_headings(
                 ],
                 response_model=HeadingStructure,
                 **Config.get_llm_params(
-                    max_retries=SCAN_CREATE_MAX_RETRIES,
-                    timeout=DEFAULT_LLM_TIMEOUT_SECONDS,
+                    max_retries=scan_create_max_retries,
+                    timeout=llm_timeout_seconds,
                 ),
             )
             structure = _normalize_scanned_structure(structure)
@@ -1106,8 +1430,8 @@ def scan_legal_text(
     structure, score, iterations = scan_headings(
         file_path=file_path,
         client=client,
-        max_iterations=5,
-        score_threshold=0.7,
+        max_iterations=None,
+        score_threshold=None,
         debug_output_path=debug_output_path,
     )
     return structure

@@ -844,6 +844,128 @@ Some body text here."""
         finally:
             os.unlink(test_file)
 
+    @patch(
+        "legiscope.parse.scan.load_params",
+        return_value={
+            "convert": {"scan_max_lines": 200},
+            "llm": {"temperature": 0.0, "max_retries": 3, "timeout": 300},
+            "parse": {
+                "scan": {
+                    "initial_sample_count": 120,
+                    "max_iterations": 2,
+                    "score_threshold": 0.7,
+                    "max_retries": 7,
+                    "timeout": 480,
+                }
+            },
+        },
+    )
+    def test_scan_legal_text_uses_configured_scan_params(self, _mock_load_params):
+        """Scan stage should honor parse.scan overrides from params.yaml."""
+        sample_blocks = []
+        for index in range(1, 181):
+            sample_blocks.append(
+                f"CHAPTER {index}\n"
+                "This chapter contains enough substantive text to remain a distinct "
+                "element during scan param override testing."
+            )
+        sample_text = "\n\n".join(sample_blocks)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+[A-Z0-9IVXLCDM.-]+(?:\s+.*)?$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1",
+                        type_label="chapter",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=180,
+            )
+
+            mock_client = Mock()
+            mock_client.chat.completions.create.side_effect = [
+                ScanResult(found=True, element_id=0, reasoning="Start of document"),
+                mock_response,
+            ]
+
+            with patch("legiscope.parse.scan.score_structure", return_value=(0.95, [])):
+                scan_legal_text(mock_client, test_file)
+
+            scan_call = mock_client.chat.completions.create.call_args_list[1]
+            prompt = scan_call.kwargs["messages"][1]["content"]
+
+            assert "These are 120 representative elements" in prompt
+            assert scan_call.kwargs["max_retries"] == 7
+            assert scan_call.kwargs["timeout"] == 480
+
+        finally:
+            os.unlink(test_file)
+
+    def test_scan_legal_text_prompt_calls_for_regex_variants(self):
+        """Scan prompt should explicitly ask for multiple regexes per logical level."""
+        sample_text = """ARTICLE III GENERAL POWERS
+
+Article B-1.0 Adoption of the Building Code
+
+CHAPTER 2 COUNCIL PROCEDURE
+
+Chapter 2-100 City-County Consolidation
+
+§ 1-100. The City's Powers Defined.
+
+A-100 Certain Existing Departments
+
+Body text here."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^ARTICLE\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="ARTICLE III GENERAL POWERS",
+                        type_label="article",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=7,
+            )
+
+            mock_client = _make_mock_client(mock_response)
+
+            with patch("legiscope.parse.scan.score_structure", return_value=(0.95, [])):
+                scan_legal_text(mock_client, test_file)
+
+            prompt = mock_client.chat.completions.create.call_args_list[-1].kwargs[
+                "messages"
+            ][1]["content"]
+
+            assert "multiple entries in `regex_patterns`" in prompt
+            assert "FORMAT VARIANTS SEEN IN SAMPLE:" in prompt
+            assert "- article:" in prompt
+            assert "- chapter:" in prompt
+            assert "- section:" in prompt
+
+        finally:
+            os.unlink(test_file)
+
     def test_scan_legal_text_writes_heading_scan_debug_artifact(self):
         """Scan debug output should preserve per-iteration generated structures and scores."""
         sample_text = """CHAPTER 1: GENERAL PROVISIONS
@@ -927,7 +1049,42 @@ This chapter contains general provisions.
         _apply_example_based_pattern_refinement(level)
 
         assert re.match(level.regex_pattern, "CHAPTER 9-600 DRUG PARAPHERNALIA")
-        assert level.number_regex == r"[A-Z0-9IVXLCDM]+(?:[-.][A-Z0-9IVXLCDM]+)*"
+        assert level.number_regex == r"[A-Z0-9]+(?:[-.][A-Z0-9]+)+"
+
+    def test_example_refinement_supports_letter_prefixed_sections(self):
+        """Section refinement should support letter-prefixed identifiers generically."""
+        level = HeadingLevel(
+            level=1,
+            regex_pattern=r"^§\s*.+$",
+            markdown_prefix="#",
+            example_heading="§ A-100. Certain Existing Departments.",
+            type_label="section",
+        )
+
+        _apply_example_based_pattern_refinement(level)
+
+        assert re.match(level.regex_pattern, "§ A-100. Certain Existing Departments.")
+        assert re.match(level.regex_pattern, "A-100 Certain Existing Departments")
+        assert level.number_regex == r"[A-Z0-9]+(?:[-.][A-Z0-9]+)+"
+
+    def test_example_refinement_preserves_existing_regex_variants(self):
+        """Example-based refinement should not discard other regex variants from the LLM."""
+        variant_pattern = r"^ARTICLE\s+[A-Z0-9]+(?:[-.][A-Z0-9]+)+(?:\s+.*)?$"
+        level = HeadingLevel(
+            level=1,
+            regex_patterns=[
+                r"^ARTICLE\s+[IVXLCDM]+(?:\s+.*)?$",
+                variant_pattern,
+            ],
+            markdown_prefix="#",
+            example_heading="ARTICLE III GENERAL POWERS",
+            type_label="article",
+        )
+
+        _apply_example_based_pattern_refinement(level)
+
+        assert variant_pattern in level.regex_patterns
+        assert re.match(level.regex_pattern, "ARTICLE III GENERAL POWERS")
 
     def test_scan_legal_text_invalid_regex_produces_warnings(self):
         """Test that invalid regex patterns produce warnings and low quality score."""
@@ -2518,6 +2675,39 @@ class TestScoreStructure:
         assert any("outline mismatch" in error.lower() for error in full_errors)
         assert not any("outline mismatch" in error.lower() for error in scoped_errors)
 
+    def test_recall_excludes_non_structural_enumerators_and_annotations(self):
+        """Recall denominator should ignore common non-structural heading-like lines."""
+        lines = [
+            "CHAPTER 1 GENERAL PROVISIONS",
+            "(1) This is a numbered clause.",
+            "2. This is a numeric bullet.",
+            "ANNOTATION",
+            "NOTES",
+            "---------------",
+            "Ordinary body text.",
+        ]
+        elements = self._make_elements(lines)
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^CHAPTER\s+\d+(?:\s+.*)?$"],
+                    markdown_prefix="# ",
+                    example_heading="CHAPTER 1 GENERAL PROVISIONS",
+                    type_label="chapter",
+                    number_regex=r"\d+",
+                )
+            ],
+            total_levels=1,
+            file_sample_size=len(lines),
+        )
+
+        score, errors = score_structure(elements, structure)
+
+        assert score >= 0.9
+        assert not any("low recall" in error.lower() for error in errors)
+
 
 class TestScanSampling:
     """Tests for representative scan sampling."""
@@ -2565,6 +2755,28 @@ class TestScanSampling:
         assert any(line.startswith("TITLE 9") for line in sampled_lines)
         assert any(line.startswith("CHAPTER 9") for line in sampled_lines)
         assert any(line.startswith("ARTICLE IX") for line in sampled_lines)
+
+    def test_representative_sampling_includes_diverse_structural_families(self):
+        """Sampling should include later appendix/preamble/compound-id exemplars."""
+        lines = [f"§ 1-{i:03d}. Early section heading." for i in range(180)]
+        lines.extend(
+            [
+                "APPENDIX A SUPPLEMENTAL RULES",
+                "PREAMBLE",
+                "A-100 Certain Existing Departments",
+                "ARTICLE B-1.0 Adoption of the Building Code",
+            ]
+        )
+        lines.extend(f"Body text {i}." for i in range(40))
+        elements = self._make_elements(lines)
+
+        sample = _select_scan_sample(elements, 120)
+        sampled_lines = sample["text"].to_list()
+
+        assert any(line.startswith("APPENDIX A") for line in sampled_lines)
+        assert any(line.startswith("PREAMBLE") for line in sampled_lines)
+        assert any(line.startswith("A-100") for line in sampled_lines)
+        assert any(line.startswith("ARTICLE B-1.0") for line in sampled_lines)
 
 
 class TestScanNormalization:

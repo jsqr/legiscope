@@ -28,7 +28,15 @@ llm:
 
   temperature: 0.0
   max_retries: 3
-  timeout: 300
+  timeout: 500
+
+parse:
+  scan:
+    initial_sample_count: 200
+    max_iterations: 5
+    score_threshold: 0.7
+    max_retries: 3
+    timeout: 500
 
 # Embedding configuration
 embeddings:

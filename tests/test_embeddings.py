@@ -4,6 +4,7 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
+import httpx
 import numpy as np
 import polars as pl
 import pytest
@@ -11,6 +12,7 @@ import pytest
 from legiscope.embeddings import (
     EmbeddingConfig,
     _generate_embeddings_mistral,
+    _generate_embeddings_openrouter,
     _normalize_chroma_metadata,
     create_and_save_embeddings,
     get_embeddings,
@@ -194,6 +196,32 @@ class TestGetEmbeddings:
         mock_client.embeddings.create.assert_called_once_with(
             model="mistral-embed", inputs=["text1"]
         )
+
+    @patch("legiscope.embeddings.time_module.sleep")
+    def test_get_embeddings_openrouter_retries_transient_connection_error(
+        self, mock_sleep
+    ):
+        """OpenAI-compatible embedding requests should retry transient connection resets."""
+        mock_client = Mock()
+
+        success_response = Mock()
+        success_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        mock_client.embeddings.create.side_effect = [
+            httpx.ConnectError("Connection reset by peer"),
+            success_response,
+        ]
+
+        result = _generate_embeddings_openrouter(
+            mock_client,
+            ["text1"],
+            "qwen/qwen3-embedding-8b",
+            batch_size=1,
+        )
+
+        assert len(result) == 1
+        assert result[0] == pytest.approx([0.1, 0.2, 0.3])
+        assert mock_client.embeddings.create.call_count == 2
+        mock_sleep.assert_called_once()
 
     def test_get_embeddings_auto_detect_ollama(self):
         """Test auto-detection of ollama provider."""
