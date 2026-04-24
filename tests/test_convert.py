@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import re
 import tempfile
 from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 from instructor.core.exceptions import FailedAttempt, InstructorRetryException
+import pytest
 import yaml
 
 if TYPE_CHECKING:
@@ -22,9 +24,11 @@ from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructu
 from legiscope.parse.regions import REGIONS_SCHEMA
 from legiscope.parse.scan import (
     DEFAULT_TEMPERATURE,
+    SCAN_SYSTEM_PROMPT_COMPACT,
     _apply_example_based_pattern_refinement,
     _sample_diagnostics,
     _select_scan_sample,
+    _format_exception_debug_summary,
     scan_legal_text,
     score_structure,
 )
@@ -834,12 +838,138 @@ Some body text here."""
             first_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs[
                 "messages"
             ][1]["content"]
-            second_prompt = mock_client.chat.completions.create.call_args_list[
-                2
-            ].kwargs["messages"][1]["content"]
+            second_call = mock_client.chat.completions.create.call_args_list[2]
+            second_prompt = second_call.kwargs["messages"][1]["content"]
 
             assert "These are 200 representative elements" in first_prompt
             assert "These are 150 representative elements" in second_prompt
+            assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT_COMPACT
+            assert second_call.kwargs["max_retries"] == 1
+
+        finally:
+            os.unlink(test_file)
+
+    def test_scan_legal_text_writes_debug_artifact_on_total_generation_failure(self):
+        """Scan debug artifact should persist timeout details even when all iterations fail."""
+        sample_text = """CHAPTER 1 TEST
+
+Some body text here."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        debug_path = tempfile.NamedTemporaryFile(suffix=".json", delete=False).name
+
+        try:
+            mock_client = Mock()
+            mock_client.chat.completions.create.side_effect = [
+                ScanResult(found=True, element_id=0, reasoning="Start of document"),
+                TimeoutError("request timed out"),
+                TimeoutError("request timed out"),
+                TimeoutError("request timed out"),
+                TimeoutError("request timed out"),
+                TimeoutError("request timed out"),
+            ]
+
+            with pytest.raises(RuntimeError, match="Failed to generate heading structure"):
+                scan_legal_text(
+                    mock_client,
+                    test_file,
+                    debug_output_path=debug_path,
+                )
+
+            payload = json.loads(Path(debug_path).read_text())
+            assert payload["best_iteration"] == 0
+            assert len(payload["iterations"]) == 5
+            first_failure = payload["iterations"][0]
+            assert first_failure["status"] == "generation_error"
+            assert first_failure["exception_debug"]["is_timeout"] is True
+            assert first_failure["exception_debug"]["type"] == "TimeoutError"
+
+        finally:
+            os.unlink(test_file)
+            if os.path.exists(debug_path):
+                os.unlink(debug_path)
+
+    def test_format_exception_debug_summary_includes_finish_reason(self):
+        """Exception summaries should surface finish reasons inline for quick stderr review."""
+        summary = _format_exception_debug_summary(
+            {
+                "type": "InstructorRetryException",
+                "is_timeout": False,
+                "is_context_length": False,
+                "last_completion": {"finish_reasons": ["length"]},
+                "message": "Structured output ended early.",
+            }
+        )
+
+        assert "type=InstructorRetryException" in summary
+        assert "timeout=False" in summary
+        assert "finish_reason=length" in summary
+
+    def test_scan_legal_text_logs_exception_debug_summary(self):
+        """Generation failures should emit a one-line exception summary to stderr/logging."""
+        sample_text = """CHAPTER 1 TEST
+
+Some body text here."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+\s+.+$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1 TEST",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=2,
+            )
+            completion = Mock()
+            completion.choices = [Mock(finish_reason="length")]
+            retry_error = InstructorRetryException(
+                "retry failed",
+                n_attempts=2,
+                total_usage=0,
+                failed_attempts=[
+                    FailedAttempt(
+                        attempt_number=1,
+                        exception=ValueError("structured output truncated"),
+                        completion=completion,
+                    )
+                ],
+            )
+
+            mock_client = Mock()
+            mock_client.chat.completions.create.side_effect = [
+                ScanResult(found=True, element_id=0, reasoning="Start of document"),
+                retry_error,
+                mock_response,
+            ]
+
+            with (
+                patch("loguru.logger.warning") as mock_warning,
+                patch("legiscope.parse.scan.score_structure", return_value=(0.95, [])),
+            ):
+                scan_legal_text(mock_client, test_file)
+
+            summary_calls = [
+                call
+                for call in mock_warning.call_args_list
+                if call.args and call.args[0] == "Iteration {} exception_debug: {}"
+            ]
+            assert summary_calls
+            assert "finish_reason=length" in summary_calls[0].args[2]
 
         finally:
             os.unlink(test_file)
@@ -856,6 +986,7 @@ Some body text here."""
                     "score_threshold": 0.7,
                     "max_retries": 7,
                     "timeout": 480,
+                    "max_tokens": 1400,
                 }
             },
         },
@@ -907,6 +1038,7 @@ Some body text here."""
             assert "These are 120 representative elements" in prompt
             assert scan_call.kwargs["max_retries"] == 7
             assert scan_call.kwargs["timeout"] == 480
+            assert scan_call.kwargs["max_tokens"] == 1400
 
         finally:
             os.unlink(test_file)

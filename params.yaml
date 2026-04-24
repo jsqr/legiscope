@@ -37,6 +37,7 @@ parse:
     score_threshold: 0.7
     max_retries: 3
     timeout: 500
+    max_tokens: 2400
 
 # Embedding configuration
 embeddings:

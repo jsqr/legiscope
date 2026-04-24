@@ -31,6 +31,7 @@ SCAN_CREATE_MAX_RETRIES = DEFAULT_MAX_RETRIES
 DEFAULT_SCAN_INITIAL_SAMPLE_COUNT = 200
 DEFAULT_SCAN_SCORE_THRESHOLD = 0.7
 DEFAULT_SCAN_MAX_ITERATIONS = 5
+DEFAULT_SCAN_MAX_TOKENS = 1600
 
 
 def _get_scan_params() -> dict[str, object]:
@@ -82,6 +83,14 @@ def _get_scan_timeout_seconds() -> float:
     if not isinstance(value, (int, float)) or value <= 0:
         return DEFAULT_LLM_TIMEOUT_SECONDS
     return float(value)
+
+
+def _get_scan_max_tokens() -> int:
+    """Return scan-stage completion cap for HeadingStructure generation."""
+    value = _get_scan_params().get("max_tokens", DEFAULT_SCAN_MAX_TOKENS)
+    if not isinstance(value, int) or value <= 0:
+        return DEFAULT_SCAN_MAX_TOKENS
+    return value
 
 
 # ── Heading-like line heuristics ───────────────────────────────────────
@@ -506,6 +515,156 @@ def _generation_feedback_from_exception(exc: Exception) -> list[str]:
     return feedback[:5]
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    """Return True if an exception message indicates a timeout."""
+    lowered = str(exc).lower()
+    return "timed out" in lowered or "timeout" in lowered
+
+
+def _serialize_completion_debug(completion: object | None) -> dict[str, object] | None:
+    """Extract lightweight provider completion metadata when available."""
+    if completion is None:
+        return None
+
+    snapshot: dict[str, object] = {"type": type(completion).__name__}
+
+    try:
+        choices = getattr(completion, "choices", None)
+        if choices is not None:
+            finish_reasons: list[object] = []
+            for choice in list(choices)[:5]:
+                finish_reason = getattr(choice, "finish_reason", None)
+                if finish_reason is not None:
+                    finish_reasons.append(finish_reason)
+            if finish_reasons:
+                snapshot["finish_reasons"] = finish_reasons
+    except Exception:
+        pass
+
+    try:
+        usage = getattr(completion, "usage", None)
+        if usage is not None:
+            if hasattr(usage, "model_dump"):
+                snapshot["usage"] = usage.model_dump(mode="json")
+            elif isinstance(usage, dict):
+                snapshot["usage"] = usage
+            else:
+                usage_dict = {
+                    key: getattr(usage, key)
+                    for key in dir(usage)
+                    if not key.startswith("_")
+                    and isinstance(getattr(usage, key), (int, float, str, type(None)))
+                }
+                if usage_dict:
+                    snapshot["usage"] = usage_dict
+    except Exception:
+        pass
+
+    return snapshot
+
+
+def _exception_debug_snapshot(exc: Exception) -> dict[str, object]:
+    """Capture compact provider/debug metadata from scan failures."""
+    snapshot: dict[str, object] = {
+        "type": type(exc).__name__,
+        "message": " ".join(str(exc).split())[:500],
+        "is_timeout": _is_timeout_error(exc),
+        "is_context_length": _is_context_length_error(exc),
+    }
+
+    for attr_name in ("status_code", "code", "param"):
+        attr_value = getattr(exc, attr_name, None)
+        if attr_value is not None:
+            snapshot[attr_name] = attr_value
+
+    if isinstance(exc, InstructorRetryException):
+        snapshot["n_attempts"] = exc.n_attempts
+        if exc.create_kwargs:
+            allowed_keys = {"model", "max_retries", "timeout", "max_tokens", "temperature"}
+            snapshot["create_kwargs"] = {
+                key: value
+                for key, value in exc.create_kwargs.items()
+                if key in allowed_keys
+            }
+        if exc.last_completion is not None:
+            snapshot["last_completion"] = _serialize_completion_debug(
+                exc.last_completion
+            )
+
+        failed_attempts: list[dict[str, object]] = []
+        for failed_attempt in (exc.failed_attempts or [])[-3:]:
+            attempt_snapshot = {
+                "attempt_number": failed_attempt.attempt_number,
+                "exception_type": type(failed_attempt.exception).__name__,
+                "message": " ".join(str(failed_attempt.exception).split())[:500],
+                "is_timeout": _is_timeout_error(failed_attempt.exception),
+                "is_context_length": _is_context_length_error(failed_attempt.exception),
+            }
+            completion_snapshot = _serialize_completion_debug(
+                getattr(failed_attempt, "completion", None)
+            )
+            if completion_snapshot is not None:
+                attempt_snapshot["completion"] = completion_snapshot
+            failed_attempts.append(attempt_snapshot)
+        if failed_attempts:
+            snapshot["failed_attempts"] = failed_attempts
+
+    cause = exc.__cause__
+    if cause is not None:
+        snapshot["cause_type"] = type(cause).__name__
+        snapshot["cause_message"] = " ".join(str(cause).split())[:500]
+
+    return snapshot
+
+
+def _format_exception_debug_summary(exception_debug: dict[str, object]) -> str:
+    """Format a one-line summary for stderr/log output."""
+
+    def _append_finish_reasons(
+        reasons: list[str], completion_snapshot: object | None
+    ) -> None:
+        if not isinstance(completion_snapshot, dict):
+            return
+        finish_reasons = completion_snapshot.get("finish_reasons")
+        if not isinstance(finish_reasons, list):
+            return
+        for finish_reason in finish_reasons:
+            if finish_reason is not None:
+                reasons.append(str(finish_reason))
+
+    finish_reasons: list[str] = []
+    _append_finish_reasons(finish_reasons, exception_debug.get("last_completion"))
+    failed_attempts = exception_debug.get("failed_attempts")
+    if isinstance(failed_attempts, list):
+        for failed_attempt in failed_attempts:
+            if isinstance(failed_attempt, dict):
+                _append_finish_reasons(
+                    finish_reasons,
+                    failed_attempt.get("completion"),
+                )
+
+    deduped_finish_reasons = list(dict.fromkeys(finish_reasons))
+    parts = [
+        f"type={exception_debug.get('type', 'UnknownError')}",
+        f"timeout={bool(exception_debug.get('is_timeout'))}",
+        f"context_length={bool(exception_debug.get('is_context_length'))}",
+        "finish_reason="
+        + (
+            ",".join(deduped_finish_reasons)
+            if deduped_finish_reasons
+            else "unknown"
+        ),
+    ]
+    for key in ("status_code", "code", "cause_type"):
+        value = exception_debug.get(key)
+        if value is not None:
+            parts.append(f"{key}={value}")
+    message = exception_debug.get("message")
+    if isinstance(message, str) and message:
+        parts.append(f"message={message[:200]}")
+    return " | ".join(parts)
+
+
 def _serialize_heading_structure(structure: HeadingStructure) -> dict[str, object]:
     """Serialize a heading structure for debug artifacts."""
     return structure.model_dump(mode="json", by_alias=True)
@@ -622,6 +781,21 @@ OUTPUT TEMPLATE:
     "quality_score": 0.0,
     "iterations": 0
 }"""
+
+SCAN_SYSTEM_PROMPT_COMPACT = """\
+You are a legal text analyst. Identify only structural headings from the provided
+elements and return exactly one compact HeadingStructure JSON object.
+
+Rules:
+- Titles, parts, articles, chapters, sections, appendices, and similar division
+    markers are headings.
+- Enumerated clauses like `(a)`, `(1)`, `1.`, definitions, notes, and ordinary
+    paragraphs are not headings.
+- If one logical heading level appears in multiple formats, keep one level and
+    include alternate regexes in `regex_patterns`.
+- Use only the provided element ids in `outline_line_numbers`.
+- No commentary, no Markdown fences, no schema metadata.
+"""
 
 
 # ── Verification ───────────────────────────────────────────────────────
@@ -1236,12 +1410,14 @@ def scan_headings(
     sample_count = _get_scan_initial_sample_count()
     llm_timeout_seconds = _get_scan_timeout_seconds()
     scan_create_max_retries = _get_scan_create_max_retries()
+    scan_max_tokens = _get_scan_max_tokens()
     error_feedback: list[str] = []
     best_structure: HeadingStructure | None = None
     best_score = 0.0
     best_iteration = 0
     last_generation_error: list[str] = []
     iteration_records: list[dict[str, object]] = []
+    compact_prompt_mode = False
 
     for iteration in range(1, max_iterations + 1):
         logger.info(
@@ -1252,7 +1428,9 @@ def scan_headings(
         scan_count = min(sample_count, code_elements.height)
         sample_elements = _select_scan_sample(code_elements, scan_count)
         raw_text = _format_raw_elements(sample_elements)
-        variant_guidance = _build_scan_variant_guidance(sample_elements)
+        variant_guidance = (
+            "" if compact_prompt_mode else _build_scan_variant_guidance(sample_elements)
+        )
         sample_stats = _sample_diagnostics(sample_elements)
         sample_element_ids = sample_elements["element_id"].to_list()
         logger.info(
@@ -1279,20 +1457,31 @@ def scan_headings(
         }
 
         # Phase 2: LLM call
-        user_prompt = (
-            f"Analyze the heading structure in these legal text elements:\n\n"
-            f"{raw_text}\n\n"
-            f"These are {sample_elements.height} representative elements from the document "
-            f"({code_elements.height} total).\n"
-            f"Identify which elements are headings, group by level, create regex "
-            f"patterns, and list element ids in outline_line_numbers.\n"
-            f"When the same logical level appears in multiple observed formats, return "
-            f"multiple entries in `regex_patterns` for that level instead of splitting it "
-            f"into separate levels.\n"
-            f"Only use the provided element ids in outline_line_numbers.\n"
-            f"Return a single JSON object only. Use `heading_levels` as the top-level "
-            f"array key. Do not return schema keys like `$defs` or `properties`.\n"
-        )
+        if compact_prompt_mode:
+            user_prompt = (
+                f"Return one compact HeadingStructure JSON object for these legal text elements:\n\n"
+                f"{raw_text}\n\n"
+                f"These are {sample_elements.height} representative elements from the document "
+                f"({code_elements.height} total).\n"
+                f"Use one logical heading level per hierarchy step and place observed format variants "
+                f"in `regex_patterns`.\n"
+                f"Only use the provided element ids in outline_line_numbers.\n"
+            )
+        else:
+            user_prompt = (
+                f"Analyze the heading structure in these legal text elements:\n\n"
+                f"{raw_text}\n\n"
+                f"These are {sample_elements.height} representative elements from the document "
+                f"({code_elements.height} total).\n"
+                f"Identify which elements are headings, group by level, create regex "
+                f"patterns, and list element ids in outline_line_numbers.\n"
+                f"When the same logical level appears in multiple observed formats, return "
+                f"multiple entries in `regex_patterns` for that level instead of splitting it "
+                f"into separate levels.\n"
+                f"Only use the provided element ids in outline_line_numbers.\n"
+                f"Return a single JSON object only. Use `heading_levels` as the top-level "
+                f"array key. Do not return schema keys like `$defs` or `properties`.\n"
+            )
         if variant_guidance:
             user_prompt += f"\n{variant_guidance}"
         if error_feedback:
@@ -1304,32 +1493,61 @@ def scan_headings(
         try:
             structure = client.chat.completions.create(
                 messages=[
-                    {"role": "system", "content": SCAN_SYSTEM_PROMPT},
+                    {
+                        "role": "system",
+                        "content": (
+                            SCAN_SYSTEM_PROMPT_COMPACT
+                            if compact_prompt_mode
+                            else SCAN_SYSTEM_PROMPT
+                        ),
+                    },
                     {"role": "user", "content": user_prompt},
                 ],
                 response_model=HeadingStructure,
                 **Config.get_llm_params(
                     max_retries=scan_create_max_retries,
                     timeout=llm_timeout_seconds,
+                    max_tokens=scan_max_tokens,
                 ),
             )
             structure = _normalize_scanned_structure(structure)
         except Exception as exc:
             generation_feedback = _generation_feedback_from_exception(exc)
             last_generation_error = generation_feedback
+            exception_debug = _exception_debug_snapshot(exc)
             logger.warning(
                 "Iteration {} failed before scoring: {}",
                 iteration,
                 generation_feedback[0],
             )
+            logger.warning(
+                "Iteration {} exception_debug: {}",
+                iteration,
+                _format_exception_debug_summary(exception_debug),
+            )
             iteration_record.update(
                 {
                     "status": "generation_error",
                     "generation_feedback": generation_feedback,
+                    "exception_debug": exception_debug,
                 }
             )
             iteration_records.append(iteration_record)
             error_feedback = generation_feedback
+            if _is_timeout_error(exc):
+                if not compact_prompt_mode:
+                    logger.warning(
+                        "Timeout detected; enabling compact scan prompt mode for subsequent iterations"
+                    )
+                compact_prompt_mode = True
+                reduced_retries = min(scan_create_max_retries, 1)
+                if reduced_retries < scan_create_max_retries:
+                    logger.warning(
+                        "Reducing scan create max_retries from {} to {} after timeout",
+                        scan_create_max_retries,
+                        reduced_retries,
+                    )
+                    scan_create_max_retries = reduced_retries
             reduced_sample_count = _reduce_sample_count_after_generation_failure(
                 sample_count,
                 exc,
@@ -1374,6 +1592,17 @@ def scan_headings(
     sample_count = min(code_elements.height, sample_count + 50)
 
     if best_structure is None:
+        if debug_output_path is not None:
+            _write_scan_debug_artifact(
+                debug_output_path=debug_output_path,
+                file_path=file_path,
+                code_elements_height=code_elements.height,
+                code_start_element_id=code_start.element_id,
+                code_start_line=code_start.start_line,
+                best_iteration=best_iteration,
+                best_score=best_score,
+                iteration_records=iteration_records,
+            )
         detail = " ".join(last_generation_error).strip()
         if detail:
             raise RuntimeError(
