@@ -39,13 +39,14 @@ class HeadingLevel(BaseModel):
     level: int
     regex_pattern: str = ""
     regex_patterns: list[str] = []
-    markdown_prefix: str
+    markdown_prefix: str = ""
     example_heading: str
     type_label: str = ""
     number_regex: str | None = None
     multiline: bool = False
     inferred: bool = False
-    outline_line_numbers: list[int] = []
+
+    model_config = {"extra": "ignore"}
 
     @model_validator(mode="after")
     def _sync_patterns(self) -> "HeadingLevel":
@@ -73,8 +74,8 @@ class HeadingStructure(BaseModel):
     """
 
     levels: list[HeadingLevel] = Field(alias="heading_levels")
-    total_levels: int
-    file_sample_size: int
+    total_levels: int = 0
+    file_sample_size: int = 0
     code_start_element_id: int | None = None
     code_start_line: int | None = None
     toc_line_ranges: list[tuple[int, int]] = []

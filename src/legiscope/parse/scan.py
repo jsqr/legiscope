@@ -440,11 +440,21 @@ def _reduce_sample_count_after_generation_failure(
     if _is_context_length_error(exc):
         return max(60, int(sample_count * 0.6))
 
+    if _is_output_length_error(exc):
+        return max(80, int(sample_count * 0.7))
+
     lowered = str(exc).lower()
     if "timed out" in lowered or "timeout" in lowered:
         return max(80, int(sample_count * 0.75))
 
     return max(100, sample_count - 40)
+
+
+def _reduce_sample_count_after_scoring_retry(sample_count: int) -> int:
+    """Shrink the sample modestly after a scored retry so the next attempt differs."""
+    if sample_count <= 60:
+        return sample_count
+    return max(60, int(sample_count * 0.85))
 
 
 def _is_context_length_error(exc: Exception) -> bool:
@@ -458,10 +468,63 @@ def _is_context_length_error(exc: Exception) -> bool:
     )
 
 
+def _completion_finish_reasons(completion: object | None) -> list[str]:
+    """Extract finish reasons from provider completion objects when available."""
+    reasons: list[str] = []
+    choices = getattr(completion, "choices", None)
+    if choices is None:
+        return reasons
+
+    try:
+        for choice in list(choices)[:5]:
+            finish_reason = getattr(choice, "finish_reason", None)
+            if finish_reason is not None:
+                reasons.append(str(finish_reason).lower())
+    except Exception:
+        return reasons
+
+    return reasons
+
+
+def _is_output_length_error(exc: Exception) -> bool:
+    """Return True if *exc* indicates generation stopped at the output cap."""
+    lowered = str(exc).lower()
+    if (
+        "max_tokens length limit" in lowered
+        or "output is incomplete due to a max_tokens length limit" in lowered
+        or "finish_reason=length" in lowered
+        or "finish reason=length" in lowered
+        or "finish_reason 'length'" in lowered
+    ):
+        return True
+
+    if not isinstance(exc, InstructorRetryException):
+        return False
+
+    for reason in _completion_finish_reasons(exc.last_completion):
+        if reason == "length":
+            return True
+
+    for failed_attempt in exc.failed_attempts or []:
+        for reason in _completion_finish_reasons(
+            getattr(failed_attempt, "completion", None)
+        ):
+            if reason == "length":
+                return True
+
+    return False
+
+
 def _summarize_generation_error(exc: Exception) -> str:
     """Condense verbose Instructor/provider errors into short prompt feedback."""
     err = str(exc)
     lowered = err.lower()
+
+    if _is_output_length_error(exc):
+        return (
+            "Previous attempt hit the output length limit. Return the smallest "
+            "valid HeadingStructure JSON object and omit optional fields."
+        )
 
     if "timed out" in lowered or "timeout" in lowered:
         return (
@@ -741,31 +804,31 @@ RULES:
    - Handle case/format variants in one level's list
    - End with `.*$` or `(?:\\s+.*)?$` as appropriate
 
-5. OUTLINE_LINE_NUMBERS: for each level, list which `E{id}` element ids belong to
-   it (from the elements). This enables verification.
+5. MARKDOWN PREFIX: optional. If omitted, the pipeline assigns `#`, `##`, `###`,
+    or `####` based on normalized level order. Levels 5-8 all use `####`.
 
-6. MARKDOWN PREFIX: literal "# ", "## ", "### ", or "#### ". Levels 5-8 all use "#### ".
+6. EXAMPLE_HEADING: complete verbatim text from the elements (not abbreviated).
 
-7. EXAMPLE_HEADING: complete verbatim text from the elements (not abbreviated).
+7. TYPE_LABEL: short lowercase label ("title", "chapter", "section", etc.).
 
-8. TYPE_LABEL: short lowercase label ("title", "chapter", "section", etc.).
+8. NUMBER_REGEX: regex for just the identifier portion, no anchors. null if none.
 
-9. NUMBER_REGEX: regex for just the identifier portion, no anchors. null if none.
+9. MULTILINE: true if heading keyword is on one line and title on the next.
 
-10. MULTILINE: true if heading keyword is on one line and title on the next.
-
-11. BODY TEXT: Most elements are NOT headings. Do not assign body paragraphs,
+10. BODY TEXT: Most elements are NOT headings. Do not assign body paragraphs,
     enumerated clauses like `(a)`, `(1)`, or `(i)`, or definitions to heading levels.
     Only structural division markers (titles, chapters, articles, sections, parts, etc.)
     are headings.
 
 OUTPUT REQUIREMENTS:
 - Return exactly one JSON object representing a HeadingStructure instance.
-- Use these exact top-level keys: `heading_levels`, `total_levels`, `file_sample_size`,
-    `toc_line_ranges`, `outline_warnings`, `quality_score`, `iterations`.
-- Each item in `heading_levels` must be an object with these keys: `level`,
-    `regex_pattern`, `regex_patterns`, `markdown_prefix`, `example_heading`,
-    `type_label`, `number_regex`, `multiline`, `inferred`, `outline_line_numbers`.
+- `heading_levels` is required.
+- `total_levels`, `file_sample_size`, `toc_line_ranges`, `outline_warnings`,
+    `quality_score`, and `iterations` are optional and may be omitted for brevity.
+- Each item in `heading_levels` should include `level`, `example_heading`,
+    `type_label`, and either `regex_patterns` or `regex_pattern`.
+- `markdown_prefix`, `number_regex`, `multiline`, and `inferred` are optional
+    when unknown or unnecessary.
 - Do not return JSON Schema or metadata. Never include keys like `$defs`, `properties`,
     `required`, `title`, `type`, or `description`.
 - Do not wrap the answer inside `properties` or any other container.
@@ -773,29 +836,8 @@ OUTPUT REQUIREMENTS:
 
 OUTPUT TEMPLATE:
 {
-    "heading_levels": [...],
-    "total_levels": 0,
-    "file_sample_size": 0,
-    "toc_line_ranges": [],
-    "outline_warnings": [],
-    "quality_score": 0.0,
-    "iterations": 0
+    "heading_levels": [...]
 }"""
-
-SCAN_SYSTEM_PROMPT_COMPACT = """\
-You are a legal text analyst. Identify only structural headings from the provided
-elements and return exactly one compact HeadingStructure JSON object.
-
-Rules:
-- Titles, parts, articles, chapters, sections, appendices, and similar division
-    markers are headings.
-- Enumerated clauses like `(a)`, `(1)`, `1.`, definitions, notes, and ordinary
-    paragraphs are not headings.
-- If one logical heading level appears in multiple formats, keep one level and
-    include alternate regexes in `regex_patterns`.
-- Use only the provided element ids in `outline_line_numbers`.
-- No commentary, no Markdown fences, no schema metadata.
-"""
 
 
 # ── Verification ───────────────────────────────────────────────────────
@@ -828,6 +870,268 @@ def _pattern_matches_element(pattern: "re.Pattern[str]", element_text: str) -> b
     return bool(joined and pattern.match(joined))
 
 
+_BODY_CUE_PAT = re.compile(
+    r"\b(?:shall|must|may|means|include(?:s|d)?|require(?:s|d)?|"
+    r"prohibit(?:s|ed)?|provide(?:s|d)?|govern(?:s|ed)?|apply|applies|"
+    r"applicable|subject\s+to|pursuant\s+to)\b",
+    re.IGNORECASE,
+)
+
+
+def _keyword_prefix_for_level(level: HeadingLevel) -> str | None:
+    """Return the canonical heading keyword prefix for a structural level."""
+    keyword_map = {
+        "title": "TITLE",
+        "article": "ARTICLE",
+        "chapter": "CHAPTER",
+        "section": "SECTION",
+        "appendix": "APPENDIX",
+        "preamble": "PREAMBLE",
+    }
+    return keyword_map.get(level.type_label.lower().strip())
+
+
+def _split_heading_identifier_and_remainder(
+    line: str,
+    level: HeadingLevel,
+) -> tuple[str | None, str]:
+    """Split a heading line into identifier token and trailing title portion."""
+    stripped = line.strip()
+    if not stripped:
+        return None, ""
+
+    working = stripped
+    keyword_prefix = _keyword_prefix_for_level(level)
+    if keyword_prefix and re.match(rf"^{keyword_prefix}\b", working, re.IGNORECASE):
+        keyword_match = re.match(rf"^{keyword_prefix}\s+", working, re.IGNORECASE)
+        if keyword_match:
+            working = working[keyword_match.end() :]
+    elif working.startswith("§"):
+        symbol_match = re.match(r"^§\s*", working)
+        if symbol_match:
+            working = working[symbol_match.end() :]
+
+    token_match = re.match(r"[A-Z0-9]+(?:[-.][A-Z0-9]+)*", working, re.IGNORECASE)
+    if not token_match:
+        return None, working
+
+    return token_match.group(0), working[token_match.end() :]
+
+
+def _delimiter_family(remainder: str) -> str:
+    """Classify the delimiter that follows a heading identifier."""
+    if not remainder:
+        return "none"
+    if remainder.startswith("."):
+        return "dot"
+    if remainder.startswith(":"):
+        return "colon"
+    if re.match(r"^\s{2,}", remainder):
+        return "multi_space"
+    if re.match(r"^\s*[\-\u2013\u2014]\s*", remainder):
+        return "dash"
+    if re.match(r"^\s+", remainder):
+        return "single_space"
+    return "attached"
+
+
+def _normalized_heading_tail(remainder: str) -> str:
+    """Return the title-like tail of a heading after delimiter cleanup."""
+    return remainder.lstrip(" .:-\t\u2013\u2014")
+
+
+def _starts_with_upper_alpha(text: str) -> bool:
+    """Return True when the first alphabetic character in *text* is uppercase."""
+    for char in text:
+        if char.isalpha():
+            return char.isupper()
+    return False
+
+
+def _lowercase_initial_ratio(text: str) -> float:
+    """Return the fraction of words in *text* that begin with lowercase letters."""
+    words = re.findall(r"[A-Za-z][A-Za-z'’-]*", text)
+    if not words:
+        return 0.0
+    lowercase_initial = sum(1 for word in words if word[0].islower())
+    return lowercase_initial / len(words)
+
+
+def _looks_body_like_heading_tail(
+    tail_text: str,
+    *,
+    expect_initial_upper: bool,
+) -> bool:
+    """Return True when a matched heading tail looks more like body text than a title."""
+    if not tail_text:
+        return False
+
+    if expect_initial_upper and not _starts_with_upper_alpha(tail_text):
+        return True
+
+    words = re.findall(r"[A-Za-z][A-Za-z'’-]*", tail_text)
+    if len(words) < 6:
+        return False
+
+    lowercase_ratio = _lowercase_initial_ratio(tail_text)
+    if lowercase_ratio >= 0.6 and _BODY_CUE_PAT.search(tail_text):
+        return True
+
+    return False
+
+
+def _structural_precision_score(
+    elements_df: pl.DataFrame,
+    structure: HeadingStructure,
+    compiled: list[tuple[int, "re.Pattern[str]", str]],
+) -> tuple[list[str], float]:
+    """Score whether matched headings look structurally consistent with their level."""
+    warnings: list[str] = []
+    level_scores: list[float] = []
+    element_rows = elements_df.to_dicts()
+
+    for level in structure.levels:
+        if level.inferred:
+            continue
+
+        matched_lines: list[str] = []
+        for row in element_rows:
+            element_text = row["text"]
+            if level.level in _matched_levels_for_element(element_text, compiled):
+                first_line = element_text.split("\n")[0].strip()
+                if first_line:
+                    matched_lines.append(first_line)
+
+        if not matched_lines:
+            continue
+
+        _example_identifier, example_remainder = _split_heading_identifier_and_remainder(
+            level.example_heading,
+            level,
+        )
+        expected_delimiter = _delimiter_family(example_remainder)
+        example_tail = _normalized_heading_tail(example_remainder)
+        expect_initial_upper = _starts_with_upper_alpha(example_tail)
+
+        delimiter_mismatches = 0
+        body_like_matches = 0
+        match_scores: list[float] = []
+        for line in matched_lines:
+            _identifier, remainder = _split_heading_identifier_and_remainder(line, level)
+            actual_delimiter = _delimiter_family(remainder)
+            tail_text = _normalized_heading_tail(remainder)
+            line_score = 1.0
+
+            if expected_delimiter in {"multi_space", "colon", "dash"} and (
+                actual_delimiter != expected_delimiter
+            ):
+                delimiter_mismatches += 1
+                line_score -= 0.45
+
+            if _looks_body_like_heading_tail(
+                tail_text,
+                expect_initial_upper=expect_initial_upper,
+            ):
+                body_like_matches += 1
+                line_score -= 0.55
+
+            match_scores.append(max(0.0, line_score))
+
+        level_score = sum(match_scores) / len(match_scores)
+        level_scores.append(level_score)
+
+        if level_score < 0.85 and (delimiter_mismatches > 0 or body_like_matches > 0):
+            warnings.append(
+                f"Low structural precision at level {level.level}: {delimiter_mismatches} delimiter mismatches and "
+                f"{body_like_matches} body-like matches across {len(matched_lines)} matched elements "
+                f"(score {level_score:.0%})"
+            )
+
+    if not level_scores:
+        return warnings, 1.0
+
+    return warnings, sum(level_scores) / len(level_scores)
+
+
+def _classify_generation_failure(exc: Exception) -> str:
+    """Classify generation failures into a small set of retry-relevant buckets."""
+    if _is_context_length_error(exc):
+        return "context_length"
+    if _is_output_length_error(exc):
+        return "output_length"
+    if _is_timeout_error(exc):
+        return "timeout"
+
+    lowered = str(exc).lower()
+    if "validation errors for headingstructure" in lowered:
+        return "schema_validation"
+    return "other_generation"
+
+
+def _classify_scored_structure_errors(errors: list[str]) -> list[dict[str, object]]:
+    """Group scored-iteration errors into compact retry buckets."""
+    category_order = [
+        "low_recall",
+        "structural_precision",
+        "ambiguity",
+        "pattern_validity",
+        "parent_child",
+        "sibling_ordering",
+    ]
+    counts: dict[str, int] = {}
+    samples: dict[str, str] = {}
+
+    for error in errors:
+        lowered = error.lower()
+        category: str | None = None
+        if lowered.startswith("low recall"):
+            category = "low_recall"
+        elif "structural precision" in lowered:
+            category = "structural_precision"
+        elif "ambiguous" in lowered:
+            category = "ambiguity"
+        elif "pattern has 0 matches" in lowered or "invalid regex" in lowered or "no elements matched" in lowered:
+            category = "pattern_validity"
+        elif "parent-child mismatch" in lowered:
+            category = "parent_child"
+        elif "out-of-order siblings" in lowered:
+            category = "sibling_ordering"
+
+        if category is None:
+            continue
+
+        counts[category] = counts.get(category, 0) + 1
+        samples.setdefault(category, error)
+
+    classified: list[dict[str, object]] = []
+    for category in category_order:
+        count = counts.get(category)
+        if not count:
+            continue
+        message = " ".join(samples[category].split())
+        if count > 1 and category in {"ambiguity", "pattern_validity", "parent_child", "sibling_ordering"}:
+            message = f"{message} (+{count - 1} more)"
+        classified.append(
+            {
+                "category": category,
+                "count": count,
+                "message": message[:180],
+            }
+        )
+    return classified
+
+
+def _build_scored_retry_feedback(classified_errors: list[dict[str, object]]) -> str:
+    """Build a compact scored-retry footer from classified structure errors."""
+    if not classified_errors:
+        return ""
+
+    lines = ["RETRY_FEEDBACK:"]
+    for item in classified_errors[:3]:
+        lines.append(f"- {item['category']}: {item['message']}")
+    return "\n".join(lines)
+
+
 def _matched_levels_for_element(
     element_text: str,
     compiled: list[tuple[int, "re.Pattern[str]", str]],
@@ -842,73 +1146,20 @@ def _matched_levels_for_element(
     )
 
 
-def _matched_element_ids_by_level(
-    elements_df: pl.DataFrame,
-    compiled: list[tuple[int, "re.Pattern[str]", str]],
-) -> dict[int, set[int]]:
-    """Return element ids matched by each compiled level pattern."""
-    matched_by_level: dict[int, set[int]] = {}
-    for row in elements_df.to_dicts():
-        eid = row["element_id"]
-        element_text = row["text"]
-        first_line = element_text.split("\n")[0].strip()
-        if not first_line:
-            continue
-        for level in _matched_levels_for_element(element_text, compiled):
-            matched_by_level.setdefault(level, set()).add(eid)
-    return matched_by_level
-
-
-def _check_outline_alignment(
-    structure: HeadingStructure,
-    compiled: list[tuple[int, "re.Pattern[str]", str]],
-    elements_df: pl.DataFrame,
-) -> tuple[list[str], float]:
-    """Compare regex matches to the model's own outline_line_numbers per level."""
-    warnings: list[str] = []
-    level_scores: list[float] = []
-    matched_by_level = _matched_element_ids_by_level(elements_df, compiled)
-
-    for level in structure.levels:
-        if level.inferred or not level.outline_line_numbers:
-            continue
-
-        expected = set(level.outline_line_numbers)
-        matched = matched_by_level.get(level.level, set())
-        true_positives = expected & matched
-
-        precision = len(true_positives) / len(matched) if matched else 0.0
-        recall = len(true_positives) / len(expected) if expected else 1.0
-        if precision + recall > 0:
-            f1 = 2 * precision * recall / (precision + recall)
-        else:
-            f1 = 0.0
-        level_scores.append(f1)
-
-        if precision < 0.85 or recall < 0.85:
-            warnings.append(
-                f"Level {level.level} outline mismatch: regex matched {len(matched)} elements "
-                f"vs {len(expected)} declared headings (precision {precision:.0%}, recall {recall:.0%})"
-            )
-
-    if not level_scores:
-        return warnings, 1.0
-
-    return warnings, sum(level_scores) / len(level_scores)
-
-
-def _identifier_sort_key(identifier: str) -> tuple[int | str, ...] | None:
+def _identifier_sort_key(
+    identifier: str,
+) -> tuple[tuple[int, int | str], ...] | None:
     """Build a natural sort key for identifiers like 1-100, 2-3, or A-10."""
     parts = re.findall(r"\d+|[A-Za-z]+", identifier)
     if not parts:
         return None
 
-    key: list[int | str] = []
+    key: list[tuple[int, int | str]] = []
     for part in parts:
         if part.isdigit():
-            key.append(int(part))
+            key.append((0, int(part)))
         else:
-            key.append(part.lower())
+            key.append((1, part.lower()))
     return tuple(key)
 
 
@@ -1062,23 +1313,7 @@ def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
 
 def _normalize_scanned_structure(structure: HeadingStructure) -> HeadingStructure:
     """Apply conservative post-processing to LLM output before scoring."""
-    explicit_levels = [level for level in structure.levels if not level.inferred]
-    explicit_counts = [len(level.outline_line_numbers) for level in explicit_levels]
-
-    if (
-        len(explicit_levels) >= 3
-        and all(count > 0 for count in explicit_counts)
-        and any(
-            explicit_counts[index] > explicit_counts[index + 1]
-            for index in range(len(explicit_counts) - 1)
-        )
-    ):
-        ordered_explicit = sorted(
-            explicit_levels,
-            key=lambda level: (len(level.outline_line_numbers), level.level),
-        )
-        inferred_levels = [level for level in structure.levels if level.inferred]
-        structure.levels = inferred_levels + ordered_explicit
+    structure.levels = sorted(structure.levels, key=lambda level: level.level)
 
     for new_level, level in enumerate(structure.levels, start=1):
         level.level = new_level
@@ -1197,7 +1432,7 @@ def _check_sibling_ordering(
         except re.error:
             continue
         prev_id: str | None = None
-        prev_key: tuple[int | str, ...] | None = None
+        prev_key: tuple[tuple[int, int | str], ...] | None = None
         for row in element_rows:
             element_text = row["text"]
             first_line = element_text.split("\n")[0].strip()
@@ -1258,6 +1493,8 @@ def score_structure(
     outline_elements_df: pl.DataFrame | None = None,
 ) -> tuple[float, list[str]]:
     """Compute a 0.0-1.0 quality score and return error messages."""
+    del outline_elements_df
+
     compiled, compile_warnings = _verify_compile_patterns(structure)
     errors = list(compile_warnings)
 
@@ -1336,34 +1573,34 @@ def score_structure(
     errors.extend(pc_warnings)
     pc_score = 0.0 if pc_warnings else 1.0
 
-    # Outline alignment (0.15) — regexes should agree with declared outline ids
-    outline_scope = (
-        outline_elements_df if outline_elements_df is not None else elements_df
+    # Structural precision (0.15)
+    structural_precision_warnings, structural_precision = _structural_precision_score(
+        elements_df,
+        structure,
+        compiled,
     )
-    outline_warnings, outline_alignment_score = _check_outline_alignment(
-        structure, compiled, outline_scope
-    )
-    errors.extend(outline_warnings)
+    errors.extend(structural_precision_warnings)
 
     # Completeness warnings for error feedback
     completeness_warnings = _check_completeness(elements_df, compiled)
     errors.extend(completeness_warnings)
 
-    score = (
+    weighted_score = (
         0.15 * precision
         + 0.25 * recall
         + 0.15 * pattern_validity
         + 0.1 * sibling_score
         + 0.1 * ambiguity_score
         + 0.1 * pc_score
-        + 0.15 * outline_alignment_score
+        + 0.15 * structural_precision
     )
+    score = weighted_score
 
     # Quality gates: cap score when critical metrics are poor
     if recall < 0.5:
         score = min(score, recall + 0.3)
-    if outline_alignment_score < 0.8:
-        score = min(score, outline_alignment_score + 0.1)
+    if structural_precision < 0.6:
+        score = min(score, structural_precision + 0.25)
 
     return score, errors
 
@@ -1411,13 +1648,12 @@ def scan_headings(
     llm_timeout_seconds = _get_scan_timeout_seconds()
     scan_create_max_retries = _get_scan_create_max_retries()
     scan_max_tokens = _get_scan_max_tokens()
-    error_feedback: list[str] = []
     best_structure: HeadingStructure | None = None
     best_score = 0.0
     best_iteration = 0
     last_generation_error: list[str] = []
+    scored_retry_feedback = ""
     iteration_records: list[dict[str, object]] = []
-    compact_prompt_mode = False
 
     for iteration in range(1, max_iterations + 1):
         logger.info(
@@ -1428,9 +1664,7 @@ def scan_headings(
         scan_count = min(sample_count, code_elements.height)
         sample_elements = _select_scan_sample(code_elements, scan_count)
         raw_text = _format_raw_elements(sample_elements)
-        variant_guidance = (
-            "" if compact_prompt_mode else _build_scan_variant_guidance(sample_elements)
-        )
+        variant_guidance = _build_scan_variant_guidance(sample_elements)
         sample_stats = _sample_diagnostics(sample_elements)
         sample_element_ids = sample_elements["element_id"].to_list()
         logger.info(
@@ -1454,52 +1688,44 @@ def scan_headings(
             "sample_element_start_id": sample_element_ids[0],
             "sample_element_end_id": sample_element_ids[-1],
             "sample_diagnostics": dict(sample_stats),
+            "prompt_mode": "standard",
+            "raw_text_chars": len(raw_text),
+            "variant_guidance_chars": len(variant_guidance),
+            "llm_timeout_seconds": llm_timeout_seconds,
+            "scan_max_tokens": scan_max_tokens,
+            "scan_create_max_retries": scan_create_max_retries,
         }
 
         # Phase 2: LLM call
-        if compact_prompt_mode:
-            user_prompt = (
-                f"Return one compact HeadingStructure JSON object for these legal text elements:\n\n"
-                f"{raw_text}\n\n"
-                f"These are {sample_elements.height} representative elements from the document "
-                f"({code_elements.height} total).\n"
-                f"Use one logical heading level per hierarchy step and place observed format variants "
-                f"in `regex_patterns`.\n"
-                f"Only use the provided element ids in outline_line_numbers.\n"
-            )
-        else:
-            user_prompt = (
-                f"Analyze the heading structure in these legal text elements:\n\n"
-                f"{raw_text}\n\n"
-                f"These are {sample_elements.height} representative elements from the document "
-                f"({code_elements.height} total).\n"
-                f"Identify which elements are headings, group by level, create regex "
-                f"patterns, and list element ids in outline_line_numbers.\n"
-                f"When the same logical level appears in multiple observed formats, return "
-                f"multiple entries in `regex_patterns` for that level instead of splitting it "
-                f"into separate levels.\n"
-                f"Only use the provided element ids in outline_line_numbers.\n"
-                f"Return a single JSON object only. Use `heading_levels` as the top-level "
-                f"array key. Do not return schema keys like `$defs` or `properties`.\n"
-            )
+        user_prompt = (
+            f"Analyze the heading structure in these legal text elements:\n\n"
+            f"{raw_text}\n\n"
+            f"These are {sample_elements.height} representative elements from the document "
+            f"({code_elements.height} total).\n"
+            f"Identify which elements are headings, group by level, and create regex "
+            f"patterns.\n"
+            f"When the same logical level appears in multiple observed formats, return "
+            f"multiple entries in `regex_patterns` for that level instead of splitting it "
+            f"into separate levels.\n"
+            f"Keep the JSON compact and omit optional fields when possible.\n"
+            f"Return a single JSON object only. Use `heading_levels` as the top-level "
+            f"array key. Do not return schema keys like `$defs` or `properties`.\n"
+        )
         if variant_guidance:
             user_prompt += f"\n{variant_guidance}"
-        if error_feedback:
-            feedback_text = "\n".join(f"- {e}" for e in error_feedback[:20])
-            user_prompt += (
-                f"\nPREVIOUS ATTEMPT HAD THESE ISSUES (please fix):\n{feedback_text}\n"
-            )
+        if scored_retry_feedback:
+            user_prompt += f"\n\n{scored_retry_feedback}\n"
+        iteration_record["user_prompt_chars"] = len(user_prompt)
+        iteration_record["system_prompt_chars"] = len(SCAN_SYSTEM_PROMPT)
+        if scored_retry_feedback:
+            iteration_record["retry_feedback"] = scored_retry_feedback
 
         try:
             structure = client.chat.completions.create(
                 messages=[
                     {
                         "role": "system",
-                        "content": (
-                            SCAN_SYSTEM_PROMPT_COMPACT
-                            if compact_prompt_mode
-                            else SCAN_SYSTEM_PROMPT
-                        ),
+                        "content": SCAN_SYSTEM_PROMPT,
                     },
                     {"role": "user", "content": user_prompt},
                 ],
@@ -1530,24 +1756,14 @@ def scan_headings(
                     "status": "generation_error",
                     "generation_feedback": generation_feedback,
                     "exception_debug": exception_debug,
+                    "retry_classification": {
+                        "kind": "generation",
+                        "category": _classify_generation_failure(exc),
+                    },
                 }
             )
             iteration_records.append(iteration_record)
-            error_feedback = generation_feedback
-            if _is_timeout_error(exc):
-                if not compact_prompt_mode:
-                    logger.warning(
-                        "Timeout detected; enabling compact scan prompt mode for subsequent iterations"
-                    )
-                compact_prompt_mode = True
-                reduced_retries = min(scan_create_max_retries, 1)
-                if reduced_retries < scan_create_max_retries:
-                    logger.warning(
-                        "Reducing scan create max_retries from {} to {} after timeout",
-                        scan_create_max_retries,
-                        reduced_retries,
-                    )
-                    scan_create_max_retries = reduced_retries
+            scored_retry_feedback = ""
             reduced_sample_count = _reduce_sample_count_after_generation_failure(
                 sample_count,
                 exc,
@@ -1565,9 +1781,13 @@ def scan_headings(
         score, errors = score_structure(
             code_elements,
             structure,
-            outline_elements_df=sample_elements,
         )
         logger.info(f"Iteration {iteration}: score={score:.3f}, errors={len(errors)}")
+        classified_scored_errors: list[dict[str, object]] = []
+        next_retry_feedback = ""
+        if score < score_threshold:
+            classified_scored_errors = _classify_scored_structure_errors(errors)
+            next_retry_feedback = _build_scored_retry_feedback(classified_scored_errors)
         iteration_record.update(
             {
                 "status": "scored",
@@ -1577,6 +1797,13 @@ def scan_headings(
                 "generated_structure": _serialize_heading_structure(structure),
             }
         )
+        if classified_scored_errors:
+            iteration_record["retry_classification"] = {
+                "kind": "scored",
+                "categories": [
+                    str(item["category"]) for item in classified_scored_errors
+                ],
+            }
         iteration_records.append(iteration_record)
 
         if score > best_score or best_structure is None:
@@ -1588,7 +1815,17 @@ def scan_headings(
         if score >= score_threshold:
             break
 
-        error_feedback = errors
+        scored_retry_feedback = next_retry_feedback
+
+        reduced_sample_count = _reduce_sample_count_after_scoring_retry(sample_count)
+        if reduced_sample_count < sample_count:
+            logger.info(
+                "Reducing sample_count from {} to {} for next retry after score {:.3f}",
+                sample_count,
+                reduced_sample_count,
+                score,
+            )
+            sample_count = reduced_sample_count
     sample_count = min(code_elements.height, sample_count + 50)
 
     if best_structure is None:

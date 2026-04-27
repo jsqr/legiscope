@@ -24,7 +24,7 @@ from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructu
 from legiscope.parse.regions import REGIONS_SCHEMA
 from legiscope.parse.scan import (
     DEFAULT_TEMPERATURE,
-    SCAN_SYSTEM_PROMPT_COMPACT,
+    SCAN_SYSTEM_PROMPT,
     _apply_example_based_pattern_refinement,
     _sample_diagnostics,
     _select_scan_sample,
@@ -139,6 +139,26 @@ class TestResponseModels:
         )
 
         assert structure.toc_line_ranges == [(114, 313)]
+
+    def test_heading_structure_accepts_minimal_scan_payload(self):
+        """Scan payloads may omit optional fields that the pipeline fills later."""
+        structure = HeadingStructure.model_validate(
+            {
+                "heading_levels": [
+                    {
+                        "level": 1,
+                        "regex_patterns": [r"^CHAPTER\s+\d+.*$"],
+                        "example_heading": "CHAPTER 1 GENERAL PROVISIONS",
+                        "type_label": "chapter",
+                    }
+                ]
+            }
+        )
+
+        assert structure.total_levels == 0
+        assert structure.file_sample_size == 0
+        assert structure.levels[0].markdown_prefix == "#"
+        assert not hasattr(structure.levels[0], "outline_line_numbers")
 
 
 def _make_mock_client(heading_structure_response):
@@ -843,8 +863,161 @@ Some body text here."""
 
             assert "These are 200 representative elements" in first_prompt
             assert "These are 150 representative elements" in second_prompt
-            assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT_COMPACT
-            assert second_call.kwargs["max_retries"] == 1
+            assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT
+            assert second_call.kwargs["max_retries"] == 3
+            assert "PREVIOUS ATTEMPT HAD THESE ISSUES" not in second_prompt
+            assert "RETRY_FEEDBACK:" not in second_prompt
+
+        finally:
+            os.unlink(test_file)
+
+    def test_scan_legal_text_reduces_sample_after_length_limit(self):
+        """Length-limited retries should keep the same prompt shape and shrink sample size."""
+        sample_blocks = []
+        for index in range(1, 261):
+            sample_blocks.append(
+                f"CHAPTER {index}\n"
+                "This chapter contains enough substantive text to remain a distinct "
+                "element during scan testing and output-length retry validation."
+            )
+        sample_text = "\n\n".join(sample_blocks)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+[A-Z0-9IVXLCDM.-]+(?:\s+.*)?$",
+                        example_heading="CHAPTER 1",
+                        type_label="chapter",
+                    )
+                ],
+            )
+
+            completion = Mock()
+            completion.choices = [Mock(finish_reason="length")]
+            retry_error = InstructorRetryException(
+                "The output is incomplete due to a max_tokens length limit.",
+                n_attempts=1,
+                total_usage=0,
+                failed_attempts=[
+                    FailedAttempt(
+                        attempt_number=1,
+                        exception=ValueError("structured output truncated"),
+                        completion=completion,
+                    )
+                ],
+            )
+
+            mock_client = Mock()
+            mock_client.chat.completions.create.side_effect = [
+                ScanResult(found=True, element_id=0, reasoning="Start of document"),
+                retry_error,
+                mock_response,
+            ]
+
+            with patch("legiscope.parse.scan.score_structure", return_value=(0.95, [])):
+                scan_legal_text(mock_client, test_file)
+
+            first_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs[
+                "messages"
+            ][1]["content"]
+            second_call = mock_client.chat.completions.create.call_args_list[2]
+            second_prompt = second_call.kwargs["messages"][1]["content"]
+
+            assert "These are 200 representative elements" in first_prompt
+            assert "These are 140 representative elements" in second_prompt
+            assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT
+            assert second_call.kwargs["max_retries"] == 3
+            assert "PREVIOUS ATTEMPT HAD THESE ISSUES" not in second_prompt
+            assert "RETRY_FEEDBACK:" not in second_prompt
+
+        finally:
+            os.unlink(test_file)
+
+    def test_scan_legal_text_adds_retry_feedback_only_after_scored_failure(self):
+        """Scored retries should carry compact feedback; generation retries should not."""
+        sample_text = """CHAPTER 1   TEST
+
+1-100   Proper heading
+
+Some body text here."""
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            first_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^\d+(?:-\d+)+\s+.*$",
+                        markdown_prefix="#",
+                        example_heading="1-100   Proper heading",
+                        type_label="section",
+                        number_regex=r"\d+(?:-\d+)+",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=3,
+            )
+            second_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+\d+(?:\s+.*)?$",
+                        markdown_prefix="#",
+                        example_heading="CHAPTER 1   TEST",
+                        type_label="chapter",
+                        number_regex=r"\d+",
+                    )
+                ],
+                total_levels=1,
+                file_sample_size=3,
+            )
+
+            mock_client = Mock()
+            mock_client.chat.completions.create.side_effect = [
+                ScanResult(found=True, element_id=0, reasoning="Start of document"),
+                first_response,
+                second_response,
+            ]
+
+            with patch(
+                "legiscope.parse.scan.score_structure",
+                side_effect=[
+                    (
+                        0.45,
+                        [
+                            "Low recall: patterns matched 1 of 3 heading-like elements (33%)",
+                            "Low structural precision at level 1: 1 delimiter mismatches and 1 body-like matches across 2 matched elements (score 50%)",
+                        ],
+                    ),
+                    (0.95, []),
+                ],
+            ):
+                scan_legal_text(mock_client, test_file)
+
+            first_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs[
+                "messages"
+            ][1]["content"]
+            second_prompt = mock_client.chat.completions.create.call_args_list[2].kwargs[
+                "messages"
+            ][1]["content"]
+
+            assert "RETRY_FEEDBACK:" not in first_prompt
+            assert "RETRY_FEEDBACK:" in second_prompt
+            assert "- low_recall:" in second_prompt
+            assert "- structural_precision:" in second_prompt
 
         finally:
             os.unlink(test_file)
@@ -2631,8 +2804,55 @@ class TestScoreStructure:
         assert score >= 0.8
         assert not any("out-of-order siblings" in error.lower() for error in errors)
 
-    def test_outline_mismatch_penalises_broad_regex(self):
-        """Broad regexes should be penalized when they disagree with outline ids."""
+    def test_mixed_identifier_families_have_comparable_sort_keys(self):
+        """Sibling ordering checks should not crash on mixed numeric and alpha ids."""
+        from legiscope.parse.scan import _identifier_sort_key
+
+        alpha_key = _identifier_sort_key("A-10")
+        numeric_key = _identifier_sort_key("1-10")
+
+        assert alpha_key is not None
+        assert numeric_key is not None
+        assert (alpha_key < numeric_key) is False
+
+    def test_outline_scope_argument_is_ignored_without_outline_contract(self):
+        """Score calculation should not depend on scan-time outline ids or sample scope."""
+        lines = [
+            "1-100   Proper heading",
+            "1-100 body text that should not be a heading",
+            "2-100   Another heading",
+            "2-100 more body text that should not be a heading",
+        ]
+        elements = self._make_elements(lines)
+        sample = elements.head(2)
+
+        structure = HeadingStructure(
+            heading_levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_patterns=[r"^\d+(?:-\d+)+\s+.*$"],
+                    markdown_prefix="# ",
+                    example_heading="1-100   Proper heading",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=1,
+            file_sample_size=len(lines),
+        )
+
+        full_score, full_errors = score_structure(elements, structure)
+        scoped_score, scoped_errors = score_structure(
+            elements,
+            structure,
+            outline_elements_df=sample,
+        )
+
+        assert full_score == scoped_score
+        assert full_errors == scoped_errors
+
+    def test_structural_precision_penalizes_body_like_overmatch(self):
+        """Broad heading regexes should be penalized when they overmatch body-like lines."""
         lines = [
             "1-100   Proper heading",
             "1-100 body text that should not be a heading",
@@ -2650,7 +2870,6 @@ class TestScoreStructure:
                     example_heading="1-100   Proper heading",
                     type_label="section",
                     number_regex=r"\d+(?:-\d+)+",
-                    outline_line_numbers=[0, 2],
                 ),
             ],
             total_levels=1,
@@ -2660,7 +2879,7 @@ class TestScoreStructure:
         score, errors = score_structure(elements, structure)
 
         assert score < 0.8
-        assert any("outline mismatch" in error.lower() for error in errors)
+        assert any("low structural precision" in error.lower() for error in errors)
 
     def test_multiline_heading_elements_are_scored_as_matches(self):
         """Score evaluation should match multiline headings the same way conversion does."""
@@ -2764,48 +2983,6 @@ class TestScoreStructure:
 
         assert score >= 0.8
         assert not any("out-of-order siblings" in error.lower() for error in errors)
-
-    def test_outline_alignment_can_be_scoped_to_sample_elements(self):
-        """Sample-local outline ids should not be compared to full-document matches."""
-        lines = [
-            "§ 1-100. First sampled heading.",
-            "§ 1-101. Second sampled heading.",
-            "§ 1-102. Third sampled heading.",
-            "§ 1-103. Fourth sampled heading.",
-            "§ 2-100. Later heading outside sample.",
-            "§ 2-101. Another later heading outside sample.",
-            "§ 3-100. More later headings outside sample.",
-            "§ 3-101. Final later heading outside sample.",
-        ]
-        elements = self._make_elements(lines)
-        sample = elements.head(4)
-
-        structure = HeadingStructure(
-            heading_levels=[
-                HeadingLevel(
-                    level=1,
-                    regex_patterns=[r"^§\s*\d+(?:-\d+)+\.\s*.*$"],
-                    markdown_prefix="# ",
-                    example_heading="§ 1-100. First sampled heading.",
-                    type_label="section",
-                    number_regex=r"\d+(?:-\d+)+",
-                    outline_line_numbers=[0, 1, 2, 3],
-                ),
-            ],
-            total_levels=1,
-            file_sample_size=sample.height,
-        )
-
-        full_score, full_errors = score_structure(elements, structure)
-        scoped_score, scoped_errors = score_structure(
-            elements,
-            structure,
-            outline_elements_df=sample,
-        )
-
-        assert scoped_score > full_score
-        assert any("outline mismatch" in error.lower() for error in full_errors)
-        assert not any("outline mismatch" in error.lower() for error in scoped_errors)
 
     def test_recall_excludes_non_structural_enumerators_and_annotations(self):
         """Recall denominator should ignore common non-structural heading-like lines."""
@@ -2914,35 +3091,32 @@ class TestScanSampling:
 class TestScanNormalization:
     """Tests for scan-time normalization of heading structures."""
 
-    def test_reordered_levels_also_reset_markdown_prefixes(self):
-        """Markdown prefixes should follow normalized level order, not stale LLM output."""
+    def test_normalization_sorts_by_declared_level_and_resets_markdown_prefixes(self):
+        """Markdown prefixes should follow normalized declared level order, not stale LLM output."""
         from legiscope.parse.scan import _normalize_scanned_structure
 
         structure = HeadingStructure(
             heading_levels=[
                 HeadingLevel(
-                    level=1,
+                    level=2,
                     regex_patterns=[r"^ARTICLE\s+[IVXLCDM]+\s+.*$"],
                     markdown_prefix="#",
                     example_heading="ARTICLE I   POWERS OF THE CITY",
                     type_label="article",
-                    outline_line_numbers=[116],
                 ),
                 HeadingLevel(
-                    level=2,
+                    level=3,
                     regex_patterns=[r"^\d+(?:-\d+)\s+.*$"],
                     markdown_prefix="##",
                     example_heading="1-100   The City's Powers Defined",
                     type_label="section",
-                    outline_line_numbers=list(range(117, 180)),
                 ),
                 HeadingLevel(
-                    level=3,
+                    level=1,
                     regex_patterns=[r"^CHAPTER\s+\d+\s+.*$"],
                     markdown_prefix="###",
                     example_heading="CHAPTER 1   THE COUNCIL",
                     type_label="chapter",
-                    outline_line_numbers=[120, 121, 129, 135],
                 ),
             ],
             total_levels=3,
@@ -2951,9 +3125,9 @@ class TestScanNormalization:
 
         normalized = _normalize_scanned_structure(structure)
 
-        assert normalized.levels[0].type_label == "article"
+        assert normalized.levels[0].type_label == "chapter"
         assert normalized.levels[0].markdown_prefix == "#"
-        assert normalized.levels[1].type_label == "chapter"
+        assert normalized.levels[1].type_label == "article"
         assert normalized.levels[1].markdown_prefix == "##"
         assert normalized.levels[2].type_label == "section"
         assert normalized.levels[2].markdown_prefix == "###"
