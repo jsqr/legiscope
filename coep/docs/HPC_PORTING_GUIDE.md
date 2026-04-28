@@ -189,7 +189,7 @@ paths:
   chroma_db_dir: "chroma_db"          # Under data_dir
   queries_dir: "queries"
   output_dir: "output"
-  default_queries_file: "DPL_queries_with_context.csv"
+  default_queries_file: "DPL_queries_expanded_nested.csv"
   monqcle_report: "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
 
 database:
@@ -321,7 +321,7 @@ and runs automatically as part of `dvc exp run`.
 
 ### Workflow
 
-1. **Load queries** from `data/queries/DPL_queries_with_context.csv`
+1. **Load queries** from `config.default_queries_path()`
   (structured CSV with `variable_name`, `query_text`, `coding_instructions`,
   `response_options`, and optional context fields such as `prepend_text`)
 2. **Load MonQcle data** from `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv`,
@@ -339,7 +339,7 @@ and runs automatically as part of `dvc exp run`.
 
 | Input | Path | Notes |
 |-------|------|-------|
-| Queries | `data/queries/DPL_queries_with_context.csv` | Same for all jurisdictions |
+| Queries | `data/queries/<paths.default_queries_file>` | Config-driven benchmark query CSV; same file is used for all jurisdictions |
 | MonQcle ground truth | `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv` | **One file with data for all cities**; filtered by jurisdiction ID at runtime |
 | ChromaDB index | `data/chroma_db/` | Must be pre-built via DVC pipeline |
 | Sections parquet | `data/laws/{STATE}/{Locality}/{code-slug}/sections.parquet` | Pre-built via DVC pipeline |
@@ -1382,16 +1382,14 @@ bash coep/scripts/HPC_scripts/bootstrap_bigpurple.sh
 
 7. **Upload MonQcle and query data** (gitignored — not in the repo):
    ```bash
-   # On HPC: create the directories
-   mkdir -p data/queries
-   mkdir -p coep/data/monqcle_data
+   # Preferred: run the helper from your LOCAL machine.
+   # It reads the active query CSV and MonQcle path from config.yaml.
+   bash coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh \
+     --netid <netid> \
+     --docx-dir ~/legiscope-docx
 
-   # From your LOCAL machine: upload the active query file and MonQcle report
-   scp data/queries/DPL_queries_with_context.csv \
-       <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/legiscope/data/queries/
-
-   scp coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv \
-       <netid>@bigpurple.nyumc.org:/gpfs/data/cerdalab/LegalAI/legiscope/coep/data/monqcle_data/
+   # Manual fallback: upload the file named by paths.default_queries_file
+   # into data/queries/ and the configured MonQcle report into coep/data/monqcle_data/.
    ```
 
 ### Run the Pipeline

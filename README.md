@@ -259,7 +259,8 @@ uv run python scripts/run_queries.py
 Queries are read from the default path configured in `config.yaml`
 (`paths.default_queries_file`). Standalone query execution expects a `question`
 column. The COEP benchmark pipeline can also consume a structured query CSV
-such as `data/queries/DPL_queries_with_context.csv`. In that flow,
+such as the active file resolved from `config.yaml`
+(`data/queries/<paths.default_queries_file>`). In that flow,
 `coep/src/query.py` composes a completion-oriented `question` from
 `query_text`, `coding_instructions`, and `response_options`, while preserving
 fields such as `prepend_text` in query metadata for downstream hooks.
