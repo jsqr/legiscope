@@ -1028,7 +1028,9 @@ def build_chunks_df(
         if total_parts == 1:
             source_kind = "section_subtree" if has_children else "section_body"
         else:
-            source_kind = "section_subtree_split" if has_children else "section_body_split"
+            source_kind = (
+                "section_subtree_split" if has_children else "section_body_split"
+            )
 
         for index, part in enumerate(body_parts, start=1):
             display_heading = section["heading_text"]

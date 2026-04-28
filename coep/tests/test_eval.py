@@ -15,6 +15,7 @@ from coep.src.eval import (
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     melt_monqcle_to_long,
+    prepare_ground_truth_for_variables,
     prioritize_ground_truth_matches,
 )
 
@@ -226,6 +227,38 @@ class TestCombinedVariableExpansion:
 
         assert result.equals(row)
 
+    def test_prepare_ground_truth_prefers_split_variables(self):
+        row = pl.DataFrame(
+            {
+                "dp_collected": ["Yes"],
+                "dp_valid_imp": ["By officer"],
+            }
+        )
+
+        result = prepare_ground_truth_for_variables(
+            row,
+            ["dp_collected", "dp_valid_imp"],
+        )
+
+        assert result["variable_name"].to_list() == ["dp_collected", "dp_valid_imp"]
+        assert result["ground_truth"].to_list() == ["Yes", "By officer"]
+
+    def test_prepare_ground_truth_supports_legacy_combined_compatibility(self):
+        row = pl.DataFrame(
+            {
+                "dp_collected": ["Yes"],
+                "dp_valid_imp": ["By officer"],
+            }
+        )
+
+        result = prepare_ground_truth_for_variables(
+            row,
+            ["dp_collected_combined"],
+        )
+
+        assert result["variable_name"].to_list() == ["dp_collected_combined"]
+        assert result["ground_truth"][0] == "Collected: Yes\nValid/Imp: By officer"
+
 
 class TestBenchmarkResultOrdering:
     """Test ordering of benchmark result rows after the left join."""
@@ -253,6 +286,26 @@ class TestBenchmarkResultOrdering:
             "var_missing_2",
         ]
         assert ordered["benchmark_row_id"].to_list() == [0, 1, 2, 3]
+
+    def test_prioritize_ground_truth_matches_preserves_option_subquestion_order(self):
+        results = pl.DataFrame(
+            {
+                "benchmark_row_id": [0, 0, 0, 1],
+                "evaluation_subquestion_index": [2, 0, 1, 0],
+                "variable_name": [
+                    "var_scored_1",
+                    "var_scored_1",
+                    "var_scored_1",
+                    "var_scored_2",
+                ],
+                "ground_truth_available": [True, True, True, True],
+            }
+        )
+
+        ordered = prioritize_ground_truth_matches(results)
+
+        assert ordered["benchmark_row_id"].to_list() == [0, 0, 0, 1]
+        assert ordered["evaluation_subquestion_index"].to_list() == [0, 1, 2, 0]
 
 
 class TestEvaluator:

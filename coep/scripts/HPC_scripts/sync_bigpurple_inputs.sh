@@ -6,14 +6,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
+CONFIG_QUERY_FILE="$(awk -F'"' '/default_queries_file:/ {print $2; exit}' "${LOCAL_PROJECT_ROOT}/config.yaml")"
+CONFIG_MONQCLE_FILE="$(awk -F'"' '/monqcle_report:/ {print $2; exit}' "${LOCAL_PROJECT_ROOT}/config.yaml")"
+
 NETID=""
 HOST="bigpurple.nyumc.org"
 PROJECT_HOME="/gpfs/data/cerdalab/LegalAI"
 PROJECT_ROOT="${PROJECT_HOME}/legiscope"
 REMOTE_DOCX_DIR="${PROJECT_HOME}/docx_sources"
 LOCAL_DOCX_DIR=""
-LOCAL_QUERY_FILE="${LOCAL_PROJECT_ROOT}/data/queries/DPL_queries_with_context.csv"
-LOCAL_MONQCLE_FILE="${LOCAL_PROJECT_ROOT}/coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+LOCAL_QUERY_FILE="${LOCAL_PROJECT_ROOT}/data/queries/${CONFIG_QUERY_FILE}"
+LOCAL_MONQCLE_FILE="${LOCAL_PROJECT_ROOT}/${CONFIG_MONQCLE_FILE}"
 SSH_JUMP=""
 DRY_RUN=false
 
@@ -33,8 +36,8 @@ Options:
   --project-root PATH   Remote repo path (default: /gpfs/data/cerdalab/LegalAI/legiscope)
   --remote-docx-dir PATH
                         Remote flat DOCX staging dir (default: /gpfs/data/cerdalab/LegalAI/docx_sources)
-    --query-file PATH     Local query CSV (default: <repo>/data/queries/DPL_queries_with_context.csv)
-    --monqcle-file PATH   Local MonQcle CSV (default: <repo>/coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv)
+        --query-file PATH     Local query CSV (default: active file from config.yaml)
+        --monqcle-file PATH   Local MonQcle CSV (default: active file from config.yaml)
   --ssh-jump TARGET     Optional SSH jump host, e.g. user@gw.hpc.nyu.edu
   --dry-run             Print commands and run rsync in preview mode
   -h, --help            Show this help
@@ -107,6 +110,9 @@ require_cmd() {
 require_cmd ssh
 require_cmd rsync
 
+[[ -n "$CONFIG_QUERY_FILE" ]] || die "could not determine paths.default_queries_file from config.yaml"
+[[ -n "$CONFIG_MONQCLE_FILE" ]] || die "could not determine paths.monqcle_report from config.yaml"
+
 ssh_run() {
     local remote="$1"
     local command="$2"
@@ -124,10 +130,6 @@ ssh_run() {
 [[ -f "$LOCAL_QUERY_FILE" ]] || die "local query CSV not found: $LOCAL_QUERY_FILE"
 [[ -f "$LOCAL_MONQCLE_FILE" ]] || die "local MonQcle CSV not found: $LOCAL_MONQCLE_FILE"
 
-if [[ "$(basename "$LOCAL_QUERY_FILE")" != "DPL_queries_with_context.csv" ]]; then
-    die "the active query file must be named DPL_queries_with_context.csv"
-fi
-
 if ! compgen -G "${LOCAL_DOCX_DIR}/*.docx" >/dev/null; then
     die "no .docx files found in: $LOCAL_DOCX_DIR"
 fi
@@ -143,12 +145,14 @@ if [[ "$DRY_RUN" == true ]]; then
     RSYNC_ARGS+=(-n)
 fi
 
-REMOTE_QUERY_PATH="${PROJECT_ROOT}/data/queries/DPL_queries_with_context.csv"
-REMOTE_MONQCLE_PATH="${PROJECT_ROOT}/coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+REMOTE_QUERY_PATH="${PROJECT_ROOT}/data/queries/${CONFIG_QUERY_FILE}"
+REMOTE_MONQCLE_PATH="${PROJECT_ROOT}/${CONFIG_MONQCLE_FILE}"
 
 say "=== Sync BigPurple Inputs ==="
 say "Remote        : ${REMOTE}"
 say "Project root  : ${PROJECT_ROOT}"
+say "Query CSV     : ${LOCAL_QUERY_FILE}"
+say "MonQcle CSV   : ${LOCAL_MONQCLE_FILE}"
 say "DOCX source   : ${LOCAL_DOCX_DIR}"
 say "DOCX target   : ${REMOTE_DOCX_DIR}"
 say ""

@@ -257,7 +257,14 @@ def _build_scan_variant_guidance(elements_df: pl.DataFrame) -> str:
     for row in elements_df.to_dicts():
         first_line = row["text"].split("\n")[0].strip()
         label = _classify_scan_candidate(first_line)
-        if label not in {"title", "article", "chapter", "section", "appendix", "compound_id"}:
+        if label not in {
+            "title",
+            "article",
+            "chapter",
+            "section",
+            "appendix",
+            "compound_id",
+        }:
             continue
         group_label = "section" if label == "compound_id" else label
         signature = _variant_signature_for_line(first_line)
@@ -274,9 +281,7 @@ def _build_scan_variant_guidance(elements_df: pl.DataFrame) -> str:
         variant_examples = "; ".join(
             f"`{example[:90]}`" for example in list(variants.values())[:4]
         )
-        lines.append(
-            f"- {group_label}: {variant_examples}"
-        )
+        lines.append(f"- {group_label}: {variant_examples}")
 
     if not lines:
         return ""
@@ -643,7 +648,13 @@ def _exception_debug_snapshot(exc: Exception) -> dict[str, object]:
     if isinstance(exc, InstructorRetryException):
         snapshot["n_attempts"] = exc.n_attempts
         if exc.create_kwargs:
-            allowed_keys = {"model", "max_retries", "timeout", "max_tokens", "temperature"}
+            allowed_keys = {
+                "model",
+                "max_retries",
+                "timeout",
+                "max_tokens",
+                "temperature",
+            }
             snapshot["create_kwargs"] = {
                 key: value
                 for key, value in exc.create_kwargs.items()
@@ -712,11 +723,7 @@ def _format_exception_debug_summary(exception_debug: dict[str, object]) -> str:
         f"timeout={bool(exception_debug.get('is_timeout'))}",
         f"context_length={bool(exception_debug.get('is_context_length'))}",
         "finish_reason="
-        + (
-            ",".join(deduped_finish_reasons)
-            if deduped_finish_reasons
-            else "unknown"
-        ),
+        + (",".join(deduped_finish_reasons) if deduped_finish_reasons else "unknown"),
     ]
     for key in ("status_code", "code", "cause_type"):
         value = exception_debug.get(key)
@@ -1005,9 +1012,11 @@ def _structural_precision_score(
         if not matched_lines:
             continue
 
-        _example_identifier, example_remainder = _split_heading_identifier_and_remainder(
-            level.example_heading,
-            level,
+        _example_identifier, example_remainder = (
+            _split_heading_identifier_and_remainder(
+                level.example_heading,
+                level,
+            )
         )
         expected_delimiter = _delimiter_family(example_remainder)
         example_tail = _normalized_heading_tail(example_remainder)
@@ -1017,7 +1026,9 @@ def _structural_precision_score(
         body_like_matches = 0
         match_scores: list[float] = []
         for line in matched_lines:
-            _identifier, remainder = _split_heading_identifier_and_remainder(line, level)
+            _identifier, remainder = _split_heading_identifier_and_remainder(
+                line, level
+            )
             actual_delimiter = _delimiter_family(remainder)
             tail_text = _normalized_heading_tail(remainder)
             line_score = 1.0
@@ -1090,7 +1101,11 @@ def _classify_scored_structure_errors(errors: list[str]) -> list[dict[str, objec
             category = "structural_precision"
         elif "ambiguous" in lowered:
             category = "ambiguity"
-        elif "pattern has 0 matches" in lowered or "invalid regex" in lowered or "no elements matched" in lowered:
+        elif (
+            "pattern has 0 matches" in lowered
+            or "invalid regex" in lowered
+            or "no elements matched" in lowered
+        ):
             category = "pattern_validity"
         elif "parent-child mismatch" in lowered:
             category = "parent_child"
@@ -1109,7 +1124,12 @@ def _classify_scored_structure_errors(errors: list[str]) -> list[dict[str, objec
         if not count:
             continue
         message = " ".join(samples[category].split())
-        if count > 1 and category in {"ambiguity", "pattern_validity", "parent_child", "sibling_ordering"}:
+        if count > 1 and category in {
+            "ambiguity",
+            "pattern_validity",
+            "parent_child",
+            "sibling_ordering",
+        }:
             message = f"{message} (+{count - 1} more)"
         classified.append(
             {
@@ -1289,9 +1309,7 @@ def _apply_example_based_pattern_refinement(level: HeadingLevel) -> None:
             number_pattern = _identifier_pattern_from_token(token)
             _update_level_patterns(
                 level,
-                [
-                    rf"^(?:§\s*)?{number_pattern}(?:\.\s*.*|\:\s*.*|\s+.*)$"
-                ],
+                [rf"^(?:§\s*)?{number_pattern}(?:\.\s*.*|\:\s*.*|\s+.*)$"],
                 number_regex=number_pattern,
             )
         return

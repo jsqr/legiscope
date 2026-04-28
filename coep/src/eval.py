@@ -316,10 +316,10 @@ def melt_monqcle_to_long(
     return result
 
 
-# Mapping of combined query variables to their MonQcle source columns.
-# Each key is the combined variable name used in queries; the value is a list of
-# (monqcle_column, label) pairs whose values are merged into the ground truth.
-_COMBINED_VARIABLE_SOURCES: dict[str, list[tuple[str, str]]] = {
+# Mapping of legacy combined query variables to their MonQcle source columns.
+# New nested COEP query CSVs should target the split variables directly; these
+# compatibility aliases remain for older result files and benchmark queries.
+_LEGACY_COMBINED_VARIABLE_SOURCES: dict[str, list[tuple[str, str]]] = {
     "dp_collected_combined": [
         ("dp_collected", "Collected"),
         ("dp_valid_imp", "Valid/Imp"),
@@ -331,10 +331,23 @@ _COMBINED_VARIABLE_SOURCES: dict[str, list[tuple[str, str]]] = {
 }
 
 
+def _dedupe_variable_names(variable_names: list[str]) -> list[str]:
+    """Return requested variable names with original order preserved."""
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for variable_name in variable_names:
+        stripped = str(variable_name).strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        deduped.append(stripped)
+    return deduped
+
+
 def expand_combined_variables(
     monqcle_row: pl.DataFrame, variable_names: list[str]
 ) -> pl.DataFrame:
-    """Add synthetic columns to a MonQcle row for combined query variables.
+    """Add synthetic columns to a MonQcle row for legacy combined variables.
 
     Some query variables (e.g. ``dp_collected_combined``) combine multiple
     MonQcle columns.  This function detects those variables in
@@ -348,7 +361,9 @@ def expand_combined_variables(
     Returns:
         The MonQcle row with any necessary combined columns added.
     """
-    combined_vars = [v for v in variable_names if v in _COMBINED_VARIABLE_SOURCES]
+    combined_vars = [
+        v for v in variable_names if v in _LEGACY_COMBINED_VARIABLE_SOURCES
+    ]
     if not combined_vars:
         return monqcle_row
 
@@ -359,7 +374,7 @@ def expand_combined_variables(
     for var_name in combined_vars:
         parts: list[str] = []
         citation_parts: list[str] = []
-        for col, label in _COMBINED_VARIABLE_SOURCES[var_name]:
+        for col, label in _LEGACY_COMBINED_VARIABLE_SOURCES[var_name]:
             val = row_dict.get(col)
             val_str = str(val) if val not in [None, "-"] else ""
             parts.append(f"{label}: {val_str}")
@@ -378,6 +393,28 @@ def expand_combined_variables(
     return monqcle_row
 
 
+def prepare_ground_truth_for_variables(
+    monqcle_row: pl.DataFrame,
+    variable_names: list[str],
+) -> pl.DataFrame:
+    """Build long-form ground truth with split variables primary and legacy compatibility optional."""
+    requested_variables = _dedupe_variable_names(variable_names)
+    compatibility_variables = [
+        variable_name
+        for variable_name in requested_variables
+        if variable_name in _LEGACY_COMBINED_VARIABLE_SOURCES
+    ]
+
+    if compatibility_variables:
+        logger.info(
+            "Using legacy combined-variable compatibility for: "
+            f"{compatibility_variables}"
+        )
+        monqcle_row = expand_combined_variables(monqcle_row, compatibility_variables)
+
+    return melt_monqcle_to_long(monqcle_row, requested_variables)
+
+
 def prioritize_ground_truth_matches(results_df: pl.DataFrame) -> pl.DataFrame:
     """Keep rows with matched ground truth first while preserving query order within groups."""
     required_columns = {"ground_truth_available", "benchmark_row_id"}
@@ -388,9 +425,15 @@ def prioritize_ground_truth_matches(results_df: pl.DataFrame) -> pl.DataFrame:
             + ", ".join(sorted(missing_columns))
         )
 
+    sort_columns = ["ground_truth_available", "benchmark_row_id"]
+    descending = [True, False]
+    if "evaluation_subquestion_index" in results_df.columns:
+        sort_columns.append("evaluation_subquestion_index")
+        descending.append(False)
+
     return results_df.sort(
-        by=["ground_truth_available", "benchmark_row_id"],
-        descending=[True, False],
+        by=sort_columns,
+        descending=descending,
         nulls_last=True,
     )
 

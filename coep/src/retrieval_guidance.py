@@ -5,14 +5,14 @@ from legiscope.retrieval_guidance import RetrievalGuidance, RetrievalGuidanceReq
 
 _DEFAULT_QUERY_CONTEXT = (
     "This query concerns a local municipal ordinance regulating "
-    "drug paraphernalia-related activities."
+    "drug paraphernalia used with controlled substances."
 )
 
 
 _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
     "existence_scope": (
         "Retrieve operative ordinance text that establishes whether the jurisdiction bans or regulates "
-        "drug paraphernalia beyond narrow business-only rules."
+        "drug paraphernalia used with controlled substances beyond narrow business-only rules."
     ),
     "date_enactment": (
         "Retrieve ordinance metadata and amendment history that identify enactment, adoption, approval, "
@@ -34,11 +34,12 @@ _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
     ),
     "definition_type": (
         "Retrieve definition sections and closely linked operative text that describe covered paraphernalia "
-        "types, functions, or item lists."
+        "types, functions, or item lists used with controlled substances."
     ),
     "prohibited_activity": (
         "Retrieve operative prohibition text enumerating what acts are barred, especially sale, delivery, "
-        "distribution, possession-with-intent, use, display, advertising, or manufacture."
+        "distribution, possession-with-intent, use, display, advertising, or manufacture of drug paraphernalia "
+        "used with controlled substances."
     ),
     "penalty": (
         "Retrieve penalty sections, general penalty cross-references, and sanction language tied to the "
@@ -95,7 +96,7 @@ _RETRIEVAL_OVERRIDE_BY_VARIABLE = {
 }
 
 
-_EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE = {
+_LEGACY_EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE = {
     "dp_exempt_sygen_activity": ["Syringes, generally"],
     "dp_exempt_sy_ssp_activity": [
         "Syringes from syringe services, harm reduction programs, or supervised use sites"
@@ -104,19 +105,19 @@ _EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE = {
         "Paraphernalia for consumption of cannabis, generally",
         "Paraphernalia for consumption of cannabis, generally or medical use",
     ],
-    "dp_exempt_DCEgen_activity": ["Drug codeing/testing equipment, generally"],
+    "dp_exempt_DCEgen_activity": ["Drug checking/testing equipment, generally"],
     "dp_exempt_fentDCE_activity": [
-        "Drug codeing/testing equipment for fentanyl or fentanyl analogues"
+        "Drug checking/testing equipment for fentanyl or fentanyl analogues"
     ],
-    "dp_exempt_xyDCE_activity": ["Drug codeing/testing equipment for xylazine"],
+    "dp_exempt_xyDCE_activity": ["Drug checking/testing equipment for xylazine"],
     "dp_exempt_DCE_ssp_activity": [
-        "Drug codeing equipment, in the context of syringe services, harm reduction programs, or supervised use sites"
+        "Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites"
     ],
     "dp_exempt_fentDCE_ssp_activity": [
-        "Fentanyl codeing/testing equipment specifically, in the context of syringe services, harm reduction programs, or supervised use sites"
+        "Fentanyl checking/testing equipment specifically, in the context of syringe services, harm reduction programs, or supervised use sites"
     ],
     "dp_exempt_xyDCE_ssp_activity": [
-        "Xylazine codeing/testing equipment specifically, in the context syringe services, harm reduction programs, or supervised use sites"
+        "Xylazine checking/testing equipment specifically, in the context syringe services, harm reduction programs, or supervised use sites"
     ],
     "dp_exempt_SEgen_activity": ["Pipes/smoking equipment, generally"],
     "dp_exempt_SE_ssp_activity": [
@@ -128,11 +129,57 @@ _EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE = {
 }
 
 
+def _dedupe_preserving_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for value in values:
+        stripped = value.strip()
+        if not stripped or stripped in seen:
+            continue
+        seen.add(stripped)
+        deduped.append(stripped)
+    return deduped
+
+
+def _expected_exemption_dependency_labels(
+    request: RetrievalGuidanceRequest,
+) -> list[str]:
+    """Prefer CSV-configured blocker labels, falling back to legacy aliases."""
+    hierarchy = request.metadata.get("hierarchy") or {}
+    configured_labels: list[str] = []
+
+    if isinstance(hierarchy, dict):
+        for rule in hierarchy.get("label_blockers", []):
+            if not isinstance(rule, dict):
+                continue
+            blocker_labels = rule.get("blocker_labels") or []
+            if not isinstance(blocker_labels, list):
+                continue
+            for label in blocker_labels:
+                if isinstance(label, str):
+                    configured_labels.append(label)
+
+    deduped_labels = _dedupe_preserving_order(configured_labels)
+    if deduped_labels:
+        return deduped_labels
+
+    return list(
+        _LEGACY_EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE.get(
+            request.variable_name or "",
+            [],
+        )
+    )
+
+
 _FAMILY_BY_VARIABLE = {
     "dp_law": "existence_scope",
     "dp_enacted": "date_enactment",
     "dp_effective_dt": "date_effective",
+    "dp_collected": "date_current_through",
+    "dp_valid_imp": "date_current_through",
     "dp_collected_combined": "date_current_through",
+    "dp_state_fed_reference": "reference_necessity",
+    "dp_state_fed_citation": "reference_necessity",
     "dp_state_fed_combined": "reference_necessity",
     "dp_type": "definition_type",
     "dp_activity": "prohibited_activity",
@@ -158,7 +205,7 @@ _GUIDANCE_BY_FAMILY = {
         guidance_topic="existence_scope",
         relevance_instructions=(
             "Prefer operative local ordinance text that actually prohibits or regulates drug "
-            "paraphernalia-related activity. Treat broad prohibitions that apply beyond a narrow "
+            "paraphernalia used with controlled substances. Treat broad prohibitions that apply beyond a narrow "
             "business context as high value. Reject unrelated mentions, tobacco-only language, "
             "non-controlled-substance paraphernalia, and business-only display or head-shop rules "
             "unless the text clearly applies more broadly or creates a generally applicable ban."
@@ -170,6 +217,9 @@ _GUIDANCE_BY_FAMILY = {
             "pipe",
             "syringe",
             "needle",
+            "hypodermic",
+            "roach clip",
+            "injection device",
             "ingestion device",
             "inhalation device",
         ],
@@ -260,9 +310,9 @@ _GUIDANCE_BY_FAMILY = {
         guidance_topic="definition_type",
         relevance_instructions=(
             "Prefer definitions and closely linked operative text that describe what kinds of "
-            "paraphernalia are covered. High-value text includes verbs like inject, inhale, test, "
+            "paraphernalia used with controlled substances are covered. High-value text includes verbs like inject, inhale, test, "
             "analyze, ingest, prepare, conceal, or pack, and item lists such as pipes, syringes, "
-            "kits, or containers. Reject date, penalty, and exemption text unless it directly adds to "
+            "kits, roach clips, hypodermic devices, or containers. Reject date, penalty, and exemption text unless it directly adds to "
             "the operative definition."
         ),
         anchor_terms=[
@@ -273,6 +323,9 @@ _GUIDANCE_BY_FAMILY = {
             "ingest",
             "pipe",
             "syringe",
+            "hypodermic",
+            "roach clip",
+            "injection device",
             "kit",
         ],
     ),
@@ -284,7 +337,7 @@ _GUIDANCE_BY_FAMILY = {
             "display, advertise, or manufacture. Apply the coding logic carefully: simple possession "
             "is different from possession with intent to sell or deliver; use should only count if the "
             "text explicitly prohibits use; and business-context activity may still be narrower than a "
-            "general prohibition. Reject nearby definition, date, or penalty text unless it directly "
+            "general prohibition. Focus on acts involving drug paraphernalia used with controlled substances. Reject nearby definition, date, or penalty text unless it directly "
             "states the operative activity."
         ),
         anchor_terms=[
@@ -342,6 +395,9 @@ _GUIDANCE_BY_FAMILY = {
             "authorized",
             "exemption",
             "exception",
+            "hypodermic",
+            "injection device",
+            "roach clip",
             "medical marijuana",
             "cannabis",
             "marihuana",
@@ -534,6 +590,23 @@ _VARIABLE_OVERRIDES = {
 
 
 _COMPLETION_RULES_BY_FAMILY = {
+    "existence_scope": (
+        "Interpret the question as asking whether the ordinance prohibits or regulates drug paraphernalia "
+        "used with controlled substances, not tobacco-only or other non-controlled-substance paraphernalia."
+    ),
+    "definition_type": (
+        "Describe only paraphernalia types tied to controlled-substance use and ground the answer in the legal "
+        "definition or closely linked operative text."
+    ),
+    "prohibited_activity": (
+        "List only activities that the ordinance expressly prohibits for drug paraphernalia used with controlled substances."
+    ),
+    "exemption_presence": (
+        "Identify only exemption language that actually creates a paraphernalia carve-out under the coding rules."
+    ),
+    "exemption_activity_scope": (
+        "Explain which activities remain allowed under the exemption, using the exemption text together with the operative activity language when necessary."
+    ),
     "reference_necessity": (
         "Decision rule: Answer Yes only when the local ordinance expressly incorporates, adopts, or "
         "depends on a state or federal statute or definition such that reviewing that outside law is "
@@ -591,22 +664,32 @@ def _build_query_context(request: RetrievalGuidanceRequest) -> str:
 
     prior_answers = request.metadata.get("prior_answers") or {}
     if (
-        isinstance(prior_answers, dict)
-        and _FAMILY_BY_VARIABLE.get(request.variable_name or "")
+        _FAMILY_BY_VARIABLE.get(request.variable_name or "")
         == "exemption_activity_scope"
     ):
-        exemption_answer = prior_answers.get("dp_exemption", {})
-        activity_answer = prior_answers.get("dp_activity", {})
+        context_by_variable = {
+            context.variable_name: context
+            for context in request.parent_contexts
+            if context.variable_name
+        }
+        exemption_context = context_by_variable.get("dp_exemption")
+        activity_context = context_by_variable.get("dp_activity")
         exemption_short_answer = (
-            exemption_answer.get("short_answer")
-            if isinstance(exemption_answer, dict)
-            else None
+            exemption_context.short_answer if exemption_context is not None else None
         )
         activity_short_answer = (
-            activity_answer.get("short_answer")
-            if isinstance(activity_answer, dict)
-            else None
+            activity_context.short_answer if activity_context is not None else None
         )
+
+        if exemption_short_answer is None and isinstance(prior_answers, dict):
+            exemption_answer = prior_answers.get("dp_exemption", {})
+            if isinstance(exemption_answer, dict):
+                exemption_short_answer = exemption_answer.get("short_answer")
+
+        if activity_short_answer is None and isinstance(prior_answers, dict):
+            activity_answer = prior_answers.get("dp_activity", {})
+            if isinstance(activity_answer, dict):
+                activity_short_answer = activity_answer.get("short_answer")
 
         if exemption_short_answer:
             context_parts.append(
@@ -617,10 +700,7 @@ def _build_query_context(request: RetrievalGuidanceRequest) -> str:
                 f"Previously coded prohibited activities: {activity_short_answer}."
             )
 
-        expected_labels = _EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE.get(
-            request.variable_name or "",
-            [],
-        )
+        expected_labels = _expected_exemption_dependency_labels(request)
         if expected_labels:
             context_parts.append(
                 "This subquestion is only in scope if the earlier exemption answer included: "
@@ -689,16 +769,13 @@ def _build_completion_instructions(guidance: RetrievalGuidance) -> str | None:
             "Variable family: " + guidance.guidance_topic.replace("_", " ") + "."
         )
 
-    if guidance.relevance_instructions:
-        parts.append(guidance.relevance_instructions.strip())
-
     family_rule = _COMPLETION_RULES_BY_FAMILY.get(guidance.guidance_topic or "")
     if family_rule:
         parts.append(family_rule)
 
     if guidance.anchor_terms:
         parts.append(
-            "Relevant legal anchors and terms: "
+            "Completion-relevant legal anchors and terms: "
             + ", ".join(guidance.anchor_terms)
             + "."
         )

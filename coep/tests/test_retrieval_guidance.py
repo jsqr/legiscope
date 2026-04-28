@@ -1,7 +1,12 @@
 """Tests for COEP-specific retrieval guidance hooks."""
 
 from coep.src.retrieval_guidance import get_drug_paraphernalia_retrieval_guidance
-from legiscope.retrieval_guidance import RetrievalGuidanceRequest
+from legiscope.query_hierarchy import (
+    LabelBlockerRule,
+    QueryHierarchy,
+    hierarchy_to_metadata,
+)
+from legiscope.retrieval_guidance import ParentQueryContext, RetrievalGuidanceRequest
 
 
 class TestCoepRetrievalGuidance:
@@ -18,7 +23,10 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.guidance_topic == "date_enactment"
         assert guidance.shared_context is not None
-        assert "drug paraphernalia-related activities" in guidance.shared_context
+        assert (
+            "drug paraphernalia used with controlled substances"
+            in guidance.shared_context
+        )
         assert "enacted" in guidance.anchor_terms
         assert "became law" in guidance.anchor_terms
         assert guidance.retrieval_instructions is not None
@@ -38,6 +46,7 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert "Query context:" in guidance.completion_instructions
         assert "Variable family: date enactment." in guidance.completion_instructions
+        assert "Prefer ordinance metadata" not in guidance.completion_instructions
 
     def test_returns_guidance_for_penalty_variable(self):
         request = RetrievalGuidanceRequest(
@@ -77,24 +86,46 @@ class TestCoepRetrievalGuidance:
         assert guidance.retrieval_query is not None
         assert "Retrieval target: exemption activity scope" in guidance.retrieval_query
         assert guidance.completion_instructions is not None
-        assert "Relevant legal anchors and terms" in guidance.completion_instructions
+        assert (
+            "Completion-relevant legal anchors and terms"
+            in guidance.completion_instructions
+        )
 
-    def test_exemption_activity_guidance_uses_prior_answer_context(self):
+    def test_exemption_activity_guidance_uses_parent_contexts(self):
+        hierarchy = QueryHierarchy(
+            query_id="Q2.1",
+            parent_ids=("Q1",),
+            label_blockers=(
+                LabelBlockerRule(
+                    parent_query_id="Q1",
+                    blocker_labels=("Custom cannabis label",),
+                ),
+            ),
+        )
         request = RetrievalGuidanceRequest(
             query="If cannabis paraphernalia is exempted, which activities are exempted?",
             variable_name="dp_exempt_can_activity",
             metadata={
                 "prepend_text": (
                     "This query refers to legal municipal ordinance that prohibits "
-                    "drug paraphernalia-related activities."
+                    "drug paraphernalia used with controlled substances."
                 ),
-                "prior_answers": {
-                    "dp_exemption": {
-                        "short_answer": "Paraphernalia for consumption of cannabis, generally or medical use"
-                    },
-                    "dp_activity": {"short_answer": "Sales AND/OR Use"},
-                },
+                "hierarchy": hierarchy_to_metadata(hierarchy),
             },
+            parent_contexts=[
+                ParentQueryContext(
+                    query_id="Q1",
+                    variable_name="dp_exemption",
+                    question="Which paraphernalia exemptions exist?",
+                    short_answer="Paraphernalia for consumption of cannabis, generally or medical use",
+                ),
+                ParentQueryContext(
+                    query_id="Q2",
+                    variable_name="dp_activity",
+                    question="Which activities are prohibited?",
+                    short_answer="Sales AND/OR Use",
+                ),
+            ],
         )
 
         guidance = get_drug_paraphernalia_retrieval_guidance(request)
@@ -108,6 +139,10 @@ class TestCoepRetrievalGuidance:
         )
         assert (
             "only in scope if the earlier exemption answer included"
+            in guidance.shared_context
+        )
+        assert (
+            "This subquestion is only in scope if the earlier exemption answer included: Custom cannabis label."
             in guidance.shared_context
         )
 
@@ -138,7 +173,7 @@ class TestCoepRetrievalGuidance:
                 "query_text": "On which date was the ordinance enacted?",
                 "prepend_text": (
                     "This query refers to legal municipal ordinance that prohibits "
-                    "drug paraphernalia-related activities."
+                    "drug paraphernalia used with controlled substances."
                 ),
                 "coding_instructions": "Use the enacted date if explicitly stated.",
             },
@@ -149,7 +184,7 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.retrieval_query is not None
         assert (
-            "Legal context: This query refers to legal municipal ordinance that prohibits drug paraphernalia-related activities."
+            "Legal context: This query refers to legal municipal ordinance that prohibits drug paraphernalia used with controlled substances."
             in guidance.retrieval_query
         )
         assert (
@@ -167,7 +202,7 @@ class TestCoepRetrievalGuidance:
                 "query_text": "On which date did the ordinance go into effect if known?",
                 "prepend_text": (
                     "This query refers to legal municipal ordinance that prohibits "
-                    "drug paraphernalia-related activities."
+                    "drug paraphernalia used with controlled substances."
                 ),
             },
         )
@@ -177,12 +212,12 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.retrieval_query is not None
         assert (
-            "Legal context: This query refers to legal municipal ordinance that prohibits drug paraphernalia-related activities."
+            "Legal context: This query refers to legal municipal ordinance that prohibits drug paraphernalia used with controlled substances."
             in guidance.retrieval_query
         )
         assert guidance.completion_instructions is not None
         assert (
-            "Query context: This query refers to legal municipal ordinance that prohibits drug paraphernalia-related activities."
+            "Query context: This query refers to legal municipal ordinance that prohibits drug paraphernalia used with controlled substances."
             in guidance.completion_instructions
         )
 
@@ -200,7 +235,7 @@ class TestCoepRetrievalGuidance:
                 ),
                 "prepend_text": (
                     "This query refers to legal municipal ordinance that prohibits "
-                    "drug paraphernalia-related activities."
+                    "drug paraphernalia used with controlled substances."
                 ),
             },
         )
@@ -230,10 +265,79 @@ class TestCoepRetrievalGuidance:
             "Answer No when the local ordinance is self-contained"
             in guidance.completion_instructions
         )
+
+    def test_existence_guidance_adds_controlled_substance_anchors(self):
+        request = RetrievalGuidanceRequest(
+            query="Does a local drug paraphernalia law exist?",
+            variable_name="dp_law",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert "hypodermic" in guidance.anchor_terms
+        assert "roach clip" in guidance.anchor_terms
+        assert "injection device" in guidance.anchor_terms
+        assert guidance.completion_instructions is not None
+        assert "used with controlled substances" in guidance.completion_instructions
+
+    def test_completion_instructions_do_not_reuse_relevance_filter_language(self):
+        request = RetrievalGuidanceRequest(
+            query="Which types of drug paraphernalia are covered?",
+            variable_name="dp_type",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.relevance_instructions is not None
+        assert "Prefer definitions" in guidance.relevance_instructions
+        assert guidance.completion_instructions is not None
+        assert "Prefer definitions" not in guidance.completion_instructions
+        assert "used with controlled substances" in guidance.completion_instructions
         assert (
-            "do not elevate incidental citations as the relevant law"
+            "ground the answer in the legal definition"
             in guidance.completion_instructions
         )
+
+    def test_returns_guidance_for_split_reference_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="Does local law require review of outside law?",
+            variable_name="dp_state_fed_reference",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "reference_necessity"
+        assert "state law" in guidance.anchor_terms
+        assert "A mere citation is not enough." in guidance.relevance_instructions
+
+    def test_returns_guidance_for_split_reference_citation_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="What outside-law citation is actually relevant?",
+            variable_name="dp_state_fed_citation",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "reference_necessity"
+        assert guidance.retrieval_instructions is not None
+        assert "self-contained definition text" in guidance.retrieval_instructions
+
+    def test_returns_guidance_for_split_current_through_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="As of what date is the code current through?",
+            variable_name="dp_valid_imp",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "date_current_through"
+        assert guidance.retrieval_instructions is not None
+        assert "current-through notices" in guidance.retrieval_instructions
 
     def test_returns_none_for_unmapped_variable(self):
         request = RetrievalGuidanceRequest(

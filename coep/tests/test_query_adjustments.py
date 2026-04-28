@@ -7,6 +7,11 @@ import polars as pl
 
 from coep.src.query import adjust_drug_paraphernalia_queries
 from legiscope.query import load_queries
+from legiscope.query_hierarchy import (
+    REQUIRES_DATA_COLUMN,
+    REQUIRES_LABELS_COLUMN,
+    REQUIRES_YES_COLUMN,
+)
 
 
 class TestCoepQueryAdjustments:
@@ -82,5 +87,69 @@ class TestCoepQueryAdjustments:
             )
             assert len(queries) == 1
             assert queries[0].variable_name == "normal"
+        finally:
+            os.unlink(temp_path)
+
+    def test_split_query_dependency_columns_survive_adjustment(self):
+        df = pl.DataFrame(
+            {
+                "question_number": ["Q1", "Q1.1"],
+                "variable_name": ["dp_exemption", "dp_exempt_can_activity"],
+                "prepend_text": ["Context.", "Context."],
+                "query_text": [
+                    "Which exemptions exist?",
+                    "If cannabis paraphernalia is exempted, which activities are exempted?",
+                ],
+                "response_options": [
+                    "Paraphernalia for consumption of cannabis, generally OR None",
+                    "Sales AND/OR Use",
+                ],
+                "coding_instructions": [
+                    "Select the best option.",
+                    "Select all that apply.",
+                ],
+                REQUIRES_YES_COLUMN: ["", "Q1"],
+                REQUIRES_DATA_COLUMN: ["", "Q1"],
+                REQUIRES_LABELS_COLUMN: [
+                    "",
+                    "Q1 => Paraphernalia for consumption of cannabis, generally",
+                ],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            df.write_csv(f.name)
+            temp_path = f.name
+
+        try:
+            queries = load_queries(
+                temp_path,
+                adjust_for_dataset=True,
+                query_adjuster=adjust_drug_paraphernalia_queries,
+            )
+
+            assert [query.query_id for query in queries] == ["Q1", "Q1.1"]
+            child_query = queries[1]
+            assert child_query.metadata["hierarchy"] == {
+                "query_id": "Q1.1",
+                "parent_ids": ["Q1"],
+                "boolean_parent_ids": ["Q1"],
+                "context_parent_ids": ["Q1"],
+                "pass_parent_question": True,
+                "pass_parent_short_answer": True,
+                "label_blockers": [
+                    {
+                        "parent_query_id": "Q1",
+                        "blocker_labels": [
+                            "Paraphernalia for consumption of cannabis, generally"
+                        ],
+                    }
+                ],
+                "inherit_parent_retrieval": True,
+            }
+            assert (
+                "Question: If cannabis paraphernalia is exempted, which activities are exempted?"
+                in child_query.question
+            )
         finally:
             os.unlink(temp_path)

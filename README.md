@@ -93,6 +93,38 @@ uv run python scripts/run_queries.py
 
 _See [Running Queries](#running-queries) for all options._
 
+### Hierarchical Query CSVs
+
+The query loader now supports nested query CSVs where each row remains a single
+executable question instead of manually merging follow-up prompts into one long
+query. For the COEP drug-paraphernalia benchmark this means:
+
+- `question_number` is treated as the stable `query_id`
+- `variable_name` stays the benchmark join key
+- `query_text`, `coding_instructions`, and `response_options` compose the
+   completion prompt
+- `prepend_text` stays in metadata so retrieval-guidance hooks can reuse it as
+   legal context without duplicating it in the prompt body
+
+Optional dependency columns control parent/child execution:
+
+- `Requires "yes" from upstream question:` accepts `||`-delimited parent query IDs
+- `Requires data from upstream question:` accepts `||`-delimited parent query IDs
+   whose question and short answer should flow into the child prompt context
+- `Requires label(s) from upstream question:` accepts rules like
+   `Q1 => Label A || Label B`
+
+When a child query inherits parent retrieval, the framework keeps all distinct
+retrieval units from the parent plus the child retrieval set and only coalesces
+exact duplicates by `chunk_id` or `section_id`. Query/debug outputs expose this
+state through fields such as `query_status`, `skip_reason`, `missing_parent_ids`,
+`label_match_method`, `label_match_score`, `inherited_chunk_ids`,
+`new_chunk_ids`, and `merged_chunk_ids`.
+
+In benchmark mode, rows skipped by explicit dependency rules are scored
+deterministically: blank ground truth is treated as correct, non-blank ground
+truth is treated as incorrect, and no judge-model call is made for those rows.
+
 ### Experiments
 
 `params.yaml` is the single source of truth for the current jurisdiction,

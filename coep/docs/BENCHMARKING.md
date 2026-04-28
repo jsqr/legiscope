@@ -19,9 +19,14 @@ database record with columns corresponding to MonQcle variables (questions). The
 via a "Standard Report" download from MonQcle.
 
 2. **Prepare your Queries**: Queries should be a CSV file with each row corresponding to a question
-in a MonQcle record, for example the Drug Paraphernalia record. Follow-up questions should be merged
-with the parent question to provide adequate context during query to the LLM.
-Columns should include `question` and the `variable_name` from MonQcle.
+in a MonQcle record, for example the Drug Paraphernalia record. Follow-up questions should stay split as
+their own rows; parent-child behavior is driven by explicit dependency columns rather than manual prompt
+merging.
+Columns should include `question_number`, `variable_name`, `query_text`, and any optional dependency
+columns such as `Requires "yes" from upstream question:`, `Requires data from upstream question:`, and
+`Requires label(s) from upstream question:`. The COEP query adjuster composes the benchmark prompt from
+`query_text`, `coding_instructions`, and `response_options`, while preserving hierarchy metadata for the
+generic query engine.
 
 3.  **Environment Variables**: Ensure your `.env` file has the necessary API keys 
 (`OPENAI_API_KEY` or `OPENROUTER_API_KEY`) and the `LEGISCOPE_COLLECTION_NAME` is set correctly.
@@ -100,12 +105,19 @@ Jurisdiction, retrieval settings (including HYDE/relevance filtering and debug o
     - Optionally applies **Relevance Filtering** to remove irrelevant segments before generation.
     - It reads in the MonQcle Standard Report, isolates the correct record, and melts it to a question-answer pair format.
     - It applies COEP-specific query preprocessing via `adjust_drug_paraphernalia_queries()`.
+        - Split MonQcle variables are the primary benchmark surface. Legacy combined variables such as
+            `dp_collected_combined` and `dp_state_fed_combined` are expanded only as compatibility aliases when
+            an older query file still requests them.
+        - Child queries can inherit parent retrieval context. The merge keeps all distinct parent and child
+            retrieval units, then coalesces exact duplicate chunks or sections.
 2.  **Evaluation**: It uses an "LLM-as-a-judge" ("powerful" model) to compare the generated answer against the ground truth.
     - **Note**: The evaluator is provided with the full **Comprehensive Answer** which includes:
         - The Short Answer
         - The detailed Reasoning
         - The Supporting Passages/Citations
     - This ensures the judge evaluates the entire context of the generated response, not just the final conclusion.
+        - Rows skipped because an explicit dependency rule was not satisfied are scored deterministically instead:
+            blank ground truth counts as correct, non-blank ground truth counts as incorrect, and no judge-model call is made.
 3.  **Scoring**: The judge assigns a score (0-10) based on accuracy and provides a reasoning.
 4.  **Output**: A new CSV is saved containing original questions, generated answers (comprehensive), human answers, scores, and reasonings.
 

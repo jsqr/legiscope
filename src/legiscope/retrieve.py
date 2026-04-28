@@ -42,6 +42,9 @@ DEFAULT_LEXICAL_RERANKING_ENABLED = bool(
 DEFAULT_RELEVANCE_MIN_KEEP = max(
     1, int(_rp.get("relevance_filter", {}).get("min_keep", 2))
 )
+DEFAULT_RELEVANCE_BACKFILL_MARGIN = float(
+    _rp.get("relevance_filter", {}).get("backfill_margin", 0.1)
+)
 
 _LEXICAL_TOKEN_PAT = re.compile(r"[A-Za-z0-9]+")
 _LEXICAL_STOPWORDS = {
@@ -133,6 +136,10 @@ class SectionResult:
     llm_assessed: bool = (
         False  # True if relevance_score is from LLM, False if from embedding distance
     )
+    retrieved_for_query_ids: list[str] = field(default_factory=list)
+    inherited_from_parent_query_ids: list[str] = field(default_factory=list)
+    is_inherited: bool = False
+    is_new_for_child: bool = False
 
 
 @dataclass
@@ -310,29 +317,22 @@ class HydeRewrite(BaseModel):
 class RelevanceAssessment(BaseModel):
     """Structured response for relevance assessment of text to a query.
 
-    Uses a hybrid approach:
-    - is_relevant: Binary decision for filtering (quality gate)
-    - relevance_score: Graded 0-1 score for ranking among relevant documents
-    - confidence: Assessment reliability/certainty
+    Uses a graded relevance approach:
+    - relevance_score: Graded 0-1 score for filtering and ranking documents
+    - reasoning: Explanation of the score
     """
 
-    is_relevant: bool = Field(
-        description="Whether the text is directly relevant to answering the query"
-    )
     relevance_score: float = Field(
         description=(
-            "Graded relevance score 0-1 for ranking. Only meaningful if is_relevant=True. "
+            "Graded relevance score 0-1 for filtering and ranking. "
             "0.0-0.3=tangentially related, 0.3-0.6=moderately relevant, "
             "0.6-0.8=relevant, 0.8-1.0=highly relevant"
         ),
         ge=0.0,
         le=1.0,
     )
-    confidence: float = Field(
-        description="Confidence score 0-1 for the relevance assessment", ge=0.0, le=1.0
-    )
     reasoning: str = Field(
-        description="Explanation of why the text is or is not relevant to the query"
+        description="Explanation of why the text received this relevance score"
     )
 
 
@@ -436,7 +436,7 @@ def is_relevant(
     """Assess whether text is directly relevant to answering a query using LLM analysis.
 
     Uses LLM-powered analysis to determine if the given text directly helps answer
-    the query, providing a structured assessment with confidence score and reasoning.
+    the query, providing a structured relevance score and reasoning.
 
     Args:
         query: The query being answered
@@ -458,8 +458,7 @@ def is_relevant(
             "No vehicle shall be parked on any street between 2 AM and 6 AM",
             client
         )
-        print(result.is_relevant)
-        print(result.confidence)
+        print(result.relevance_score)
         print(result.reasoning)
     """
     # Use default model if not specified
@@ -494,14 +493,13 @@ The text is NOT relevant if it:
 3. Mentions the topic but provides no actionable information
 4. Is administrative or procedural content unrelated to the query substance
 
-Provide THREE scores:
-1. is_relevant: Binary decision (true/false) - acts as a quality gate
-2. relevance_score: Graded score 0-1 for ranking (only meaningful if relevant=true)
-   - 0.0-0.3: Tangentially related, provides background context
-   - 0.3-0.6: Moderately relevant, some useful information
-   - 0.6-0.8: Relevant, directly addresses query aspects
-   - 0.8-1.0: Highly relevant, comprehensive answer to query
-3. confidence: How certain you are of this assessment (0-1)"""
+Provide:
+1. relevance_score: Graded score 0-1 for filtering and ranking
+    - 0.0-0.3: Tangentially related, provides background context
+    - 0.3-0.6: Moderately relevant, some useful information
+    - 0.6-0.8: Relevant, directly addresses query aspects
+    - 0.8-1.0: Highly relevant, comprehensive answer to query
+2. reasoning: Concise explanation of the score"""
 
     if retrieval_guidance and retrieval_guidance.has_content():
         guidance_lines = []
@@ -535,10 +533,8 @@ Text to assess:
 "{text}"
 
 Provide:
-1. Binary relevance decision (is_relevant)
-2. Graded relevance score for ranking (relevance_score)
-3. Confidence in your assessment (confidence)
-4. Reasoning for your decision"""
+1. Graded relevance score for filtering and ranking (relevance_score)
+2. Reasoning for your score"""
 
     try:
         result = ask(
@@ -552,8 +548,7 @@ Provide:
         )
 
         logger.info(
-            f"LLM relevance assessment completed - relevant: {result.is_relevant}, "
-            f"score: {result.relevance_score:.2f}, confidence: {result.confidence:.2f}, "
+            f"LLM relevance assessment completed - score: {result.relevance_score:.2f}, "
             f"query: '{query[:20]}...', text: '{text[:20]}...'"
         )
 
@@ -697,15 +692,24 @@ def _assessment_passes_threshold(
     assessment: RelevanceAssessment,
     threshold: float,
 ) -> bool:
-    """Use a soft gate so one weaker score does not drop clearly useful text."""
-    if not assessment.is_relevant:
-        return False
-    return assessment.relevance_score >= threshold or assessment.confidence >= threshold
+    """Keep sections whose relevance score clears the configured threshold."""
+    return assessment.relevance_score >= threshold
 
 
 def _assessment_rank(assessment: RelevanceAssessment) -> float:
     """Build a stable ranking score for kept or backfilled relevance hits."""
-    return (0.7 * assessment.relevance_score) + (0.3 * assessment.confidence)
+    return assessment.relevance_score
+
+
+def _assessment_is_borderline_for_backfill(
+    assessment: RelevanceAssessment,
+    threshold: float,
+) -> bool:
+    """Return whether a near-miss score is still strong enough for backfill."""
+    return assessment.relevance_score >= max(
+        0.0,
+        threshold - DEFAULT_RELEVANCE_BACKFILL_MARGIN,
+    )
 
 
 def _updated_section_with_assessment(
@@ -729,6 +733,10 @@ def _updated_section_with_assessment(
         region_role=section.region_role,
         retrieval_priority=section.retrieval_priority,
         llm_assessed=True,
+        retrieved_for_query_ids=list(section.retrieved_for_query_ids),
+        inherited_from_parent_query_ids=list(section.inherited_from_parent_query_ids),
+        is_inherited=section.is_inherited,
+        is_new_for_child=section.is_new_for_child,
     )
 
 
@@ -1105,22 +1113,21 @@ def filter_sections(
     client: Instructor,
     sections_results: SectionCollection,
     query: str,
-    confidence_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
+    relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
     retrieval_guidance: RetrievalGuidance | None = None,
 ) -> SectionCollection:
     """Filter retrieved context units by relevance using LLM-powered assessment.
 
     Applies relevance assessment to each retrieval unit using LLM analysis and filters
-    out context units that are not relevant or fall below the minimum relevance/confidence
-    threshold.
+    out context units that fall below the minimum relevance-score threshold.
 
     Args:
         client: Instructor client for LLM-powered relevance assessment
         sections_results: Retrieval-unit collection from retrieve_sections or previous filter
         query: Original query used for retrieval
-        confidence_threshold: Minimum relevance score and confidence score for
-            relevance (0-1). Defaults to 0.7
+        relevance_threshold: Minimum relevance score required to keep a
+            retrieval unit (0-1). Defaults to 0.7
         model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
         retrieval_guidance: Optional query-specific instructions to inject into
             the relevance prompt
@@ -1133,7 +1140,7 @@ def filter_sections(
 
     Example:
         results = retrieve_sections(collection, "parking rules", sections_parquet_path)
-        filtered = filter_sections(client, results, "parking rules", confidence_threshold=0.7)
+        filtered = filter_sections(client, results, "parking rules", relevance_threshold=0.7)
         print(f"Filtered from {filtered.filtering_metadata.original_count} "
               f"to {filtered.filtering_metadata.filtered_count} retrieval units")
     """
@@ -1181,7 +1188,7 @@ def filter_sections(
 
             keep_by_threshold = _assessment_passes_threshold(
                 assessment,
-                confidence_threshold,
+                relevance_threshold,
             )
 
             # Store assessment for metadata
@@ -1189,9 +1196,7 @@ def filter_sections(
                 {
                     "index": i,
                     "section_id": section.section_id,
-                    "is_relevant": assessment.is_relevant,
                     "relevance_score": assessment.relevance_score,
-                    "confidence": assessment.confidence,
                     "reasoning": assessment.reasoning,
                     "kept": keep_by_threshold,
                     "keep_reason": (
@@ -1205,13 +1210,11 @@ def filter_sections(
                     _updated_section_with_assessment(section, assessment)
                 )
                 logger.debug(
-                    f"Retrieval unit {i} kept: relevant={assessment.is_relevant}, "
-                    f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
+                    f"Retrieval unit {i} kept: score={assessment.relevance_score:.2f}"
                 )
             else:
                 logger.debug(
-                    f"Retrieval unit {i} filtered: relevant={assessment.is_relevant}, "
-                    f"score={assessment.relevance_score:.2f}, confidence={assessment.confidence:.2f}"
+                    f"Retrieval unit {i} filtered: score={assessment.relevance_score:.2f}"
                 )
 
         except Exception as e:
@@ -1227,7 +1230,11 @@ def filter_sections(
                 _updated_section_with_assessment(section, assessment),
             )
             for section, assessment in assessed_sections
-            if assessment.is_relevant and section.section_id not in kept_ids
+            if section.section_id not in kept_ids
+            and _assessment_is_borderline_for_backfill(
+                assessment,
+                relevance_threshold,
+            )
         ]
         backfill_candidates.sort(key=lambda item: item[0], reverse=True)
 
@@ -1274,7 +1281,7 @@ def filter_sections(
         filtering_metadata=FilteringMetadata(
             original_count=original_count,
             filtered_count=filtered_count,
-            threshold=confidence_threshold,
+            threshold=relevance_threshold,
             assessments=assessments,
         ),
     )

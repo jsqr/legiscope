@@ -45,13 +45,22 @@ from legiscope import config
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.models import CodeRef
 from legiscope.params import load_params
-from legiscope.query import BatchQuerySettings, load_queries, run_queries
+from legiscope.query import (
+    BatchQuerySettings,
+    _clean_response_options,
+    _is_scalar_date_response_options,
+    _is_status_date_response_options,
+    _normalize_option_text,
+    _normalize_structured_short_answer,
+    _split_response_options,
+    load_queries,
+    run_queries,
+)
 from coep.src.eval import (
     Evaluator,
-    expand_combined_variables,
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
-    melt_monqcle_to_long,
+    prepare_ground_truth_for_variables,
     prioritize_ground_truth_matches,
 )
 from coep.src.query import adjust_drug_paraphernalia_queries
@@ -179,6 +188,416 @@ def _ensure_supporting_passage_validation_columns(df: pl.DataFrame) -> pl.DataFr
     )
 
 
+def _build_query_metadata_df(query_inputs) -> pl.DataFrame:
+    """Return per-variable benchmark query metadata needed for evaluation."""
+    records: list[dict[str, object]] = []
+    seen: set[str] = set()
+
+    for query_input in query_inputs:
+        variable_name = str(query_input.variable_name or "").strip()
+        if not variable_name or variable_name in seen:
+            continue
+
+        metadata = query_input.metadata or {}
+        records.append(
+            {
+                "variable_name": variable_name,
+                "question_number": metadata.get("question_number"),
+                "query_text": metadata.get("query_text"),
+                "response_options": metadata.get("response_options"),
+                "coding_instructions": metadata.get("coding_instructions"),
+            }
+        )
+        seen.add(variable_name)
+
+    if not records:
+        return pl.DataFrame(
+            schema={
+                "variable_name": pl.String,
+                "question_number": pl.String,
+                "query_text": pl.String,
+                "response_options": pl.String,
+                "coding_instructions": pl.String,
+            }
+        )
+
+    return pl.DataFrame(records)
+
+
+def _attach_query_metadata_columns(df: pl.DataFrame, query_inputs) -> pl.DataFrame:
+    """Reattach structured query metadata that run_queries intentionally omits."""
+    metadata_df = _build_query_metadata_df(query_inputs)
+    if metadata_df.is_empty():
+        return df
+
+    overlapping_columns = [
+        column
+        for column in metadata_df.columns
+        if column != "variable_name" and column in df.columns
+    ]
+    enriched = df.join(metadata_df, on="variable_name", how="left", suffix="_query")
+
+    if not overlapping_columns:
+        return enriched
+
+    coalesced_columns: list[pl.Expr] = []
+    duplicate_columns: list[str] = []
+    for column in overlapping_columns:
+        duplicate_column = f"{column}_query"
+        if duplicate_column not in enriched.columns:
+            continue
+        coalesced_columns.append(
+            pl.coalesce(pl.col(column), pl.col(duplicate_column)).alias(column)
+        )
+        duplicate_columns.append(duplicate_column)
+
+    if coalesced_columns:
+        enriched = enriched.with_columns(coalesced_columns)
+    if duplicate_columns:
+        enriched = enriched.drop(duplicate_columns)
+    return enriched
+
+
+def _expandable_response_options(response_options: object) -> list[str] | None:
+    """Return discrete options suitable for AND/OR option-level evaluation."""
+    cleaned = _clean_response_options(response_options)
+    if not cleaned:
+        return None
+    if _is_scalar_date_response_options(cleaned):
+        return None
+    if _is_status_date_response_options(cleaned):
+        return None
+
+    options, separator = _split_response_options(cleaned)
+    if separator != " AND/OR " or len(options) < 2:
+        return None
+
+    if any("<" in option and ">" in option for option in options):
+        return None
+
+    return options
+
+
+def _selected_option_keys(
+    answer: object,
+    *,
+    variable_name: object,
+    response_options: object,
+    coding_instructions: object,
+) -> set[str]:
+    """Return canonical option keys selected by an answer."""
+    cleaned_response_options = _clean_response_options(response_options)
+    if not cleaned_response_options:
+        return set()
+
+    metadata = {
+        "response_options": cleaned_response_options,
+        "coding_instructions": str(coding_instructions or ""),
+    }
+    canonical_answer = _normalize_structured_short_answer(
+        str(answer or ""),
+        str(variable_name or "").strip() or None,
+        metadata,
+    )
+    if not canonical_answer:
+        return set()
+
+    if cleaned_response_options == "Yes, <citation> OR No":
+        normalized_answer = _normalize_option_text(canonical_answer)
+        if normalized_answer.startswith("yes"):
+            return {_normalize_option_text("Yes")}
+        if normalized_answer == _normalize_option_text("No"):
+            return {_normalize_option_text("No")}
+        return set()
+
+    selected_options, _separator = _split_response_options(canonical_answer)
+    return {
+        _normalize_option_text(str(option).strip())
+        for option in selected_options
+        if str(option).strip()
+    }
+
+
+def _build_option_level_question(base_question: str, option: str) -> str:
+    """Return the judge-facing subquestion for a discrete response option."""
+    return "\n".join(
+        [
+            f"Original question: {base_question}",
+            f'Response option under evaluation: "{option}"',
+            (
+                "Evaluate only whether this specific option should be listed. "
+                "The subquestion is correct only if the generated answer includes "
+                "the option when the ground truth includes it, and omits it when "
+                "the ground truth omits it."
+            ),
+        ]
+    )
+
+
+def _build_option_level_ground_truth(
+    option: str,
+    *,
+    expected_present: bool,
+    original_ground_truth: object,
+) -> str:
+    """Return the ground-truth payload for an option-level evaluation row."""
+    lines = [
+        f"Response option: {option}",
+        f"Expected presence: {'Present' if expected_present else 'Absent'}",
+    ]
+    ground_truth_text = str(original_ground_truth or "").strip()
+    if ground_truth_text:
+        lines.append(f"Original ground truth answer: {ground_truth_text}")
+    return "\n".join(lines)
+
+
+def _build_option_level_generated_answer(
+    row: dict[str, object],
+    *,
+    option: str,
+    generated_present: bool,
+) -> str:
+    """Return the generated-answer payload for an option-level evaluation row."""
+    lines = [
+        f"Response option: {option}",
+        f"Generated presence: {'Present' if generated_present else 'Absent'}",
+    ]
+
+    short_answer = str(row.get("short_answer") or "").strip()
+    if short_answer:
+        lines.append(f"Original generated short answer: {short_answer}")
+
+    raw_short_answer = str(row.get("raw_short_answer") or "").strip()
+    if raw_short_answer and raw_short_answer != short_answer:
+        lines.append(f"Original raw short answer: {raw_short_answer}")
+
+    reasoning = str(row.get("reasoning") or "").strip()
+    if reasoning:
+        lines.append(f"Reasoning: {reasoning}")
+
+    supporting_passages = str(row.get("supporting_passages") or "").strip()
+    if supporting_passages:
+        lines.append(f"Supporting Passages: {supporting_passages}")
+
+    return "\n\n".join(lines)
+
+
+def _expand_option_level_evaluation_rows(df: pl.DataFrame) -> pl.DataFrame:
+    """Explode discrete benchmark rows into per-option evaluation subquestions."""
+    if df.is_empty():
+        return df
+
+    expanded_rows: list[dict[str, object]] = []
+    for row in df.to_dicts():
+        row_copy = dict(row)
+        row_copy.setdefault("evaluation_mode", "whole_answer")
+        row_copy.setdefault("evaluation_subquestion_index", 0)
+        row_copy.setdefault("evaluation_option", None)
+        row_copy.setdefault("evaluation_expected_present", None)
+        row_copy.setdefault("evaluation_generated_present", None)
+        row_copy.setdefault(
+            "evaluation_question",
+            str(row.get("query_text") or row.get("query") or "").strip(),
+        )
+        row_copy.setdefault("evaluation_ground_truth", row.get("ground_truth"))
+        row_copy.setdefault("evaluation_generated_answer", None)
+
+        if row.get("evaluation_status") not in {"scored_llm", "scored_skipped"}:
+            expanded_rows.append(row_copy)
+            continue
+        if not row.get("ground_truth_available"):
+            expanded_rows.append(row_copy)
+            continue
+
+        options = _expandable_response_options(row.get("response_options"))
+        if not options:
+            expanded_rows.append(row_copy)
+            continue
+
+        response_options = row.get("response_options")
+        coding_instructions = row.get("coding_instructions")
+        variable_name = row.get("variable_name")
+        expected_option_keys = _selected_option_keys(
+            row.get("ground_truth"),
+            variable_name=variable_name,
+            response_options=response_options,
+            coding_instructions=coding_instructions,
+        )
+        generated_option_keys = _selected_option_keys(
+            row.get("short_answer"),
+            variable_name=variable_name,
+            response_options=response_options,
+            coding_instructions=coding_instructions,
+        )
+        base_question = str(row.get("query_text") or row.get("query") or "").strip()
+
+        for option_index, option in enumerate(options):
+            option_key = _normalize_option_text(str(option).strip())
+            expected_present = option_key in expected_option_keys
+            generated_present = option_key in generated_option_keys
+            expanded_row = dict(row)
+            expanded_row.update(
+                {
+                    "evaluation_mode": "response_option",
+                    "evaluation_subquestion_index": option_index,
+                    "evaluation_option": option,
+                    "evaluation_expected_present": expected_present,
+                    "evaluation_generated_present": generated_present,
+                    "evaluation_question": _build_option_level_question(
+                        base_question,
+                        option,
+                    ),
+                    "evaluation_ground_truth": _build_option_level_ground_truth(
+                        option,
+                        expected_present=expected_present,
+                        original_ground_truth=row.get("ground_truth"),
+                    ),
+                    "evaluation_generated_answer": _build_option_level_generated_answer(
+                        row,
+                        option=option,
+                        generated_present=generated_present,
+                    ),
+                }
+            )
+            expanded_rows.append(expanded_row)
+
+    return pl.DataFrame(expanded_rows)
+
+
+def _ensure_evaluation_prompt_columns(df: pl.DataFrame) -> pl.DataFrame:
+    """Populate evaluation prompt columns for both whole-answer and subquestion rows."""
+    if df.is_empty():
+        return df
+
+    comprehensive_answer_expr = pl.concat_str(
+        [
+            pl.col("short_answer"),
+            pl.lit("\n\nReasoning: "),
+            pl.col("reasoning"),
+            pl.lit("\n\nSupporting Passages: "),
+            pl.col("supporting_passages"),
+        ]
+    ).alias("_fallback_comprehensive_answer")
+
+    fallback_question = pl.when(pl.col("query_text").is_not_null())
+    fallback_question = fallback_question.then(pl.col("query_text")).otherwise(
+        pl.col("query")
+    )
+
+    return (
+        df.with_columns(comprehensive_answer_expr)
+        .with_columns(
+            [
+                pl.coalesce(
+                    pl.col("evaluation_question"),
+                    fallback_question,
+                ).alias("evaluation_question"),
+                pl.coalesce(
+                    pl.col("evaluation_ground_truth"),
+                    pl.col("ground_truth"),
+                ).alias("evaluation_ground_truth"),
+                pl.coalesce(
+                    pl.col("evaluation_generated_answer"),
+                    pl.col("_fallback_comprehensive_answer"),
+                ).alias("evaluation_generated_answer"),
+            ]
+        )
+        .drop("_fallback_comprehensive_answer")
+    )
+
+
+def _score_skipped_queries(df: pl.DataFrame) -> pl.DataFrame:
+    """Score skipped rows deterministically instead of sending them to the judge LLM."""
+    if df.is_empty():
+        return df
+
+    has_option_presence = "evaluation_expected_present" in df.columns
+    evaluation_expected_present = (
+        pl.col("evaluation_expected_present")
+        if has_option_presence
+        else pl.lit(None, dtype=pl.Boolean)
+    )
+
+    return df.with_columns(
+        [
+            pl.when(pl.col("ground_truth_available"))
+            .then(
+                pl.when(evaluation_expected_present.is_not_null())
+                .then(
+                    pl.when(evaluation_expected_present)
+                    .then(pl.lit(0))
+                    .otherwise(pl.lit(10))
+                )
+                .otherwise(pl.lit(0))
+            )
+            .otherwise(pl.lit(10))
+            .alias("eval_score"),
+            pl.when(pl.col("ground_truth_available"))
+            .then(
+                pl.when(evaluation_expected_present.is_not_null())
+                .then(
+                    pl.when(evaluation_expected_present)
+                    .then(
+                        pl.lit(
+                            "The query was skipped by an explicit dependency rule, and this option should have been listed according to the ground truth."
+                        )
+                    )
+                    .otherwise(
+                        pl.lit(
+                            "The query was skipped by an explicit dependency rule, and this option should not have been listed according to the ground truth."
+                        )
+                    )
+                )
+                .otherwise(
+                    pl.lit(
+                        "The query was skipped by an explicit dependency rule even though ground truth was present."
+                    )
+                )
+            )
+            .otherwise(
+                pl.lit(
+                    "The query was skipped by an explicit dependency rule and the corresponding ground truth was blank or unavailable."
+                )
+            )
+            .alias("eval_reason"),
+            pl.when(pl.col("ground_truth_available"))
+            .then(
+                pl.when(evaluation_expected_present.is_not_null())
+                .then(
+                    pl.when(evaluation_expected_present)
+                    .then(pl.lit("Incorrect"))
+                    .otherwise(pl.lit("Correct"))
+                )
+                .otherwise(pl.lit("Incorrect"))
+            )
+            .otherwise(pl.lit("Correct"))
+            .alias("eval_label"),
+            pl.lit("other").alias("eval_error_type"),
+        ]
+    )
+
+
+def _requested_variable_names(query_inputs) -> list[str]:
+    """Return distinct benchmark variable names in query order."""
+    seen: set[str] = set()
+    variable_names: list[str] = []
+    for query_input in query_inputs:
+        variable_name = query_input.variable_name
+        if not variable_name or variable_name in seen:
+            continue
+        seen.add(variable_name)
+        variable_names.append(variable_name)
+    return variable_names
+
+
+def _build_ground_truth_df(
+    monqcle_row: pl.DataFrame,
+    variable_names: list[str],
+) -> pl.DataFrame:
+    """Prepare long-form ground truth with split variables primary."""
+    return prepare_ground_truth_for_variables(monqcle_row, variable_names)
+
+
 def _summarize_eval_error_types(df: pl.DataFrame) -> dict[str, int]:
     """Return compact counts for evaluation error types."""
     if "eval_error_type" not in df.columns or df.is_empty():
@@ -189,6 +608,37 @@ def _summarize_eval_error_types(df: pl.DataFrame) -> dict[str, int]:
         error_type = str(row["eval_error_type"] or "")
         counts[error_type] = int(row["len"])
     return counts
+
+
+def _summarize_scoring_methods(df: pl.DataFrame) -> dict[str, int]:
+    """Return counts describing whole-answer versus AND/OR option-level scoring."""
+    if df.is_empty() or "evaluation_mode" not in df.columns:
+        return {
+            "whole_answer_rows": 0,
+            "response_option_rows": 0,
+            "and_or_questions_scored_option_level": 0,
+        }
+
+    whole_answer_rows = df.filter(pl.col("evaluation_mode") == "whole_answer").height
+    response_option_rows = df.filter(
+        pl.col("evaluation_mode") == "response_option"
+    ).height
+
+    and_or_questions_scored_option_level = 0
+    if "benchmark_row_id" in df.columns:
+        and_or_questions_scored_option_level = (
+            df.filter(pl.col("evaluation_mode") == "response_option")
+            .select("benchmark_row_id")
+            .n_unique()
+        )
+
+    return {
+        "whole_answer_rows": int(whole_answer_rows),
+        "response_option_rows": int(response_option_rows),
+        "and_or_questions_scored_option_level": int(
+            and_or_questions_scored_option_level
+        ),
+    }
 
 
 def _materialize_benchmark_outputs(
@@ -288,13 +738,8 @@ def main():
     monqcle_row = load_and_filter_monqcle(str(monqcle_path), monqcle_name, series_title)
 
     # Get variable names from query inputs for filtering ground truth
-    variable_names = [q.variable_name for q in query_inputs if q.variable_name]
-
-    # Expand any combined variables (e.g. dp_collected_combined, dp_state_fed_combined)
-    monqcle_row = expand_combined_variables(monqcle_row, variable_names)
-
-    # Melt to long format (now handles everything including combined vars)
-    ground_truth_df = melt_monqcle_to_long(monqcle_row, variable_names)
+    variable_names = _requested_variable_names(query_inputs)
+    ground_truth_df = _build_ground_truth_df(monqcle_row, variable_names)
 
     # =========================================================================
     # Step 3: Initialize Resources
@@ -337,6 +782,7 @@ def main():
     )
     gen_results_df = _ensure_generation_outcome_columns(gen_results_df)
     gen_results_df = _ensure_supporting_passage_validation_columns(gen_results_df)
+    gen_results_df = _attach_query_metadata_columns(gen_results_df, query_inputs)
 
     # =========================================================================
     # Step 6: Join with Ground Truth
@@ -354,11 +800,17 @@ def main():
             ).alias("ground_truth_available")
         )
         .with_columns(
-            pl.when(pl.col("ground_truth_available"))
-            .then(pl.lit("scored"))
+            pl.when(pl.col("query_status").cast(pl.Utf8).eq("skipped"))
+            .then(pl.lit("scored_skipped"))
+            .when(pl.col("ground_truth_available"))
+            .then(pl.lit("scored_llm"))
             .otherwise(pl.lit("missing_ground_truth"))
             .alias("evaluation_status")
         )
+    )
+    joined_df = _expand_option_level_evaluation_rows(joined_df)
+    joined_df = _ensure_evaluation_prompt_columns(joined_df).with_row_index(
+        "evaluation_row_id"
     )
 
     if debug_enabled and debug_dir:
@@ -402,47 +854,85 @@ def main():
     # =========================================================================
     logger.info("Evaluating generated answers against ground truth...")
 
-    # Filter to only rows with ground truth for evaluation
-    eval_input_df = joined_df.filter(pl.col("ground_truth_available"))
+    llm_eval_input_df = joined_df.filter(pl.col("evaluation_status") == "scored_llm")
+    skipped_eval_df = _score_skipped_queries(
+        joined_df.filter(pl.col("evaluation_status") == "scored_skipped")
+    )
 
-    if len(eval_input_df) == 0:
+    if len(llm_eval_input_df) == 0 and len(skipped_eval_df) == 0:
         logger.error("No rows with ground truth to evaluate!")
         sys.exit(1)
 
-    # Construct comprehensive answer context for evaluation
-    eval_scored_df = eval_input_df.with_columns(
-        pl.concat_str(
-            [
-                pl.col("short_answer"),
-                pl.lit("\n\nReasoning: "),
-                pl.col("reasoning"),
-                pl.lit("\n\nSupporting Passages: "),
-                pl.col("supporting_passages"),
-            ]
-        ).alias("comprehensive_answer")
-    )
+    llm_eval_scored_df = llm_eval_input_df
+    if len(llm_eval_input_df) > 0:
+        llm_eval_scored_df = evaluator.evaluate_batch(
+            llm_eval_scored_df,
+            question_col="evaluation_question",
+            answer_col="evaluation_generated_answer",
+            truth_col="evaluation_ground_truth",
+        )
+    else:
+        llm_eval_scored_df = pl.DataFrame(
+            schema={
+                "evaluation_row_id": pl.Int64,
+                "evaluation_generated_answer": pl.String,
+                "eval_score": pl.Int64,
+                "eval_reason": pl.String,
+                "eval_label": pl.String,
+                "eval_error_type": pl.String,
+            }
+        )
 
-    eval_scored_df = evaluator.evaluate_batch(
-        eval_scored_df,
-        question_col="query",
-        answer_col="comprehensive_answer",
-        truth_col="ground_truth",
+    skipped_eval_df = skipped_eval_df.with_columns(
+        pl.col("evaluation_generated_answer")
+        .cast(pl.String)
+        .alias("evaluation_generated_answer")
+    )
+    eval_scored_df = pl.concat(
+        [
+            llm_eval_scored_df.select(
+                [
+                    "evaluation_row_id",
+                    "evaluation_generated_answer",
+                    "eval_score",
+                    "eval_reason",
+                    "eval_label",
+                    "eval_error_type",
+                ]
+            ),
+            skipped_eval_df.select(
+                [
+                    "evaluation_row_id",
+                    "evaluation_generated_answer",
+                    "eval_score",
+                    "eval_reason",
+                    "eval_label",
+                    "eval_error_type",
+                ]
+            ),
+        ],
+        how="vertical_relaxed",
     )
 
     final_df = joined_df.join(
         eval_scored_df.select(
             [
-                "benchmark_row_id",
-                "comprehensive_answer",
+                "evaluation_row_id",
+                "evaluation_generated_answer",
                 "eval_score",
                 "eval_reason",
                 "eval_label",
                 "eval_error_type",
             ]
         ),
-        on="benchmark_row_id",
+        on="evaluation_row_id",
         how="left",
-    ).with_columns(pl.lit(jurisdiction_id).alias("jurisdiction_id"))
+    ).with_columns(
+        [
+            pl.lit(jurisdiction_id).alias("jurisdiction_id"),
+            pl.col("evaluation_generated_answer").alias("comprehensive_answer"),
+        ]
+    )
     final_df = prioritize_ground_truth_matches(final_df)
     final_df = _drop_redundant_query_columns(final_df)
 
@@ -458,7 +948,9 @@ def main():
     processed_count = final_df.height
     scored_count = eval_scored_df.height
     unscored_count = processed_count - scored_count
-    no_retrieval_units_count = final_df.filter(pl.col("no_retrieval_units_found")).height
+    no_retrieval_units_count = final_df.filter(
+        pl.col("no_retrieval_units_found")
+    ).height
     filtered_out_all_units_count = final_df.filter(
         pl.col("all_retrieval_units_filtered_out")
     ).height
@@ -469,6 +961,7 @@ def main():
     ).height
     accuracy_rate = (correct_count / scored_count) * 100 if scored_count > 0 else 0
     eval_error_type_counts = _summarize_eval_error_types(eval_scored_df)
+    scoring_method_counts = _summarize_scoring_methods(eval_scored_df)
 
     print("\n" + "=" * 60)
     print("BENCHMARK COMPLETED")
@@ -476,6 +969,15 @@ def main():
     print(f"Total Queries Processed: {processed_count}")
     print(f"Queries Scored Against Ground Truth: {scored_count}")
     print(f"Queries Unscored (missing/excluded ground truth): {unscored_count}")
+    print(f"Whole-answer scored rows: {scoring_method_counts['whole_answer_rows']}")
+    print(
+        "AND/OR option-level scored rows: "
+        f"{scoring_method_counts['response_option_rows']}"
+    )
+    print(
+        "Original AND/OR questions scored option-level: "
+        f"{scoring_method_counts['and_or_questions_scored_option_level']}"
+    )
     print(f"Average Quality Score: {avg_score:.2f} / 10")
     print(f"Correct: {correct_count} ({accuracy_rate:.1f}%)")
     print(f"Partially Correct: {partial_count}")
@@ -500,6 +1002,13 @@ def main():
         "abstained_queries": abstention_count,
         "error_response_queries": error_response_count,
         "supporting_passage_validation_drift_queries": supporting_passage_validation_drift_count,
+        "whole_answer_scored_rows": scoring_method_counts["whole_answer_rows"],
+        "and_or_option_level_scored_rows": scoring_method_counts[
+            "response_option_rows"
+        ],
+        "and_or_questions_scored_option_level": scoring_method_counts[
+            "and_or_questions_scored_option_level"
+        ],
         "eval_error_type_counts": eval_error_type_counts,
         "total": scored_count,
     }

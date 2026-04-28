@@ -265,9 +265,7 @@ def _process_markdown_elements(
                 }
             )
             if heading_count % heading_log_interval == 0:
-                logger.debug(
-                    f"Converted {heading_count} headings to markdown so far"
-                )
+                logger.debug(f"Converted {heading_count} headings to markdown so far")
         else:
             # Body element — write as paragraph text
             lines = text.split("\n")

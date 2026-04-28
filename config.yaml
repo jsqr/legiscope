@@ -10,7 +10,7 @@ paths:
   chroma_db_dir: "chroma_db"
   queries_dir: "queries"
   output_dir: "output"
-  default_queries_file: "DPL_queries_with_context.csv"
+  default_queries_file: "DPL_queries_expanded_nested.csv"
   # COEP-specific benchmark fixture path. Unlike the directories above, this is
   # resolved relative to the repository/config root (or used as-is if absolute),
   # not under data_dir.

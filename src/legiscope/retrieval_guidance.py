@@ -12,6 +12,18 @@ class RetrievalGuidanceRequest:
     query: str
     variable_name: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    parent_contexts: list["ParentQueryContext"] = field(default_factory=list)
+
+
+@dataclass
+class ParentQueryContext:
+    """Minimal upstream state that may safely flow into child queries."""
+
+    query_id: str
+    question: str
+    short_answer: str
+    raw_short_answer: str | None = None
+    variable_name: str | None = None
 
 
 @dataclass

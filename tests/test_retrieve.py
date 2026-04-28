@@ -198,54 +198,41 @@ class TestRelevanceAssessment:
     def test_relevance_assessment_model_valid(self):
         """Test creating a valid RelevanceAssessment instance."""
         assessment = RelevanceAssessment(
-            is_relevant=True,
             relevance_score=0.75,
-            confidence=0.85,
             reasoning="The text directly addresses parking regulations with specific rules",
         )
 
-        assert assessment.is_relevant is True
         assert assessment.relevance_score == 0.75
-        assert assessment.confidence == 0.85
         assert (
             assessment.reasoning
             == "The text directly addresses parking regulations with specific rules"
         )
 
-    def test_relevance_assessment_model_confidence_bounds(self):
-        """Test confidence score bounds validation."""
-        # Valid confidence scores
+    def test_relevance_assessment_model_relevance_score_bounds(self):
+        """Test relevance score bounds validation."""
         assessment1 = RelevanceAssessment(
-            is_relevant=True,
-            relevance_score=0.5,
-            confidence=0.0,
+            relevance_score=0.0,
             reasoning="Test",
         )
-        assert assessment1.confidence == 0.0
+        assert assessment1.relevance_score == 0.0
 
         assessment2 = RelevanceAssessment(
-            is_relevant=False,
-            relevance_score=0.1,
-            confidence=1.0,
+            relevance_score=1.0,
             reasoning="Test",
         )
-        assert assessment2.confidence == 1.0
+        assert assessment2.relevance_score == 1.0
 
-    def test_relevance_assessment_model_invalid_confidence(self):
-        """Test that invalid confidence scores are rejected."""
+    def test_relevance_assessment_model_invalid_relevance_score(self):
+        """Test that invalid relevance scores are rejected."""
         with pytest.raises(ValueError):
             RelevanceAssessment(
-                is_relevant=True,
-                relevance_score=0.5,
-                confidence=-0.1,
+                relevance_score=-0.1,
                 reasoning="Test",
             )
 
         with pytest.raises(ValueError):
             RelevanceAssessment(
-                is_relevant=False,
-                relevance_score=0.1,
-                confidence=1.1,
+                relevance_score=1.1,
                 reasoning="Test",
             )
 
@@ -256,9 +243,7 @@ class TestIsRelevant:
     def test_is_relevant_success(self):
         """Test successful relevance assessment."""
         mock_result = RelevanceAssessment(
-            is_relevant=True,
             relevance_score=0.85,
-            confidence=0.9,
             reasoning="The text contains specific parking regulations that directly answer the query",
         )
 
@@ -272,8 +257,7 @@ class TestIsRelevant:
             )
 
             assert isinstance(result, RelevanceAssessment)
-            assert result.is_relevant is True
-            assert result.confidence == 0.9
+            assert result.relevance_score == 0.85
             assert "parking regulations" in result.reasoning
 
             # Verify ask was called correctly
@@ -287,9 +271,7 @@ class TestIsRelevant:
     def test_is_relevant_custom_model(self):
         """Test relevance assessment with custom model."""
         mock_result = RelevanceAssessment(
-            is_relevant=False,
             relevance_score=0.2,
-            confidence=0.8,
             reasoning="The text discusses unrelated topics",
         )
 
@@ -306,9 +288,7 @@ class TestIsRelevant:
     def test_is_relevant_includes_retrieval_guidance(self):
         """Project-provided retrieval guidance should be injected into the prompt."""
         mock_result = RelevanceAssessment(
-            is_relevant=True,
             relevance_score=0.9,
-            confidence=0.9,
             reasoning="The text directly answers the date query.",
         )
 
@@ -1163,15 +1143,11 @@ class TestFilterSections:
         # Mock assessments
         mock_assessments = [
             RelevanceAssessment(
-                is_relevant=True,
                 relevance_score=0.9,
-                confidence=0.9,
                 reasoning="Good",
             ),
             RelevanceAssessment(
-                is_relevant=False,
                 relevance_score=0.1,
-                confidence=0.9,
                 reasoning="Bad",
             ),
         ]
@@ -1185,7 +1161,7 @@ class TestFilterSections:
                 mock_client = Mock(spec=Instructor)
 
                 result = filter_sections(
-                    mock_client, input_results, "query", confidence_threshold=0.5
+                    mock_client, input_results, "query", relevance_threshold=0.5
                 )
 
                 assert len(result.sections) == 1
@@ -1194,10 +1170,10 @@ class TestFilterSections:
                 assert result.sections[0].llm_assessed is True
                 assert result.filtering_metadata.filtered_count == 1
 
-    def test_filter_sections_keeps_relevant_sections_when_confidence_clears_threshold(
+    def test_filter_sections_backfills_borderline_sections_when_score_just_misses_threshold(
         self,
     ):
-        """A high-confidence relevant section should survive even if the score is slightly lower."""
+        """A borderline score should survive through backfill when it just misses threshold."""
         from unittest.mock import Mock, patch
 
         from legiscope.retrieve import (
@@ -1226,9 +1202,7 @@ class TestFilterSections:
         )
 
         mock_assessment = RelevanceAssessment(
-            is_relevant=True,
             relevance_score=0.65,
-            confidence=0.95,
             reasoning="Related but not specific enough",
         )
 
@@ -1239,14 +1213,18 @@ class TestFilterSections:
             ):
                 mock_client = Mock(spec=Instructor)
                 result = filter_sections(
-                    mock_client, input_results, "query", confidence_threshold=0.7
+                    mock_client, input_results, "query", relevance_threshold=0.7
                 )
 
                 assert len(result.sections) == 1
                 assert result.filtering_metadata.filtered_count == 1
+                assert (
+                    result.filtering_metadata.assessments[0]["keep_reason"]
+                    == "backfill"
+                )
 
     def test_filter_sections_keeps_relevant_sections_when_score_clears_threshold(self):
-        """A high-score relevant section should survive even if confidence is lower."""
+        """A high-score section should survive when the score clears threshold."""
         from unittest.mock import Mock, patch
 
         from legiscope.retrieve import (
@@ -1275,9 +1253,7 @@ class TestFilterSections:
         )
 
         mock_assessment = RelevanceAssessment(
-            is_relevant=True,
             relevance_score=0.95,
-            confidence=0.65,
             reasoning="Specific but uncertain",
         )
 
@@ -1288,11 +1264,15 @@ class TestFilterSections:
             ):
                 mock_client = Mock(spec=Instructor)
                 result = filter_sections(
-                    mock_client, input_results, "query", confidence_threshold=0.7
+                    mock_client, input_results, "query", relevance_threshold=0.7
                 )
 
                 assert len(result.sections) == 1
                 assert result.filtering_metadata.filtered_count == 1
+                assert (
+                    result.filtering_metadata.assessments[0]["keep_reason"]
+                    == "threshold"
+                )
 
     def test_filter_sections_backfills_relevant_sections_when_scores_are_borderline(
         self,
@@ -1337,15 +1317,11 @@ class TestFilterSections:
 
         mock_assessments = [
             RelevanceAssessment(
-                is_relevant=True,
                 relevance_score=0.64,
-                confidence=0.62,
                 reasoning="Useful but not confidently above threshold",
             ),
             RelevanceAssessment(
-                is_relevant=True,
                 relevance_score=0.61,
-                confidence=0.6,
                 reasoning="Also useful but borderline",
             ),
         ]
@@ -1357,7 +1333,7 @@ class TestFilterSections:
             ):
                 mock_client = Mock(spec=Instructor)
                 result = filter_sections(
-                    mock_client, input_results, "query", confidence_threshold=0.7
+                    mock_client, input_results, "query", relevance_threshold=0.7
                 )
 
                 assert len(result.sections) == 2
@@ -1409,15 +1385,11 @@ class TestFilterSections:
 
         mock_assessments = [
             RelevanceAssessment(
-                is_relevant=True,
                 relevance_score=0.7,
-                confidence=0.9,
                 reasoning="Okay",
             ),
             RelevanceAssessment(
-                is_relevant=True,
                 relevance_score=0.9,
-                confidence=0.9,
                 reasoning="Great",
             ),
         ]

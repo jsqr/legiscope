@@ -1010,9 +1010,9 @@ Some body text here."""
             first_prompt = mock_client.chat.completions.create.call_args_list[1].kwargs[
                 "messages"
             ][1]["content"]
-            second_prompt = mock_client.chat.completions.create.call_args_list[2].kwargs[
-                "messages"
-            ][1]["content"]
+            second_prompt = mock_client.chat.completions.create.call_args_list[
+                2
+            ].kwargs["messages"][1]["content"]
 
             assert "RETRY_FEEDBACK:" not in first_prompt
             assert "RETRY_FEEDBACK:" in second_prompt
@@ -1047,7 +1047,9 @@ Some body text here."""
                 TimeoutError("request timed out"),
             ]
 
-            with pytest.raises(RuntimeError, match="Failed to generate heading structure"):
+            with pytest.raises(
+                RuntimeError, match="Failed to generate heading structure"
+            ):
                 scan_legal_text(
                     mock_client,
                     test_file,
@@ -1314,9 +1316,12 @@ This chapter contains general provisions.
             assert payload["best_score"] == 0.95
             assert len(payload["iterations"]) == 1
             assert payload["iterations"][0]["status"] == "scored"
-            assert payload["iterations"][0]["generated_structure"]["heading_levels"][0][
-                "example_heading"
-            ] == "CHAPTER 1: GENERAL PROVISIONS"
+            assert (
+                payload["iterations"][0]["generated_structure"]["heading_levels"][0][
+                    "example_heading"
+                ]
+                == "CHAPTER 1: GENERAL PROVISIONS"
+            )
         finally:
             os.unlink(test_file)
             if os.path.exists(debug_path):

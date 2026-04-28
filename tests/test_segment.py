@@ -732,7 +732,9 @@ Short supporting text."""
             llm_context_limit=4400,
         )
 
-        section_chunks = chunks_df.filter(pl.col("source_kind") == "section_packed_split")
+        section_chunks = chunks_df.filter(
+            pl.col("source_kind") == "section_packed_split"
+        )
         assert len(section_chunks) == 2
         assert section_chunks["heading_text"].to_list() == [
             "# ARTICLE I (Part 1)",

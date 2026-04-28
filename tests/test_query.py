@@ -33,7 +33,18 @@ from legiscope.query import (
     DEFAULT_LEXICAL_RERANKING_ENABLED,
     DEFAULT_VALIDATION_ENABLED,
 )
-from legiscope.retrieval_guidance import RetrievalGuidance, RetrievalGuidanceRequest
+from legiscope.query_hierarchy import (
+    LabelBlockerRule,
+    QueryHierarchy,
+    REQUIRES_DATA_COLUMN,
+    REQUIRES_LABELS_COLUMN,
+    REQUIRES_YES_COLUMN,
+    hierarchy_to_metadata,
+)
+from legiscope.retrieval_guidance import (
+    RetrievalGuidance,
+    RetrievalGuidanceRequest,
+)
 from legiscope.retrieve import (
     FilteringMetadata,
     QueryInfo,
@@ -309,6 +320,59 @@ class TestLoadQueries:
             queries = load_queries(temp_path, adjust_for_dataset=False)
             assert len(queries) == 1
             assert queries[0].metadata == {"category": "general"}
+        finally:
+            os.unlink(temp_path)
+
+    def test_load_queries_parses_hierarchy_metadata_with_pipe_delimiters(self):
+        """Enriched CSV hierarchy columns should normalize into structured metadata."""
+        df = pl.DataFrame(
+            {
+                "question_number": ["Q1", "Q1.1"],
+                "question": ["Parent question", "Child question"],
+                "variable_name": ["parent_var", "child_var"],
+                REQUIRES_YES_COLUMN: ["", "Q1 || Q0"],
+                REQUIRES_DATA_COLUMN: ["", "Q1"],
+                REQUIRES_LABELS_COLUMN: [
+                    "",
+                    "Q1 => Syringes, generally || Pipes/smoking equipment, generally",
+                ],
+                "response_options": [
+                    "Responses: Yes OR No",
+                    'Responses: "Option, with comma" OR No',
+                ],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            df.write_csv(f.name)
+            temp_path = f.name
+
+        try:
+            queries = load_queries(temp_path, adjust_for_dataset=False)
+            assert queries[1].query_id == "Q1.1"
+            assert queries[1].metadata["query_id"] == "Q1.1"
+            assert (
+                queries[1].metadata["response_options"]
+                == 'Responses: "Option, with comma" OR No'
+            )
+            assert queries[1].metadata["hierarchy"] == {
+                "query_id": "Q1.1",
+                "parent_ids": ["Q1", "Q0"],
+                "boolean_parent_ids": ["Q1", "Q0"],
+                "context_parent_ids": ["Q1"],
+                "label_blockers": [
+                    {
+                        "parent_query_id": "Q1",
+                        "blocker_labels": [
+                            "Syringes, generally",
+                            "Pipes/smoking equipment, generally",
+                        ],
+                    }
+                ],
+                "pass_parent_question": True,
+                "pass_parent_short_answer": True,
+                "inherit_parent_retrieval": True,
+            }
         finally:
             os.unlink(temp_path)
 
@@ -1888,7 +1952,10 @@ class TestBatchQueryConfigBasics:
 
         metadata = json.loads(results_df[0, "query_metadata"])
         assert metadata["question_number"] == "Q1.4"
-        assert metadata["query_text"] == "What is the current-through date of the ordinance?"
+        assert (
+            metadata["query_text"]
+            == "What is the current-through date of the ordinance?"
+        )
         assert metadata["query_family"] == "status"
 
     def test_run_queries_surfaces_filtered_out_retrieval_units(self, tmp_path):
@@ -1935,7 +2002,9 @@ class TestBatchQueryConfigBasics:
         )
 
         with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
-            with patch("legiscope.query.filter_sections", return_value=filtered_results):
+            with patch(
+                "legiscope.query.filter_sections", return_value=filtered_results
+            ):
                 mock_client = Mock(spec=Instructor)
                 llm_config = LLMConfig(client=mock_client, model="test-model")
                 settings = BatchQuerySettings(
@@ -1955,3 +2024,536 @@ class TestBatchQueryConfigBasics:
         assert results_df[0, "query_stage_status"] == "no_sections_after_filtering"
         assert results_df[0, "all_retrieval_units_filtered_out"] is True
         assert results_df[0, "generated_abstention"] is True
+
+
+class TestHierarchicalQueryExecution:
+    """Focused regressions for parent/child execution behavior."""
+
+    @staticmethod
+    def _write_sections_parquet(tmp_path):
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+        return sections_path
+
+    @staticmethod
+    def _make_section(section_id: str, chunk_id: str | None = None) -> SectionResult:
+        return SectionResult(
+            section_id=section_id,
+            heading_text=f"Section {section_id}",
+            body_text=f"Body for {section_id}",
+            heading_level=1,
+            parent_id=None,
+            matching_segments=[],
+            relevance_score=0.1,
+            segment_count=1,
+            chunk_id=chunk_id,
+        )
+
+    def test_run_queries_skips_child_when_requires_yes_parent_is_explicit_no(
+        self, tmp_path
+    ):
+        sections_path = self._write_sections_parquet(tmp_path)
+        retrieval_results = SectionCollection(
+            sections=[self._make_section("s1")],
+            query_info=QueryInfo(
+                original_query="query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="No exemption exists.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.9,
+            limitations="None",
+        )
+
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("Q1",),
+            boolean_parent_ids=("Q1",),
+        )
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+
+        with patch(
+            "legiscope.query.retrieve_sections", return_value=retrieval_results
+        ) as mock_retrieve:
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=[(parent_response, [])],
+            ) as mock_query:
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Parent",
+                            variable_name="parent_var",
+                            metadata={
+                                "response_options": "Responses: Yes OR No",
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy),
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Child",
+                            variable_name="child_var",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy),
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert mock_query.call_count == 1
+        assert mock_retrieve.call_count == 1
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert child_row[0, "query_status"] == "skipped"
+        assert child_row[0, "query_stage_status"] == "skipped"
+        assert child_row[0, "skip_reason"] == "requires_yes_not_satisfied"
+        assert child_row[0, "blocking_parent_query_id"] == "Q1"
+
+    def test_run_queries_executes_child_when_required_parent_is_missing(self, tmp_path):
+        sections_path = self._write_sections_parquet(tmp_path)
+        retrieval_results = SectionCollection(
+            sections=[self._make_section("s1")],
+            query_info=QueryInfo(
+                original_query="query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="Executed despite missing parent.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("Q0",),
+            boolean_parent_ids=("Q0",),
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(response, []),
+            ) as mock_query:
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Child",
+                            variable_name="child_var",
+                            metadata={
+                                "response_options": "Responses: Yes OR No",
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy),
+                            },
+                            query_id="Q1.1",
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert mock_query.call_count == 1
+        assert results_df[0, "query_status"] == "completed"
+        assert results_df[0, "executed_despite_missing_parent"] is True
+        assert results_df[0, "missing_parent_ids"] == '["Q0"]'
+
+    def _run_label_blocker_case(
+        self,
+        tmp_path,
+        *,
+        parent_short_answer: str,
+        response_options: str,
+        blocker_labels: tuple[str, ...],
+    ):
+        sections_path = self._write_sections_parquet(tmp_path)
+        retrieval_results = SectionCollection(
+            sections=[self._make_section("s1")],
+            query_info=QueryInfo(
+                original_query="query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            short_answer=parent_short_answer,
+            reasoning="Parent answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.9,
+            limitations="None",
+        )
+        child_response = LegalQueryResponse(
+            short_answer="Allowed uses",
+            reasoning="Child answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("Q1",),
+            label_blockers=(
+                LabelBlockerRule(
+                    parent_query_id="Q1",
+                    blocker_labels=blocker_labels,
+                ),
+            ),
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=[(parent_response, []), (child_response, [])],
+            ) as mock_query:
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Parent",
+                            variable_name="parent_var",
+                            metadata={
+                                "response_options": response_options,
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy),
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Child",
+                            variable_name="child_var",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy),
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        return results_df, mock_query.call_count
+
+    def test_run_queries_executes_child_on_exact_normalized_label_match(self, tmp_path):
+        results_df, query_call_count = self._run_label_blocker_case(
+            tmp_path,
+            parent_short_answer="Pipes/Smoking Equipment, Generally",
+            response_options=(
+                "Pipes/Smoking Equipment, Generally OR Syringes, generally"
+            ),
+            blocker_labels=("pipes smoking equipment generally",),
+        )
+
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert query_call_count == 2
+        assert child_row[0, "query_status"] == "completed"
+        assert child_row[0, "label_match_method"] == "exact_normalized"
+        assert child_row[0, "label_match_score"] == 100.0
+        assert child_row[0, "label_match_ambiguous"] is False
+
+    def test_run_queries_executes_child_on_fuzzy_unique_label_match(self, tmp_path):
+        results_df, query_call_count = self._run_label_blocker_case(
+            tmp_path,
+            parent_short_answer="Pipes and smoking equipment, generally",
+            response_options=(
+                "Pipes and smoking equipment, generally OR Syringes, generally"
+            ),
+            blocker_labels=("Pipes/smoking equipment, generally",),
+        )
+
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert query_call_count == 2
+        assert child_row[0, "query_status"] == "completed"
+        assert child_row[0, "label_match_method"] == "fuzzy_unique"
+        assert child_row[0, "label_match_score"] >= 90.0
+        assert child_row[0, "label_match_ambiguous"] is False
+
+    def test_run_queries_executes_child_when_label_match_is_ambiguous_fuzzy(
+        self, tmp_path
+    ):
+        results_df, query_call_count = self._run_label_blocker_case(
+            tmp_path,
+            parent_short_answer=(
+                "Pipes smoking equipment generally AND/OR Pipe smoking equipment generally"
+            ),
+            response_options=(
+                "Pipes smoking equipment generally AND/OR Pipe smoking equipment generally"
+            ),
+            blocker_labels=("Pipes and smoking equipment generally",),
+        )
+
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert query_call_count == 2
+        assert child_row[0, "query_status"] == "completed"
+        assert child_row[0, "label_match_method"] == "ambiguous_fuzzy"
+        assert child_row[0, "label_match_ambiguous"] is True
+
+    def test_run_queries_skips_child_when_label_blocker_is_not_satisfied(
+        self, tmp_path
+    ):
+        results_df, query_call_count = self._run_label_blocker_case(
+            tmp_path,
+            parent_short_answer="Syringes, generally",
+            response_options=(
+                "Pipes/smoking equipment, generally OR Syringes, generally"
+            ),
+            blocker_labels=("Pipes/smoking equipment, generally",),
+        )
+
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert query_call_count == 1
+        assert child_row[0, "query_status"] == "skipped"
+        assert child_row[0, "skip_reason"] == "label_blocker_not_satisfied"
+        assert child_row[0, "label_match_method"] == "no_confident_match"
+
+    def test_run_queries_passes_only_parent_question_and_short_answer_context(
+        self, tmp_path
+    ):
+        sections_path = self._write_sections_parquet(tmp_path)
+        retrieval_results = SectionCollection(
+            sections=[self._make_section("s1")],
+            query_info=QueryInfo(
+                original_query="query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            short_answer="Sales AND/OR Use",
+            reasoning="Long explanation that should not flow downstream.",
+            citations=["Section 1"],
+            supporting_passages=["Large upstream passage"],
+            confidence=0.9,
+            limitations="None",
+        )
+        child_response = LegalQueryResponse(
+            short_answer="Use",
+            reasoning="Child answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("Q1",),
+            context_parent_ids=("Q1",),
+            inherit_parent_retrieval=True,
+        )
+
+        captured_parent_contexts: list[list[dict[str, str | None]]] = []
+
+        def fake_query_legal_documents(
+            retrieval_results,
+            _query,
+            _settings,
+            *,
+            query_metadata=None,
+            preselected_sections=None,
+            execution_capture=None,
+            **_kwargs,
+        ):
+            if execution_capture is not None:
+                execution_capture["completion_sections"] = list(
+                    preselected_sections or retrieval_results.sections
+                )
+            if query_metadata and query_metadata.get("query_id") == "Q1.1":
+                captured_parent_contexts.append(query_metadata.get("parent_contexts"))
+                return child_response, []
+            return parent_response, []
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=fake_query_legal_documents,
+            ):
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                    filter_relevance=False,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Question: Which activities are prohibited?",
+                            variable_name="dp_activity",
+                            metadata={
+                                "query_text": "Which activities are prohibited?",
+                                "response_options": "Responses: Sales AND/OR Use",
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy),
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Question: If exempted, which activities stay allowed?",
+                            variable_name="dp_exempt_can_activity",
+                            metadata={
+                                "query_text": "If exempted, which activities stay allowed?",
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy),
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert captured_parent_contexts == [
+            [
+                {
+                    "query_id": "Q1",
+                    "question": "Which activities are prohibited?",
+                    "short_answer": "Sales AND/OR Use",
+                    "raw_short_answer": "Sales AND/OR Use",
+                    "variable_name": "dp_activity",
+                }
+            ]
+        ]
+
+    def test_run_queries_merges_parent_and_child_retrieval_units(self, tmp_path):
+        sections_path = self._write_sections_parquet(tmp_path)
+        parent_results = SectionCollection(
+            sections=[self._make_section("s_parent", chunk_id="chunk_parent")],
+            query_info=QueryInfo(
+                original_query="parent query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        child_results = SectionCollection(
+            sections=[
+                self._make_section("s_parent_dup", chunk_id="chunk_parent"),
+                self._make_section("s_child", chunk_id="chunk_child"),
+            ],
+            query_info=QueryInfo(
+                original_query="child query", total_segments_found=2, unique_sections=2
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="Parent answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.9,
+            limitations="None",
+        )
+        child_response = LegalQueryResponse(
+            short_answer="Use",
+            reasoning="Child answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("Q1",),
+            context_parent_ids=("Q1",),
+            inherit_parent_retrieval=True,
+        )
+
+        merged_section_ids: list[list[str]] = []
+
+        def fake_query_legal_documents(
+            retrieval_results,
+            _query,
+            _settings,
+            *,
+            preselected_sections=None,
+            execution_capture=None,
+            **_kwargs,
+        ):
+            if execution_capture is not None:
+                execution_capture["completion_sections"] = list(
+                    preselected_sections or retrieval_results.sections
+                )
+            merged_sections = preselected_sections or retrieval_results.sections
+            merged_section_ids.append(
+                [section.chunk_id or section.section_id for section in merged_sections]
+            )
+            if len(merged_section_ids) == 1:
+                return parent_response, []
+            return child_response, []
+
+        with patch(
+            "legiscope.query.retrieve_sections",
+            side_effect=[parent_results, child_results],
+        ):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=fake_query_legal_documents,
+            ):
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                    filter_relevance=False,
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Parent",
+                            variable_name="parent_var",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy)
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Child",
+                            variable_name="child_var",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy)
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert merged_section_ids[0] == ["chunk_parent"]
+        assert merged_section_ids[1] == ["chunk_parent", "chunk_child"]
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert child_row[0, "inherited_chunk_ids"] == '["chunk_parent"]'
+        assert child_row[0, "new_chunk_ids"] == '["chunk_parent", "chunk_child"]'
+        assert child_row[0, "merged_chunk_ids"] == '["chunk_parent", "chunk_child"]'
+        assert child_row[0, "coalesced_duplicate_chunk_ids"] == '["chunk_parent"]'

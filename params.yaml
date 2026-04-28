@@ -84,7 +84,7 @@ retrieval:
 
   # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
-    enabled: true
+    enabled: false
     threshold: 0.7
 
 # Benchmark evaluation settings
