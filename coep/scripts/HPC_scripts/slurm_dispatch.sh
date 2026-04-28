@@ -22,6 +22,9 @@
 #   bash coep/scripts/HPC_scripts/slurm_dispatch.sh /gpfs/data/cerdalab/LegalAI/docx_sources
 #   bash coep/scripts/HPC_scripts/slurm_dispatch.sh --dry-run /gpfs/data/cerdalab/LegalAI/docx_sources
 #
+# Notifications are suppressed for dispatcher-created jobs by default to avoid
+# one email/webhook per jurisdiction. Manual submissions can set SLURM_NOTIFY=1.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -112,7 +115,7 @@ for docx in "$DOCX_DIR"/*.docx; do
     else
         echo "  Submitting: ${STATE}-${LOCALITY} (${CODE_SLUG})"
         sbatch \
-            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS}" \
+            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0" \
             "$SLURM_SCRIPT"
     fi
 

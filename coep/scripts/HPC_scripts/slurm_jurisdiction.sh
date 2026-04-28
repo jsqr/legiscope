@@ -30,13 +30,17 @@
 # Optional env vars:
 #   CODE_SLUG  - Code slug (default: municipal-code)
 #   CODE_NAME  - Display name (default: "{Locality} Municipal Code")
+#   SLURM_NOTIFY           - 1/true to enable notifications (default: 1)
+#   SLURM_NOTIFY_EVENTS    - Comma-separated events: start,end,fail (default: start,end,fail)
+#   SLURM_NOTIFY_EMAIL     - Email address to notify if local `mail` command exists
+#   SLURM_NOTIFY_SUBJECT_PREFIX - Subject prefix for email notifications
 #
 # Usage:
 #   # Via dispatcher (recommended):
 #   bash coep/scripts/HPC_scripts/slurm_dispatch.sh /path/to/docx/folder
 #
 #   # Manual single submission:
-#   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx \
+#   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx,SLURM_NOTIFY=1,SLURM_NOTIFY_EMAIL=you@nyulangone.org,SLURM_NOTIFY_EVENTS=start,end,fail \
 #       coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 #
 set -eo pipefail
@@ -56,6 +60,9 @@ fi
 
 CODE_SLUG="${CODE_SLUG:-municipal-code}"
 CODE_NAME="${CODE_NAME:-${LOCALITY} Municipal Code}"
+SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
+SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
+SLURM_NOTIFY_SUBJECT_PREFIX="${SLURM_NOTIFY_SUBJECT_PREFIX:-[legiscope]}"
 
 echo "=== Legiscope Pipeline: ${STATE}-${LOCALITY} ==="
 echo "Job ID  : ${SLURM_JOB_ID}"
@@ -64,6 +71,50 @@ echo "Code    : ${CODE_SLUG} (${CODE_NAME})"
 echo "DOCX    : ${DOCX_PATH}"
 echo "Started : $(date)"
 echo "==========================================="
+
+notifications_enabled() {
+    case "${SLURM_NOTIFY,,}" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+notification_event_enabled() {
+    local event_name="$1"
+    local normalized_events="${SLURM_NOTIFY_EVENTS,,}"
+
+    [[ ",${normalized_events}," == *",${event_name},"* ]]
+}
+
+send_notification() {
+    local event_name="$1"
+    local detail="$2"
+    local timestamp message subject
+
+    notifications_enabled || return 0
+    notification_event_enabled "$event_name" || return 0
+
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    message="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: ${STATE}-${LOCALITY} job ${SLURM_JOB_ID} on $(hostname) at ${timestamp}. ${detail}"
+    subject="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: ${STATE}-${LOCALITY} (${SLURM_JOB_ID})"
+
+    if [[ -z "${SLURM_NOTIFY_EMAIL:-}" ]]; then
+        return 0
+    fi
+
+    if [[ -n "${SLURM_NOTIFY_EMAIL:-}" ]] && command -v mail >/dev/null 2>&1; then
+        printf '%s\n' "$message" | mail -s "$subject" "$SLURM_NOTIFY_EMAIL" || \
+            echo "WARNING: Email notification failed for event '${event_name}'" >&2
+    elif [[ -n "${SLURM_NOTIFY_EMAIL:-}" ]]; then
+        echo "WARNING: 'mail' command is unavailable; skipping '${event_name}' notification to ${SLURM_NOTIFY_EMAIL}" >&2
+    fi
+}
+
+send_notification "start" "Stage=${CURRENT_STAGE:-setup}."
 
 # ── Environment setup ─────────────────────────────────────────────
 # BigPurple's /etc/bashrc references BASHRCSOURCED before defining it,
@@ -299,6 +350,12 @@ cleanup_on_exit() {
     if [[ "$exit_code" -ne 0 && "$CHECKPOINT_SYNC_DONE" -eq 0 ]]; then
         echo "Job failed during stage '${CURRENT_STAGE}' (exit ${exit_code}); attempting checkpoint sync before exit..."
         sync_checkpoint_artifacts "failure-${CURRENT_STAGE}" || true
+    fi
+
+    if [[ "$exit_code" -eq 0 ]]; then
+        send_notification "end" "Completed successfully."
+    else
+        send_notification "fail" "Exited during stage=${CURRENT_STAGE} with status ${exit_code}."
     fi
 
     trap - EXIT
