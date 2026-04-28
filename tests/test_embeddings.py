@@ -223,6 +223,47 @@ class TestGetEmbeddings:
         assert mock_client.embeddings.create.call_count == 2
         mock_sleep.assert_called_once()
 
+    @patch("legiscope.embeddings.time_module.sleep")
+    @patch("legiscope.embeddings._detect_embedding_provider", return_value="openrouter")
+    @patch("legiscope.embeddings.get_openrouter_client")
+    def test_get_embeddings_openrouter_rebuilds_client_after_connection_error(
+        self,
+        mock_get_openrouter_client,
+        _mock_detect_provider,
+        mock_sleep,
+    ):
+        """Retryable OpenRouter errors should rebuild the client before retrying."""
+        stale_client = Mock()
+        stale_client.embeddings.create.side_effect = httpx.ConnectError(
+            "Connection reset by peer"
+        )
+
+        fresh_client = Mock()
+        success_response = Mock()
+        success_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        fresh_client.embeddings.create.return_value = success_response
+        mock_get_openrouter_client.return_value = fresh_client
+
+        result = _generate_embeddings_openrouter(
+            stale_client,
+            ["text1"],
+            "qwen/qwen3-embedding-8b",
+            batch_size=1,
+        )
+
+        assert len(result) == 1
+        assert result[0] == pytest.approx([0.1, 0.2, 0.3])
+        stale_client.embeddings.create.assert_called_once_with(
+            model="qwen/qwen3-embedding-8b",
+            input=["text1"],
+        )
+        fresh_client.embeddings.create.assert_called_once_with(
+            model="qwen/qwen3-embedding-8b",
+            input=["text1"],
+        )
+        mock_get_openrouter_client.assert_called_once()
+        mock_sleep.assert_called_once()
+
     def test_get_embeddings_auto_detect_ollama(self):
         """Test auto-detection of ollama provider."""
         # Create mock client with ollama in name

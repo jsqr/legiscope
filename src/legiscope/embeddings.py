@@ -605,6 +605,26 @@ def _is_retryable_embedding_error(exc: Exception) -> bool:
     )
 
 
+def _refresh_openai_compatible_embedding_client(client):
+    """Rebuild OpenAI-compatible clients after retryable request failures."""
+    try:
+        provider = _detect_embedding_provider(client)
+    except ValueError:
+        return client
+
+    if provider == "openrouter":
+        logger.debug(
+            "Rebuilding OpenRouter embedding client after retryable request failure"
+        )
+        return get_openrouter_client()
+
+    if provider == "openai":
+        logger.debug("Rebuilding OpenAI embedding client after retryable request failure")
+        return _get_openai_client()
+
+    return client
+
+
 def _request_openai_compatible_embeddings(
     *,
     client,
@@ -621,7 +641,7 @@ def _request_openai_compatible_embeddings(
     attempt = 0
     while True:
         try:
-            return client.embeddings.create(model=model, input=batch_texts)
+            return client.embeddings.create(model=model, input=batch_texts), client
         except Exception as exc:
             if not _is_retryable_embedding_error(exc) or attempt >= max_retries:
                 raise
@@ -635,6 +655,7 @@ def _request_openai_compatible_embeddings(
             )
             time_module.sleep(delay)
             attempt += 1
+            client = _refresh_openai_compatible_embedding_client(client)
 
 
 def _generate_embeddings_openrouter(
@@ -665,7 +686,7 @@ def _generate_embeddings_openrouter(
         batch_texts = texts[start_idx:end_idx]
 
         try:
-            response = _request_openai_compatible_embeddings(
+            response, client = _request_openai_compatible_embeddings(
                 client=client,
                 model=model,
                 batch_texts=batch_texts,
@@ -681,6 +702,7 @@ def _generate_embeddings_openrouter(
                     f"still failed after retries; retrying with smaller batch size "
                     f"{split_batch_size} for these {len(batch_texts)} texts"
                 )
+                client = _refresh_openai_compatible_embedding_client(client)
                 embeddings_list.extend(
                     _generate_embeddings_openrouter(
                         client,
