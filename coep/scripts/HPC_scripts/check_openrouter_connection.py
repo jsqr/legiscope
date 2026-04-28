@@ -27,7 +27,21 @@ try:
 except ImportError:
     pass
 
-src_path = Path(__file__).parent.parent / "src"
+
+def _find_src_path(start: Path) -> Path:
+    """Walk upward from *start* until the repo's ``src`` directory is found."""
+    for parent in [start, *start.parents]:
+        candidate = parent / "src"
+        if (candidate / "legiscope").is_dir():
+            return candidate
+
+    raise RuntimeError(
+        "Unable to locate src/legiscope from script path; run this from within "
+        "the legiscope repository checkout or update PYTHONPATH."
+    )
+
+
+src_path = _find_src_path(Path(__file__).resolve().parent)
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
