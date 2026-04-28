@@ -63,6 +63,7 @@ CODE_NAME="${CODE_NAME:-${LOCALITY} Municipal Code}"
 SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
 SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
 SLURM_NOTIFY_SUBJECT_PREFIX="${SLURM_NOTIFY_SUBJECT_PREFIX:-[legiscope]}"
+MAIL_BIN="$(command -v mail 2>/dev/null || true)"
 
 echo "=== Legiscope Pipeline: ${STATE}-${LOCALITY} ==="
 echo "Job ID  : ${SLURM_JOB_ID}"
@@ -106,8 +107,8 @@ send_notification() {
         return 0
     fi
 
-    if [[ -n "${SLURM_NOTIFY_EMAIL:-}" ]] && command -v mail >/dev/null 2>&1; then
-        printf '%s\n' "$message" | mail -s "$subject" "$SLURM_NOTIFY_EMAIL" || \
+    if [[ -n "$MAIL_BIN" ]]; then
+        printf '%s\n' "$message" | "$MAIL_BIN" -s "$subject" "$SLURM_NOTIFY_EMAIL" || \
             echo "WARNING: Email notification failed for event '${event_name}'" >&2
     elif [[ -n "${SLURM_NOTIFY_EMAIL:-}" ]]; then
         echo "WARNING: 'mail' command is unavailable; skipping '${event_name}' notification to ${SLURM_NOTIFY_EMAIL}" >&2
