@@ -33,10 +33,9 @@ source ~/.bashrc
 set -eo pipefail
 
 export PYTHONNOUSERSITE=1
-# The validated BigPurple vLLM stack still emits repeated startup warnings from
-# deprecated cuda-python aliases and FLA tensor-format notices. These are noisy
-# but not actionable for the pinned torch/vLLM build, so suppress them here.
-KNOWN_VLLM_WARNING_FILTERS="ignore:.*cuda\\.cudart.*:FutureWarning,ignore:.*cuda\\.nvrtc.*:FutureWarning,ignore:.*tensor format.*:UserWarning"
+# PYTHONWARNINGS matches literal message prefixes here, so use the exact
+# cuda-python deprecation text emitted by the pinned BigPurple stack.
+KNOWN_VLLM_WARNING_FILTERS="ignore:The cuda.cudart module is deprecated:FutureWarning,ignore:The cuda.nvrtc module is deprecated:FutureWarning"
 export PYTHONWARNINGS="${PYTHONWARNINGS:+${PYTHONWARNINGS},}${KNOWN_VLLM_WARNING_FILTERS}"
 
 # Skip 'module load anaconda3' — cuda/12.6 dependency has a read-only FS bug.

@@ -13,6 +13,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import platform
+import socket
+import ssl
 import sys
 import traceback
 from pathlib import Path
@@ -53,6 +56,21 @@ def _build_parser() -> argparse.ArgumentParser:
         description="Check OpenRouter connectivity and a minimal embedding call",
     )
     parser.add_argument(
+        "--host",
+        default="openrouter.ai",
+        help="Primary host to probe for DNS/TCP/TLS/HTTP diagnostics",
+    )
+    parser.add_argument(
+        "--compare-host",
+        action="append",
+        dest="compare_hosts",
+        default=[],
+        help=(
+            "Additional hosts to probe for comparison. Repeat the flag for multiple "
+            "hosts, e.g. --compare-host api.openai.com --compare-host google.com"
+        ),
+    )
+    parser.add_argument(
         "--model",
         default="qwen/qwen3-embedding-8b",
         help="Embedding model to request",
@@ -71,21 +89,105 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _print_environment_diagnostics() -> None:
+    print(f"python_executable={sys.executable}")
+    print(f"python_version={platform.python_version()}")
+    print(f"openssl={ssl.OPENSSL_VERSION}")
+    print(f"repo_src={src_path}")
+
+    for env_name in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ):
+        env_value = os.getenv(env_name)
+        print(f"{env_name}={'set' if env_value else 'unset'}")
+
+
+def _probe_dns(hostname: str) -> None:
+    try:
+        addrinfo = socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)
+    except Exception as exc:
+        print(f"dns_error={type(exc).__name__}: {exc}")
+        return
+
+    addresses: list[str] = []
+    for entry in addrinfo:
+        sockaddr = entry[4]
+        host = sockaddr[0]
+        if host not in addresses:
+            addresses.append(host)
+
+    print(f"dns_addresses={','.join(addresses)}")
+
+
+def _probe_tcp_and_tls(hostname: str, timeout: float) -> None:
+    try:
+        with socket.create_connection((hostname, 443), timeout=timeout) as sock:
+            peer = sock.getpeername()
+            print(f"tcp_connect_ok={peer[0]}:{peer[1]}")
+    except Exception as exc:
+        print(f"tcp_connect_error={type(exc).__name__}: {exc}")
+        return
+
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((hostname, 443), timeout=timeout) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as tls_sock:
+                print(f"tls_handshake_ok={tls_sock.version()}")
+    except Exception as exc:
+        print(f"tls_handshake_error={type(exc).__name__}: {exc}")
+
+
+def _probe_http_models(hostname: str, timeout: float) -> None:
+    url = f"https://{hostname}/api/v1/models"
+    try:
+        response = httpx.get(url, timeout=timeout)
+        print(f"models_get_status={response.status_code}")
+    except Exception as exc:
+        print(f"models_get_error={type(exc).__name__}: {exc}")
+
+
+def _probe_public_ip(timeout: float) -> None:
+    endpoints = (
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+    )
+
+    for endpoint in endpoints:
+        try:
+            response = httpx.get(endpoint, timeout=timeout)
+            response.raise_for_status()
+            print(f"public_ip={response.text.strip()} via {endpoint}")
+            return
+        except Exception as exc:
+            print(f"public_ip_probe_error[{endpoint}]={type(exc).__name__}: {exc}")
+
+    print("public_ip=unavailable")
+
+
+def _run_host_probe(hostname: str, timeout: float) -> None:
+    print(f"=== host={hostname} ===")
+    _probe_dns(hostname)
+    _probe_tcp_and_tls(hostname, timeout)
+    _probe_http_models(hostname, timeout)
+
+
 def main() -> int:
     args = _build_parser().parse_args()
 
     print(f"openai={openai.__version__}")
     print(f"httpx={httpx.__version__}")
     print(f"key_present={bool(os.getenv('OPENROUTER_API_KEY'))}")
-
-    try:
-        response = httpx.get(
-            "https://openrouter.ai/api/v1/models",
-            timeout=args.timeout,
-        )
-        print(f"models_get_status={response.status_code}")
-    except Exception as exc:
-        print(f"models_get_error={type(exc).__name__}: {exc}")
+    _print_environment_diagnostics()
+    _probe_public_ip(args.timeout)
+    _run_host_probe(args.host, args.timeout)
+    for compare_host in args.compare_hosts:
+        _run_host_probe(compare_host, args.timeout)
 
     try:
         client = get_openrouter_client()

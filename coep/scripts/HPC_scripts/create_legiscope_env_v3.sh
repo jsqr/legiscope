@@ -48,6 +48,9 @@ export TMPDIR
 
 # Prevent ~/.local/lib/python*/site-packages/ from shadowing conda packages
 export PYTHONNOUSERSITE=1
+# Suppress known cuda-python deprecation spam in vLLM/torch import paths.
+KNOWN_VLLM_WARNING_FILTERS="ignore:The cuda.cudart module is deprecated:FutureWarning,ignore:The cuda.nvrtc module is deprecated:FutureWarning"
+export PYTHONWARNINGS="${PYTHONWARNINGS:+${PYTHONWARNINGS},}${KNOWN_VLLM_WARNING_FILTERS}"
 
 write_vllm_runtime_constraints() {
     python <<'PY' > "$VLLM_RUNTIME_CONSTRAINTS"

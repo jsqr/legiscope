@@ -27,17 +27,100 @@
 #   bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
 #   sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
 #
+# Optional env vars:
+#   SLURM_NOTIFY                - 1/true to enable notifications (default: 1)
+#   SLURM_NOTIFY_EVENTS         - Comma-separated events: start,end,fail (default: start,end,fail)
+#   SLURM_NOTIFY_EMAIL          - Email address to notify if local `mail` command exists
+#   SLURM_NOTIFY_SUBJECT_PREFIX - Subject prefix for email notifications
+#
 set -eo pipefail
+
+SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
+SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
+SLURM_NOTIFY_SUBJECT_PREFIX="${SLURM_NOTIFY_SUBJECT_PREFIX:-[legiscope]}"
+MAIL_BIN="$(command -v mail 2>/dev/null || true)"
+
+notifications_enabled() {
+    case "${SLURM_NOTIFY,,}" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+notification_event_enabled() {
+    local event_name="$1"
+    local normalized_events="${SLURM_NOTIFY_EVENTS,,}"
+
+    [[ ",${normalized_events}," == *",${event_name},"* ]]
+}
+
+send_notification() {
+    local event_name="$1"
+    local detail="$2"
+    local timestamp message subject
+
+    notifications_enabled || return 0
+    notification_event_enabled "$event_name" || return 0
+
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    message="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: benchmark job ${SLURM_JOB_ID} on $(hostname) at ${timestamp}. ${detail}"
+    subject="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: benchmark (${SLURM_JOB_ID})"
+
+    if [[ -z "${SLURM_NOTIFY_EMAIL:-}" ]]; then
+        return 0
+    fi
+
+    if [[ -n "$MAIL_BIN" ]]; then
+        printf '%s\n' "$message" | "$MAIL_BIN" -s "$subject" "$SLURM_NOTIFY_EMAIL" || \
+            echo "WARNING: Email notification failed for event '${event_name}'" >&2
+    elif [[ -n "${SLURM_NOTIFY_EMAIL:-}" ]]; then
+        echo "WARNING: 'mail' command is unavailable; skipping '${event_name}' notification to ${SLURM_NOTIFY_EMAIL}" >&2
+    fi
+}
+
+CURRENT_STAGE="setup"
+VLLM_PID=""
+BENCHMARK_BACKUP_DIR=""
+BENCHMARK_BACKUP_ACTIVE=0
+
+cleanup_and_notify() {
+    local exit_code=$?
+
+    if [[ -n "$VLLM_PID" ]]; then
+        kill "$VLLM_PID" 2>/dev/null || true
+    fi
+
+    if [[ "$exit_code" -ne 0 && -n "${BENCHMARK_OUTPUT_DIR:-}" ]]; then
+        restore_benchmark_artifacts "$BENCHMARK_OUTPUT_DIR" || true
+    fi
+
+    clear_benchmark_backup || true
+
+    if [[ $exit_code -eq 0 ]]; then
+        send_notification "end" "Stage=${CURRENT_STAGE}."
+    else
+        send_notification "fail" "Stage=${CURRENT_STAGE}. Exit=${exit_code}."
+    fi
+
+    exit "$exit_code"
+}
+
+trap cleanup_and_notify EXIT
+
+send_notification "start" "Stage=${CURRENT_STAGE}."
 
 # ── Environment setup ────────────────────────────────────────────
 # BigPurple's /etc/bashrc references BASHRCSOURCED before defining it,
 # so these SLURM wrappers cannot enable nounset while sourcing ~/.bashrc.
 source ~/.bashrc
 export PYTHONNOUSERSITE=1
-# The validated BigPurple vLLM stack still emits repeated startup warnings from
-# deprecated cuda-python aliases and FLA tensor-format notices. These are noisy
-# but not actionable for the pinned torch/vLLM build, so suppress them here.
-KNOWN_VLLM_WARNING_FILTERS="ignore:.*cuda\\.cudart.*:FutureWarning,ignore:.*cuda\\.nvrtc.*:FutureWarning,ignore:.*tensor format.*:UserWarning"
+# PYTHONWARNINGS matches literal message prefixes here, so use the exact
+# cuda-python deprecation text emitted by the pinned BigPurple stack.
+KNOWN_VLLM_WARNING_FILTERS="ignore:The cuda.cudart module is deprecated:FutureWarning,ignore:The cuda.nvrtc module is deprecated:FutureWarning"
 export PYTHONWARNINGS="${PYTHONWARNINGS:+${PYTHONWARNINGS},}${KNOWN_VLLM_WARNING_FILTERS}"
 # Skip 'module load anaconda3' — cuda/12.6 dependency has a read-only FS bug.
 # Conda is available via ~/.bashrc after 'conda init'.
@@ -49,7 +132,6 @@ unset TRANSFORMERS_CACHE
 unset VLLM_PROJECT
 export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 GITHUB_SSH_REMOTE="${GITHUB_SSH_REMOTE:-git@github.com:jsqr/legiscope.git}"
-CURRENT_STAGE="setup"
 
 cd /gpfs/data/cerdalab/LegalAI/legiscope
 
@@ -146,6 +228,50 @@ remove_benchmark_artifacts() {
         "$output_dir/benchmark_metrics.json"
 }
 
+backup_benchmark_artifacts() {
+    local output_dir="$1"
+
+    BENCHMARK_BACKUP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/benchmark_backup_${SLURM_JOB_ID}_XXXXXX")"
+    BENCHMARK_BACKUP_ACTIVE=0
+
+    if [[ -f "$output_dir/benchmark_results.csv" ]]; then
+        cp "$output_dir/benchmark_results.csv" "$BENCHMARK_BACKUP_DIR/benchmark_results.csv"
+        BENCHMARK_BACKUP_ACTIVE=1
+    fi
+
+    if [[ -f "$output_dir/benchmark_metrics.json" ]]; then
+        cp "$output_dir/benchmark_metrics.json" "$BENCHMARK_BACKUP_DIR/benchmark_metrics.json"
+        BENCHMARK_BACKUP_ACTIVE=1
+    fi
+}
+
+restore_benchmark_artifacts() {
+    local output_dir="$1"
+
+    if [[ "$BENCHMARK_BACKUP_ACTIVE" -ne 1 || -z "$BENCHMARK_BACKUP_DIR" || ! -d "$BENCHMARK_BACKUP_DIR" ]]; then
+        return 0
+    fi
+
+    mkdir -p "$output_dir"
+
+    if [[ -f "$BENCHMARK_BACKUP_DIR/benchmark_results.csv" ]]; then
+        cp "$BENCHMARK_BACKUP_DIR/benchmark_results.csv" "$output_dir/benchmark_results.csv"
+    fi
+
+    if [[ -f "$BENCHMARK_BACKUP_DIR/benchmark_metrics.json" ]]; then
+        cp "$BENCHMARK_BACKUP_DIR/benchmark_metrics.json" "$output_dir/benchmark_metrics.json"
+    fi
+}
+
+clear_benchmark_backup() {
+    if [[ -n "$BENCHMARK_BACKUP_DIR" && -d "$BENCHMARK_BACKUP_DIR" ]]; then
+        rm -rf "$BENCHMARK_BACKUP_DIR"
+    fi
+
+    BENCHMARK_BACKUP_DIR=""
+    BENCHMARK_BACKUP_ACTIVE=0
+}
+
 # Load .env (API keys, etc.)
 if [[ ! -r .env ]]; then
     echo "ERROR: Required .env file is missing or not readable in $(pwd). Create it or fix its permissions before running the benchmark job." >&2
@@ -228,7 +354,6 @@ python -m vllm.entrypoints.openai.api_server \
     --dtype float16 --enforce-eager &
 
 VLLM_PID=$!
-trap "kill $VLLM_PID 2>/dev/null || true" EXIT
 
 READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
 
@@ -280,20 +405,26 @@ PY
 )"
 IFS=$'\t' read -r BENCHMARK_STATE BENCHMARK_LOCALITY <<< "$JURISDICTION_INFO"
 BENCHMARK_OUTPUT_DIR="data/output/${BENCHMARK_STATE}-${BENCHMARK_LOCALITY}"
+BENCHMARK_CODE_SLUG="$(python3 - <<'PY'
+import yaml
+from pathlib import Path
+
+params = yaml.safe_load(Path('params.yaml').read_text()) or {}
+jurisdiction = params.get('jurisdiction', {})
+print(jurisdiction.get('code_slug', ''))
+PY
+)"
 
 echo "Preparing benchmark output directory ${BENCHMARK_OUTPUT_DIR}..."
+backup_benchmark_artifacts "$BENCHMARK_OUTPUT_DIR"
 remove_benchmark_artifacts "$BENCHMARK_OUTPUT_DIR"
 
 echo "=== Benchmark re-run: $(date) ==="
-./scripts/dvc_repro.sh --stage benchmark
+bash scripts/dvc_python.sh coep/scripts/benchmark_pipeline.py \
+    --state "$BENCHMARK_STATE" \
+    --locality "$BENCHMARK_LOCALITY" \
+    --code-slug "$BENCHMARK_CODE_SLUG"
 
-CURRENT_STAGE="push"
-if should_attempt_dvc_push "$(pwd)"; then
-    if run_dvc_exp_push "$(pwd)"; then
-        echo "=== Benchmark completed (experiment pushed): $(date) ==="
-    else
-        echo "WARNING: Benchmark completed, but 'dvc exp push origin' failed; continuing without pushing experiment: $(date) ===" >&2
-    fi
-else
-    echo "=== Benchmark completed (experiment not pushed; no Git auth detected for origin): $(date) ==="
-fi
+CURRENT_STAGE="finalize"
+clear_benchmark_backup
+echo "=== Benchmark completed (outputs written in shared repo): $(date) ==="
