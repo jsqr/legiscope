@@ -84,6 +84,27 @@ _PRIOR_ANSWER_ALLOWED_KEYS = {
     "raw_short_answer",
 }
 
+_QUERY_INPUT_COLUMN_ALIASES = {
+    "question": "question",
+    "variable": "variable_name",
+    "variable_name": "variable_name",
+    "question_number": "question_number",
+    "prepend_text": "prepend_text",
+    "query_text": "query_text",
+    "response_options": "response_options",
+    "coding_instructions": "coding_instructions",
+    'requires_"yes"_from_upstream_question:': REQUIRES_YES_COLUMN,
+    "requires_data_from_upstream_question:": REQUIRES_DATA_COLUMN,
+    "requires_label(s)_from_upstream_question:": REQUIRES_LABELS_COLUMN,
+}
+
+
+def _canonicalize_query_input_column_name(column: str) -> str:
+    """Map known query CSV header variants onto the internal canonical names."""
+    stripped = column.strip()
+    normalized = re.sub(r"\s+", "_", stripped.lower())
+    return _QUERY_INPUT_COLUMN_ALIASES.get(normalized, stripped)
+
 
 def _sanitize_prior_answer_payload(payload: Any) -> dict[str, str] | None:
     """Keep only compact answer summaries for downstream dependency context."""
@@ -659,23 +680,27 @@ def _column_is_effectively_empty(series: pl.Series) -> bool:
 
 
 def _normalize_query_input_df(df: pl.DataFrame) -> pl.DataFrame:
-    """Drop noisy query CSV columns and normalize header whitespace."""
+    """Drop noisy query CSV columns and normalize known query header variants."""
     if df.is_empty() and not df.columns:
         return df
 
-    rename_map = {
-        column: column.strip() for column in df.columns if column != column.strip()
-    }
+    rename_map = {}
+    canonical_columns: list[str] = []
+    for column in df.columns:
+        canonical = _canonicalize_query_input_column_name(column)
+        canonical_columns.append(canonical)
+        if canonical != column:
+            rename_map[column] = canonical
+
     if rename_map:
-        stripped_columns = [rename_map.get(column, column) for column in df.columns]
         duplicate_columns = [
             column_name
-            for column_name, count in Counter(stripped_columns).items()
+            for column_name, count in Counter(canonical_columns).items()
             if count > 1
         ]
         if duplicate_columns:
             raise ValueError(
-                "Query CSV contains duplicate column names after trimming whitespace: "
+                "Query CSV contains duplicate column names after normalization: "
                 f"{duplicate_columns}"
             )
         df = df.rename(rename_map)

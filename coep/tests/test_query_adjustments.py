@@ -63,6 +63,42 @@ class TestCoepQueryAdjustments:
         finally:
             os.unlink(temp_path)
 
+    def test_query_loader_normalizes_title_cased_coep_headers(self):
+        df = pl.DataFrame(
+            {
+                "Question": ["Fallback question that should be replaced"],
+                "Variable": ["dp_law"],
+                "Prepend text": ["This is about drug paraphernalia."],
+                "Query text": ["Does the jurisdiction ban paraphernalia?"],
+                "Response options": ["Yes OR No"],
+                "Coding instructions": ["Code YES if found."],
+                'Requires ""yes"" from upstream question:': [""],
+                "Requires data from upstream question:": [""],
+                "Requires label(s) from upstream question:": [""],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            df.write_csv(f.name)
+            temp_path = f.name
+
+        try:
+            queries = load_queries(
+                temp_path,
+                adjust_for_dataset=True,
+                query_adjuster=adjust_drug_paraphernalia_queries,
+            )
+
+            assert len(queries) == 1
+            assert (
+                "Question: Does the jurisdiction ban paraphernalia?"
+                in queries[0].question
+            )
+            assert queries[0].variable_name == "dp_law"
+            assert queries[0].metadata["prepend_text"] == "This is about drug paraphernalia."
+        finally:
+            os.unlink(temp_path)
+
     def test_exclusion_for_monqcle_metadata_variables(self):
         df = pl.DataFrame(
             {
