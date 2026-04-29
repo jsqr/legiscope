@@ -509,7 +509,14 @@ def _ensure_evaluation_prompt_columns(df: pl.DataFrame) -> pl.DataFrame:
 def _score_skipped_queries(df: pl.DataFrame) -> pl.DataFrame:
     """Score skipped rows deterministically instead of sending them to the judge LLM."""
     if df.is_empty():
-        return df
+        return df.with_columns(
+            [
+                pl.lit(None, dtype=pl.Int64).alias("eval_score"),
+                pl.lit(None, dtype=pl.String).alias("eval_reason"),
+                pl.lit(None, dtype=pl.String).alias("eval_label"),
+                pl.lit(None, dtype=pl.String).alias("eval_error_type"),
+            ]
+        )
 
     has_option_presence = "evaluation_expected_present" in df.columns
     evaluation_expected_present = (

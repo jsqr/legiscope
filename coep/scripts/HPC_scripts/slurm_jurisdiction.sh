@@ -43,7 +43,7 @@
 #   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx,SLURM_NOTIFY=1,SLURM_NOTIFY_EMAIL=you@nyulangone.org,SLURM_NOTIFY_EVENTS=start,end,fail \
 #       coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 #
-set -eo pipefail
+set -Eeo pipefail
 
 # ── Validate required inputs ─────────────────────────────────────
 for var in STATE LOCALITY DOCX_PATH; do
@@ -159,6 +159,7 @@ SHARED_OUTPUT_DIR="${PROJECT_DIR}/${OUTPUT_DIR_REL}"
 CURRENT_STAGE="setup"
 VLLM_PID=""
 CHECKPOINT_SYNC_DONE=0
+FAIL_NOTIFICATION_SENT=0
 
 resolve_tmp_root() {
     local candidate
@@ -340,6 +341,17 @@ handle_termination_signal() {
     exit 143
 }
 
+handle_error() {
+    local exit_code="$1"
+    local failed_command="$2"
+    local failed_line="$3"
+
+    if [[ "$FAIL_NOTIFICATION_SENT" -eq 0 ]]; then
+        send_notification "fail" "Exited during stage=${CURRENT_STAGE} with status ${exit_code} at line ${failed_line}. Command: ${failed_command}"
+        FAIL_NOTIFICATION_SENT=1
+    fi
+}
+
 cleanup_on_exit() {
     local exit_code="$1"
 
@@ -354,7 +366,7 @@ cleanup_on_exit() {
 
     if [[ "$exit_code" -eq 0 ]]; then
         send_notification "end" "Completed successfully."
-    else
+    elif [[ "$FAIL_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "fail" "Exited during stage=${CURRENT_STAGE} with status ${exit_code}."
     fi
 
@@ -387,6 +399,7 @@ cd "$WORK_DIR"
 export PYTHONPATH="$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 
 trap 'cleanup_on_exit "$?"' EXIT
+trap 'handle_error "$?" "$BASH_COMMAND" "$LINENO"' ERR
 trap 'handle_termination_signal TERM' TERM
 trap 'handle_termination_signal INT' INT
 

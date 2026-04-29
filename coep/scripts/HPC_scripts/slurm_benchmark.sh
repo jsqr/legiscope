@@ -33,7 +33,7 @@
 #   SLURM_NOTIFY_EMAIL          - Email address to notify if local `mail` command exists
 #   SLURM_NOTIFY_SUBJECT_PREFIX - Subject prefix for email notifications
 #
-set -eo pipefail
+set -Eeo pipefail
 
 SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
 SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
@@ -86,6 +86,18 @@ CURRENT_STAGE="setup"
 VLLM_PID=""
 BENCHMARK_BACKUP_DIR=""
 BENCHMARK_BACKUP_ACTIVE=0
+FAIL_NOTIFICATION_SENT=0
+
+handle_error() {
+    local exit_code="$1"
+    local failed_command="$2"
+    local failed_line="$3"
+
+    if [[ "$FAIL_NOTIFICATION_SENT" -eq 0 ]]; then
+        send_notification "fail" "Stage=${CURRENT_STAGE}. Exit=${exit_code}. Line=${failed_line}. Command: ${failed_command}"
+        FAIL_NOTIFICATION_SENT=1
+    fi
+}
 
 cleanup_and_notify() {
     local exit_code=$?
@@ -102,14 +114,16 @@ cleanup_and_notify() {
 
     if [[ $exit_code -eq 0 ]]; then
         send_notification "end" "Stage=${CURRENT_STAGE}."
-    else
+    elif [[ "$FAIL_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "fail" "Stage=${CURRENT_STAGE}. Exit=${exit_code}."
     fi
 
+    trap - EXIT ERR
     exit "$exit_code"
 }
 
 trap cleanup_and_notify EXIT
+trap 'handle_error "$?" "$BASH_COMMAND" "$LINENO"' ERR
 
 send_notification "start" "Stage=${CURRENT_STAGE}."
 

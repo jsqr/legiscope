@@ -136,6 +136,23 @@ class TestBenchmarkPipelineHelpers:
         assert scored[1, "eval_label"] == "Incorrect"
         assert scored[1, "eval_score"] == 0
 
+    def test_score_skipped_queries_empty_frame_keeps_eval_schema(self):
+        df = pl.DataFrame(
+            schema={
+                "evaluation_row_id": pl.Int64,
+                "evaluation_generated_answer": pl.String,
+                "ground_truth_available": pl.Boolean,
+            }
+        )
+
+        scored = benchmark_pipeline._score_skipped_queries(df)
+
+        assert scored.is_empty()
+        assert "eval_score" in scored.columns
+        assert "eval_reason" in scored.columns
+        assert "eval_label" in scored.columns
+        assert "eval_error_type" in scored.columns
+
     def test_attach_query_metadata_columns_restores_structured_csv_fields(self):
         df = pl.DataFrame(
             {
