@@ -27,9 +27,10 @@ from legiscope.params import load_params
 
 _p = load_params()
 _seg = _p.get("segmentation", {})
+_ret = _p.get("retrieval", {})
 DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT = int(_seg.get("embedding_model_token_limit", 1024))
 DEFAULT_LLM_CONTEXT_LIMIT = int(_seg.get("llm_context_limit", 32768))
-DEFAULT_TARGET_RETRIEVED_CHUNKS = 5
+DEFAULT_TARGET_RETRIEVED_CHUNKS = int(_ret.get("n_results", 5))
 _CHUNK_CONTEXT_RESERVE_RATIO = 0.25
 _CHUNK_CONTEXT_RESERVE_MIN = 4000
 _MAJOR_BOUNDARY_SECTION_TYPES = {
@@ -538,8 +539,8 @@ def _derive_chunk_token_limit(
     """Derive a per-chunk budget from the downstream completion context limit.
 
     The chunk budget is intentionally smaller than the model context window so
-    query completion can fit several retrieved chunks plus the system prompt,
-    user query, and answer budget in a single request.
+    query completion can fit the worst-case retrieval fan-out plus the system
+    prompt, user query, and answer budget in a single request.
     """
     if llm_context_limit <= 0:
         raise ValueError("llm_context_limit must be positive")
@@ -783,11 +784,28 @@ def _split_paragraph_units(text: str) -> list[str]:
     if not normalized_text:
         return []
 
-    return [
+    paragraphs = [
         paragraph.strip()
         for paragraph in re.split(r"\n\s*\n", normalized_text)
         if paragraph.strip()
     ]
+
+    merged_paragraphs: list[str] = []
+    index = 0
+    while index < len(paragraphs):
+        paragraph = paragraphs[index]
+        if (
+            re.match(r"^#{1,6}\s+.+$", paragraph)
+            and index + 1 < len(paragraphs)
+        ):
+            merged_paragraphs.append(f"{paragraph}\n\n{paragraphs[index + 1]}")
+            index += 2
+            continue
+
+        merged_paragraphs.append(paragraph)
+        index += 1
+
+    return merged_paragraphs
 
 
 def _split_sentence_units(text: str) -> list[str]:
@@ -912,6 +930,7 @@ def build_chunks_df(
     code_md_content: str,
     code_dir: Path,
     llm_context_limit: int = DEFAULT_LLM_CONTEXT_LIMIT,
+    target_retrieved_chunks: int = DEFAULT_TARGET_RETRIEVED_CHUNKS,
 ) -> pl.DataFrame:
     """Build retrieval-oriented chunks from canonical sections and chunkable regions.
 
@@ -933,7 +952,10 @@ def build_chunks_df(
     if len(sections_df) == 0:
         return pl.DataFrame(schema=CHUNKS_SCHEMA)
 
-    chunk_token_limit = _derive_chunk_token_limit(llm_context_limit)
+    chunk_token_limit = _derive_chunk_token_limit(
+        llm_context_limit,
+        target_retrieved_chunks=target_retrieved_chunks,
+    )
     sections_by_ordinal = {
         row["section_ordinal"]: row
         for row in sections_df.sort("section_ordinal").to_dicts()
@@ -1698,6 +1720,7 @@ def segment_legal_code(
     code_ref: CodeRef,
     embedding_model_token_limit: int = DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT,
     llm_context_limit: int = DEFAULT_LLM_CONTEXT_LIMIT,
+    target_retrieved_chunks: int = DEFAULT_TARGET_RETRIEVED_CHUNKS,
 ) -> tuple[pl.DataFrame, pl.DataFrame]:
     """Segment a legal code's Markdown into sections and segments.
 
@@ -1724,6 +1747,8 @@ def segment_legal_code(
         embedding_model_token_limit: Maximum approximate tokens per embedding-ready
             segment.
         llm_context_limit: Downstream LLM context budget used to derive chunk size.
+        target_retrieved_chunks: Worst-case number of distinct chunks that may be
+            sent to completion from a single retrieval pass.
 
     Returns:
         Tuple of ``(sections_df, segments_df)``.
@@ -1802,6 +1827,7 @@ def segment_legal_code(
         content,
         code_dir,
         llm_context_limit=llm_context_limit,
+        target_retrieved_chunks=target_retrieved_chunks,
     )
 
     segments_df = create_segments_df(

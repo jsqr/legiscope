@@ -698,6 +698,30 @@ class TestSplitSegmentRow:
         _, texts = _split_segment_row(row, {}, 100)
         assert texts == ["Some text."]
 
+    def test_prefers_heading_boundaries_before_fallback_tokens(self):
+        """Oversized packed bodies should split on embedded markdown headings first."""
+        from legiscope.embeddings import _split_segment_row
+
+        unit_one = "## 1-100. Purpose.\n\n" + " ".join(["alpha"] * 10) + "."
+        unit_two = "## 1-200. Scope.\n\n" + " ".join(["beta"] * 10) + "."
+        unit_three = "## 1-300. Definitions.\n\n" + " ".join(["gamma"] * 10) + "."
+        row = {
+            "section_ordinal": 0,
+            "segment_text": "\n\n".join([unit_one, unit_two, unit_three]),
+            "word_count": 36,
+        }
+        sections = self._sections_by_ordinal(
+            [{"section_ordinal": 0, "heading_text": "# ARTICLE I", "ancestor_path": None}]
+        )
+
+        split_rows, split_texts = _split_segment_row(row, sections, 24)
+
+        assert len(split_rows) == 3
+        assert all(text.startswith("## ") for text in split_texts)
+        assert "## 1-100. Purpose." in split_rows[0]["segment_text"]
+        assert "## 1-200. Scope." in split_rows[1]["segment_text"]
+        assert "## 1-300. Definitions." in split_rows[2]["segment_text"]
+
 
 class TestSplitOversizedEmbeddingSegments:
     """Unit tests for _split_oversized_embedding_segments."""

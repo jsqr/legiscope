@@ -1293,7 +1293,7 @@ def _split_segment_row(
         ``(new_rows, embedding_texts)`` — parallel lists.  If no split is
         needed, both are single-element lists wrapping the original row.
     """
-    from legiscope.segment import _estimate_token_count, _split_by_token_budget
+    from legiscope.segment import _estimate_token_count, _segment_text_for_retrieval
 
     section_ordinal = row.get("section_ordinal")
 
@@ -1352,7 +1352,7 @@ def _split_segment_row(
     if halve_budget:
         body_budget = max(1, body_budget // 2)
 
-    chunks = _split_by_token_budget(segment_text, body_budget)
+    chunks = _segment_text_for_retrieval(segment_text, body_budget)
 
     new_rows: list[dict[str, Any]] = []
     new_texts: list[str] = []

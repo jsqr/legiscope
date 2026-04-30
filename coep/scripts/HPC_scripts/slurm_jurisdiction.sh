@@ -160,6 +160,14 @@ SHARED_CODE_DIR="${PROJECT_DIR}/${CODE_DIR_REL}"
 SHARED_OUTPUT_DIR="${PROJECT_DIR}/${OUTPUT_DIR_REL}"
 CURRENT_STAGE="setup"
 VLLM_PID=""
+VLLM_GPU_MEMORY_UTILIZATION="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
+LOG_ROOT="/gpfs/data/cerdalab/LegalAI/legiscope/logs"
+METRICS_DIR="${LOG_ROOT}/metrics"
+VLLM_LOG_FILE=""
+GPU_MEM_LOG_FILE=""
+GPU_PROC_LOG_FILE=""
+GPU_MEM_MONITOR_PID=""
+GPU_PROC_MONITOR_PID=""
 CHECKPOINT_SYNC_DONE=0
 FAIL_NOTIFICATION_SENT=0
 END_NOTIFICATION_SENT=0
@@ -178,6 +186,171 @@ resolve_tmp_root() {
 
     echo "ERROR: Could not find a writable temporary directory" >&2
     return 1
+}
+
+init_vllm_metrics_paths() {
+    mkdir -p "$METRICS_DIR"
+    VLLM_LOG_FILE="${METRICS_DIR}/jurisdiction_${SLURM_JOB_ID}_vllm.log"
+    GPU_MEM_LOG_FILE="${METRICS_DIR}/jurisdiction_${SLURM_JOB_ID}_gpu.csv"
+    GPU_PROC_LOG_FILE="${METRICS_DIR}/jurisdiction_${SLURM_JOB_ID}_gpu_process.csv"
+}
+
+start_gpu_metrics_capture() {
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        echo "WARNING: nvidia-smi not found; GPU memory sampling disabled" >&2
+        return 0
+    fi
+
+    : > "$GPU_MEM_LOG_FILE"
+    : > "$GPU_PROC_LOG_FILE"
+
+    nvidia-smi \
+        --query-gpu=timestamp,index,name,memory.total,memory.used,memory.free,utilization.gpu,utilization.memory \
+        --format=csv,noheader,nounits \
+        -l 5 > "$GPU_MEM_LOG_FILE" 2>/dev/null &
+    GPU_MEM_MONITOR_PID=$!
+
+    nvidia-smi \
+        --query-compute-apps=timestamp,gpu_uuid,pid,process_name,used_gpu_memory \
+        --format=csv,noheader,nounits \
+        -l 5 > "$GPU_PROC_LOG_FILE" 2>/dev/null &
+    GPU_PROC_MONITOR_PID=$!
+}
+
+stop_gpu_metrics_capture() {
+    local monitor_pid
+
+    for monitor_pid in "$GPU_MEM_MONITOR_PID" "$GPU_PROC_MONITOR_PID"; do
+        if [[ -n "$monitor_pid" ]] && kill -0 "$monitor_pid" 2>/dev/null; then
+            kill "$monitor_pid" 2>/dev/null || true
+            wait "$monitor_pid" 2>/dev/null || true
+        fi
+    done
+}
+
+emit_vllm_metrics_summary() {
+    local model_loading_summary="unavailable"
+    local kv_memory_summary="unavailable"
+    local kv_tokens_summary="unavailable"
+    local concurrency_summary="unavailable"
+    local startup_summary="unavailable"
+
+    if [[ -f "$VLLM_LOG_FILE" ]]; then
+        model_loading_summary="$(grep -F 'Model loading took ' "$VLLM_LOG_FILE" | tail -1 | sed 's/.*Model loading took //')"
+        kv_memory_summary="$(grep -F 'Available KV cache memory:' "$VLLM_LOG_FILE" | tail -1 | sed 's/.*Available KV cache memory: //')"
+        kv_tokens_summary="$(grep -F 'GPU KV cache size:' "$VLLM_LOG_FILE" | tail -1 | sed 's/.*GPU KV cache size: //')"
+        concurrency_summary="$(grep -F 'Maximum concurrency for ' "$VLLM_LOG_FILE" | tail -1 | sed 's/.*Maximum concurrency for /for /')"
+        startup_summary="$(grep -F 'init engine (profile, create kv cache, warmup model) took ' "$VLLM_LOG_FILE" | tail -1 | sed 's/.*init engine (profile, create kv cache, warmup model) took //')"
+
+        [[ -n "$model_loading_summary" ]] || model_loading_summary="unavailable"
+        [[ -n "$kv_memory_summary" ]] || kv_memory_summary="unavailable"
+        [[ -n "$kv_tokens_summary" ]] || kv_tokens_summary="unavailable"
+        [[ -n "$concurrency_summary" ]] || concurrency_summary="unavailable"
+        [[ -n "$startup_summary" ]] || startup_summary="unavailable"
+    fi
+
+    {
+        echo
+        echo "=== vLLM / GPU Metrics Summary ==="
+        echo "Job ID: ${SLURM_JOB_ID}"
+        echo "Stage at exit: ${CURRENT_STAGE}"
+        echo "Model: ${MODEL_ID:-unavailable}"
+        echo "Configured max model len: ${VLLM_MAX_MODEL_LEN:-unavailable}"
+        echo "Configured gpu memory utilization: ${VLLM_GPU_MEMORY_UTILIZATION}"
+        echo "Tensor parallel size: ${VLLM_TP_SIZE:-unavailable}"
+        echo "Model loading summary: ${model_loading_summary}"
+        echo "Available KV cache memory: ${kv_memory_summary}"
+        echo "GPU KV cache size: ${kv_tokens_summary}"
+        echo "Maximum concurrency: ${concurrency_summary}"
+        echo "Engine init summary: ${startup_summary}"
+
+        if [[ -s "$GPU_MEM_LOG_FILE" ]]; then
+            python3 - "$GPU_MEM_LOG_FILE" <<'PY'
+import csv
+import sys
+
+path = sys.argv[1]
+rows = []
+with open(path, newline="") as handle:
+    reader = csv.reader(handle, skipinitialspace=True)
+    for row in reader:
+        if len(row) < 8:
+            continue
+        try:
+            rows.append(
+                {
+                    "gpu": int(row[1]),
+                    "name": row[2],
+                    "total": float(row[3]),
+                    "used": float(row[4]),
+                    "free": float(row[5]),
+                    "util_gpu": float(row[6]),
+                    "util_mem": float(row[7]),
+                }
+            )
+        except ValueError:
+            continue
+
+if not rows:
+    print("Peak GPU memory usage: unavailable")
+    raise SystemExit(0)
+
+by_gpu = {}
+for row in rows:
+    gpu = row["gpu"]
+    current = by_gpu.get(gpu)
+    if current is None or row["used"] > current["used"]:
+        by_gpu[gpu] = row
+
+peak_used = max(row["used"] for row in rows)
+peak_total = max(row["total"] for row in rows if row["used"] == peak_used)
+print(f"Peak GPU memory usage (any GPU): {peak_used / 1024:.2f} GiB / {peak_total / 1024:.2f} GiB")
+for gpu in sorted(by_gpu):
+    row = by_gpu[gpu]
+    print(
+        f"GPU {gpu} peak: {row['used'] / 1024:.2f} GiB used, {row['free'] / 1024:.2f} GiB free, "
+        f"gpu util {row['util_gpu']:.0f}%, mem util {row['util_mem']:.0f}% ({row['name']})"
+    )
+PY
+        else
+            echo "Peak GPU memory usage: unavailable"
+        fi
+
+        if [[ -s "$GPU_PROC_LOG_FILE" ]]; then
+            python3 - "$GPU_PROC_LOG_FILE" <<'PY'
+import csv
+import sys
+
+path = sys.argv[1]
+best = None
+with open(path, newline="") as handle:
+    reader = csv.reader(handle, skipinitialspace=True)
+    for row in reader:
+        if len(row) < 5:
+            continue
+        try:
+            used = float(row[4])
+        except ValueError:
+            continue
+        if best is None or used > best["used"]:
+            best = {"pid": row[2], "name": row[3], "used": used}
+
+if best is None:
+    print("Peak compute-process memory: unavailable")
+else:
+    print(
+        f"Peak compute-process memory: PID {best['pid']} ({best['name']}) used {best['used'] / 1024:.2f} GiB"
+    )
+PY
+        else
+            echo "Peak compute-process memory: unavailable"
+        fi
+
+        echo "Raw vLLM log: ${VLLM_LOG_FILE:-unavailable}"
+        echo "Raw GPU sample log: ${GPU_MEM_LOG_FILE:-unavailable}"
+        echo "Raw GPU process log: ${GPU_PROC_LOG_FILE:-unavailable}"
+        echo "=== End vLLM / GPU Metrics Summary ==="
+    } >&2
 }
 
 configure_git_identity() {
@@ -360,7 +533,10 @@ cleanup_on_exit() {
 
     if [[ -n "$VLLM_PID" ]]; then
         kill "$VLLM_PID" 2>/dev/null || true
+        wait "$VLLM_PID" 2>/dev/null || true
     fi
+
+    stop_gpu_metrics_capture
 
     if [[ "$exit_code" -ne 0 && "$CHECKPOINT_SYNC_DONE" -eq 0 ]]; then
         echo "Job failed during stage '${CURRENT_STAGE}' (exit ${exit_code}); attempting checkpoint sync before exit..."
@@ -372,6 +548,8 @@ cleanup_on_exit() {
     elif [[ "$FAIL_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "fail" "Exited during stage=${CURRENT_STAGE} with status ${exit_code}."
     fi
+
+    emit_vllm_metrics_summary
 
     trap - EXIT
     exit "$exit_code"
@@ -400,6 +578,8 @@ rsync -a "${PROJECT_DIR}/.git/" "${WORK_DIR}/.git/"
 
 cd "$WORK_DIR"
 export PYTHONPATH="$WORK_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+
+init_vllm_metrics_paths
 
 trap 'cleanup_on_exit "$?"' EXIT
 trap 'handle_error "$?" "$BASH_COMMAND" "$LINENO"' ERR
@@ -492,12 +672,15 @@ echo "Starting vLLM on port ${VLLM_PORT}..."
 echo "Resolved model from params.yaml: ${MODEL_ID}"
 echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
 echo "Using tensor parallel size ${VLLM_TP_SIZE}"
+echo "Using gpu memory utilization ${VLLM_GPU_MEMORY_UTILIZATION}"
+
+start_gpu_metrics_capture
 
 python -m vllm.entrypoints.openai.api_server \
     --model "$MODEL_ID" \
     --host 0.0.0.0 \
     --port "$VLLM_PORT" \
-    --gpu-memory-utilization 0.85 \
+    --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION" \
     --max-model-len "$VLLM_MAX_MODEL_LEN" \
     --api-key "$API_KEY" \
     --served-model-name "$MODEL_ID" \
@@ -509,7 +692,9 @@ python -m vllm.entrypoints.openai.api_server \
     --default-chat-template-kwargs '{"enable_thinking": false}' \
     --language-model-only \
     --dtype float16 \
-    --enforce-eager &
+    --enforce-eager \
+    > >(tee -a "$VLLM_LOG_FILE") \
+    2> >(tee -a "$VLLM_LOG_FILE" >&2) &
 
 VLLM_PID=$!
 

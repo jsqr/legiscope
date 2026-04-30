@@ -41,6 +41,7 @@ from legiscope.retrieve import (
     SectionCollection,
     SectionResult,
 )
+from legiscope.segment import _estimate_token_count
 from legiscope.utils import ask, LLMConfig
 
 
@@ -58,6 +59,11 @@ def _llm_params() -> dict[str, Any]:
 def _retrieval_params() -> dict[str, Any]:
     p = load_params()
     return p.get("retrieval", {})
+
+
+def _segmentation_params() -> dict[str, Any]:
+    p = load_params()
+    return p.get("segmentation", {})
 
 
 def _debug_timestamp() -> str:
@@ -144,11 +150,16 @@ def _sanitize_prior_answers(prior_answers: Any) -> dict[str, dict[str, str]]:
 _qp = _query_params()
 _lp = _llm_params()
 _rp = _retrieval_params()
+_sp = _segmentation_params()
 
 DEFAULT_TEMPERATURE = _lp.get("temperature", 0.0)
 DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
 DEFAULT_N_RESULTS = _rp.get("n_results", 10)
 DEFAULT_LLM_TIMEOUT_SECONDS = float(_lp.get("timeout", 300))
+DEFAULT_COMPLETION_CONTEXT_LIMIT = int(_sp.get("llm_context_limit", 32768))
+DEFAULT_CONTEXT_OVERFLOW_RETRIES = 3
+_COMPLETION_CONTEXT_RESERVE_RATIO = 0.25
+_COMPLETION_CONTEXT_RESERVE_MIN = 4000
 
 # Retrieval-phase settings (single source of truth from retrieval section)
 DEFAULT_HYDE_ENABLED: bool = _rp.get("hyde", {}).get("enabled", False)
@@ -201,6 +212,13 @@ _MONTH_YEAR_RE = re.compile(
 _NUMERIC_MONTH_YEAR_RE = re.compile(r"\b(?P<month>\d{1,2})[/-](?P<year>\d{4})\b")
 _YEAR_ONLY_RE = re.compile(r"\b(?P<year>(?:18|19|20|21)\d{2})\b")
 _DATE_PLACEHOLDER_RE = re.compile(r"<[^>]*date[^>]*>", re.IGNORECASE)
+_CONTEXT_OVERFLOW_PATTERNS = (
+    "maximum context length",
+    "context length",
+    "prompt contains at least",
+    "prompt is too long",
+    "too many tokens",
+)
 _CITATION_PATTERNS = [
     re.compile(
         r"(?:relevant\s+)?citation\s*(?:is|:)\s*(?P<citation>[^\n]+)",
@@ -1116,33 +1134,27 @@ def query_legal_documents(
             stage_status = debug_capture.setdefault("query", {}).get("stage_status")
         return _build_no_sections_response(stage_status), []
 
-    full_context = _prepare_legal_context(sections)
-    if execution_capture is not None:
-        execution_capture["completion_sections"] = list(sections)
+    sections, full_context, completion_budgeting = _select_sections_for_completion_budget(
+        sections,
+        llm_context_limit=DEFAULT_COMPLETION_CONTEXT_LIMIT,
+    )
 
     system_prompt, user_prompt = _build_legal_prompts(
         query,
         full_context,
         query_metadata=query_metadata,
     )
-
-    if debug_capture is not None:
-        debug_capture["query"].update(
-            {
-                "stage_status": "completed",
-                "sections_used_for_completion": len(sections),
-                "retrieval_units_used_for_completion": len(sections),
-                "final_section_headings": _json_debug(
-                    [section.heading_text for section in sections[:DEBUG_SECTION_LIMIT]]
-                ),
-                "final_retrieval_unit_headings": _json_debug(
-                    [section.heading_text for section in sections[:DEBUG_SECTION_LIMIT]]
-                ),
-                "llm_system_prompt": system_prompt,
-                "llm_user_prompt": user_prompt,
-                "llm_context_preview": _truncate_debug_text(full_context, 2000),
-            }
-        )
+    _update_completion_debug_capture(
+        debug_capture,
+        sections=sections,
+        full_context=full_context,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        metadata=completion_budgeting,
+    )
+    if execution_capture is not None:
+        execution_capture["completion_sections"] = list(sections)
+        execution_capture["completion_budgeting"] = dict(completion_budgeting)
 
     # Execute LLM call for query processing
     logger.debug(
@@ -1163,7 +1175,49 @@ def query_legal_documents(
     timeout_seconds = DEFAULT_LLM_TIMEOUT_SECONDS
 
     try:
-        response = _run_with_timeout(_invoke_llm, timeout_seconds)
+        response = None
+        overflow_attempt = 0
+        while True:
+            try:
+                response = _run_with_timeout(_invoke_llm, timeout_seconds)
+                break
+            except Exception as error:
+                if not _is_context_overflow_error(error):
+                    raise
+                if (
+                    overflow_attempt >= DEFAULT_CONTEXT_OVERFLOW_RETRIES
+                    or len(sections) <= 1
+                ):
+                    raise
+
+                dropped_section = sections.pop()
+                _record_overflow_retry_drop(completion_budgeting, dropped_section)
+                full_context = _prepare_legal_context(sections)
+                system_prompt, user_prompt = _build_legal_prompts(
+                    query,
+                    full_context,
+                    query_metadata=query_metadata,
+                )
+                _update_completion_debug_capture(
+                    debug_capture,
+                    sections=sections,
+                    full_context=full_context,
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    metadata=completion_budgeting,
+                )
+                if execution_capture is not None:
+                    execution_capture["completion_sections"] = list(sections)
+                    execution_capture["completion_budgeting"] = dict(
+                        completion_budgeting
+                    )
+                overflow_attempt += 1
+                logger.warning(
+                    "Context overflow during completion; retrying with {} retrieval units",
+                    len(sections),
+                )
+
+        assert response is not None
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
@@ -1175,6 +1229,10 @@ def query_legal_documents(
         similarity_scores = []
         if settings.validate_supporting_passages:
             similarity_scores = _validate_supporting_passages(response, sections)
+
+        if execution_capture is not None:
+            execution_capture["completion_sections"] = list(sections)
+            execution_capture["completion_budgeting"] = dict(completion_budgeting)
 
         if debug_capture is not None:
             debug_capture["query"].update(
@@ -1580,34 +1638,218 @@ def run_queries(
     return _compile_query_results(results)
 
 
+def _prepare_legal_context_unit(section: SectionResult, *, display_index: int) -> str:
+    """Render one retrieval unit for completion-context budgeting and prompting."""
+    section_parts = [
+        f"\nRetrieval Unit {display_index}: {section.heading_text}",
+        f"Relevance Score: {section.relevance_score:.3f}",
+    ]
+
+    if section.context_path:
+        section_parts.append(f"Context Path: {section.context_path}")
+
+    if section.source_kind:
+        section_parts.append(f"Source Kind: {section.source_kind}")
+
+    if section.region_role and section.region_role not in {"main_body", "appendix"}:
+        section_parts.append(f"Region Role: {section.region_role}")
+
+    if section.body_text:
+        section_parts.append(f"Content: {section.body_text}")
+    else:
+        section_parts.append("Content: [No body text]")
+
+    return "\n".join(section_parts)
+
+
 def _prepare_legal_context(sections: list[SectionResult]) -> str:
     """Prepare formatted context from retrieved context units for LLM processing."""
-    context_units = []
-    for i, section in enumerate(sections):
-        # Build context-unit parts as a list for efficient concatenation
-        # Start with metadata
-        section_parts = [
-            f"\nRetrieval Unit {i + 1}: {section.heading_text}",
-            f"Relevance Score: {section.relevance_score:.3f}",
-        ]
+    return "\n".join(
+        _prepare_legal_context_unit(section, display_index=i + 1)
+        for i, section in enumerate(sections)
+    )
 
-        if section.context_path:
-            section_parts.append(f"Context Path: {section.context_path}")
 
-        if section.source_kind:
-            section_parts.append(f"Source Kind: {section.source_kind}")
+def _section_result_id(section: SectionResult) -> str:
+    """Return the stable retrieval-unit identifier used in debug output."""
+    return str(section.chunk_id or section.section_id)
 
-        if section.region_role and section.region_role not in {"main_body", "appendix"}:
-            section_parts.append(f"Region Role: {section.region_role}")
 
-        if section.body_text:
-            section_parts.append(f"Content: {section.body_text}")
-        else:
-            section_parts.append("Content: [No body text]")
+def _derive_completion_context_budget(
+    llm_context_limit: int = DEFAULT_COMPLETION_CONTEXT_LIMIT,
+) -> int:
+    """Reserve prompt/output overhead and return the budget available for context text."""
+    if llm_context_limit <= 0:
+        raise ValueError("llm_context_limit must be positive")
 
-        context_units.append("\n".join(section_parts))
+    reserved_tokens = max(
+        _COMPLETION_CONTEXT_RESERVE_MIN,
+        int(llm_context_limit * _COMPLETION_CONTEXT_RESERVE_RATIO),
+    )
+    return max(1, llm_context_limit - reserved_tokens)
 
-    return "\n".join(context_units)
+
+def _select_sections_for_completion_budget(
+    sections: list[SectionResult],
+    *,
+    llm_context_limit: int = DEFAULT_COMPLETION_CONTEXT_LIMIT,
+) -> tuple[list[SectionResult], str, dict[str, Any]]:
+    """Keep highest-priority sections that fit the completion context budget."""
+    context_token_budget = _derive_completion_context_budget(llm_context_limit)
+    selected_sections: list[SectionResult] = []
+    selected_context_units: list[str] = []
+    selected_context_tokens = 0
+    preflight_dropped_sections: list[SectionResult] = []
+    forced_oversized_sections: list[SectionResult] = []
+
+    for section in sections:
+        unit_text = _prepare_legal_context_unit(
+            section,
+            display_index=len(selected_sections) + 1,
+        )
+        unit_tokens = _estimate_token_count(unit_text)
+
+        if not selected_sections and unit_tokens > context_token_budget:
+            selected_sections.append(section)
+            selected_context_units.append(unit_text)
+            selected_context_tokens = unit_tokens
+            forced_oversized_sections.append(section)
+            continue
+
+        if selected_context_tokens + unit_tokens > context_token_budget:
+            preflight_dropped_sections.append(section)
+            continue
+
+        selected_sections.append(section)
+        selected_context_units.append(unit_text)
+        selected_context_tokens += unit_tokens
+
+    full_context = "\n".join(selected_context_units)
+    metadata = {
+        "context_token_budget": context_token_budget,
+        "preflight_selected_context_tokens": selected_context_tokens,
+        "final_context_tokens": selected_context_tokens,
+        "preflight_dropped_chunk_ids": [
+            _section_result_id(section) for section in preflight_dropped_sections
+        ],
+        "preflight_dropped_chunk_headings": [
+            section.heading_text for section in preflight_dropped_sections
+        ],
+        "preflight_dropped_count": len(preflight_dropped_sections),
+        "forced_oversized_chunk_ids": [
+            _section_result_id(section) for section in forced_oversized_sections
+        ],
+        "forced_oversized_chunk_headings": [
+            section.heading_text for section in forced_oversized_sections
+        ],
+        "overflow_retry_dropped_chunk_ids": [],
+        "overflow_retry_dropped_chunk_headings": [],
+        "overflow_retry_count": 0,
+        "total_dropped_chunk_ids": [
+            _section_result_id(section) for section in preflight_dropped_sections
+        ],
+        "total_dropped_chunk_headings": [
+            section.heading_text for section in preflight_dropped_sections
+        ],
+        "total_dropped_count": len(preflight_dropped_sections),
+        "final_chunk_ids": [_section_result_id(section) for section in selected_sections],
+        "final_chunk_headings": [section.heading_text for section in selected_sections],
+    }
+    return selected_sections, full_context, metadata
+
+
+def _is_context_overflow_error(error: Exception) -> bool:
+    """Return whether an exception appears to be a provider context-window overflow."""
+    message = str(error).lower()
+    return any(pattern in message for pattern in _CONTEXT_OVERFLOW_PATTERNS)
+
+
+def _record_overflow_retry_drop(
+    metadata: dict[str, Any],
+    section: SectionResult,
+) -> None:
+    """Track overflow retry drops for debug artifacts and benchmark outputs."""
+    section_id = _section_result_id(section)
+    heading_text = section.heading_text
+    metadata.setdefault("overflow_retry_dropped_chunk_ids", []).append(section_id)
+    metadata.setdefault("overflow_retry_dropped_chunk_headings", []).append(
+        heading_text
+    )
+    metadata["overflow_retry_count"] = int(metadata.get("overflow_retry_count", 0)) + 1
+    metadata.setdefault("total_dropped_chunk_ids", []).append(section_id)
+    metadata.setdefault("total_dropped_chunk_headings", []).append(heading_text)
+    metadata["total_dropped_count"] = int(metadata.get("total_dropped_count", 0)) + 1
+
+
+def _update_completion_debug_capture(
+    debug_capture: dict[str, dict[str, Any]] | None,
+    *,
+    sections: list[SectionResult],
+    full_context: str,
+    system_prompt: str,
+    user_prompt: str,
+    metadata: dict[str, Any],
+) -> None:
+    """Persist completion-budget decisions and final prompt state into debug rows."""
+    if debug_capture is None:
+        return
+
+    metadata["final_context_tokens"] = _estimate_token_count(full_context)
+    metadata["final_chunk_ids"] = [_section_result_id(section) for section in sections]
+    metadata["final_chunk_headings"] = [section.heading_text for section in sections]
+
+    debug_capture.setdefault("query", {}).update(
+        {
+            "stage_status": "completed",
+            "sections_used_for_completion": len(sections),
+            "retrieval_units_used_for_completion": len(sections),
+            "final_section_headings": _json_debug(
+                [section.heading_text for section in sections[:DEBUG_SECTION_LIMIT]]
+            ),
+            "final_retrieval_unit_headings": _json_debug(
+                [section.heading_text for section in sections[:DEBUG_SECTION_LIMIT]]
+            ),
+            "llm_system_prompt": system_prompt,
+            "llm_user_prompt": user_prompt,
+            "llm_context_preview": _truncate_debug_text(full_context, 2000),
+            "completion_context_budget_tokens": metadata.get("context_token_budget", 0),
+            "completion_preflight_selected_context_tokens": metadata.get(
+                "preflight_selected_context_tokens", 0
+            ),
+            "completion_final_context_tokens": metadata.get(
+                "final_context_tokens", 0
+            ),
+            "completion_preflight_dropped_count": metadata.get(
+                "preflight_dropped_count", 0
+            ),
+            "completion_preflight_dropped_chunk_ids": _json_debug(
+                metadata.get("preflight_dropped_chunk_ids", [])
+            ),
+            "completion_preflight_dropped_chunk_headings": _json_debug(
+                metadata.get("preflight_dropped_chunk_headings", [])
+            ),
+            "completion_forced_oversized_chunk_ids": _json_debug(
+                metadata.get("forced_oversized_chunk_ids", [])
+            ),
+            "completion_forced_oversized_chunk_headings": _json_debug(
+                metadata.get("forced_oversized_chunk_headings", [])
+            ),
+            "overflow_retry_count": metadata.get("overflow_retry_count", 0),
+            "overflow_retry_dropped_chunk_ids": _json_debug(
+                metadata.get("overflow_retry_dropped_chunk_ids", [])
+            ),
+            "overflow_retry_dropped_chunk_headings": _json_debug(
+                metadata.get("overflow_retry_dropped_chunk_headings", [])
+            ),
+            "completion_total_dropped_count": metadata.get("total_dropped_count", 0),
+            "completion_total_dropped_chunk_ids": _json_debug(
+                metadata.get("total_dropped_chunk_ids", [])
+            ),
+            "completion_total_dropped_chunk_headings": _json_debug(
+                metadata.get("total_dropped_chunk_headings", [])
+            ),
+        }
+    )
 
 
 def _build_structured_answer_contract(
@@ -2216,91 +2458,42 @@ def _annotate_sections_for_query(
         )
         for section in sections
     ]
-
-
-def _merge_sections_for_hierarchy(
+def _select_completion_sections_for_hierarchy(
     *,
     query_id: str,
     child_sections: list[SectionResult],
     inherited_sections: list[tuple[str, list[SectionResult]]],
 ) -> tuple[list[SectionResult], dict[str, list[str] | int]]:
-    """Merge parent and child retrieval units while preserving provenance."""
-    merged_sections: list[SectionResult] = []
-    merged_by_id: dict[str, int] = {}
-    inherited_ids: list[str] = []
-    child_ids: list[str] = []
-    merged_ids: list[str] = []
-    duplicate_ids: list[str] = []
-
-    def _record(
-        section: SectionResult, *, parent_query_id: str | None, is_child: bool
-    ) -> None:
-        section_id = _section_unit_id(section)
-        if parent_query_id is not None:
-            inherited_ids.append(section_id)
-        if is_child:
-            child_ids.append(section_id)
-
-        if section_id in merged_by_id:
-            duplicate_ids.append(section_id)
-            current = merged_sections[merged_by_id[section_id]]
-            inherited_from_parent_query_ids = list(
-                current.inherited_from_parent_query_ids
-            )
-            if (
-                parent_query_id
-                and parent_query_id not in inherited_from_parent_query_ids
-            ):
-                inherited_from_parent_query_ids.append(parent_query_id)
-
-            retrieved_for_query_ids = list(current.retrieved_for_query_ids)
-            for source_query_id in section.retrieved_for_query_ids:
-                if source_query_id not in retrieved_for_query_ids:
-                    retrieved_for_query_ids.append(source_query_id)
-            if is_child and query_id not in retrieved_for_query_ids:
-                retrieved_for_query_ids.append(query_id)
-
-            merged_sections[merged_by_id[section_id]] = replace(
-                current,
-                inherited_from_parent_query_ids=inherited_from_parent_query_ids,
-                retrieved_for_query_ids=retrieved_for_query_ids,
-                is_inherited=current.is_inherited or parent_query_id is not None,
-                is_new_for_child=current.is_new_for_child or is_child,
-            )
-            return
-
-        annotated = replace(
+    """Keep only child retrieval units for completion while recording discarded parent units."""
+    inherited_ids = [
+        _section_unit_id(section)
+        for _parent_query_id, parent_sections in inherited_sections
+        for section in parent_sections
+    ]
+    selected_sections = [
+        replace(
             section,
-            inherited_from_parent_query_ids=(
-                [parent_query_id] if parent_query_id is not None else []
-            ),
+            inherited_from_parent_query_ids=[],
             retrieved_for_query_ids=(
                 list(section.retrieved_for_query_ids)
                 if section.retrieved_for_query_ids
-                else ([query_id] if is_child else [])
+                else [query_id]
             ),
-            is_inherited=parent_query_id is not None,
-            is_new_for_child=is_child,
+            is_inherited=False,
+            is_new_for_child=True,
         )
-        merged_by_id[section_id] = len(merged_sections)
-        merged_sections.append(annotated)
-        merged_ids.append(section_id)
+        for section in child_sections
+    ]
+    selected_ids = [_section_unit_id(section) for section in selected_sections]
 
-    for parent_query_id, parent_sections in inherited_sections:
-        for section in parent_sections:
-            _record(section, parent_query_id=parent_query_id, is_child=False)
-
-    for section in child_sections:
-        _record(section, parent_query_id=None, is_child=True)
-
-    return merged_sections, {
+    return selected_sections, {
         "inherited_chunk_ids": inherited_ids,
-        "new_chunk_ids": child_ids,
-        "merged_chunk_ids": merged_ids,
-        "coalesced_duplicate_chunk_ids": sorted(set(duplicate_ids)),
+        "new_chunk_ids": selected_ids,
+        "merged_chunk_ids": selected_ids,
+        "coalesced_duplicate_chunk_ids": [],
         "inherited_count": len(inherited_ids),
-        "child_count": len(child_ids),
-        "merged_count": len(merged_sections),
+        "child_count": len(selected_ids),
+        "merged_count": len(selected_sections),
     }
 
 
@@ -2937,7 +3130,7 @@ def _process_single_query_with_error_handling(
                 debug_capture=debug_capture,
             )
             preselected_sections, retrieval_merge_metadata = (
-                _merge_sections_for_hierarchy(
+                _select_completion_sections_for_hierarchy(
                     query_id=query_id,
                     child_sections=child_completion_sections,
                     inherited_sections=inherited_sections,
@@ -2978,6 +3171,7 @@ def _process_single_query_with_error_handling(
             execution_capture=execution_capture,
         )
         completion_sections = list(execution_capture.get("completion_sections", []))
+        completion_budgeting = dict(execution_capture.get("completion_budgeting", {}))
 
         raw_short_answer = query_response.short_answer
         has_structured_response_options = bool(
@@ -3059,6 +3253,48 @@ def _process_single_query_with_error_handling(
             ),
             "generated_error_response": str(query_response.short_answer).startswith(
                 "Error:"
+            ),
+            "completion_context_budget_tokens": completion_budgeting.get(
+                "context_token_budget", 0
+            ),
+            "completion_preflight_selected_context_tokens": completion_budgeting.get(
+                "preflight_selected_context_tokens", 0
+            ),
+            "completion_final_context_tokens": completion_budgeting.get(
+                "final_context_tokens", 0
+            ),
+            "completion_preflight_dropped_count": completion_budgeting.get(
+                "preflight_dropped_count", 0
+            ),
+            "completion_preflight_dropped_chunk_ids": _json_debug(
+                completion_budgeting.get("preflight_dropped_chunk_ids", [])
+            ),
+            "completion_preflight_dropped_chunk_headings": _json_debug(
+                completion_budgeting.get("preflight_dropped_chunk_headings", [])
+            ),
+            "completion_forced_oversized_chunk_ids": _json_debug(
+                completion_budgeting.get("forced_oversized_chunk_ids", [])
+            ),
+            "completion_forced_oversized_chunk_headings": _json_debug(
+                completion_budgeting.get("forced_oversized_chunk_headings", [])
+            ),
+            "overflow_retry_count": completion_budgeting.get(
+                "overflow_retry_count", 0
+            ),
+            "overflow_retry_dropped_chunk_ids": _json_debug(
+                completion_budgeting.get("overflow_retry_dropped_chunk_ids", [])
+            ),
+            "overflow_retry_dropped_chunk_headings": _json_debug(
+                completion_budgeting.get("overflow_retry_dropped_chunk_headings", [])
+            ),
+            "completion_total_dropped_count": completion_budgeting.get(
+                "total_dropped_count", 0
+            ),
+            "completion_total_dropped_chunk_ids": _json_debug(
+                completion_budgeting.get("total_dropped_chunk_ids", [])
+            ),
+            "completion_total_dropped_chunk_headings": _json_debug(
+                completion_budgeting.get("total_dropped_chunk_headings", [])
             ),
             "_debug_retrieval_row": retrieval_debug_row,
             "_debug_relevance_row": relevance_debug_row,

@@ -608,14 +608,15 @@ This section sets out the basic powers of the city."""
 class TestBuildChunks:
     """Unit tests for derived chunk construction."""
 
-    def test_chunk_budget_depends_only_on_llm_context_limit(self, monkeypatch):
-        """Derived chunk size should be independent of embedding segment limits."""
+    def test_chunk_budget_uses_retrieval_result_budget(self, monkeypatch):
+        """Derived chunk size should honor the configured worst-case retrieval fan-out."""
         monkeypatch.setattr(
             segment_mod,
             "DEFAULT_EMBEDDING_MODEL_TOKEN_LIMIT",
             20000,
         )
-        assert _derive_chunk_token_limit(32768) == 4915
+        assert _derive_chunk_token_limit(32768) == 2457
+        assert _derive_chunk_token_limit(32768, target_retrieved_chunks=5) == 4915
 
     def test_build_chunks_splits_oversized_section_body(self, tmp_path: Path):
         """Oversized section bodies should split into multiple derived chunks."""
@@ -647,6 +648,7 @@ Short supporting text."""
             markdown_text,
             code_dir,
             llm_context_limit=3000,
+            target_retrieved_chunks=5,
         )
 
         split_chunks = chunks_df.filter(pl.col("source_kind") == "section_body_split")
@@ -682,6 +684,7 @@ Short supporting text."""
             markdown_text,
             code_dir,
             llm_context_limit=4400,
+            target_retrieved_chunks=5,
         )
 
         split_chunks = chunks_df.filter(pl.col("source_kind") == "section_body_split")
@@ -730,6 +733,7 @@ Short supporting text."""
             markdown_text,
             code_dir,
             llm_context_limit=4400,
+            target_retrieved_chunks=5,
         )
 
         section_chunks = chunks_df.filter(
@@ -792,6 +796,7 @@ Short supporting text."""
             markdown_text,
             code_dir,
             llm_context_limit=4300,
+            target_retrieved_chunks=5,
         )
 
         section_chunks = chunks_df.filter(pl.col("source_kind") == "section_subtree")
@@ -852,6 +857,7 @@ Short supporting text."""
             markdown_text,
             code_dir,
             llm_context_limit=4700,
+            target_retrieved_chunks=5,
         )
 
         section_chunks = chunks_df.filter(pl.col("source_kind") == "section_subtree")
@@ -1750,6 +1756,35 @@ Definitions text for the third section."""
             _estimate_token_count(text) <= adjusted_limit
             for text in result["segment_text"].to_list()
         )
+
+    def test_create_segments_df_respects_total_embedding_budget(self):
+        """Segment bodies should leave room for the ancestor headings prepended later."""
+        body = "\n\n".join(
+            [
+                " ".join(["alpha"] * 10) + ".",
+                " ".join(["beta"] * 10) + ".",
+                " ".join(["gamma"] * 10) + ".",
+            ]
+        )
+        df = pl.DataFrame(
+            {
+                "section_ordinal": [0, 1],
+                "heading_level": [1, 2],
+                "heading_text": ["# TITLE I", "## Section 1"],
+                "body_text": ["", body],
+                "parent": [None, 0],
+                "children": [[1], []],
+                "depth": [0, 1],
+                "ancestor_path": ["0", "0/1"],
+            }
+        )
+
+        result = create_segments_df(df, token_limit=20)
+
+        assert len(result) >= 2
+        for row in result.filter(pl.col("section_ordinal") == 1).to_dicts():
+            assembled = "\n\n".join(["# TITLE I", "## Section 1", row["segment_text"]])
+            assert _estimate_token_count(assembled) <= 20
 
     def test_mixed_scenarios_flat_format(self):
         """Test mixed scenarios with various section lengths."""

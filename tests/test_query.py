@@ -1037,6 +1037,140 @@ class TestBatchQueryConfig:
 class TestQueryConfigBasics:
     """Test QuerySettings-based query_legal_documents function."""
 
+    def test_query_legal_documents_preflights_completion_budget_and_records_drops(
+        self, monkeypatch
+    ):
+        mock_client = Mock(spec=Instructor)
+        sections = [
+            SectionResult(
+                section_id=f"s{i}",
+                heading_text=f"# Section {i}",
+                body_text=" ".join(["word"] * 80),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.1,
+                segment_count=1,
+            )
+            for i in range(3)
+        ]
+        retrieval_results = SectionCollection(
+            sections=sections,
+            query_info=QueryInfo(
+                original_query="test query",
+                total_segments_found=3,
+                unique_sections=3,
+            ),
+        )
+        mock_response = LegalQueryResponse(
+            short_answer="Budgeted answer",
+            reasoning="Budgeted reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+        debug_capture = {"query": {}}
+        execution_capture: dict[str, object] = {}
+
+        monkeypatch.setattr("legiscope.query.DEFAULT_COMPLETION_CONTEXT_LIMIT", 4200)
+
+        with patch("legiscope.query.ask", return_value=mock_response):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What does the ordinance say?",
+                settings,
+                debug_capture=debug_capture,
+                execution_capture=execution_capture,
+            )
+
+        assert response.short_answer == "Budgeted answer"
+        assert similarity_scores == []
+        assert len(execution_capture["completion_sections"]) < len(sections)
+        budget_metadata = execution_capture["completion_budgeting"]
+        assert budget_metadata["preflight_dropped_count"] > 0
+        assert json.loads(debug_capture["query"]["completion_total_dropped_chunk_ids"]) == budget_metadata[
+            "total_dropped_chunk_ids"
+        ]
+
+    def test_query_legal_documents_retries_on_context_overflow_by_dropping_last_chunk(
+        self, monkeypatch
+    ):
+        mock_client = Mock(spec=Instructor)
+        sections = [
+            SectionResult(
+                section_id=f"s{i}",
+                heading_text=f"# Section {i}",
+                body_text="Short supporting text.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.1,
+                segment_count=1,
+            )
+            for i in range(3)
+        ]
+        retrieval_results = SectionCollection(
+            sections=sections,
+            query_info=QueryInfo(
+                original_query="test query",
+                total_segments_found=3,
+                unique_sections=3,
+            ),
+        )
+        debug_capture = {"query": {}}
+        execution_capture: dict[str, object] = {}
+        mock_response = LegalQueryResponse(
+            short_answer="Recovered answer",
+            reasoning="Recovered reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+        call_count = 0
+
+        def fake_ask(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise RuntimeError(
+                    "This model's maximum context length is 32768 tokens. However, your prompt contains at least 40000 tokens."
+                )
+            return mock_response
+
+        monkeypatch.setattr("legiscope.query.DEFAULT_COMPLETION_CONTEXT_LIMIT", 32768)
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What does the ordinance say?",
+                settings,
+                debug_capture=debug_capture,
+                execution_capture=execution_capture,
+            )
+
+        assert response.short_answer == "Recovered answer"
+        assert similarity_scores == []
+        assert call_count == 2
+        assert len(execution_capture["completion_sections"]) == 2
+        assert execution_capture["completion_budgeting"]["overflow_retry_count"] == 1
+        assert json.loads(debug_capture["query"]["overflow_retry_dropped_chunk_ids"]) == [
+            "s2"
+        ]
+
     def test_query_legal_documents_with_config(self):
         """Test basic query_legal_documents with settings object."""
         mock_client = Mock(spec=Instructor)
@@ -1139,6 +1273,68 @@ class TestQueryConfigBasics:
 
 class TestBatchQueryConfigBasics:
     """Test BatchQuerySettings-based run_queries function."""
+
+    def test_run_queries_records_completion_drop_metadata(self, tmp_path, monkeypatch):
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id=f"s{i}",
+                    heading_text=f"# Section {i}",
+                    body_text=" ".join(["word"] * 80),
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+                for i in range(3)
+            ],
+            query_info=QueryInfo(
+                original_query="test query",
+                total_segments_found=3,
+                unique_sections=3,
+            ),
+        )
+        mock_response = LegalQueryResponse(
+            short_answer="Budgeted answer",
+            reasoning="Budgeted reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        monkeypatch.setattr("legiscope.query.DEFAULT_COMPLETION_CONTEXT_LIMIT", 4200)
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch("legiscope.query.ask", return_value=mock_response):
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=Mock(spec=Instructor), model="test-model"),
+                    filter_relevance=False,
+                    validate_supporting_passages=False,
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[QueryInput(question="query1", variable_name="dp_test")],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert results_df[0, "completion_total_dropped_count"] > 0
+        assert json.loads(results_df[0, "completion_preflight_dropped_chunk_ids"]) != []
 
     def test_run_queries_with_minimal_config(self, tmp_path):
         """Test run_queries with minimal configuration."""
@@ -2446,12 +2642,15 @@ class TestHierarchicalQueryExecution:
             ]
         ]
 
-    def test_run_queries_merges_parent_and_child_retrieval_units(self, tmp_path):
+    def test_run_queries_uses_only_child_retrieval_units_for_completion(self, tmp_path):
         sections_path = self._write_sections_parquet(tmp_path)
         parent_results = SectionCollection(
-            sections=[self._make_section("s_parent", chunk_id="chunk_parent")],
+            sections=[
+                self._make_section("s_parent_only", chunk_id="chunk_parent_only"),
+                self._make_section("s_parent", chunk_id="chunk_parent"),
+            ],
             query_info=QueryInfo(
-                original_query="parent query", total_segments_found=1, unique_sections=1
+                original_query="parent query", total_segments_found=2, unique_sections=2
             ),
         )
         child_results = SectionCollection(
@@ -2550,10 +2749,89 @@ class TestHierarchicalQueryExecution:
                     settings=settings,
                 )
 
-        assert merged_section_ids[0] == ["chunk_parent"]
+        assert merged_section_ids[0] == ["chunk_parent_only", "chunk_parent"]
         assert merged_section_ids[1] == ["chunk_parent", "chunk_child"]
         child_row = results_df.filter(pl.col("query_id") == "Q1.1")
-        assert child_row[0, "inherited_chunk_ids"] == '["chunk_parent"]'
+        assert child_row[0, "inherited_chunk_ids"] == '["chunk_parent_only", "chunk_parent"]'
         assert child_row[0, "new_chunk_ids"] == '["chunk_parent", "chunk_child"]'
         assert child_row[0, "merged_chunk_ids"] == '["chunk_parent", "chunk_child"]'
-        assert child_row[0, "coalesced_duplicate_chunk_ids"] == '["chunk_parent"]'
+        assert child_row[0, "coalesced_duplicate_chunk_ids"] == '[]'
+
+    def test_run_queries_appends_parent_retrieval_prompt_to_child_retrieval_query(
+        self, tmp_path
+    ):
+        sections_path = self._write_sections_parquet(tmp_path)
+        retrieval_results = SectionCollection(
+            sections=[self._make_section("s1")],
+            query_info=QueryInfo(
+                original_query="query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="Parent answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.9,
+            limitations="None",
+        )
+        child_response = LegalQueryResponse(
+            short_answer="Use",
+            reasoning="Child answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("Q1",),
+            context_parent_ids=("Q1",),
+            inherit_parent_retrieval=True,
+        )
+
+        with patch(
+            "legiscope.query.retrieve_sections",
+            side_effect=[retrieval_results, retrieval_results],
+        ) as mock_retrieve:
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=[(parent_response, []), (child_response, [])],
+            ):
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                    filter_relevance=False,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Parent retrieval prompt",
+                            variable_name="parent_var",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy)
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Child retrieval prompt",
+                            variable_name="child_var",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy)
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert mock_retrieve.call_args_list[1].kwargs["query_text"] == (
+            "Upstream retrieval context from Q1:\nParent retrieval prompt\n\n"
+            "Child retrieval prompt"
+        )
