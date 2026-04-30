@@ -103,6 +103,8 @@ send_notification() {
     message="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: ${STATE}-${LOCALITY} job ${SLURM_JOB_ID} on $(hostname) at ${timestamp}. ${detail}"
     subject="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: ${STATE}-${LOCALITY} (${SLURM_JOB_ID})"
 
+    echo "Notification attempt: event=${event_name} email=${SLURM_NOTIFY_EMAIL:-<unset>} mail_bin=${MAIL_BIN:-<missing>}" >&2
+
     if [[ -z "${SLURM_NOTIFY_EMAIL:-}" ]]; then
         return 0
     fi
@@ -160,6 +162,7 @@ CURRENT_STAGE="setup"
 VLLM_PID=""
 CHECKPOINT_SYNC_DONE=0
 FAIL_NOTIFICATION_SENT=0
+END_NOTIFICATION_SENT=0
 
 resolve_tmp_root() {
     local candidate
@@ -364,7 +367,7 @@ cleanup_on_exit() {
         sync_checkpoint_artifacts "failure-${CURRENT_STAGE}" || true
     fi
 
-    if [[ "$exit_code" -eq 0 ]]; then
+    if [[ "$exit_code" -eq 0 && "$END_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "end" "Completed successfully."
     elif [[ "$FAIL_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "fail" "Exited during stage=${CURRENT_STAGE} with status ${exit_code}."
@@ -592,4 +595,6 @@ echo "Shared project artifacts were synced after the DVC pipeline completed."
 
 echo "=== Completed: ${STATE}-${LOCALITY} ($(date)) ==="
 CURRENT_STAGE="complete"
+send_notification "end" "Completed successfully."
+END_NOTIFICATION_SENT=1
 # vLLM server killed automatically by trap

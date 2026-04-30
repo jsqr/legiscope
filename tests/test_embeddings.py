@@ -198,17 +198,148 @@ class TestGetEmbeddings:
         )
 
     @patch("legiscope.embeddings.time_module.sleep")
+    @patch("legiscope.embeddings.get_mistral_client")
+    def test_get_embeddings_mistral_retries_transient_connection_error(
+        self, mock_get_mistral_client, mock_sleep
+    ):
+        """Mistral embedding requests should retry transient connection resets."""
+        mock_client = Mock()
+
+        success_response = Mock()
+        success_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+
+        fresh_client = Mock()
+        fresh_client.embeddings.create.return_value = success_response
+        mock_get_mistral_client.return_value = fresh_client
+
+        mock_client.embeddings.create.side_effect = [
+            httpx.ConnectError("Connection reset by peer"),
+        ]
+
+        result = _generate_embeddings_mistral(
+            mock_client,
+            ["text1"],
+            "mistral-embed",
+            batch_size=1,
+        )
+
+        assert len(result) == 1
+        assert result[0] == pytest.approx([0.1, 0.2, 0.3])
+        mock_client.embeddings.create.assert_called_once_with(
+            model="mistral-embed",
+            inputs=["text1"],
+        )
+        fresh_client.embeddings.create.assert_called_once_with(
+            model="mistral-embed",
+            inputs=["text1"],
+        )
+        mock_get_mistral_client.assert_called_once()
+        mock_sleep.assert_called_once()
+
+    @patch("legiscope.embeddings.time_module.sleep")
+    @patch("legiscope.embeddings._detect_embedding_provider", return_value="mistral")
+    @patch("legiscope.embeddings.get_mistral_client")
+    def test_get_embeddings_mistral_rebuilds_client_after_connection_error(
+        self,
+        mock_get_mistral_client,
+        _mock_detect_provider,
+        mock_sleep,
+    ):
+        """Retryable Mistral errors should rebuild the client before retrying."""
+        stale_client = Mock()
+        stale_client.embeddings.create.side_effect = httpx.ConnectError(
+            "Connection reset by peer"
+        )
+
+        fresh_client = Mock()
+        success_response = Mock()
+        success_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        fresh_client.embeddings.create.return_value = success_response
+        mock_get_mistral_client.return_value = fresh_client
+
+        result = _generate_embeddings_mistral(
+            stale_client,
+            ["text1"],
+            "mistral-embed",
+            batch_size=1,
+        )
+
+        assert len(result) == 1
+        assert result[0] == pytest.approx([0.1, 0.2, 0.3])
+        stale_client.embeddings.create.assert_called_once_with(
+            model="mistral-embed",
+            inputs=["text1"],
+        )
+        fresh_client.embeddings.create.assert_called_once_with(
+            model="mistral-embed",
+            inputs=["text1"],
+        )
+        mock_get_mistral_client.assert_called_once()
+        mock_sleep.assert_called_once()
+
+    @patch("legiscope.embeddings.time_module.sleep")
+    @patch("legiscope.embeddings._refresh_embedding_client")
+    def test_get_embeddings_mistral_splits_batch_after_retry_exhaustion(
+        self, mock_refresh_embedding_client, mock_sleep
+    ):
+        """Mistral batches should split when a retryable multi-text batch still fails."""
+        mock_client = Mock()
+        mock_refresh_embedding_client.return_value = mock_client
+
+        first_single = Mock()
+        first_single.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        second_single = Mock()
+        second_single.data = [Mock(embedding=[0.4, 0.5, 0.6])]
+
+        mock_client.embeddings.create.side_effect = [
+            httpx.ConnectError("Connection reset by peer"),
+            httpx.ConnectError("Connection reset by peer"),
+            httpx.ConnectError("Connection reset by peer"),
+            httpx.ConnectError("Connection reset by peer"),
+            first_single,
+            second_single,
+        ]
+
+        with patch(
+            "legiscope.embeddings._get_embedding_request_max_retries",
+            return_value=3,
+        ):
+            result = _generate_embeddings_mistral(
+                mock_client,
+                ["text1", "text2"],
+                "mistral-embed",
+                batch_size=2,
+            )
+
+        assert len(result) == 2
+        assert result[0] == pytest.approx([0.1, 0.2, 0.3])
+        assert result[1] == pytest.approx([0.4, 0.5, 0.6])
+        mock_client.embeddings.create.assert_any_call(
+            model="mistral-embed",
+            inputs=["text1"],
+        )
+        mock_client.embeddings.create.assert_any_call(
+            model="mistral-embed",
+            inputs=["text2"],
+        )
+        assert mock_sleep.call_count == 3
+
+    @patch("legiscope.embeddings.time_module.sleep")
+    @patch("legiscope.embeddings.get_openrouter_client")
     def test_get_embeddings_openrouter_retries_transient_connection_error(
-        self, mock_sleep
+        self, mock_get_openrouter_client, mock_sleep
     ):
         """OpenAI-compatible embedding requests should retry transient connection resets."""
         mock_client = Mock()
 
         success_response = Mock()
         success_response.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        fresh_client = Mock()
+        fresh_client.embeddings.create.return_value = success_response
+        mock_get_openrouter_client.return_value = fresh_client
+
         mock_client.embeddings.create.side_effect = [
             httpx.ConnectError("Connection reset by peer"),
-            success_response,
         ]
 
         result = _generate_embeddings_openrouter(
@@ -220,7 +351,15 @@ class TestGetEmbeddings:
 
         assert len(result) == 1
         assert result[0] == pytest.approx([0.1, 0.2, 0.3])
-        assert mock_client.embeddings.create.call_count == 2
+        mock_client.embeddings.create.assert_called_once_with(
+            model="qwen/qwen3-embedding-8b",
+            input=["text1"],
+        )
+        fresh_client.embeddings.create.assert_called_once_with(
+            model="qwen/qwen3-embedding-8b",
+            input=["text1"],
+        )
+        mock_get_openrouter_client.assert_called_once()
         mock_sleep.assert_called_once()
 
     @patch("legiscope.embeddings.time_module.sleep")

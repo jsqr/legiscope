@@ -467,13 +467,39 @@ def _generate_embeddings_mistral(
         f"Processing {len(texts)} texts in {total_batches} batches of {batch_size} (Mistral)"
     )
 
-    # Mistral API format - batch processing
     for batch_num in range(total_batches):
         start_idx = batch_num * batch_size
         end_idx = min(start_idx + batch_size, len(texts))
         batch_texts = texts[start_idx:end_idx]
 
-        response = client.embeddings.create(model=model, inputs=batch_texts)
+        try:
+            response, client = _request_mistral_embeddings(
+                client=client,
+                model=model,
+                batch_texts=batch_texts,
+                batch_number=batch_num + 1,
+                total_batches=total_batches,
+            )
+        except Exception as exc:
+            if _is_retryable_embedding_error(exc) and len(batch_texts) > 1:
+                split_batch_size = max(1, len(batch_texts) // 2)
+                logger.warning(
+                    f"Mistral embedding batch {batch_num + 1}/{total_batches} "
+                    f"still failed after retries; retrying with smaller batch size "
+                    f"{split_batch_size} for these {len(batch_texts)} texts"
+                )
+                client = _refresh_embedding_client(client, provider="mistral")
+                embeddings_list.extend(
+                    _generate_embeddings_mistral(
+                        client,
+                        batch_texts,
+                        model,
+                        batch_size=split_batch_size,
+                    )
+                )
+                continue
+            raise
+
         if response is None or not hasattr(response, "data") or len(response.data) == 0:
             logger.error(f"Failed to get embeddings for batch {batch_num + 1}")
             raise ValueError(f"Failed to get embeddings for batch {batch_num + 1}")
@@ -597,20 +623,39 @@ def _is_retryable_embedding_error(exc: Exception) -> bool:
             RateLimitError,
         )
     except ImportError:
-        return False
+        APIConnectionError = APITimeoutError = InternalServerError = RateLimitError = ()
+
+    mistral_retryable_errors: tuple[type[Exception], ...] = ()
+    try:
+        from mistralai import MistralError, NoResponseError, SDKError
+
+        mistral_retryable_errors = (MistralError, NoResponseError, SDKError)
+    except ImportError:
+        pass
 
     return isinstance(
         exc,
-        (APIConnectionError, APITimeoutError, InternalServerError, RateLimitError),
+        (
+            APIConnectionError,
+            APITimeoutError,
+            InternalServerError,
+            RateLimitError,
+            *mistral_retryable_errors,
+        ),
     )
 
 
-def _refresh_openai_compatible_embedding_client(client):
-    """Rebuild OpenAI-compatible clients after retryable request failures."""
-    try:
-        provider = _detect_embedding_provider(client)
-    except ValueError:
-        return client
+def _refresh_embedding_client(client, provider: str | None = None):
+    """Rebuild embedding clients after retryable request failures."""
+    if provider is None:
+        try:
+            provider = _detect_embedding_provider(client)
+        except ValueError:
+            return client
+
+    if provider == "mistral":
+        logger.debug("Rebuilding Mistral embedding client after retryable request failure")
+        return get_mistral_client()
 
     if provider == "openrouter":
         logger.debug(
@@ -630,6 +675,7 @@ def _request_openai_compatible_embeddings(
     client,
     model: str,
     batch_texts: list[str],
+    refresh_provider: str,
     provider_label: str,
     batch_number: int,
     total_batches: int,
@@ -655,7 +701,52 @@ def _request_openai_compatible_embeddings(
             )
             time_module.sleep(delay)
             attempt += 1
-            client = _refresh_openai_compatible_embedding_client(client)
+            client = _refresh_embedding_client(client, provider=refresh_provider)
+
+
+def _get_openai_compatible_refresh_provider(client) -> str:
+    """Resolve whether an OpenAI-compatible client should refresh as OpenAI or OpenRouter."""
+    try:
+        provider = _detect_embedding_provider(client)
+    except ValueError:
+        return "openrouter"
+
+    if provider in {"openai", "openrouter"}:
+        return provider
+
+    return "openrouter"
+
+
+def _request_mistral_embeddings(
+    *,
+    client,
+    model: str,
+    batch_texts: list[str],
+    batch_number: int,
+    total_batches: int,
+):
+    """Execute one Mistral embedding request with bounded retries."""
+    max_retries = _get_embedding_request_max_retries()
+    base_delay = _get_embedding_request_retry_base_delay_seconds()
+
+    attempt = 0
+    while True:
+        try:
+            return client.embeddings.create(model=model, inputs=batch_texts), client
+        except Exception as exc:
+            if not _is_retryable_embedding_error(exc) or attempt >= max_retries:
+                raise
+
+            delay = base_delay * (2**attempt)
+            logger.warning(
+                f"Transient Mistral embedding error for batch "
+                f"{batch_number}/{total_batches} with {len(batch_texts)} texts; "
+                f"retrying in {delay:.1f}s "
+                f"(attempt {attempt + 1}/{max_retries}): {exc}"
+            )
+            time_module.sleep(delay)
+            attempt += 1
+            client = _refresh_embedding_client(client, provider="mistral")
 
 
 def _generate_embeddings_openrouter(
@@ -679,6 +770,7 @@ def _generate_embeddings_openrouter(
     embeddings_list: list[list[float]] = []
     total_batches = (len(texts) + batch_size - 1) // batch_size
     log_interval = _get_batch_log_interval()
+    refresh_provider = _get_openai_compatible_refresh_provider(client)
 
     for batch_num in range(total_batches):
         start_idx = batch_num * batch_size
@@ -690,6 +782,7 @@ def _generate_embeddings_openrouter(
                 client=client,
                 model=model,
                 batch_texts=batch_texts,
+                refresh_provider=refresh_provider,
                 provider_label="OpenAI-compatible",
                 batch_number=batch_num + 1,
                 total_batches=total_batches,
@@ -702,7 +795,7 @@ def _generate_embeddings_openrouter(
                     f"still failed after retries; retrying with smaller batch size "
                     f"{split_batch_size} for these {len(batch_texts)} texts"
                 )
-                client = _refresh_openai_compatible_embedding_client(client)
+                client = _refresh_embedding_client(client, provider=refresh_provider)
                 embeddings_list.extend(
                     _generate_embeddings_openrouter(
                         client,

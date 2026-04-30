@@ -70,6 +70,8 @@ send_notification() {
     message="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: benchmark job ${SLURM_JOB_ID} on $(hostname) at ${timestamp}. ${detail}"
     subject="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: benchmark (${SLURM_JOB_ID})"
 
+    echo "Notification attempt: event=${event_name} email=${SLURM_NOTIFY_EMAIL:-<unset>} mail_bin=${MAIL_BIN:-<missing>}" >&2
+
     if [[ -z "${SLURM_NOTIFY_EMAIL:-}" ]]; then
         return 0
     fi
@@ -87,6 +89,7 @@ VLLM_PID=""
 BENCHMARK_BACKUP_DIR=""
 BENCHMARK_BACKUP_ACTIVE=0
 FAIL_NOTIFICATION_SENT=0
+END_NOTIFICATION_SENT=0
 
 handle_error() {
     local exit_code="$1"
@@ -112,7 +115,7 @@ cleanup_and_notify() {
 
     clear_benchmark_backup || true
 
-    if [[ $exit_code -eq 0 ]]; then
+    if [[ $exit_code -eq 0 && "$END_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "end" "Stage=${CURRENT_STAGE}."
     elif [[ "$FAIL_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "fail" "Stage=${CURRENT_STAGE}. Exit=${exit_code}."
@@ -442,3 +445,5 @@ bash scripts/dvc_python.sh coep/scripts/benchmark_pipeline.py \
 CURRENT_STAGE="finalize"
 clear_benchmark_backup
 echo "=== Benchmark completed (outputs written in shared repo): $(date) ==="
+send_notification "end" "Stage=${CURRENT_STAGE}."
+END_NOTIFICATION_SENT=1

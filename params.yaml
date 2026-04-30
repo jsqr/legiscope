@@ -41,12 +41,12 @@ parse:
 
 # Embedding configuration
 embeddings:
-  default_provider: openrouter
+  default_provider: mistral
   chroma_batch_size: 100
 
   providers:
     mistral:
-      model: mistral-embed
+      model: codestral-embed-2505
       batch_size: 100
 
     ollama:
