@@ -95,7 +95,10 @@ class TestCoepQueryAdjustments:
                 in queries[0].question
             )
             assert queries[0].variable_name == "dp_law"
-            assert queries[0].metadata["prepend_text"] == "This is about drug paraphernalia."
+            assert (
+                queries[0].metadata["prepend_text"]
+                == "This is about drug paraphernalia."
+            )
         finally:
             os.unlink(temp_path)
 
@@ -144,11 +147,11 @@ class TestCoepQueryAdjustments:
                     "Select the best option.",
                     "Select all that apply.",
                 ],
-                REQUIRES_YES_COLUMN: ["", "Q1"],
-                REQUIRES_DATA_COLUMN: ["", "Q1"],
+                REQUIRES_YES_COLUMN: ["", "dp_exemption"],
+                REQUIRES_DATA_COLUMN: ["", "dp_exemption"],
                 REQUIRES_LABELS_COLUMN: [
                     "",
-                    "Q1 => Paraphernalia for consumption of cannabis, generally",
+                    "dp_exemption => Paraphernalia for consumption of cannabis, generally",
                 ],
             }
         )
@@ -168,14 +171,14 @@ class TestCoepQueryAdjustments:
             child_query = queries[1]
             assert child_query.metadata["hierarchy"] == {
                 "query_id": "Q1.1",
-                "parent_ids": ["Q1"],
-                "boolean_parent_ids": ["Q1"],
-                "context_parent_ids": ["Q1"],
+                "parent_ids": ["dp_exemption"],
+                "boolean_parent_ids": ["dp_exemption"],
+                "context_parent_ids": ["dp_exemption"],
                 "pass_parent_question": True,
                 "pass_parent_short_answer": True,
                 "label_blockers": [
                     {
-                        "parent_query_id": "Q1",
+                        "parent_query_id": "dp_exemption",
                         "blocker_labels": [
                             "Paraphernalia for consumption of cannabis, generally"
                         ],

@@ -195,3 +195,6 @@ scratch/
 
 # DVC validation stage artifacts
 tmp/validate_import.ok
+
+# Internal audit reports
+coep/docs/audit_logs

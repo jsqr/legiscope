@@ -119,6 +119,10 @@ Jurisdiction, retrieval settings (including HYDE/relevance filtering and debug o
         - Rows skipped because an explicit dependency rule was not satisfied are scored deterministically instead:
             blank ground truth counts as correct, non-blank ground truth counts as incorrect, and no judge-model call is made.
 3.  **Scoring**: The judge assigns a score (0-10) based on accuracy and provides a reasoning.
+    - `benchmark_metrics.json` now exposes `primary_score` / `weighted_query_score` as the headline metric.
+    - Each original benchmark query is worth an equal share of 100 total points.
+    - If a query expands into multiple `AND/OR` response-option rows, that query's share is split evenly across those rows so the query can earn partial credit without inflating its weight.
+    - The legacy row-level `accuracy_rate` and strict collapsed `collapsed_query_accuracy_rate` remain in the metrics for comparison.
 4.  **Output**: A new CSV is saved containing original questions, generated answers (comprehensive), human answers, scores, and reasonings.
 
 

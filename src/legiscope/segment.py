@@ -61,6 +61,7 @@ CHUNKS_SCHEMA = {
     "heading_level": pl.Int64,
     "parent_id": pl.String,
     "line_number": pl.Int64,
+    "embedding_heading_text": pl.String,
     "context_path": pl.String,
     "source_kind": pl.String,
     "region_role": pl.String,
@@ -593,6 +594,32 @@ def _build_section_context_path(
     return " > ".join(headings) if headings else None
 
 
+def _build_embedding_heading_text(
+    section_row: dict[str, Any],
+    sections_by_ordinal: dict[int, dict[str, Any]],
+) -> str | None:
+    """Build the exact markdown heading stack prepended during embedding."""
+    ancestor_path = section_row.get("ancestor_path")
+    if not ancestor_path:
+        heading_text = section_row.get("heading_text")
+        return heading_text if isinstance(heading_text, str) and heading_text else None
+
+    headings: list[str] = []
+    for ordinal_text in str(ancestor_path).split("/"):
+        if not ordinal_text:
+            continue
+        ordinal = int(ordinal_text)
+        heading_text = sections_by_ordinal.get(ordinal, {}).get("heading_text")
+        if isinstance(heading_text, str) and heading_text:
+            headings.append(heading_text)
+
+    if headings:
+        return "\n\n".join(headings)
+
+    heading_text = section_row.get("heading_text")
+    return heading_text if isinstance(heading_text, str) and heading_text else None
+
+
 def _split_chunk_body(
     body_text: str,
     heading_text: str,
@@ -794,10 +821,7 @@ def _split_paragraph_units(text: str) -> list[str]:
     index = 0
     while index < len(paragraphs):
         paragraph = paragraphs[index]
-        if (
-            re.match(r"^#{1,6}\s+.+$", paragraph)
-            and index + 1 < len(paragraphs)
-        ):
+        if re.match(r"^#{1,6}\s+.+$", paragraph) and index + 1 < len(paragraphs):
             merged_paragraphs.append(f"{paragraph}\n\n{paragraphs[index + 1]}")
             index += 2
             continue
@@ -992,6 +1016,7 @@ def build_chunks_df(
         heading_level: int,
         parent_id: str | None,
         line_number: int,
+        embedding_heading_text: str | None,
         context_path: str | None,
         source_kind: str,
         region_role: str | None,
@@ -1017,6 +1042,7 @@ def build_chunks_df(
                 "heading_level": heading_level,
                 "parent_id": parent_id,
                 "line_number": line_number,
+                "embedding_heading_text": embedding_heading_text,
                 "context_path": context_path,
                 "source_kind": source_kind,
                 "region_role": region_role,
@@ -1036,6 +1062,9 @@ def build_chunks_df(
             return
 
         context_path = _build_section_context_path(section, sections_by_ordinal)
+        embedding_heading_text = _build_embedding_heading_text(
+            section, sections_by_ordinal
+        )
         chunk_body = _strip_leading_heading(full_text, section["heading_text"])
         body_parts = _split_chunk_body(
             chunk_body,
@@ -1066,6 +1095,7 @@ def build_chunks_df(
                 heading_level=section["heading_level"],
                 parent_id=section.get("parent_id"),
                 line_number=section["line_number"],
+                embedding_heading_text=embedding_heading_text,
                 context_path=context_path,
                 source_kind=source_kind,
                 region_role="main_body",
@@ -1093,6 +1123,9 @@ def build_chunks_df(
         own_body_text = section.get("body_text") or ""
         pending_units: list[tuple[str, bool]] = []
         context_path = _build_section_context_path(section, sections_by_ordinal)
+        embedding_heading_text = _build_embedding_heading_text(
+            section, sections_by_ordinal
+        )
 
         def _flush_pending_units() -> None:
             nonlocal pending_units
@@ -1130,6 +1163,7 @@ def build_chunks_df(
                     heading_level=section["heading_level"],
                     parent_id=section.get("parent_id"),
                     line_number=section["line_number"],
+                    embedding_heading_text=embedding_heading_text,
                     context_path=context_path,
                     source_kind=source_kind,
                     region_role="main_body",
@@ -1244,6 +1278,7 @@ def build_chunks_df(
                         heading_level=heading_level,
                         parent_id=None,
                         line_number=start_line,
+                        embedding_heading_text=base_heading,
                         context_path=_strip_heading_markers(base_heading)
                         or base_heading,
                         source_kind="region",
@@ -1474,6 +1509,7 @@ def create_segments_df(
             "parent_id",
             "chunk_ordinal",
             "chunk_id",
+            "embedding_heading_text",
             "context_path",
             "source_kind",
             "region_role",
@@ -1517,7 +1553,9 @@ def create_segments_df(
         # pipeline will prepend.  When ancestor_path is not available (e.g.
         # raw DataFrames without parent relationships), fall back to the
         # immediate heading cost only.
-        if has_ancestor_path and row.get("ancestor_path"):
+        if row.get("embedding_heading_text"):
+            heading_tokens = _estimate_token_count(row["embedding_heading_text"])
+        elif has_ancestor_path and row.get("ancestor_path"):
             ancestor_ordinals = [int(x) for x in row["ancestor_path"].split("/")]
             available_heading_tokens = sum(
                 _estimate_token_count(heading_text_by_ordinal[anc])

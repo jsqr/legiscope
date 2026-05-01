@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 import yaml
 
+from legiscope import config as cfg
 from legiscope.parse.elements import split_elements
 from legiscope.parse.headings import (
     HEADINGS_SCHEMA,
@@ -434,8 +435,9 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
 
     Returns:
         Path to the generated ``code.md`` file. Companion outputs
-        ``headings.parquet``, ``regions.parquet``, and ``heading_scan_debug.json`` are written to the same
-        directory.
+        ``headings.parquet`` and ``regions.parquet`` are written to the code
+        directory. ``heading_scan_debug.json`` is written to the jurisdiction's
+        output ``debug`` directory.
 
     Raises:
         FileNotFoundError: If the code directory, raw directory, or a
@@ -471,12 +473,16 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
     logger.info(f"Converting {code_ref.code_id}...")
 
     client = Config.get_powerful_client()
+    debug_output_dir = (
+        cfg.output_dir() / code_ref.jurisdiction.output_dir_name / "debug"
+    )
+    debug_output_dir.mkdir(parents=True, exist_ok=True)
 
     structure = scan_legal_text(
         client=client,
         file_path=str(input_path),
         max_lines=DEFAULT_SCAN_MAX_LINES,
-        debug_output_path=code_dir / "heading_scan_debug.json",
+        debug_output_path=debug_output_dir / "heading_scan_debug.json",
     )
 
     output_path = code_dir / "code.md"

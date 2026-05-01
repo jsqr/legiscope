@@ -64,7 +64,10 @@ class TestProperties:
     @staticmethod
     def _expected_monqcle_report_path() -> Path:
         return cfg._find_config_path().parent / Path(
-            "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv"
+            cfg.get(
+                "paths.monqcle_report",
+                "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
+            )
         )
 
     def test_laws_dir(self):

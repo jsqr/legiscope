@@ -4,9 +4,12 @@ Tests for the eval module.
 
 import os
 import tempfile
-import pytest
+import threading
+import time
 from unittest.mock import Mock, patch
+
 import polars as pl
+import pytest
 
 from coep.src.eval import (
     Evaluator,
@@ -396,3 +399,109 @@ class TestEvaluator:
             assert result_df["eval_score"][0] == 10
             assert result_df["eval_label"][0] == "Correct"
             assert result_df["eval_error_type"][0] == "none"
+
+    def test_evaluate_batch_parallel_preserves_row_order(self):
+        """Parallel evaluation should keep outputs aligned to input row order."""
+        mock_client = Mock()
+
+        with patch("legiscope.llm_config.Config") as mock_config:
+            mock_config.get_powerful_client.return_value = mock_client
+            mock_config.get_llm_params.return_value = {
+                "temperature": 0.0,
+                "max_retries": 3,
+            }
+
+            evaluator = Evaluator(max_concurrency=4)
+
+        delays = {"q1": 0.05, "q2": 0.01, "q3": 0.03}
+        score_by_question = {"q1": 1, "q2": 2, "q3": 3}
+
+        def fake_evaluate_response(question, generated_answer, ground_truth):
+            time.sleep(delays[question])
+            return EvaluationResult(
+                score=score_by_question[question],
+                reasoning=f"reason-{question}",
+                accuracy_label="Correct",
+                error_type="none",
+            )
+
+        evaluator.evaluate_response = fake_evaluate_response
+
+        df = pl.DataFrame(
+            {
+                "q": ["q1", "q2", "q3"],
+                "a": ["a1", "a2", "a3"],
+                "truth": ["t1", "t2", "t3"],
+            }
+        )
+
+        result_df = evaluator.evaluate_batch(
+            df, question_col="q", answer_col="a", truth_col="truth"
+        )
+
+        assert result_df["eval_score"].to_list() == [1, 2, 3]
+        assert result_df["eval_reason"].to_list() == [
+            "reason-q1",
+            "reason-q2",
+            "reason-q3",
+        ]
+
+    def test_evaluate_batch_parallel_executes_more_than_one_request_at_once(self):
+        """Parallel evaluation should issue overlapping judge calls when enabled."""
+        mock_client = Mock()
+
+        with patch("legiscope.llm_config.Config") as mock_config:
+            mock_config.get_powerful_client.return_value = mock_client
+            mock_config.get_llm_params.return_value = {
+                "temperature": 0.0,
+                "max_retries": 3,
+            }
+
+            evaluator = Evaluator(max_concurrency=4)
+
+        state = {
+            "active": 0,
+            "max_active": 0,
+        }
+        lock = threading.Lock()
+        release = threading.Event()
+
+        def fake_evaluate_response(question, generated_answer, ground_truth):
+            with lock:
+                state["active"] += 1
+                state["max_active"] = max(state["max_active"], state["active"])
+                if state["max_active"] >= 2:
+                    release.set()
+
+            release.wait(timeout=0.2)
+
+            with lock:
+                state["active"] -= 1
+
+            return EvaluationResult(
+                score=10,
+                reasoning=f"ok-{question}",
+                accuracy_label="Correct",
+                error_type="none",
+            )
+
+        evaluator.evaluate_response = fake_evaluate_response
+
+        df = pl.DataFrame(
+            {
+                "q": ["q1", "q2", "q3"],
+                "a": ["a1", "a2", "a3"],
+                "truth": ["t1", "t2", "t3"],
+            }
+        )
+
+        result_df = evaluator.evaluate_batch(
+            df, question_col="q", answer_col="a", truth_col="truth"
+        )
+
+        assert result_df["eval_label"].to_list() == [
+            "Correct",
+            "Correct",
+            "Correct",
+        ]
+        assert state["max_active"] >= 2

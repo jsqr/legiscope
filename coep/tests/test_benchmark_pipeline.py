@@ -46,14 +46,15 @@ class TestBenchmarkPipelineHelpers:
         assert enriched[0, "no_retrieval_units_found"] is False
         assert enriched[1, "generated_error_response"] is True
 
-    def test_ensure_supporting_passage_validation_columns_flags_drift_below_threshold(
+    def test_ensure_supporting_passage_validation_columns_flags_drift_and_not_found(
         self,
     ):
         df = pl.DataFrame(
             {
-                "supporting_passage_validation_scores": [
-                    "[1.0, 0.95, 0.9]",
-                    "[1.0, 0.89]",
+                "supporting_passage_validation_match_types": [
+                    '["exact", "exact"]',
+                    '["exact", "near_exact"]',
+                    '["exact", "not_found"]',
                     "[]",
                 ]
             }
@@ -64,6 +65,30 @@ class TestBenchmarkPipelineHelpers:
         assert enriched[0, "supporting_passage_validation_drift"] is False
         assert enriched[1, "supporting_passage_validation_drift"] is True
         assert enriched[2, "supporting_passage_validation_drift"] is False
+        assert enriched[0, "supporting_passage_validation_not_found"] is False
+        assert enriched[1, "supporting_passage_validation_not_found"] is False
+        assert enriched[2, "supporting_passage_validation_not_found"] is True
+        assert enriched[3, "supporting_passage_validation_not_found"] is False
+
+    def test_ensure_supporting_passage_validation_columns_falls_back_to_scores(self):
+        df = pl.DataFrame(
+            {
+                "supporting_passage_validation_scores": [
+                    "[1.0, 0.95]",
+                    "[1.0, 0.89]",
+                    "[]",
+                ]
+            }
+        )
+
+        enriched = benchmark_pipeline._ensure_supporting_passage_validation_columns(df)
+
+        assert enriched[0, "supporting_passage_validation_drift"] is True
+        assert enriched[0, "supporting_passage_validation_not_found"] is False
+        assert enriched[1, "supporting_passage_validation_drift"] is False
+        assert enriched[1, "supporting_passage_validation_not_found"] is True
+        assert enriched[2, "supporting_passage_validation_drift"] is False
+        assert enriched[2, "supporting_passage_validation_not_found"] is False
 
     def test_drop_redundant_query_columns_preserves_composed_query_and_metadata(self):
         df = pl.DataFrame(
@@ -254,6 +279,37 @@ class TestBenchmarkPipelineHelpers:
         assert expanded[0, "evaluation_mode"] == "whole_answer"
         assert expanded[0, "evaluation_option"] is None
 
+    def test_expand_option_level_evaluation_rows_ignores_new_suffix_in_ground_truth(
+        self,
+    ):
+        df = pl.DataFrame(
+            {
+                "benchmark_row_id": [0],
+                "query": [
+                    "Question: Does the ordinance specify any penalties for violations?"
+                ],
+                "query_text": [
+                    "Does the ordinance specify any penalties for violations?"
+                ],
+                "variable_name": ["dp_penalties"],
+                "response_options": ["Civil Fine AND/OR Other"],
+                "coding_instructions": ["Select all that apply."],
+                "short_answer": ["Civil Fine"],
+                "raw_short_answer": ["Civil Fine"],
+                "reasoning": ["The ordinance imposes a civil fine."],
+                "supporting_passages": ["['civil fine']"],
+                "ground_truth": ["Civil Fine (NEW)"],
+                "ground_truth_available": [True],
+                "evaluation_status": ["scored_llm"],
+            }
+        )
+
+        expanded = benchmark_pipeline._expand_option_level_evaluation_rows(df)
+
+        assert expanded["evaluation_option"].to_list() == ["Civil Fine", "Other"]
+        assert expanded["evaluation_expected_present"].to_list() == [True, False]
+        assert expanded["evaluation_generated_present"].to_list() == [True, False]
+
     def test_score_skipped_queries_uses_option_expectation_for_subquestions(self):
         df = pl.DataFrame(
             {
@@ -269,6 +325,37 @@ class TestBenchmarkPipelineHelpers:
         assert scored[0, "eval_label"] == "Incorrect"
         assert scored[1, "eval_score"] == 10
         assert scored[1, "eval_label"] == "Correct"
+
+    def test_score_option_level_queries_uses_presence_flags_deterministically(self):
+        df = pl.DataFrame(
+            {
+                "benchmark_row_id": [0, 1, 2],
+                "evaluation_mode": [
+                    "response_option",
+                    "response_option",
+                    "response_option",
+                ],
+                "evaluation_row_id": [10, 11, 12],
+                "evaluation_generated_answer": ["a", "b", "c"],
+                "evaluation_expected_present": [True, False, False],
+                "evaluation_generated_present": [True, False, True],
+            }
+        )
+
+        scored = benchmark_pipeline._score_option_level_queries(df)
+
+        assert scored["eval_score"].to_list() == [10, 10, 0]
+        assert scored["eval_label"].to_list() == [
+            "Correct",
+            "Correct",
+            "Incorrect",
+        ]
+        assert scored["eval_error_type"].to_list() == ["none", "none", "other"]
+        assert "correctly omitted this option" in scored[1, "eval_reason"]
+        assert (
+            "included this option even though the ground truth omits it"
+            in scored[2, "eval_reason"]
+        )
 
     def test_expand_option_level_evaluation_rows_skips_open_ended_date_questions(self):
         df = pl.DataFrame(
@@ -311,6 +398,138 @@ class TestBenchmarkPipelineHelpers:
         assert summary == {
             "whole_answer_rows": 1,
             "response_option_rows": 2,
+            "and_or_questions_scored_option_level": 1,
+        }
+
+    def test_summarize_collapsed_query_accuracy_requires_all_subrows_correct(self):
+        df = pl.DataFrame(
+            {
+                "benchmark_row_id": [0, 0, 1, 2],
+                "eval_label": [
+                    "Correct",
+                    "Correct",
+                    "Incorrect",
+                    "Partially Correct",
+                ],
+            }
+        )
+
+        summary = benchmark_pipeline._summarize_collapsed_query_accuracy(
+            df,
+            total_queries=4,
+        )
+
+        assert summary["processed_queries"] == 4
+        assert summary["scored_queries"] == 3
+        assert summary["unscored_queries"] == 1
+        assert summary["correct_queries"] == 1
+        assert summary["incorrect_queries"] == 3
+        assert round(summary["accuracy_rate"], 2) == 25.00
+
+    def test_summarize_weighted_query_score_awards_partial_credit_by_option(self):
+        df = pl.DataFrame(
+            {
+                "benchmark_row_id": [0, 0, 1],
+                "eval_label": [
+                    "Correct",
+                    "Incorrect",
+                    "Correct",
+                ],
+            }
+        )
+
+        summary = benchmark_pipeline._summarize_weighted_query_score(
+            df,
+            total_queries=3,
+        )
+
+        assert summary["processed_queries"] == 3
+        assert summary["scored_queries"] == 2
+        assert summary["unscored_queries"] == 1
+        assert round(summary["points_per_query"], 4) == 33.3333
+        assert round(summary["scored_point_ceiling"], 2) == 66.67
+        assert round(summary["earned_points"], 2) == 50.00
+        assert round(summary["score_percent"], 2) == 50.00
+
+    def test_summarize_weighted_query_score_treats_unscored_queries_as_zero_points(
+        self,
+    ):
+        df = pl.DataFrame(
+            {
+                "benchmark_row_id": [1],
+                "eval_label": ["Correct"],
+            }
+        )
+
+        summary = benchmark_pipeline._summarize_weighted_query_score(
+            df,
+            total_queries=4,
+        )
+
+        assert summary["scored_queries"] == 1
+        assert summary["unscored_queries"] == 3
+        assert round(summary["earned_points"], 2) == 25.00
+        assert round(summary["score_percent"], 2) == 25.00
+
+    def test_eval_concat_preserves_columns_needed_for_scoring_summary(self):
+        llm_eval_scored_df = pl.DataFrame(
+            {
+                "benchmark_row_id": [0],
+                "evaluation_mode": ["response_option"],
+                "evaluation_row_id": [10],
+                "evaluation_generated_answer": ["option payload"],
+                "eval_score": [10],
+                "eval_reason": ["matched"],
+                "eval_label": ["Correct"],
+                "eval_error_type": ["other"],
+            }
+        )
+        skipped_eval_df = pl.DataFrame(
+            {
+                "benchmark_row_id": [1],
+                "evaluation_mode": ["whole_answer"],
+                "evaluation_row_id": [11],
+                "evaluation_generated_answer": ["whole answer payload"],
+                "eval_score": [0],
+                "eval_reason": ["skipped despite ground truth"],
+                "eval_label": ["Incorrect"],
+                "eval_error_type": ["other"],
+            }
+        )
+
+        eval_scored_df = pl.concat(
+            [
+                llm_eval_scored_df.select(
+                    [
+                        "benchmark_row_id",
+                        "evaluation_mode",
+                        "evaluation_row_id",
+                        "evaluation_generated_answer",
+                        "eval_score",
+                        "eval_reason",
+                        "eval_label",
+                        "eval_error_type",
+                    ]
+                ),
+                skipped_eval_df.select(
+                    [
+                        "benchmark_row_id",
+                        "evaluation_mode",
+                        "evaluation_row_id",
+                        "evaluation_generated_answer",
+                        "eval_score",
+                        "eval_reason",
+                        "eval_label",
+                        "eval_error_type",
+                    ]
+                ),
+            ],
+            how="vertical_relaxed",
+        )
+
+        assert benchmark_pipeline._summarize_scoring_methods(eval_scored_df) == {
+            "whole_answer_rows": 1,
+            "response_option_rows": 1,
             "and_or_questions_scored_option_level": 1,
         }
 

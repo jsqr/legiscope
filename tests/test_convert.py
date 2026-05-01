@@ -14,6 +14,10 @@ from instructor.core.exceptions import FailedAttempt, InstructorRetryException
 import pytest
 import yaml
 
+from legiscope import config as cfg
+from legiscope.models import CodeRef, JurisdictionRef
+from legiscope.parse.convert import convert_to_markdown
+
 if TYPE_CHECKING:
     import polars as pl
 from pydantic import BaseModel
@@ -87,6 +91,68 @@ class TestConvertModule:
 
         # Verify result
         assert result == mock_response
+
+    def test_convert_to_markdown_writes_scan_debug_to_output_debug_dir(self):
+        """Parse-stage scan debug should go to the configured output/debug tree."""
+        with tempfile.TemporaryDirectory() as temp_data_dir:
+            with patch.dict(os.environ, {"LEGISCOPE_DATA_DIR": temp_data_dir}):
+                cfg.reset()
+                code_ref = CodeRef(
+                    jurisdiction=JurisdictionRef(state="PA", locality="Philadelphia"),
+                    code_slug="municipal-code",
+                )
+                code_dir = code_ref.full_data_dir
+                raw_dir = code_dir / "raw"
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                input_path = code_dir / "code.txt"
+                input_path.write_text("TITLE 1 GENERAL PROVISIONS\n", encoding="utf-8")
+
+                mock_client = Mock()
+                mock_structure = HeadingStructure(
+                    levels=[
+                        HeadingLevel(
+                            level=1,
+                            regex_pattern=r"^TITLE\s+\d+.*$",
+                            markdown_prefix="#",
+                            example_heading="TITLE 1 GENERAL PROVISIONS",
+                        )
+                    ],
+                    total_levels=1,
+                    file_sample_size=1,
+                )
+
+                try:
+                    with (
+                        patch(
+                            "legiscope.llm_config.Config.get_powerful_client",
+                            return_value=mock_client,
+                        ),
+                        patch(
+                            "legiscope.parse.convert.scan_legal_text",
+                            return_value=mock_structure,
+                        ) as mock_scan,
+                        patch("legiscope.parse.convert.text2md") as mock_text2md,
+                    ):
+                        output_path = convert_to_markdown(code_ref)
+
+                    expected_debug_path = (
+                        Path(temp_data_dir)
+                        / "output"
+                        / "PA-Philadelphia"
+                        / "debug"
+                        / "heading_scan_debug.json"
+                    )
+
+                    assert output_path == code_dir / "code.md"
+                    assert expected_debug_path.parent.exists()
+                    assert (
+                        mock_scan.call_args.kwargs["debug_output_path"]
+                        == expected_debug_path
+                    )
+                    assert mock_scan.call_args.kwargs["file_path"] == str(input_path)
+                    mock_text2md.assert_called_once()
+                finally:
+                    cfg.reset()
 
 
 class TestResponseModels:

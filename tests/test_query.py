@@ -19,6 +19,7 @@ from legiscope.query import (
     _validate_supporting_passages,
     _prepare_legal_context,
     _build_legal_prompts,
+    _normalize_option_text,
     _normalize_structured_short_answer,
     load_queries,
     QueryInput,
@@ -176,6 +177,15 @@ class TestStructuredShortAnswerNormalization:
         )
 
         assert normalized == "The best label is Misdemeanor."
+
+    def test_normalize_option_text_ignores_new_suffix_annotations(self):
+        assert _normalize_option_text("Civil Fine (NEW)") == "civil fine"
+        assert (
+            _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale (NEW)"
+            )
+            == "sales possession with intent to sell offer for sale"
+        )
 
 
 class TestPromptContracts:
@@ -749,12 +759,56 @@ class TestValidateSupportingPassages:
             body_text='Section 5-12-3: No person shall sell drug paraphernalia. "Smart quotes" are supported.',
         )
 
-        _validate_supporting_passages(response, sections)
+        result = _validate_supporting_passages(response, sections)
 
         # Should match exactly due to normalization
+        assert result.match_types == ["exact", "exact"]
         assert "validated (exact match)" in caplog.text
         assert "HALLUCINATION WARNING" not in caplog.text
         assert "NOT FOUND" not in caplog.text
+
+    def test_validate_normalizes_section_prefixes_before_matching(self, caplog):
+        response = LegalQueryResponse(
+            short_answer="Test",
+            reasoning="Test",
+            citations=[],
+            supporting_passages=["No person shall sell drug paraphernalia."],
+            confidence=0.9,
+            limitations="",
+        )
+
+        sections = self.create_test_sections(
+            body_text="§ 5-12-3: No person shall sell drug paraphernalia.",
+        )
+
+        result = _validate_supporting_passages(response, sections)
+
+        assert result.match_types == ["exact"]
+        assert result.similarity_scores == [1.0]
+        assert "HALLUCINATION WARNING" not in caplog.text
+
+    def test_validate_separates_near_exact_drift_from_true_not_found(self, caplog):
+        response = LegalQueryResponse(
+            short_answer="Test",
+            reasoning="Test",
+            citations=[],
+            supporting_passages=[
+                "No person should sell drug paraphernalia items.",
+                "This passage is completely fabricated.",
+            ],
+            confidence=0.9,
+            limitations="",
+        )
+
+        sections = self.create_test_sections(
+            body_text="Section 5-12-3: No person shall sell drug paraphernalia.",
+        )
+
+        result = _validate_supporting_passages(response, sections)
+
+        assert result.match_types == ["near_exact", "not_found"]
+        assert "DRIFT WARNING" in caplog.text
+        assert "HALLUCINATION WARNING" in caplog.text
 
 
 class TestPrepareLegalContext:
@@ -1095,9 +1149,10 @@ class TestQueryConfigBasics:
         assert len(execution_capture["completion_sections"]) < len(sections)
         budget_metadata = execution_capture["completion_budgeting"]
         assert budget_metadata["preflight_dropped_count"] > 0
-        assert json.loads(debug_capture["query"]["completion_total_dropped_chunk_ids"]) == budget_metadata[
-            "total_dropped_chunk_ids"
-        ]
+        assert (
+            json.loads(debug_capture["query"]["completion_total_dropped_chunk_ids"])
+            == budget_metadata["total_dropped_chunk_ids"]
+        )
 
     def test_query_legal_documents_retries_on_context_overflow_by_dropping_last_chunk(
         self, monkeypatch
@@ -1167,9 +1222,9 @@ class TestQueryConfigBasics:
         assert call_count == 2
         assert len(execution_capture["completion_sections"]) == 2
         assert execution_capture["completion_budgeting"]["overflow_retry_count"] == 1
-        assert json.loads(debug_capture["query"]["overflow_retry_dropped_chunk_ids"]) == [
-            "s2"
-        ]
+        assert json.loads(
+            debug_capture["query"]["overflow_retry_dropped_chunk_ids"]
+        ) == ["s2"]
 
     def test_query_legal_documents_with_config(self):
         """Test basic query_legal_documents with settings object."""
@@ -2274,8 +2329,8 @@ class TestHierarchicalQueryExecution:
 
         child_hierarchy = QueryHierarchy(
             query_id="Q1.1",
-            parent_ids=("Q1",),
-            boolean_parent_ids=("Q1",),
+            parent_ids=("parent_var",),
+            boolean_parent_ids=("parent_var",),
         )
         parent_hierarchy = QueryHierarchy(query_id="Q1")
 
@@ -2378,6 +2433,8 @@ class TestHierarchicalQueryExecution:
 
         assert mock_query.call_count == 1
         assert results_df[0, "query_status"] == "completed"
+        assert results_df[0, "skip_reason"] is None
+        assert results_df[0, "blocking_parent_query_id"] is None
         assert results_df[0, "executed_despite_missing_parent"] is True
         assert results_df[0, "missing_parent_ids"] == '["Q0"]'
 
@@ -2416,10 +2473,10 @@ class TestHierarchicalQueryExecution:
         parent_hierarchy = QueryHierarchy(query_id="Q1")
         child_hierarchy = QueryHierarchy(
             query_id="Q1.1",
-            parent_ids=("Q1",),
+            parent_ids=("parent_var",),
             label_blockers=(
                 LabelBlockerRule(
-                    parent_query_id="Q1",
+                    parent_query_id="parent_var",
                     blocker_labels=blocker_labels,
                 ),
             ),
@@ -2565,8 +2622,8 @@ class TestHierarchicalQueryExecution:
         parent_hierarchy = QueryHierarchy(query_id="Q1")
         child_hierarchy = QueryHierarchy(
             query_id="Q1.1",
-            parent_ids=("Q1",),
-            context_parent_ids=("Q1",),
+            parent_ids=("dp_activity",),
+            context_parent_ids=("dp_activity",),
             inherit_parent_retrieval=True,
         )
 
@@ -2752,10 +2809,13 @@ class TestHierarchicalQueryExecution:
         assert merged_section_ids[0] == ["chunk_parent_only", "chunk_parent"]
         assert merged_section_ids[1] == ["chunk_parent", "chunk_child"]
         child_row = results_df.filter(pl.col("query_id") == "Q1.1")
-        assert child_row[0, "inherited_chunk_ids"] == '["chunk_parent_only", "chunk_parent"]'
+        assert (
+            child_row[0, "inherited_chunk_ids"]
+            == '["chunk_parent_only", "chunk_parent"]'
+        )
         assert child_row[0, "new_chunk_ids"] == '["chunk_parent", "chunk_child"]'
         assert child_row[0, "merged_chunk_ids"] == '["chunk_parent", "chunk_child"]'
-        assert child_row[0, "coalesced_duplicate_chunk_ids"] == '[]'
+        assert child_row[0, "coalesced_duplicate_chunk_ids"] == "[]"
 
     def test_run_queries_appends_parent_retrieval_prompt_to_child_retrieval_query(
         self, tmp_path

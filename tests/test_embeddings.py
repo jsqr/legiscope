@@ -8,6 +8,7 @@ import httpx
 import numpy as np
 import polars as pl
 import pytest
+from mistralai import SDKError
 
 from legiscope.embeddings import (
     EmbeddingConfig,
@@ -323,6 +324,62 @@ class TestGetEmbeddings:
             inputs=["text2"],
         )
         assert mock_sleep.call_count == 3
+
+    @patch("legiscope.embeddings.time_module.sleep")
+    @patch("legiscope.embeddings._refresh_embedding_client")
+    def test_get_embeddings_mistral_splits_deterministic_token_cap_error_without_retry(
+        self, mock_refresh_embedding_client, mock_sleep
+    ):
+        """Token-cap 400s should split immediately instead of backing off or rebuilding."""
+        mock_client = Mock()
+        mock_refresh_embedding_client.return_value = mock_client
+
+        first_single = Mock()
+        first_single.data = [Mock(embedding=[0.1, 0.2, 0.3])]
+        second_single = Mock()
+        second_single.data = [Mock(embedding=[0.4, 0.5, 0.6])]
+
+        token_cap_error = SDKError(
+            "400 invalid_request_prompt: Too many tokens overall, split into more batches",
+            httpx.Response(
+                400,
+                request=httpx.Request(
+                    "POST",
+                    "https://api.mistral.ai/v1/embeddings",
+                ),
+            ),
+        )
+
+        mock_client.embeddings.create.side_effect = [
+            token_cap_error,
+            first_single,
+            second_single,
+        ]
+
+        result = _generate_embeddings_mistral(
+            mock_client,
+            ["text1", "text2"],
+            "mistral-embed",
+            batch_size=2,
+        )
+
+        assert len(result) == 2
+        assert result[0] == pytest.approx([0.1, 0.2, 0.3])
+        assert result[1] == pytest.approx([0.4, 0.5, 0.6])
+        mock_client.embeddings.create.assert_any_call(
+            model="mistral-embed",
+            inputs=["text1", "text2"],
+        )
+        mock_client.embeddings.create.assert_any_call(
+            model="mistral-embed",
+            inputs=["text1"],
+        )
+        mock_client.embeddings.create.assert_any_call(
+            model="mistral-embed",
+            inputs=["text2"],
+        )
+        mock_sleep.assert_not_called()
+        mock_refresh_embedding_client.assert_not_called()
 
     @patch("legiscope.embeddings.time_module.sleep")
     @patch("legiscope.embeddings.get_openrouter_client")
@@ -711,7 +768,13 @@ class TestSplitSegmentRow:
             "word_count": 36,
         }
         sections = self._sections_by_ordinal(
-            [{"section_ordinal": 0, "heading_text": "# ARTICLE I", "ancestor_path": None}]
+            [
+                {
+                    "section_ordinal": 0,
+                    "heading_text": "# ARTICLE I",
+                    "ancestor_path": None,
+                }
+            ]
         )
 
         split_rows, split_texts = _split_segment_row(row, sections, 24)

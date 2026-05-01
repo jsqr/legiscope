@@ -4,6 +4,8 @@ This module implements LLM-as-a-judge patterns to score generated answers
 against ground truth human-authored answers.
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import local
 from typing import Any, Literal, TypeAlias
 
 import polars as pl
@@ -72,19 +74,29 @@ class EvaluationResult(BaseModel):
 class Evaluator:
     """Handles the evaluation of generated responses against ground truth."""
 
-    def __init__(self, llm_config: LLMConfig | None = None):
+    def __init__(
+        self,
+        llm_config: LLMConfig | None = None,
+        *,
+        max_concurrency: int = 1,
+    ):
         """
         Initialize the evaluator.
 
         Args:
             llm_config: Configuration for the judge LLM. If None, uses the powerful client.
+            max_concurrency: Maximum number of concurrent evaluation requests.
         """
+        self._thread_local = local()
+        self._client_factory = None
+
         if llm_config is None:
             from legiscope.llm_config import Config
 
             # We want a powerful model for evaluation (Judge)
             # Config.get_powerful_client() already returns an Instructor client
-            self.client = Config.get_powerful_client()
+            self._client_factory = Config.get_powerful_client
+            self.client = self._client_factory()
             self._request_params = Config.get_llm_params()
         else:
             # llm_config.client is already an Instructor client
@@ -93,6 +105,44 @@ class Evaluator:
                 "temperature": llm_config.temperature,
                 "max_retries": llm_config.max_retries,
             }
+
+        self.max_concurrency = self._normalize_max_concurrency(max_concurrency)
+        if llm_config is not None and self.max_concurrency > 1:
+            logger.warning(
+                "Evaluator received a custom llm_config with max_concurrency > 1; "
+                "falling back to sequential evaluation for reliability."
+            )
+            self.max_concurrency = 1
+
+    @staticmethod
+    def _normalize_max_concurrency(value: int) -> int:
+        """Return a safe, positive worker count."""
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid evaluator max_concurrency={value!r}; using sequential evaluation."
+            )
+            return 1
+
+        if parsed < 1:
+            logger.warning(
+                f"Non-positive evaluator max_concurrency={parsed}; using sequential evaluation."
+            )
+            return 1
+
+        return parsed
+
+    def _get_client(self):
+        """Return a thread-local client when concurrent evaluation is enabled."""
+        if self.max_concurrency == 1 or self._client_factory is None:
+            return self.client
+
+        thread_client = getattr(self._thread_local, "client", None)
+        if thread_client is None:
+            thread_client = self._client_factory()
+            self._thread_local.client = thread_client
+        return thread_client
 
     def evaluate_response(
         self, question: str, generated_answer: str, ground_truth: str
@@ -157,7 +207,8 @@ class Evaluator:
         """
 
         try:
-            return self.client.chat.completions.create(
+            client = self._get_client()
+            return client.chat.completions.create(
                 response_model=EvaluationResult,
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -180,19 +231,68 @@ class Evaluator:
         """
         Run evaluation on a DataFrame containing results and ground truth.
         """
+        rows = list(df.iter_rows(named=True))
+        record_count = len(rows)
         scores = []
         reasons = []
         labels = []
         error_types = []
 
-        logger.info(f"Starting evaluation of {len(df)} records...")
+        worker_count = min(self.max_concurrency, record_count) if record_count else 1
+        logger.info(
+            f"Starting evaluation of {record_count} records with max_concurrency={worker_count}..."
+        )
 
-        for row in df.iter_rows(named=True):
-            result = self.evaluate_response(
-                question=row[question_col],
-                generated_answer=row[answer_col],
-                ground_truth=row[truth_col],
-            )
+        results: list[EvaluationResult] = []
+        if record_count == 0:
+            results = []
+        elif worker_count == 1:
+            results = [
+                self.evaluate_response(
+                    question=row[question_col],
+                    generated_answer=row[answer_col],
+                    ground_truth=row[truth_col],
+                )
+                for row in rows
+            ]
+        else:
+            results = [
+                EvaluationResult(
+                    score=0,
+                    reasoning="Evaluation execution failed before a result was recorded.",
+                    accuracy_label="Incorrect",
+                    error_type="other",
+                )
+                for _ in rows
+            ]
+            with ThreadPoolExecutor(
+                max_workers=worker_count,
+                thread_name_prefix="benchmark-eval",
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        self.evaluate_response,
+                        question=row[question_col],
+                        generated_answer=row[answer_col],
+                        ground_truth=row[truth_col],
+                    ): index
+                    for index, row in enumerate(rows)
+                }
+
+                for future in as_completed(futures):
+                    index = futures[future]
+                    try:
+                        results[index] = future.result()
+                    except Exception as exc:
+                        logger.error(f"Concurrent evaluation worker failed: {exc}")
+                        results[index] = EvaluationResult(
+                            score=0,
+                            reasoning=f"Evaluation execution failed: {exc}",
+                            accuracy_label="Incorrect",
+                            error_type="other",
+                        )
+
+        for result in results:
             scores.append(result.score)
             reasons.append(result.reasoning)
             labels.append(result.accuracy_label)

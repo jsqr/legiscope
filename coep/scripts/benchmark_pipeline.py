@@ -145,7 +145,77 @@ def _ensure_generation_outcome_columns(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _has_supporting_passage_validation_drift(value: object) -> bool:
-    """Return True when any supporting-passage validation score falls below 0.9."""
+    """Return True when any passage has near-exact formatting drift."""
+    if value is None:
+        return False
+
+    match_types = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        try:
+            match_types = ast.literal_eval(stripped)
+        except (SyntaxError, ValueError):
+            return False
+
+    if not isinstance(match_types, (list, tuple)):
+        return False
+
+    return any(str(match_type) == "near_exact" for match_type in match_types)
+
+
+def _has_supporting_passage_validation_not_found(value: object) -> bool:
+    """Return True when any passage validation ended in a true not-found result."""
+    if value is None:
+        return False
+
+    match_types = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        try:
+            match_types = ast.literal_eval(stripped)
+        except (SyntaxError, ValueError):
+            return False
+
+    if not isinstance(match_types, (list, tuple)):
+        return False
+
+    return any(str(match_type) == "not_found" for match_type in match_types)
+
+
+def _has_supporting_passage_validation_drift_from_scores(value: object) -> bool:
+    """Fallback drift detector for legacy artifacts that only store scores."""
+    if value is None:
+        return False
+
+    scores = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return False
+        try:
+            scores = ast.literal_eval(stripped)
+        except (SyntaxError, ValueError):
+            return False
+
+    if not isinstance(scores, (list, tuple)):
+        return False
+
+    for score in scores:
+        try:
+            numeric_score = float(score)
+            if 0.9 <= numeric_score < 1.0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+def _has_supporting_passage_validation_not_found_from_scores(value: object) -> bool:
+    """Fallback not-found detector for legacy artifacts that only store scores."""
     if value is None:
         return False
 
@@ -173,19 +243,53 @@ def _has_supporting_passage_validation_drift(value: object) -> bool:
 
 def _ensure_supporting_passage_validation_columns(df: pl.DataFrame) -> pl.DataFrame:
     """Ensure benchmark exports surface supporting-passage validation drift."""
-    if "supporting_passage_validation_drift" in df.columns:
+    if (
+        "supporting_passage_validation_drift" in df.columns
+        and "supporting_passage_validation_not_found" in df.columns
+    ):
         return df
-    if "supporting_passage_validation_scores" not in df.columns:
+    if (
+        "supporting_passage_validation_match_types" not in df.columns
+        and "supporting_passage_validation_scores" not in df.columns
+    ):
         return df
 
-    return df.with_columns(
-        pl.col("supporting_passage_validation_scores")
-        .map_elements(
-            _has_supporting_passage_validation_drift,
-            return_dtype=pl.Boolean,
-        )
-        .alias("supporting_passage_validation_drift")
+    derived_columns: list[pl.Expr] = []
+
+    source_column = (
+        "supporting_passage_validation_match_types"
+        if "supporting_passage_validation_match_types" in df.columns
+        else "supporting_passage_validation_scores"
     )
+
+    if "supporting_passage_validation_drift" not in df.columns:
+        drift_detector = (
+            _has_supporting_passage_validation_drift
+            if source_column == "supporting_passage_validation_match_types"
+            else _has_supporting_passage_validation_drift_from_scores
+        )
+        derived_columns.append(
+            pl.col(source_column)
+            .map_elements(drift_detector, return_dtype=pl.Boolean)
+            .alias("supporting_passage_validation_drift")
+        )
+
+    if "supporting_passage_validation_not_found" not in df.columns:
+        not_found_detector = (
+            _has_supporting_passage_validation_not_found
+            if source_column == "supporting_passage_validation_match_types"
+            else _has_supporting_passage_validation_not_found_from_scores
+        )
+        derived_columns.append(
+            pl.col(source_column)
+            .map_elements(not_found_detector, return_dtype=pl.Boolean)
+            .alias("supporting_passage_validation_not_found")
+        )
+
+    if not derived_columns:
+        return df
+
+    return df.with_columns(derived_columns)
 
 
 def _build_query_metadata_df(query_inputs) -> pl.DataFrame:
@@ -584,6 +688,65 @@ def _score_skipped_queries(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _score_option_level_queries(df: pl.DataFrame) -> pl.DataFrame:
+    """Score option-level rows deterministically from structured presence flags."""
+    if df.is_empty():
+        return df.with_columns(
+            [
+                pl.lit(None, dtype=pl.Int64).alias("eval_score"),
+                pl.lit(None, dtype=pl.String).alias("eval_reason"),
+                pl.lit(None, dtype=pl.String).alias("eval_label"),
+                pl.lit(None, dtype=pl.String).alias("eval_error_type"),
+            ]
+        )
+
+    expected_present = pl.col("evaluation_expected_present")
+    generated_present = pl.col("evaluation_generated_present")
+    is_match = expected_present.eq(generated_present)
+
+    return df.with_columns(
+        [
+            pl.when(is_match).then(pl.lit(10)).otherwise(pl.lit(0)).alias("eval_score"),
+            pl.when(is_match)
+            .then(
+                pl.when(expected_present)
+                .then(
+                    pl.lit(
+                        "Deterministic option-level scoring: the generated answer correctly included this option."
+                    )
+                )
+                .otherwise(
+                    pl.lit(
+                        "Deterministic option-level scoring: the generated answer correctly omitted this option."
+                    )
+                )
+            )
+            .otherwise(
+                pl.when(generated_present)
+                .then(
+                    pl.lit(
+                        "Deterministic option-level scoring: the generated answer included this option even though the ground truth omits it."
+                    )
+                )
+                .otherwise(
+                    pl.lit(
+                        "Deterministic option-level scoring: the generated answer omitted this option even though the ground truth includes it."
+                    )
+                )
+            )
+            .alias("eval_reason"),
+            pl.when(is_match)
+            .then(pl.lit("Correct"))
+            .otherwise(pl.lit("Incorrect"))
+            .alias("eval_label"),
+            pl.when(is_match)
+            .then(pl.lit("none"))
+            .otherwise(pl.lit("other"))
+            .alias("eval_error_type"),
+        ]
+    )
+
+
 def _requested_variable_names(query_inputs) -> list[str]:
     """Return distinct benchmark variable names in query order."""
     seen: set[str] = set()
@@ -645,6 +808,109 @@ def _summarize_scoring_methods(df: pl.DataFrame) -> dict[str, int]:
         "and_or_questions_scored_option_level": int(
             and_or_questions_scored_option_level
         ),
+    }
+
+
+def _summarize_collapsed_query_accuracy(
+    eval_scored_df: pl.DataFrame,
+    *,
+    total_queries: int,
+) -> dict[str, int | float]:
+    """Collapse scored subrows back to benchmark-query accuracy.
+
+    A benchmark query is counted as correct only if every scored evaluation row for
+    that query is labeled ``Correct``. This keeps expanded option-level scoring for
+    diagnostics while also producing a binary per-query metric over the original
+    benchmark prompts.
+    """
+    if eval_scored_df.is_empty():
+        return {
+            "processed_queries": int(total_queries),
+            "scored_queries": 0,
+            "unscored_queries": int(total_queries),
+            "correct_queries": 0,
+            "incorrect_queries": 0,
+            "accuracy_rate": 0.0,
+        }
+
+    per_query = eval_scored_df.group_by("benchmark_row_id").agg(
+        [
+            pl.len().alias("scored_rows"),
+            pl.col("eval_label").eq("Correct").all().alias("all_rows_correct"),
+        ]
+    )
+
+    scored_queries = per_query.height
+    correct_queries = per_query.filter(pl.col("all_rows_correct")).height
+    incorrect_queries = int(total_queries) - correct_queries
+    unscored_queries = max(int(total_queries) - scored_queries, 0)
+    accuracy_rate = (correct_queries / total_queries) * 100 if total_queries else 0.0
+
+    return {
+        "processed_queries": int(total_queries),
+        "scored_queries": int(scored_queries),
+        "unscored_queries": int(unscored_queries),
+        "correct_queries": int(correct_queries),
+        "incorrect_queries": int(incorrect_queries),
+        "accuracy_rate": float(accuracy_rate),
+    }
+
+
+def _summarize_weighted_query_score(
+    eval_scored_df: pl.DataFrame,
+    *,
+    total_queries: int,
+) -> dict[str, int | float]:
+    """Return a 100-point query-weighted score with option-level partial credit.
+
+    Each original benchmark query receives an equal share of 100 total points.
+    When a query expands into multiple response-option evaluation rows, that
+    query's share is divided evenly across those rows and earned row-by-row.
+    Queries without any scored evaluation rows contribute zero earned points.
+    """
+    processed_queries = int(total_queries)
+    points_per_query = 100.0 / processed_queries if processed_queries else 0.0
+
+    if eval_scored_df.is_empty() or processed_queries == 0:
+        return {
+            "processed_queries": processed_queries,
+            "scored_queries": 0,
+            "unscored_queries": processed_queries,
+            "points_per_query": float(points_per_query),
+            "scored_point_ceiling": 0.0,
+            "earned_points": 0.0,
+            "score_percent": 0.0,
+        }
+
+    per_query = eval_scored_df.group_by("benchmark_row_id").agg(
+        [
+            pl.len().alias("scored_rows"),
+            pl.col("eval_label").eq("Correct").sum().alias("correct_rows"),
+        ]
+    )
+
+    scored_queries = per_query.height
+    unscored_queries = max(processed_queries - scored_queries, 0)
+    earned_points = (
+        per_query.select(
+            (
+                pl.lit(points_per_query)
+                * pl.col("correct_rows")
+                / pl.col("scored_rows")
+            ).sum()
+        ).item()
+        or 0.0
+    )
+    scored_point_ceiling = points_per_query * scored_queries
+
+    return {
+        "processed_queries": processed_queries,
+        "scored_queries": int(scored_queries),
+        "unscored_queries": int(unscored_queries),
+        "points_per_query": float(points_per_query),
+        "scored_point_ceiling": float(scored_point_ceiling),
+        "earned_points": float(earned_points),
+        "score_percent": float(earned_points),
     }
 
 
@@ -723,6 +989,9 @@ def main():
     series_title = params.get("benchmark", {}).get(
         "series_title", "DPL_2025_Consolidated"
     )
+    evaluation_max_concurrency = (
+        params.get("benchmark", {}).get("evaluation", {}).get("max_concurrency", 1)
+    )
 
     # =========================================================================
     # Step 1: Load Queries
@@ -771,7 +1040,7 @@ def main():
     )
 
     # Evaluator Agent (Powerful model for judging)
-    evaluator = Evaluator()
+    evaluator = Evaluator(max_concurrency=evaluation_max_concurrency)
 
     # =========================================================================
     # Step 5: Run RAG Pipeline (Generation)
@@ -862,11 +1131,21 @@ def main():
     logger.info("Evaluating generated answers against ground truth...")
 
     llm_eval_input_df = joined_df.filter(pl.col("evaluation_status") == "scored_llm")
+    option_eval_df = _score_option_level_queries(
+        llm_eval_input_df.filter(pl.col("evaluation_mode") == "response_option")
+    )
+    llm_eval_input_df = llm_eval_input_df.filter(
+        pl.col("evaluation_mode") != "response_option"
+    )
     skipped_eval_df = _score_skipped_queries(
         joined_df.filter(pl.col("evaluation_status") == "scored_skipped")
     )
 
-    if len(llm_eval_input_df) == 0 and len(skipped_eval_df) == 0:
+    if (
+        len(llm_eval_input_df) == 0
+        and len(option_eval_df) == 0
+        and len(skipped_eval_df) == 0
+    ):
         logger.error("No rows with ground truth to evaluate!")
         sys.exit(1)
 
@@ -881,6 +1160,8 @@ def main():
     else:
         llm_eval_scored_df = pl.DataFrame(
             schema={
+                "benchmark_row_id": pl.Int64,
+                "evaluation_mode": pl.String,
                 "evaluation_row_id": pl.Int64,
                 "evaluation_generated_answer": pl.String,
                 "eval_score": pl.Int64,
@@ -899,6 +1180,20 @@ def main():
         [
             llm_eval_scored_df.select(
                 [
+                    "benchmark_row_id",
+                    "evaluation_mode",
+                    "evaluation_row_id",
+                    "evaluation_generated_answer",
+                    "eval_score",
+                    "eval_reason",
+                    "eval_label",
+                    "eval_error_type",
+                ]
+            ),
+            option_eval_df.select(
+                [
+                    "benchmark_row_id",
+                    "evaluation_mode",
                     "evaluation_row_id",
                     "evaluation_generated_answer",
                     "eval_score",
@@ -909,6 +1204,8 @@ def main():
             ),
             skipped_eval_df.select(
                 [
+                    "benchmark_row_id",
+                    "evaluation_mode",
                     "evaluation_row_id",
                     "evaluation_generated_answer",
                     "eval_score",
@@ -955,6 +1252,7 @@ def main():
     processed_count = final_df.height
     scored_count = eval_scored_df.height
     unscored_count = processed_count - scored_count
+    core_query_count = joined_df.select("benchmark_row_id").n_unique()
     no_retrieval_units_count = final_df.filter(
         pl.col("no_retrieval_units_found")
     ).height
@@ -966,16 +1264,46 @@ def main():
     supporting_passage_validation_drift_count = final_df.filter(
         pl.col("supporting_passage_validation_drift")
     ).height
+    supporting_passage_validation_not_found_count = final_df.filter(
+        pl.col("supporting_passage_validation_not_found")
+    ).height
     accuracy_rate = (correct_count / scored_count) * 100 if scored_count > 0 else 0
     eval_error_type_counts = _summarize_eval_error_types(eval_scored_df)
     scoring_method_counts = _summarize_scoring_methods(eval_scored_df)
+    collapsed_query_metrics = _summarize_collapsed_query_accuracy(
+        eval_scored_df,
+        total_queries=core_query_count,
+    )
+    weighted_query_metrics = _summarize_weighted_query_score(
+        eval_scored_df,
+        total_queries=core_query_count,
+    )
 
     print("\n" + "=" * 60)
     print("BENCHMARK COMPLETED")
     print("=" * 60)
-    print(f"Total Queries Processed: {processed_count}")
-    print(f"Queries Scored Against Ground Truth: {scored_count}")
-    print(f"Queries Unscored (missing/excluded ground truth): {unscored_count}")
+    print(f"Core benchmark queries processed: {core_query_count}")
+    print(
+        "Primary weighted benchmark score: "
+        f"{weighted_query_metrics['earned_points']:.1f} / 100"
+    )
+    print(
+        "Collapsed query accuracy: "
+        f"{collapsed_query_metrics['correct_queries']} / "
+        f"{collapsed_query_metrics['processed_queries']} "
+        f"({collapsed_query_metrics['accuracy_rate']:.1f}%)"
+    )
+    print(
+        "Collapsed queries scored against ground truth: "
+        f"{collapsed_query_metrics['scored_queries']}"
+    )
+    print(
+        "Collapsed queries unscored (missing/excluded ground truth): "
+        f"{collapsed_query_metrics['unscored_queries']}"
+    )
+    print(f"Expanded evaluation rows processed: {processed_count}")
+    print(f"Expanded rows scored against ground truth: {scored_count}")
+    print(f"Expanded rows unscored (missing/excluded ground truth): {unscored_count}")
     print(f"Whole-answer scored rows: {scoring_method_counts['whole_answer_rows']}")
     print(
         "AND/OR option-level scored rows: "
@@ -986,7 +1314,9 @@ def main():
         f"{scoring_method_counts['and_or_questions_scored_option_level']}"
     )
     print(f"Average Quality Score: {avg_score:.2f} / 10")
-    print(f"Correct: {correct_count} ({accuracy_rate:.1f}%)")
+    print(
+        f"Expanded-row accuracy: {correct_count} / {scored_count} ({accuracy_rate:.1f}%)"
+    )
     print(f"Partially Correct: {partial_count}")
     print(f"Incorrect: {incorrect_count}")
     print("=" * 60 + "\n")
@@ -996,19 +1326,47 @@ def main():
     # =========================================================================
     metrics = {
         "jurisdiction_id": jurisdiction_id,
+        "primary_score": round(weighted_query_metrics["earned_points"], 2),
+        "primary_score_label": "weighted_query_score",
+        "weighted_query_score": round(weighted_query_metrics["earned_points"], 2),
+        "weighted_query_score_percent": round(
+            weighted_query_metrics["score_percent"],
+            2,
+        ),
+        "weighted_query_points_per_query": round(
+            weighted_query_metrics["points_per_query"],
+            4,
+        ),
+        "weighted_query_scored_point_ceiling": round(
+            weighted_query_metrics["scored_point_ceiling"],
+            2,
+        ),
+        "weighted_query_scored": weighted_query_metrics["scored_queries"],
+        "weighted_query_unscored": weighted_query_metrics["unscored_queries"],
         "avg_score": round(avg_score, 4) if avg_score is not None else None,
         "accuracy_rate": round(accuracy_rate, 2),
+        "expanded_accuracy_rate": round(accuracy_rate, 2),
         "correct": correct_count,
         "partially_correct": partial_count,
         "incorrect": incorrect_count,
         "processed_queries": processed_count,
         "scored_queries": scored_count,
         "unscored_queries": unscored_count,
+        "core_benchmark_queries": core_query_count,
+        "collapsed_query_accuracy_rate": round(
+            collapsed_query_metrics["accuracy_rate"],
+            2,
+        ),
+        "collapsed_query_correct": collapsed_query_metrics["correct_queries"],
+        "collapsed_query_incorrect": collapsed_query_metrics["incorrect_queries"],
+        "collapsed_query_scored": collapsed_query_metrics["scored_queries"],
+        "collapsed_query_unscored": collapsed_query_metrics["unscored_queries"],
         "queries_with_no_retrieval_units": no_retrieval_units_count,
         "queries_filtered_to_zero_units": filtered_out_all_units_count,
         "abstained_queries": abstention_count,
         "error_response_queries": error_response_count,
         "supporting_passage_validation_drift_queries": supporting_passage_validation_drift_count,
+        "supporting_passage_validation_not_found_queries": supporting_passage_validation_not_found_count,
         "whole_answer_scored_rows": scoring_method_counts["whole_answer_rows"],
         "and_or_option_level_scored_rows": scoring_method_counts[
             "response_option_rows"

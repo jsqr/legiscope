@@ -66,7 +66,7 @@ embeddings:
 # Segmentation settings
 segmentation:
   embedding_model_token_limit: 1024
-  llm_context_limit: 36864
+  llm_context_limit: 65536
 
 # Retrieval: vector search and post-retrieval filtering
 retrieval:
@@ -90,6 +90,8 @@ retrieval:
 # Benchmark evaluation settings
 benchmark:
   series_title: DPL_2025_Consolidated
+  evaluation:
+    max_concurrency: 4
 
 # Query: LLM analysis of retrieved context (uses powerful model)
 query:

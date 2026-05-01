@@ -178,6 +178,8 @@ query:
 
 benchmark:
   series_title: "DPL_2025_Consolidated"
+  evaluation:
+    max_concurrency: 4
 ```
 
 ### 3.2 `config.yaml` — Infrastructure Settings (not DVC-tracked)
@@ -334,6 +336,12 @@ and runs automatically as part of `dvc exp run`.
 5. **Join** generated answers with ground truth by `variable_name`
 6. **Evaluate** using LLM-as-a-judge (powerful model scores 0-10)
 7. **Output** CSV with scores, reasoning, accuracy labels
+
+For BigPurple vLLM runs, the evaluator can issue multiple judge requests in
+parallel against the single local vLLM server. Configure this with
+`benchmark.evaluation.max_concurrency` in `params.yaml`. Start conservatively at
+`4` and raise only after confirming the model server remains stable under the
+combined query plus judge workload for your target node shape.
 
 ### Inputs
 
@@ -795,6 +803,10 @@ llm:
     openai:
       fast: "powerful-model"            # must match vLLM --served-model-name
       powerful: "powerful-model"        # must match vLLM --served-model-name
+
+benchmark:
+  evaluation:
+    max_concurrency: 4                   # bounded parallel LLM judge requests
 
 # Embeddings: OpenRouter API (default, no change needed)
 embeddings:

@@ -213,24 +213,69 @@ def main() -> None:
     if metrics_df.is_empty():
         print("  No benchmark_metrics.json files found.")
     else:
-        # Sort by accuracy
-        metrics_df = metrics_df.sort("accuracy_rate", descending=True)
+        has_primary_score = "primary_score" in metrics_df.columns
+        sort_column = "primary_score" if has_primary_score else "accuracy_rate"
+        metrics_df = metrics_df.sort(sort_column, descending=True)
+        has_collapsed_accuracy = "collapsed_query_accuracy_rate" in metrics_df.columns
 
         # Print table
-        print(
-            f"\n  {'Jurisdiction':<25} {'Avg Score':>10} {'Accuracy':>10} "
-            f"{'Correct':>8} {'Partial':>8} {'Wrong':>8} {'Total':>6}"
-        )
-        print("  " + "-" * 77)
+        if has_primary_score and has_collapsed_accuracy:
+            print(
+                f"\n  {'Jurisdiction':<25} {'Primary':>10} {'Avg Score':>10} {'Row Acc':>10} "
+                f"{'Query Acc':>10} {'Correct':>8} {'Partial':>8} {'Wrong':>8} {'Total':>6}"
+            )
+            print("  " + "-" * 99)
+        elif has_collapsed_accuracy:
+            print(
+                f"\n  {'Jurisdiction':<25} {'Avg Score':>10} {'Row Acc':>10} "
+                f"{'Query Acc':>10} {'Correct':>8} {'Partial':>8} {'Wrong':>8} {'Total':>6}"
+            )
+            print("  " + "-" * 88)
+        else:
+            print(
+                f"\n  {'Jurisdiction':<25} {'Avg Score':>10} {'Accuracy':>10} "
+                f"{'Correct':>8} {'Partial':>8} {'Wrong':>8} {'Total':>6}"
+            )
+            print("  " + "-" * 77)
+
         for row in metrics_df.iter_rows(named=True):
             avg = row.get("avg_score")
             avg_str = f"{avg:.2f}" if avg is not None else "N/A"
-            print(
-                f"  {row['jurisdiction_id']:<25} {avg_str:>10} "
-                f"{row['accuracy_rate']:>9.1f}% "
-                f"{row['correct']:>8} {row['partially_correct']:>8} "
-                f"{row['incorrect']:>8} {row['total']:>6}"
-            )
+            primary = row.get("primary_score")
+            primary_str = f"{primary:>9.1f}" if primary is not None else f"{'N/A':>10}"
+            if has_primary_score and has_collapsed_accuracy:
+                query_accuracy = row.get("collapsed_query_accuracy_rate")
+                query_accuracy_str = (
+                    f"{query_accuracy:>9.1f}%"
+                    if query_accuracy is not None
+                    else f"{'N/A':>10}"
+                )
+                print(
+                    f"  {row['jurisdiction_id']:<25} {primary_str} {avg_str:>10} "
+                    f"{row['accuracy_rate']:>9.1f}% {query_accuracy_str} "
+                    f"{row['correct']:>8} {row['partially_correct']:>8} "
+                    f"{row['incorrect']:>8} {row['total']:>6}"
+                )
+            elif has_collapsed_accuracy:
+                query_accuracy = row.get("collapsed_query_accuracy_rate")
+                query_accuracy_str = (
+                    f"{query_accuracy:>9.1f}%"
+                    if query_accuracy is not None
+                    else f"{'N/A':>10}"
+                )
+                print(
+                    f"  {row['jurisdiction_id']:<25} {avg_str:>10} "
+                    f"{row['accuracy_rate']:>9.1f}% {query_accuracy_str} "
+                    f"{row['correct']:>8} {row['partially_correct']:>8} "
+                    f"{row['incorrect']:>8} {row['total']:>6}"
+                )
+            else:
+                print(
+                    f"  {row['jurisdiction_id']:<25} {avg_str:>10} "
+                    f"{row['accuracy_rate']:>9.1f}% "
+                    f"{row['correct']:>8} {row['partially_correct']:>8} "
+                    f"{row['incorrect']:>8} {row['total']:>6}"
+                )
 
         # Aggregate summary
         total_correct = metrics_df["correct"].sum()
@@ -241,15 +286,61 @@ def main() -> None:
             (total_correct / total_questions) * 100 if total_questions > 0 else 0
         )
         overall_avg = metrics_df["avg_score"].mean()
+        overall_primary = None
+        if has_primary_score and "core_benchmark_queries" in metrics_df.columns:
+            total_core_queries = metrics_df["core_benchmark_queries"].sum()
+            if total_core_queries and total_core_queries > 0:
+                weighted_primary_points = (
+                    metrics_df["primary_score"] * metrics_df["core_benchmark_queries"]
+                ).sum() / total_core_queries
+                overall_primary = weighted_primary_points
+        overall_query_accuracy = None
+        if has_collapsed_accuracy:
+            total_query_correct = metrics_df["collapsed_query_correct"].sum()
+            total_query_count = metrics_df["core_benchmark_queries"].sum()
+            overall_query_accuracy = (
+                (total_query_correct / total_query_count) * 100
+                if total_query_count > 0
+                else 0
+            )
 
-        print("  " + "-" * 77)
-        avg_str = f"{overall_avg:.2f}" if overall_avg is not None else "N/A"
         print(
-            f"  {'OVERALL':<25} {avg_str:>10} "
-            f"{overall_accuracy:>9.1f}% "
-            f"{total_correct:>8} {total_partial:>8} "
-            f"{total_incorrect:>8} {total_questions:>6}"
+            "  "
+            + (
+                "-" * 99
+                if has_primary_score and has_collapsed_accuracy
+                else "-" * 88
+                if has_collapsed_accuracy
+                else "-" * 77
+            )
         )
+        avg_str = f"{overall_avg:.2f}" if overall_avg is not None else "N/A"
+        primary_str = (
+            f"{overall_primary:>9.1f}"
+            if overall_primary is not None
+            else f"{'N/A':>10}"
+        )
+        if has_primary_score and has_collapsed_accuracy:
+            print(
+                f"  {'OVERALL':<25} {primary_str} {avg_str:>10} "
+                f"{overall_accuracy:>9.1f}% {overall_query_accuracy:>9.1f}% "
+                f"{total_correct:>8} {total_partial:>8} "
+                f"{total_incorrect:>8} {total_questions:>6}"
+            )
+        elif has_collapsed_accuracy:
+            print(
+                f"  {'OVERALL':<25} {avg_str:>10} "
+                f"{overall_accuracy:>9.1f}% {overall_query_accuracy:>9.1f}% "
+                f"{total_correct:>8} {total_partial:>8} "
+                f"{total_incorrect:>8} {total_questions:>6}"
+            )
+        else:
+            print(
+                f"  {'OVERALL':<25} {avg_str:>10} "
+                f"{overall_accuracy:>9.1f}% "
+                f"{total_correct:>8} {total_partial:>8} "
+                f"{total_incorrect:>8} {total_questions:>6}"
+            )
 
         # Save metrics summary
         metrics_out = output_dir / "all_jurisdictions_metrics.csv"

@@ -27,6 +27,7 @@ from legiscope.retrieval_guidance import (
     RetrievalGuidanceRequest,
 )
 from legiscope.query_hierarchy import (
+    LabelBlockerRule,
     REQUIRES_DATA_COLUMN,
     REQUIRES_LABELS_COLUMN,
     REQUIRES_YES_COLUMN,
@@ -512,6 +513,103 @@ def _build_query_hierarchy_for_input(
     return QueryHierarchy(query_id=query_id)
 
 
+def _dedupe_query_id_values(values: list[Any]) -> tuple[str, ...]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return tuple(ordered)
+
+
+def _query_id_aliases(
+    query_input: QueryInput,
+    hierarchy: QueryHierarchy,
+) -> tuple[str, ...]:
+    metadata = query_input.metadata or {}
+    return _dedupe_query_id_values(
+        [
+            hierarchy.query_id,
+            query_input.query_id,
+            query_input.variable_name,
+            metadata.get("query_id"),
+            metadata.get("question_number"),
+            metadata.get("variable_name"),
+        ]
+    )
+
+
+def _resolve_query_hierarchy_aliases(
+    planned: list[PlannedQuery],
+) -> list[PlannedQuery]:
+    """Normalize parent references so dependency columns can use question IDs or variable names."""
+    alias_targets: dict[str, set[str]] = {}
+    for planned_query in planned:
+        for alias in _query_id_aliases(
+            planned_query.query_input,
+            planned_query.hierarchy,
+        ):
+            alias_targets.setdefault(alias, set()).add(planned_query.hierarchy.query_id)
+
+    alias_to_query_id = {
+        alias: next(iter(targets))
+        for alias, targets in alias_targets.items()
+        if len(targets) == 1
+    }
+
+    resolved: list[PlannedQuery] = []
+    for planned_query in planned:
+        hierarchy = planned_query.hierarchy
+        boolean_parent_ids = _dedupe_query_id_values(
+            [
+                alias_to_query_id.get(parent_id, parent_id)
+                for parent_id in hierarchy.boolean_parent_ids
+            ]
+        )
+        context_parent_ids = _dedupe_query_id_values(
+            [
+                alias_to_query_id.get(parent_id, parent_id)
+                for parent_id in hierarchy.context_parent_ids
+            ]
+        )
+        label_blockers = tuple(
+            LabelBlockerRule(
+                parent_query_id=alias_to_query_id.get(
+                    rule.parent_query_id,
+                    rule.parent_query_id,
+                ),
+                blocker_labels=rule.blocker_labels,
+            )
+            for rule in hierarchy.label_blockers
+        )
+        parent_ids = _dedupe_query_id_values(
+            [
+                *boolean_parent_ids,
+                *context_parent_ids,
+                *(rule.parent_query_id for rule in label_blockers),
+            ]
+        )
+        resolved.append(
+            replace(
+                planned_query,
+                hierarchy=replace(
+                    hierarchy,
+                    parent_ids=parent_ids,
+                    boolean_parent_ids=boolean_parent_ids,
+                    context_parent_ids=context_parent_ids,
+                    label_blockers=label_blockers,
+                ),
+            )
+        )
+
+    return resolved
+
+
 def _plan_queries_in_execution_order(
     query_inputs: list[QueryInput],
 ) -> list[PlannedQuery]:
@@ -527,6 +625,7 @@ def _plan_queries_in_execution_order(
         )
         for index, query_input in enumerate(query_inputs)
     ]
+    planned = _resolve_query_hierarchy_aliases(planned)
 
     query_ids = [planned_query.hierarchy.query_id for planned_query in planned]
     if len(query_ids) != len(set(query_ids)):
@@ -784,12 +883,20 @@ class LegalQueryResponse(BaseModel):
     )
 
 
+@dataclass
+class SupportingPassageValidationResult:
+    """Structured outcome for supporting-passage validation."""
+
+    similarity_scores: list[float]
+    match_types: list[str]
+
+
 def _validate_supporting_passages(
     response: LegalQueryResponse,
     sections: list[SectionResult],
     exact_match_threshold: float = DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD,
     fuzzy_match_threshold: float = DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD,
-) -> list[float]:
+) -> SupportingPassageValidationResult:
     """
     Validate that supporting passages exist in retrieved text with fuzzy matching.
 
@@ -804,7 +911,7 @@ def _validate_supporting_passages(
         fuzzy_match_threshold: Similarity threshold for warning about close matches (default 0.9)
 
     Returns:
-        list of float similarity scores for each supporting passage compared to retrieved text.
+        SupportingPassageValidationResult containing similarity scores and match types.
 
     Example warnings:
         - Exact match not found: "Supporting passage 1 not found in retrieved text..."
@@ -812,7 +919,7 @@ def _validate_supporting_passages(
         - Hallucination summary: "HALLUCINATION WARNING: 2/5 supporting passages not found..."
     """
     if not response.supporting_passages:
-        return []
+        return SupportingPassageValidationResult([], [])
 
     logger.info(
         f"Validating {len(response.supporting_passages)} supporting passages against retrieved text"
@@ -832,71 +939,112 @@ def _validate_supporting_passages(
 
     if not all_texts:
         logger.warning("No text available to validate supporting passages against")
-        return []
+        return SupportingPassageValidationResult([], [])
 
     similarity_scores = []
+    match_types: list[str] = []
     unmatched_count = 0
+    near_exact_count = 0
 
-    # Helper for robust matching
     def normalize_text(text: str) -> str:
-        # Normalize whitespace (collapses multiple spaces, tabs, newlines)
-        text = " ".join(text.split())
-        # Normalize smart quotes to standard ASCII
-        text = (
-            text.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+        text = text.strip()
+        text = text.translate(
+            str.maketrans(
+                {
+                    "“": '"',
+                    "”": '"',
+                    "„": '"',
+                    "‟": '"',
+                    "‘": "'",
+                    "’": "'",
+                    "‚": "'",
+                    "‛": "'",
+                    "`": "'",
+                }
+            )
         )
-        return text
+        text = " ".join(text.split())
+        return text.lower()
 
-    # Pre-compute normalized texts
-    normalized_texts = [normalize_text(t) for t in all_texts]
+    def strip_section_prefix(text: str) -> str:
+        stripped = text.strip()
+        patterns = (
+            r"^(?:section|sec\.?|sect\.)\s+[a-z0-9][a-z0-9.()\-/]*(?:\s*[:.)-])?\s*",
+            r"^§+\s*[a-z0-9][a-z0-9.()\-/]*(?:\s*[:.)-])?\s*",
+        )
+        for pattern in patterns:
+            updated = re.sub(pattern, "", stripped, count=1, flags=re.IGNORECASE)
+            if updated != stripped:
+                return updated.strip()
+        return stripped
+
+    def validation_variants(text: str) -> list[str]:
+        normalized = normalize_text(text)
+        variants = [normalized]
+        prefixless = strip_section_prefix(normalized)
+        if prefixless and prefixless != normalized:
+            variants.append(prefixless)
+        return variants
+
+    normalized_text_variants = [validation_variants(text) for text in all_texts]
 
     for i, passage in enumerate(response.supporting_passages):
-        # Normalize passage for matching to normalized texts
         passage_stripped = passage.strip()
-        passage_normalized = normalize_text(passage_stripped)
+        passage_variants = validation_variants(passage_stripped)
 
-        # First try exact substring match (fast path)
-        # Check both raw and normalized versions
         exact_match = any(passage_stripped in text for text in all_texts) or any(
-            passage_normalized in text for text in normalized_texts
+            passage_variant in text_variant
+            for passage_variant in passage_variants
+            for text_variants in normalized_text_variants
+            for text_variant in text_variants
         )
 
         if exact_match:
             logger.debug(f"Supporting passage {i + 1} validated (exact match)")
             similarity_scores.append(1.0)
+            match_types.append("exact")
             continue
 
-        # Try fuzzy matching to detect near-misses or distortions
         best_similarity = 0.0
         best_match_text = ""
 
-        for text in normalized_texts:
-            # Use rapidfuzz for fast partial matching (returns 0-100)
-            alignment = fuzz.partial_ratio_alignment(passage_normalized, text)
-            if alignment is None:
-                continue
+        for passage_variant in passage_variants:
+            for text_variants in normalized_text_variants:
+                for text_variant in text_variants:
+                    alignment = fuzz.partial_ratio_alignment(
+                        passage_variant, text_variant
+                    )
+                    if alignment is None:
+                        continue
 
-            score = alignment.score / 100.0
-            if score > best_similarity:
-                best_similarity = score
-                best_match_text = text[alignment.dest_start : alignment.dest_end]
+                    score = alignment.score / 100.0
+                    if score > best_similarity:
+                        best_similarity = score
+                        best_match_text = text_variant[
+                            alignment.dest_start : alignment.dest_end
+                        ]
 
+                    if best_similarity >= exact_match_threshold:
+                        break
+                if best_similarity >= exact_match_threshold:
+                    break
             if best_similarity >= exact_match_threshold:
                 break
 
-        # Log appropriate warning based on similarity score
         if best_similarity >= exact_match_threshold:
             logger.debug(
                 f"Supporting passage {i + 1} validated (fuzzy match: {best_similarity:.2f})"
             )
+            match_types.append("exact")
         elif best_similarity >= fuzzy_match_threshold:
-            unmatched_count += 1
+            near_exact_count += 1
             logger.warning(
-                f"Supporting passage {i + 1} has close match (similarity: {best_similarity:.2f}) "
-                f"but not exact - possible LLM distortion:\n"
+                f"Supporting passage {i + 1} has near-exact formatting drift "
+                f"(similarity: {best_similarity:.2f}) but not an exact normalized match:\n"
                 f"  LLM passage: {passage_stripped[:150]}...\n"
                 f"  Best match:  {best_match_text[:150]}..."
             )
+            match_types.append("near_exact")
         else:
             unmatched_count += 1
             logger.warning(
@@ -904,15 +1052,22 @@ def _validate_supporting_passages(
                 f"(best similarity: {best_similarity:.2f}):\n"
                 f"  Passage: {passage_stripped[:150]}..."
             )
+            match_types.append("not_found")
         similarity_scores.append(best_similarity)
-    # Summary warning if hallucinations detected
+
+    if near_exact_count > 0:
+        logger.warning(
+            f"DRIFT WARNING: {near_exact_count}/{len(response.supporting_passages)} "
+            f"supporting passages had near-exact formatting mismatches."
+        )
+
     if unmatched_count > 0:
         logger.warning(
             f"HALLUCINATION WARNING: {unmatched_count}/{len(response.supporting_passages)} "
             f"supporting passages not found in retrieved documents. "
             f"The LLM may have distorted or fabricated some supporting text."
         )
-    return similarity_scores
+    return SupportingPassageValidationResult(similarity_scores, match_types)
 
 
 def _resolve_completion_sections(
@@ -1134,9 +1289,11 @@ def query_legal_documents(
             stage_status = debug_capture.setdefault("query", {}).get("stage_status")
         return _build_no_sections_response(stage_status), []
 
-    sections, full_context, completion_budgeting = _select_sections_for_completion_budget(
-        sections,
-        llm_context_limit=DEFAULT_COMPLETION_CONTEXT_LIMIT,
+    sections, full_context, completion_budgeting = (
+        _select_sections_for_completion_budget(
+            sections,
+            llm_context_limit=DEFAULT_COMPLETION_CONTEXT_LIMIT,
+        )
     )
 
     system_prompt, user_prompt = _build_legal_prompts(
@@ -1227,8 +1384,11 @@ def query_legal_documents(
 
         # Validate supporting passages against retrieved text
         similarity_scores = []
+        similarity_match_types: list[str] = []
         if settings.validate_supporting_passages:
-            similarity_scores = _validate_supporting_passages(response, sections)
+            validation_result = _validate_supporting_passages(response, sections)
+            similarity_scores = validation_result.similarity_scores
+            similarity_match_types = validation_result.match_types
 
         if execution_capture is not None:
             execution_capture["completion_sections"] = list(sections)
@@ -1246,6 +1406,9 @@ def query_legal_documents(
                     "supporting_passage_validation_scores": _json_debug(
                         similarity_scores
                     ),
+                    "supporting_passage_validation_match_types": _json_debug(
+                        similarity_match_types
+                    ),
                 }
             )
 
@@ -1260,6 +1423,7 @@ def query_legal_documents(
                 {
                     "stage_status": "timeout",
                     "supporting_passage_validation_scores": "[]",
+                    "supporting_passage_validation_match_types": "[]",
                 }
             )
         return LegalQueryResponse(
@@ -1277,6 +1441,7 @@ def query_legal_documents(
                 {
                     "stage_status": "validation_error",
                     "supporting_passage_validation_scores": "[]",
+                    "supporting_passage_validation_match_types": "[]",
                 }
             )
         return LegalQueryResponse(
@@ -1752,7 +1917,9 @@ def _select_sections_for_completion_budget(
             section.heading_text for section in preflight_dropped_sections
         ],
         "total_dropped_count": len(preflight_dropped_sections),
-        "final_chunk_ids": [_section_result_id(section) for section in selected_sections],
+        "final_chunk_ids": [
+            _section_result_id(section) for section in selected_sections
+        ],
         "final_chunk_headings": [section.heading_text for section in selected_sections],
     }
     return selected_sections, full_context, metadata
@@ -1816,9 +1983,7 @@ def _update_completion_debug_capture(
             "completion_preflight_selected_context_tokens": metadata.get(
                 "preflight_selected_context_tokens", 0
             ),
-            "completion_final_context_tokens": metadata.get(
-                "final_context_tokens", 0
-            ),
+            "completion_final_context_tokens": metadata.get("final_context_tokens", 0),
             "completion_preflight_dropped_count": metadata.get(
                 "preflight_dropped_count", 0
             ),
@@ -2137,9 +2302,19 @@ def _is_status_date_response_options(response_options: str) -> bool:
     )
 
 
+def _strip_benchmark_option_annotations(text: str) -> str:
+    """Remove benchmark-only option suffixes that should not affect matching."""
+    stripped = text.strip()
+    while True:
+        updated = re.sub(r"\s*\((?:NEW)\)\s*$", "", stripped, flags=re.IGNORECASE)
+        if updated == stripped:
+            return stripped
+        stripped = updated.strip()
+
+
 def _normalize_option_text(text: str) -> str:
     """Reduce option text to a matching-friendly form."""
-    normalized = text.lower()
+    normalized = _strip_benchmark_option_annotations(text).lower()
     normalized = re.sub(r"<[^>]+>", " ", normalized)
     normalized = normalized.replace("and/or", " and or ")
     normalized = normalized.replace("/", " ")
@@ -2458,6 +2633,8 @@ def _annotate_sections_for_query(
         )
         for section in sections
     ]
+
+
 def _select_completion_sections_for_hierarchy(
     *,
     query_id: str,
@@ -2627,7 +2804,7 @@ def _evaluate_dependency_decision(
     hierarchy: QueryHierarchy,
     state_by_query_id: dict[str, QueryExecutionState],
 ) -> DependencyDecision:
-    """Apply explicit skip rules without blocking on missing or indeterminate parents."""
+    """Apply explicit skip rules while erring on execution when dependency state is uncertain."""
     decision = DependencyDecision()
 
     for parent_query_id in hierarchy.parent_ids:
@@ -2657,16 +2834,19 @@ def _evaluate_dependency_decision(
     )
     decision.executed_despite_missing_parent = bool(decision.missing_parent_ids)
 
-    for parent_query_id in hierarchy.boolean_parent_ids:
-        parent_state = state_by_query_id.get(parent_query_id)
-        if parent_state is None:
+    if decision.missing_parent_ids:
+        for parent_query_id in decision.missing_parent_ids:
             decision.dependency_rules_evaluated.append(
                 {
-                    "rule_type": "requires_yes",
+                    "rule_type": "parent_dependency",
                     "parent_query_id": parent_query_id,
                     "status": "missing_parent",
                 }
             )
+
+    for parent_query_id in hierarchy.boolean_parent_ids:
+        parent_state = state_by_query_id.get(parent_query_id)
+        if parent_state is None:
             continue
         if parent_state.status != "completed":
             decision.dependency_rules_evaluated.append(
@@ -2706,14 +2886,6 @@ def _evaluate_dependency_decision(
     for label_rule in hierarchy.label_blockers:
         parent_state = state_by_query_id.get(label_rule.parent_query_id)
         if parent_state is None:
-            decision.dependency_rules_evaluated.append(
-                {
-                    "rule_type": "requires_labels",
-                    "parent_query_id": label_rule.parent_query_id,
-                    "status": "missing_parent",
-                    "configured_blocker_labels": list(label_rule.blocker_labels),
-                }
-            )
             continue
         if parent_state.status != "completed":
             decision.dependency_rules_evaluated.append(
@@ -2870,6 +3042,7 @@ def _build_skipped_query_result(
         "segments_found": 0,
         "processing_time": 0.0,
         "supporting_passage_validation_scores": "[]",
+        "supporting_passage_validation_match_types": "[]",
         "retrieval_stage_status": "skipped",
         "relevance_stage_status": "skipped",
         "query_stage_status": "skipped",
@@ -3240,6 +3413,10 @@ def _process_single_query_with_error_handling(
             "segments_found": segments_found,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": str(similarity_scores),
+            "supporting_passage_validation_match_types": query_debug_row.get(
+                "supporting_passage_validation_match_types",
+                "[]",
+            ),
             "retrieval_stage_status": retrieval_debug_row.get("stage_status"),
             "relevance_stage_status": relevance_debug_row.get("stage_status"),
             "query_stage_status": query_debug_row.get("stage_status"),
@@ -3278,9 +3455,7 @@ def _process_single_query_with_error_handling(
             "completion_forced_oversized_chunk_headings": _json_debug(
                 completion_budgeting.get("forced_oversized_chunk_headings", [])
             ),
-            "overflow_retry_count": completion_budgeting.get(
-                "overflow_retry_count", 0
-            ),
+            "overflow_retry_count": completion_budgeting.get("overflow_retry_count", 0),
             "overflow_retry_dropped_chunk_ids": _json_debug(
                 completion_budgeting.get("overflow_retry_dropped_chunk_ids", [])
             ),
@@ -3365,6 +3540,7 @@ def _process_single_query_with_error_handling(
             "segments_found": 0,
             "processing_time": processing_time,
             "supporting_passage_validation_scores": "[]",
+            "supporting_passage_validation_match_types": "[]",
             "retrieval_stage_status": retrieval_debug_row.get("stage_status"),
             "relevance_stage_status": relevance_debug_row.get("stage_status"),
             "query_stage_status": query_debug_row.get("stage_status"),
@@ -3406,6 +3582,7 @@ def _compile_query_results(results: list[dict[str, Any]]) -> pl.DataFrame:
                 "segments_found": pl.Int64,
                 "processing_time": pl.Float64,
                 "supporting_passage_validation_scores": pl.Utf8,
+                "supporting_passage_validation_match_types": pl.Utf8,
                 "retrieval_stage_status": pl.Utf8,
                 "relevance_stage_status": pl.Utf8,
                 "query_stage_status": pl.Utf8,

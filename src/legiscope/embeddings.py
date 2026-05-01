@@ -481,6 +481,24 @@ def _generate_embeddings_mistral(
                 total_batches=total_batches,
             )
         except Exception as exc:
+            if _is_mistral_embedding_batch_split_error(exc) and len(batch_texts) > 1:
+                split_batch_size = max(1, len(batch_texts) // 2)
+                logger.warning(
+                    f"Mistral embedding batch {batch_num + 1}/{total_batches} "
+                    f"hit a deterministic token-cap error; retrying immediately "
+                    f"with smaller batch size {split_batch_size} for these "
+                    f"{len(batch_texts)} texts: {exc}"
+                )
+                embeddings_list.extend(
+                    _generate_embeddings_mistral(
+                        client,
+                        batch_texts,
+                        model,
+                        batch_size=split_batch_size,
+                    )
+                )
+                continue
+
             if _is_retryable_embedding_error(exc) and len(batch_texts) > 1:
                 split_batch_size = max(1, len(batch_texts) // 2)
                 logger.warning(
@@ -532,6 +550,28 @@ def _should_log_embedding_progress(
     return crossed_interval or is_final_large_batch
 
 
+def _is_mistral_embedding_batch_split_error(exc: Exception) -> bool:
+    """Return whether a Mistral embedding failure should trigger batch splitting.
+
+    Mistral returns payload-size failures as ``400 invalid_request_prompt`` errors.
+    These are deterministic request-shape issues, not transient transport failures,
+    so they should skip backoff/rebuild retries and immediately split the batch.
+    """
+    message = str(exc).lower()
+    raw_response = getattr(exc, "raw_response", None)
+    status_code = getattr(raw_response, "status_code", None)
+
+    if status_code != 400:
+        return False
+
+    split_fragments = (
+        "invalid_request_prompt",
+        "too many tokens overall",
+        "split into more batches",
+    )
+    return any(fragment in message for fragment in split_fragments)
+
+
 def _generate_embeddings_ollama(
     client, texts: list[str], model: str, batch_size: int | None = None
 ) -> list[list[float]]:
@@ -553,7 +593,6 @@ def _generate_embeddings_ollama(
     embeddings_list: list[list[float]] = []
     log_interval = _get_batch_log_interval()
     logger.info(f"Processing {len(texts)} texts individually (Ollama)")
-
     for i, text in enumerate(texts):
         try:
             response = client.embeddings(model=model, prompt=text)
@@ -654,7 +693,9 @@ def _refresh_embedding_client(client, provider: str | None = None):
             return client
 
     if provider == "mistral":
-        logger.debug("Rebuilding Mistral embedding client after retryable request failure")
+        logger.debug(
+            "Rebuilding Mistral embedding client after retryable request failure"
+        )
         return get_mistral_client()
 
     if provider == "openrouter":
@@ -664,7 +705,9 @@ def _refresh_embedding_client(client, provider: str | None = None):
         return get_openrouter_client()
 
     if provider == "openai":
-        logger.debug("Rebuilding OpenAI embedding client after retryable request failure")
+        logger.debug(
+            "Rebuilding OpenAI embedding client after retryable request failure"
+        )
         return _get_openai_client()
 
     return client
@@ -734,6 +777,9 @@ def _request_mistral_embeddings(
         try:
             return client.embeddings.create(model=model, inputs=batch_texts), client
         except Exception as exc:
+            if _is_mistral_embedding_batch_split_error(exc):
+                raise
+
             if not _is_retryable_embedding_error(exc) or attempt >= max_retries:
                 raise
 

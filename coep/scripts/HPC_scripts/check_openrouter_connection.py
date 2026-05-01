@@ -48,8 +48,6 @@ src_path = _find_src_path(Path(__file__).resolve().parent)
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
-from legiscope.embeddings import get_openrouter_client
-
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -179,6 +177,7 @@ def _run_host_probe(hostname: str, timeout: float) -> None:
 
 def main() -> int:
     args = _build_parser().parse_args()
+    from legiscope.embeddings import get_openrouter_client
 
     print(f"openai={openai.__version__}")
     print(f"httpx={httpx.__version__}")
@@ -198,9 +197,7 @@ def main() -> int:
         return 1
 
     print(
-        "embedding_ok "
-        f"count={len(response.data)} "
-        f"dim={len(response.data[0].embedding)}"
+        f"embedding_ok count={len(response.data)} dim={len(response.data[0].embedding)}"
     )
     return 0
 

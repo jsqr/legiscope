@@ -64,6 +64,8 @@ SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
 SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
 SLURM_NOTIFY_SUBJECT_PREFIX="${SLURM_NOTIFY_SUBJECT_PREFIX:-[legiscope]}"
 MAIL_BIN="$(command -v mail 2>/dev/null || true)"
+SLURM_CONTROL_BIN="$(command -v scontrol 2>/dev/null || true)"
+SLURM_NATIVE_MAIL_CONFIGURED=0
 
 echo "=== Legiscope Pipeline: ${STATE}-${LOCALITY} ==="
 echo "Job ID  : ${SLURM_JOB_ID}"
@@ -99,6 +101,11 @@ send_notification() {
     notifications_enabled || return 0
     notification_event_enabled "$event_name" || return 0
 
+    if [[ "$event_name" != "start" && "$SLURM_NATIVE_MAIL_CONFIGURED" -eq 1 ]]; then
+        echo "Notification delegated to Slurm: event=${event_name} email=${SLURM_NOTIFY_EMAIL:-<unset>}" >&2
+        return 0
+    fi
+
     timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
     message="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: ${STATE}-${LOCALITY} job ${SLURM_JOB_ID} on $(hostname) at ${timestamp}. ${detail}"
     subject="${SLURM_NOTIFY_SUBJECT_PREFIX} ${event_name}: ${STATE}-${LOCALITY} (${SLURM_JOB_ID})"
@@ -117,7 +124,37 @@ send_notification() {
     fi
 }
 
+configure_slurm_mail_notifications() {
+    local mail_types=()
+    local mail_type_csv
+
+    notifications_enabled || return 0
+    [[ -n "${SLURM_NOTIFY_EMAIL:-}" ]] || return 0
+
+    if [[ -z "$SLURM_CONTROL_BIN" ]]; then
+        echo "WARNING: scontrol is unavailable; relying on in-script notifications" >&2
+        return 0
+    fi
+
+    notification_event_enabled "start" && mail_types+=("BEGIN")
+    notification_event_enabled "end" && mail_types+=("END")
+    notification_event_enabled "fail" && mail_types+=("FAIL")
+
+    [[ ${#mail_types[@]} -gt 0 ]] || return 0
+
+    mail_type_csv="${mail_types[*]}"
+    mail_type_csv="${mail_type_csv// /,}"
+
+    echo "Configuring Slurm mail notifications: user=${SLURM_NOTIFY_EMAIL} types=${mail_type_csv}" >&2
+    if "$SLURM_CONTROL_BIN" update JobId="$SLURM_JOB_ID" MailUser="$SLURM_NOTIFY_EMAIL" MailType="$mail_type_csv" >/dev/null; then
+        SLURM_NATIVE_MAIL_CONFIGURED=1
+    else
+        echo "WARNING: Failed to configure Slurm mail notifications; relying on in-script notifications" >&2
+    fi
+}
+
 send_notification "start" "Stage=${CURRENT_STAGE:-setup}."
+configure_slurm_mail_notifications
 
 # ── Environment setup ─────────────────────────────────────────────
 # BigPurple's /etc/bashrc references BASHRCSOURCED before defining it,
@@ -226,6 +263,41 @@ stop_gpu_metrics_capture() {
             wait "$monitor_pid" 2>/dev/null || true
         fi
     done
+}
+
+emit_benchmark_metrics_json() {
+    local metrics_path=""
+
+    for metrics_path in \
+        "${SHARED_OUTPUT_DIR}/benchmark_metrics.json" \
+        "${WORK_DIR:-}/data/output/${STATE}-${LOCALITY}/benchmark_metrics.json"
+    do
+        [[ -n "$metrics_path" ]] || continue
+        if [[ -f "$metrics_path" ]]; then
+            {
+                echo
+                echo "=== Benchmark Metrics JSON ==="
+                python3 - "$metrics_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+payload = json.loads(path.read_text())
+print(json.dumps(payload, indent=2, sort_keys=False))
+PY
+                echo "=== End Benchmark Metrics JSON ==="
+            } >&2
+            return 0
+        fi
+    done
+
+    {
+        echo
+        echo "=== Benchmark Metrics JSON ==="
+        echo "unavailable (missing: ${SHARED_OUTPUT_DIR}/benchmark_metrics.json)"
+        echo "=== End Benchmark Metrics JSON ==="
+    } >&2
 }
 
 emit_vllm_metrics_summary() {
@@ -549,6 +621,7 @@ cleanup_on_exit() {
         send_notification "fail" "Exited during stage=${CURRENT_STAGE} with status ${exit_code}."
     fi
 
+    emit_benchmark_metrics_json
     emit_vllm_metrics_summary
 
     trap - EXIT

@@ -692,6 +692,45 @@ Short supporting text."""
         assert split_chunks["chunk_count"].to_list() == [2, 2]
         assert split_chunks["body_text"][0].count("\n\n") >= 2
 
+    def test_build_chunks_carry_canonical_embedding_heading_text(self, tmp_path: Path):
+        """Canonical chunks should preserve the exact markdown heading stack used for embedding."""
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="PA", locality="HeadingTown"),
+            code_slug="municipal-code",
+        )
+        code_dir = tmp_path / "code"
+        code_dir.mkdir(parents=True, exist_ok=True)
+
+        body_text = " ".join(["word"] * 600)
+        markdown_text = f"""# TITLE I
+
+## CHAPTER 1
+
+### 1-100. Purpose.
+
+{body_text}
+"""
+
+        sections_df = divide_into_sections(markdown_text)
+        sections_df = add_parent_relationships(sections_df)
+        sections_df = enrich_sections(sections_df, code_ref)
+
+        chunks_df = build_chunks_df(
+            sections_df,
+            code_ref,
+            markdown_text,
+            code_dir,
+            llm_context_limit=2200,
+            target_retrieved_chunks=5,
+        )
+
+        leaf_chunks = chunks_df.filter(pl.col("section_ordinal") == 2)
+        assert len(leaf_chunks) >= 1
+        assert "embedding_heading_text" in chunks_df.columns
+        assert leaf_chunks["embedding_heading_text"][0] == (
+            "# TITLE I\n\n## CHAPTER 1\n\n### 1-100. Purpose."
+        )
+
     def test_build_chunks_packs_adjacent_child_sections_up_to_budget(
         self, tmp_path: Path
     ):
@@ -1785,6 +1824,36 @@ Definitions text for the third section."""
         for row in result.filter(pl.col("section_ordinal") == 1).to_dicts():
             assembled = "\n\n".join(["# TITLE I", "## Section 1", row["segment_text"]])
             assert _estimate_token_count(assembled) <= 20
+
+    def test_create_segments_df_uses_embedding_heading_text_without_ancestor_path(self):
+        """Chunk-derived rows should budget against canonical heading text even without ancestor_path."""
+        embedding_heading_text = "\n\n".join(
+            [
+                "# " + " ".join(["Root"] * 6),
+                "## " + " ".join(["Child"] * 6),
+                "### " + " ".join(["Leaf"] * 6),
+            ]
+        )
+        body_text = " ".join(["Body"] * 35)
+
+        df = pl.DataFrame(
+            {
+                "section_ordinal": [2],
+                "heading_level": [3],
+                "heading_text": ["### Leaf (Part 1)"],
+                "body_text": [body_text],
+                "embedding_heading_text": [embedding_heading_text],
+                "context_path": ["Root > Child > Leaf"],
+                "source_kind": ["section_body_split"],
+            }
+        )
+
+        result = create_segments_df(df, token_limit=50)
+
+        assert len(result) >= 2
+        for row in result.to_dicts():
+            assembled = "\n\n".join([embedding_heading_text, row["segment_text"]])
+            assert _estimate_token_count(assembled) <= 50
 
     def test_mixed_scenarios_flat_format(self):
         """Test mixed scenarios with various section lengths."""
