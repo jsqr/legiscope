@@ -6,21 +6,21 @@ stages:
     deps:
     - path: data/laws/PA/Philadelphia/municipal-code/raw
       hash: md5
-      md5: 68b50f2df420eb326d208024ef0da04a.dir
+      md5: b8d1df6b76793d221a5c1926241b9e3e.dir
       size: 23142398
       nfiles: 1
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/parse.py
       hash: md5
       md5: c702515e8f681bc6163fc033787cfcc7
       size: 1111
     - path: src/legiscope/parse
       hash: md5
-      md5: b839f52ec65fc586e4cdf36f38d3c4bf.dir
-      size: 132603
+      md5: 9bb9b065ea37816e68fa6b20ab13a46b.dir
+      size: 297726
       nfiles: 14
     - path: tmp/validate_import.ok
       hash: md5
@@ -34,11 +34,11 @@ stages:
           code_slug: municipal-code
           code_name: Philadelphia Municipal Code
         llm:
-          default_provider: ollama
+          default_provider: openai
           providers:
             openai:
-              fast: Qwen/Qwen2.5-3B-Instruct
-              powerful: Qwen/Qwen2.5-3B-Instruct
+              fast: Qwen/Qwen3.5-27B
+              powerful: Qwen/Qwen3.5-27B
             mistral:
               fast: mistral-small-2506
               powerful: mistral-large-2512
@@ -48,40 +48,52 @@ stages:
               num_ctx: 4096
           temperature: 0.0
           max_retries: 3
-          timeout: 300
+          timeout: 500
     outs:
     - path: data/laws/PA/Philadelphia/municipal-code/code.md
       hash: md5
-      md5: 19edf3e768a6365bc679c9cc254f68c4
-      size: 8473712
+      md5: 2de96a112ae3b672bab52e73b8b4b94e
+      size: 9358927
     - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
       hash: md5
-      md5: a69554ce15a1062263ccca0b0d1db65e
-      size: 18090
+      md5: 6363f05a5f57f37dc417d1348560b64d
+      size: 150544
+    - path: data/laws/PA/Philadelphia/municipal-code/regions.parquet
+      hash: md5
+      md5: d3a038598091295d508f87e0f79bccf8
+      size: 74909
+    - path: data/output/PA-Philadelphia/debug/heading_scan_debug.json
+      hash: md5
+      md5: 46827e84cfde06a17a66f5bdb734fd39
+      size: 12115
   segment:
     cmd: bash scripts/dvc_python.sh scripts/segment.py --state PA --locality 
       Philadelphia --code-slug municipal-code
     deps:
     - path: data/laws/PA/Philadelphia/municipal-code/code.md
       hash: md5
-      md5: 19edf3e768a6365bc679c9cc254f68c4
-      size: 8473712
+      md5: 2de96a112ae3b672bab52e73b8b4b94e
+      size: 9358927
     - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
       hash: md5
-      md5: a69554ce15a1062263ccca0b0d1db65e
-      size: 18090
+      md5: 6363f05a5f57f37dc417d1348560b64d
+      size: 150544
+    - path: data/laws/PA/Philadelphia/municipal-code/regions.parquet
+      hash: md5
+      md5: d3a038598091295d508f87e0f79bccf8
+      size: 74909
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/segment.py
       hash: md5
-      md5: 50b01c5ddbc22131de2f890f89c50e02
-      size: 1541
+      md5: dc1c52cac2d96ce0c0839327fc8a2a96
+      size: 1717
     - path: src/legiscope/segment.py
       hash: md5
-      md5: 79af3f6fcb5d1b9a923864049132b71e
-      size: 35458
+      md5: 8d8f87cf43af329e342e54e8e4d0c23a
+      size: 70056
     params:
       params.yaml:
         jurisdiction:
@@ -90,8 +102,13 @@ stages:
           code_slug: municipal-code
           code_name: Philadelphia Municipal Code
         segmentation:
-          token_limit: 1024
+          embedding_model_token_limit: 1024
+          llm_context_limit: 65536
     outs:
+    - path: data/laws/PA/Philadelphia/municipal-code/chunks.parquet
+      hash: md5
+      md5: eb60b3280d11a6c13e23992de87fca95
+      size: 2061564
     - path: data/laws/PA/Philadelphia/municipal-code/external_references.parquet
       hash: md5
       md5: 61a94b29211d82d0d4dd0bbba2d8735e
@@ -102,50 +119,53 @@ stages:
       size: 913
     - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
       hash: md5
-      md5: ca9f4b70bebf7de9ae511333f570c090
-      size: 1572
+      md5: fac1df1a176c7fbab3b094ad9a52fccf
+      size: 2082087
     - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
       hash: md5
-      md5: e09464f21ae4055c506ad295d00f9c7a
-      size: 1894
+      md5: 930d2ef113fa8ba4f193427f83308d39
+      size: 2130597
   embed:
     cmd: bash scripts/dvc_python.sh scripts/embed.py --state PA --locality 
       Philadelphia --code-slug municipal-code
     deps:
     - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
       hash: md5
-      md5: ca9f4b70bebf7de9ae511333f570c090
-      size: 1572
+      md5: fac1df1a176c7fbab3b094ad9a52fccf
+      size: 2082087
     - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
       hash: md5
-      md5: e09464f21ae4055c506ad295d00f9c7a
-      size: 1894
+      md5: 930d2ef113fa8ba4f193427f83308d39
+      size: 2130597
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/embed.py
       hash: md5
-      md5: 74cde80e0872702b5ef327bf2ea94d9e
-      size: 2480
+      md5: 6825142bfaec08a1eb19ef407798a4d1
+      size: 2544
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: b44226404e62155c563f5a1b37657be6
-      size: 47056
+      md5: f54cbde38342d529d3a390c17d06604a
+      size: 62041
     params:
       params.yaml:
         embeddings:
-          default_provider: openrouter
+          default_provider: mistral
           chroma_batch_size: 100
           providers:
             mistral:
-              model: mistral-embed
+              model: codestral-embed-2505
               batch_size: 100
             ollama:
               model: embeddinggemma
               batch_size: 1
             openrouter:
               model: qwen/qwen3-embedding-8b
+              batch_size: 100
+            openai:
+              model: text-embedding-3-small
               batch_size: 100
           dtype: float32
         jurisdiction:
@@ -156,37 +176,42 @@ stages:
     outs:
     - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
       hash: md5
-      md5: 39fb95de6d59faaf796be7a93ca57fd6
-      size: 1133
+      md5: 45979352331ca41d6824d8041bf5c810
+      size: 19235695
   index:
     cmd: bash scripts/dvc_python.sh scripts/index.py --state PA --locality 
       Philadelphia --code-slug municipal-code
     deps:
     - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
       hash: md5
-      md5: 39fb95de6d59faaf796be7a93ca57fd6
-      size: 1133
+      md5: 45979352331ca41d6824d8041bf5c810
+      size: 19235695
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/index.py
       hash: md5
-      md5: c60e4880c09de2a3292db1f0ecc51e89
-      size: 2658
+      md5: b82d34344694d7f8f5dd8b0e2627bbac
+      size: 2951
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: b44226404e62155c563f5a1b37657be6
-      size: 47056
+      md5: f54cbde38342d529d3a390c17d06604a
+      size: 62041
     params:
       params.yaml:
-        embeddings.default_provider: openrouter
+        embeddings.default_provider: mistral
         jurisdiction:
           state: PA
           locality: Philadelphia
           code_slug: municipal-code
           code_name: Philadelphia Municipal Code
         retrieval.distance_metric: l2
+    outs:
+    - path: data/laws/PA/Philadelphia/municipal-code/index.stamp
+      hash: md5
+      md5: b133ce71662324dd9cc685371f1671a5
+      size: 58
   validate:
     cmd: "bash -c 'bash scripts/dvc_python.sh -c \"import legiscope; print(f\\\"Package
       import works: {legiscope.__file__}\\\")\" && mkdir -p tmp && echo ok > tmp/validate_import.ok'"
@@ -197,14 +222,119 @@ stages:
       size: 1269
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: src/legiscope/__init__.py
       hash: md5
-      md5: a8b33b5c5e1ef0f62eb486a23ed1cfef
-      size: 2189
+      md5: ebe365f9bcb5ddb104483565508e88b7
+      size: 2408
     outs:
     - path: tmp/validate_import.ok
       hash: md5
       md5: eff5bc1ef8ec9d03e640fc4370f5eacd
       size: 3
+  benchmark:
+    cmd: bash scripts/dvc_python.sh coep/scripts/benchmark_pipeline.py --state 
+      PA --locality Philadelphia --code-slug municipal-code
+    deps:
+    - path: coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv
+      hash: md5
+      md5: 4894e1808fc491d39e24c4b5ba666887
+      size: 851633
+    - path: coep/scripts/benchmark_pipeline.py
+      hash: md5
+      md5: 01fb965a47858d15382c2636c5093061
+      size: 52117
+    - path: coep/src/eval.py
+      hash: md5
+      md5: 619c2217e3224629d272179f9cdbde2e
+      size: 24904
+    - path: coep/src/query.py
+      hash: md5
+      md5: 936c199c5e7c3307a541357f389605eb
+      size: 2076
+    - path: data/laws/PA/Philadelphia/municipal-code/chunks.parquet
+      hash: md5
+      md5: eb60b3280d11a6c13e23992de87fca95
+      size: 2061564
+    - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
+      hash: md5
+      md5: 45979352331ca41d6824d8041bf5c810
+      size: 19235695
+    - path: data/laws/PA/Philadelphia/municipal-code/index.stamp
+      hash: md5
+      md5: b133ce71662324dd9cc685371f1671a5
+      size: 58
+    - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
+      hash: md5
+      md5: fac1df1a176c7fbab3b094ad9a52fccf
+      size: 2082087
+    - path: data/queries/DPL_queries_with_context.csv
+      hash: md5
+      md5: 5012fc22efcc75c2d0e27332f48ce6da
+      size: 35829
+    - path: scripts/dvc_python.sh
+      hash: md5
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
+    - path: src/legiscope/query.py
+      hash: md5
+      md5: 8ffe96b070686cefafdb7c54e2d9810b
+      size: 135269
+    - path: src/legiscope/retrieve.py
+      hash: md5
+      md5: 4f3eef17153637792008f96cd6dbf82a
+      size: 52974
+    params:
+      params.yaml:
+        benchmark:
+          series_title: DPL_2025_Consolidated
+          evaluation:
+            max_concurrency: 4
+        jurisdiction:
+          state: PA
+          locality: Philadelphia
+          code_slug: municipal-code
+          code_name: Philadelphia Municipal Code
+        llm:
+          default_provider: openai
+          providers:
+            openai:
+              fast: Qwen/Qwen3.5-27B
+              powerful: Qwen/Qwen3.5-27B
+            mistral:
+              fast: mistral-small-2506
+              powerful: mistral-large-2512
+            ollama:
+              fast: gemma3:4b
+              powerful: gemma3:4b
+              num_ctx: 4096
+          temperature: 0.0
+          max_retries: 3
+          timeout: 500
+        query:
+          validation:
+            enabled: true
+            exact_match_threshold: 1.0
+            fuzzy_match_threshold: 0.9
+        retrieval:
+          n_results: 10
+          distance_metric: l2
+          debug: true
+          lexical_overfetch_factor: 3
+          lexical_reranking:
+            enabled: false
+          hyde:
+            enabled: false
+          relevance_filter:
+            enabled: false
+            threshold: 0.7
+    outs:
+    - path: data/output/PA-Philadelphia/benchmark_metrics.json
+      hash: md5
+      md5: 3365f115bdade9bea473d4876261bf87
+      size: 1247
+    - path: data/output/PA-Philadelphia/benchmark_results.csv
+      hash: md5
+      md5: 8ee7570910bf42f80f9eaf71858427cb
+      size: 1412365
