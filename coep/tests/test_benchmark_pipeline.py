@@ -144,6 +144,37 @@ class TestBenchmarkPipelineHelpers:
         assert output_path.read_text() == timestamped_path.read_text()
         assert json.loads(metrics_path.read_text()) == metrics
 
+    def test_materialize_benchmark_outputs_serializes_nested_columns_for_csv(
+        self, tmp_path
+    ):
+        final_df = pl.DataFrame(
+            {
+                "variable_name": ["dp_activity"],
+                "match_types": [["exact", "near_exact"]],
+                "answer_payload": [{"label": "Sales", "score": 1.0}],
+            }
+        )
+        output_path = tmp_path / "benchmark_results.csv"
+        timestamped_path = output_path
+        metrics_path = tmp_path / "benchmark_metrics.json"
+
+        benchmark_pipeline._materialize_benchmark_outputs(
+            final_df=final_df,
+            output_path=output_path,
+            timestamped_path=timestamped_path,
+            metrics={"processed_queries": 1},
+            metrics_path=metrics_path,
+        )
+
+        written_df = pl.read_csv(output_path)
+
+        assert written_df[0, "variable_name"] == "dp_activity"
+        assert json.loads(written_df[0, "match_types"]) == ["exact", "near_exact"]
+        assert json.loads(written_df[0, "answer_payload"]) == {
+            "label": "Sales",
+            "score": 1.0,
+        }
+
     def test_score_skipped_queries_uses_deterministic_blank_vs_nonblank_ground_truth(
         self,
     ):

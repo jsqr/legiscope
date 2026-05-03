@@ -925,7 +925,42 @@ def _materialize_benchmark_outputs(
     """Write benchmark outputs and ensure the canonical DVC out is materialized."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    final_df.write_csv(str(output_path))
+    def _json_ready_nested_value(value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, pl.Series):
+            return [_json_ready_nested_value(item) for item in value.to_list()]
+        if isinstance(value, dict):
+            return {
+                str(key): _json_ready_nested_value(nested_value)
+                for key, nested_value in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return [_json_ready_nested_value(item) for item in value]
+        return value
+
+    export_df = final_df
+    nested_export_columns = [
+        column_name
+        for column_name, dtype in final_df.schema.items()
+        if isinstance(dtype, (pl.List, pl.Array, pl.Struct, pl.Object))
+    ]
+    if nested_export_columns:
+        export_df = final_df.with_columns(
+            [
+                pl.col(column_name)
+                .map_elements(
+                    lambda value: json.dumps(_json_ready_nested_value(value))
+                    if value is not None
+                    else None,
+                    return_dtype=pl.String,
+                )
+                .alias(column_name)
+                for column_name in nested_export_columns
+            ]
+        )
+
+    export_df.write_csv(str(output_path))
     logger.info(f"Results saved to {output_path}")
 
     if timestamped_path != output_path:
