@@ -1624,6 +1624,13 @@ def run_queries(
             effective_query_metadata.pop("parent_contexts", None)
 
         if dependency_decision.should_skip:
+            logger.warning(
+                "Skipping query {} ({}) due to dependency rule: {}; blocking parent: {}",
+                planned_query.hierarchy.query_id,
+                query_input.variable_name or "no-variable",
+                dependency_decision.skip_reason or "unknown",
+                dependency_decision.blocking_parent_query_id or "none",
+            )
             result = _build_skipped_query_result(
                 planned_query=planned_query,
                 dependency_decision=dependency_decision,

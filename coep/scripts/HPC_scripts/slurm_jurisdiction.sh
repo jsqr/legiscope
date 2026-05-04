@@ -102,8 +102,7 @@ send_notification() {
     notification_event_enabled "$event_name" || return 0
 
     if [[ "$event_name" != "start" && "$SLURM_NATIVE_MAIL_CONFIGURED" -eq 1 ]]; then
-        echo "Notification delegated to Slurm: event=${event_name} email=${SLURM_NOTIFY_EMAIL:-<unset>}" >&2
-        return 0
+        echo "Notification also using in-script mail fallback despite Slurm mail configuration: event=${event_name} email=${SLURM_NOTIFY_EMAIL:-<unset>}" >&2
     fi
 
     timestamp="$(date '+%Y-%m-%d %H:%M:%S %Z')"
@@ -284,7 +283,29 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 payload = json.loads(path.read_text())
-print(json.dumps(payload, indent=2, sort_keys=False))
+summary_keys = [
+    "jurisdiction_id",
+    "primary_score",
+    "primary_score_label",
+    "weighted_query_scored",
+    "weighted_query_unscored",
+    "collapsed_query_accuracy_rate",
+    "collapsed_query_correct",
+    "collapsed_query_incorrect",
+    "collapsed_query_scored",
+    "collapsed_query_unscored",
+    "whole_answer_scored_rows",
+    "and_or_option_level_scored_rows",
+    "and_or_questions_scored_option_level",
+    "queries_with_no_retrieval_units",
+    "queries_filtered_to_zero_units",
+    "abstained_queries",
+    "error_response_queries",
+    "supporting_passage_validation_drift_queries",
+    "supporting_passage_validation_not_found_queries",
+]
+summary = {key: payload[key] for key in summary_keys if key in payload}
+print(json.dumps(summary, indent=2, sort_keys=False))
 PY
                 echo "=== End Benchmark Metrics JSON ==="
             } >&2
