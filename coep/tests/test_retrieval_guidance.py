@@ -64,6 +64,27 @@ class TestCoepRetrievalGuidance:
         assert "Exact legal labels matter" in guidance.relevance_instructions
         assert guidance.retrieval_query is not None
         assert "misdemeanor" in guidance.retrieval_query
+        assert guidance.completion_instructions is not None
+        assert "license revocation" in guidance.completion_instructions
+        assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
+
+    def test_returns_guidance_for_exemption_variable_with_strict_other_rules(self):
+        request = RetrievalGuidanceRequest(
+            query="Which exemptions exist?",
+            variable_name="dp_exemption",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "exemption_presence"
+        assert guidance.completion_instructions is not None
+        assert "tobacco-only exceptions" in guidance.completion_instructions
+        assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
+        assert (
+            "favor does not apply, does not include, exception"
+            in guidance.completion_instructions
+        )
 
     def test_returns_guidance_for_exemption_activity_variable(self):
         request = RetrievalGuidanceRequest(

@@ -24,6 +24,7 @@ Usage (on HPC, with conda env activated):
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,13 @@ if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
 import polars as pl
+
+
+CANONICAL_RESULTS_NAME = "benchmark_results.csv"
+TIMESTAMPED_RESULTS_GLOB = "benchmark_results_*.csv"
+TIMESTAMPED_RESULTS_PATTERN = re.compile(
+    r"^benchmark_results_(\d{8}_\d{6})\.csv$"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,12 +100,77 @@ def get_expected_jurisdictions(docx_dir: Path) -> list[str]:
     return ids
 
 
+def _iter_jurisdiction_output_dirs(output_dir: Path) -> list[Path]:
+    """Return immediate child directories that contain benchmark artifacts."""
+    jurisdiction_dirs: list[Path] = []
+    for child in sorted(output_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        has_metrics = (child / "benchmark_metrics.json").exists()
+        has_canonical_results = (child / CANONICAL_RESULTS_NAME).exists()
+        has_timestamped_results = any(child.glob(TIMESTAMPED_RESULTS_GLOB))
+        if has_metrics or has_canonical_results or has_timestamped_results:
+            jurisdiction_dirs.append(child)
+    return jurisdiction_dirs
+
+
+def _extract_results_timestamp(results_file: Path) -> str | None:
+    """Extract a benchmark timestamp from a timestamped results filename."""
+    match = TIMESTAMPED_RESULTS_PATTERN.match(results_file.name)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _select_results_file(jurisdiction_dir: Path) -> Path | None:
+    """Pick the newest available results file for a jurisdiction.
+
+    Prefer timestamped copies because local workspaces may only have the
+    historical artifacts synced back from HPC while the canonical DVC output is
+    absent or stale.
+    """
+    timestamped_files = sorted(jurisdiction_dir.glob(TIMESTAMPED_RESULTS_GLOB))
+    if timestamped_files:
+        return timestamped_files[-1]
+
+    canonical_results = jurisdiction_dir / CANONICAL_RESULTS_NAME
+    if canonical_results.exists():
+        return canonical_results
+
+    return None
+
+
+def _serialize_nested_columns_for_csv(df: pl.DataFrame) -> pl.DataFrame:
+    """Convert nested/object columns to JSON strings before CSV export."""
+    nested_columns = [
+        column_name
+        for column_name, dtype in df.schema.items()
+        if isinstance(dtype, (pl.List, pl.Array, pl.Struct, pl.Object))
+    ]
+    if not nested_columns:
+        return df
+
+    return df.with_columns(
+        [
+            pl.col(column_name)
+            .map_elements(
+                lambda value: json.dumps(value) if value is not None else None,
+                return_dtype=pl.String,
+            )
+            .alias(column_name)
+            for column_name in nested_columns
+        ]
+    )
+
+
 def collect_metrics(output_dir: Path) -> pl.DataFrame:
     """Collect all benchmark_metrics.json files into a single DataFrame."""
     rows = []
     for metrics_file in sorted(output_dir.rglob("benchmark_metrics.json")):
         try:
             data = json.loads(metrics_file.read_text())
+            data.setdefault("jurisdiction_id", metrics_file.parent.name)
+            data["aggregate_metrics_path"] = str(metrics_file)
             rows.append(data)
         except (json.JSONDecodeError, OSError) as e:
             print(f"  WARNING: Could not read {metrics_file}: {e}")
@@ -109,19 +182,54 @@ def collect_metrics(output_dir: Path) -> pl.DataFrame:
 def collect_results(output_dir: Path) -> pl.DataFrame:
     """Concatenate all benchmark_results.csv files."""
     frames = []
-    for jur_dir in sorted(output_dir.iterdir()):
-        if not jur_dir.is_dir():
+    for jur_dir in _iter_jurisdiction_output_dirs(output_dir):
+        results_file = _select_results_file(jur_dir)
+        if results_file is None:
             continue
-        results_file = jur_dir / "benchmark_results.csv"
-        if results_file.exists():
-            try:
-                df = pl.read_csv(str(results_file))
-                frames.append(df)
-            except Exception as e:
-                print(f"  WARNING: Could not read {results_file}: {e}")
+
+        try:
+            df = pl.read_csv(str(results_file))
+            jurisdiction_id_expr = (
+                pl.when(
+                    pl.col("jurisdiction_id").cast(pl.String).fill_null("")
+                    .str.strip_chars()
+                    == ""
+                )
+                .then(pl.lit(jur_dir.name))
+                .otherwise(pl.col("jurisdiction_id").cast(pl.String))
+                .alias("jurisdiction_id")
+                if "jurisdiction_id" in df.columns
+                else pl.lit(jur_dir.name).alias("jurisdiction_id")
+            )
+            source_type = (
+                "timestamped"
+                if results_file.name != CANONICAL_RESULTS_NAME
+                else "canonical"
+            )
+            df = df.with_columns(
+                [
+                    jurisdiction_id_expr,
+                    pl.lit(str(results_file), dtype=pl.String).alias(
+                        "_aggregate_source_path"
+                    ),
+                    pl.lit(results_file.name, dtype=pl.String).alias(
+                        "_aggregate_source_file"
+                    ),
+                    pl.lit(source_type, dtype=pl.String).alias(
+                        "_aggregate_source_type"
+                    ),
+                    pl.lit(
+                        _extract_results_timestamp(results_file),
+                        dtype=pl.String,
+                    ).alias("_aggregate_source_timestamp"),
+                ]
+            )
+            frames.append(df)
+        except Exception as e:
+            print(f"  WARNING: Could not read {results_file}: {e}")
     if not frames:
         return pl.DataFrame()
-    return pl.concat(frames, how="diagonal")
+    return pl.concat(frames, how="diagonal_relaxed")
 
 
 def check_slurm_jobs() -> str | None:
@@ -161,9 +269,7 @@ def main() -> None:
         sys.exit(1)
 
     # ── 1. Check expected vs completed jurisdictions ──────────────
-    completed_dirs = sorted(
-        [d.name for d in output_dir.iterdir() if d.is_dir() and "-" in d.name]
-    )
+    completed_dirs = [d.name for d in _iter_jurisdiction_output_dirs(output_dir)]
 
     if args.docx_dir and args.docx_dir.exists():
         expected = get_expected_jurisdictions(args.docx_dir)
@@ -344,7 +450,7 @@ def main() -> None:
 
         # Save metrics summary
         metrics_out = output_dir / "all_jurisdictions_metrics.csv"
-        metrics_df.write_csv(str(metrics_out))
+        _serialize_nested_columns_for_csv(metrics_df).write_csv(str(metrics_out))
         print(f"\n  Metrics saved to: {metrics_out}")
 
     # ── 4. Concatenate detailed results ───────────────────────────
@@ -356,10 +462,19 @@ def main() -> None:
     else:
         combined_out = output_dir / "all_jurisdictions_benchmark.csv"
         results_df.write_csv(str(combined_out))
+        timestamped_sources = results_df.filter(
+            pl.col("_aggregate_source_type") == "timestamped"
+        )
         print(
             f"  Combined {results_df.height} rows across {len(completed_dirs)} jurisdictions"
         )
         print(f"  Saved to: {combined_out}")
+        if timestamped_sources.height > 0:
+            unique_timestamped = timestamped_sources["jurisdiction_id"].n_unique()
+            print(
+                "  Used latest timestamped benchmark CSVs for "
+                f"{unique_timestamped} jurisdiction(s)."
+            )
 
         # Per-jurisdiction breakdown from detailed results
         if (

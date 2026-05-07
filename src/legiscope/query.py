@@ -74,6 +74,7 @@ def _debug_timestamp() -> str:
 
 _RESULT_QUERY_METADATA_EXCLUDE_KEYS = {
     "coding_instructions",
+    "disable_inherited_retrieval_from",
     "hierarchy",
     "prior_answers",
     "parent_contexts",
@@ -145,6 +146,61 @@ def _sanitize_prior_answers(prior_answers: Any) -> dict[str, dict[str, str]]:
             sanitized_prior_answers[str(variable_name)] = clean_payload
 
     return sanitized_prior_answers
+
+
+def _parse_retrieval_inheritance_exclusions(value: Any) -> set[str]:
+    """Normalize metadata-configured parent identifiers excluded from retrieval inheritance."""
+    if value is None:
+        return set()
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return set()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return {
+                str(item).strip()
+                for item in parsed
+                if str(item).strip()
+            }
+        return {
+            item.strip()
+            for item in text.split("||")
+            if item.strip()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return {
+            str(item).strip()
+            for item in value
+            if str(item).strip()
+        }
+    normalized = str(value).strip()
+    return {normalized} if normalized else set()
+
+
+def _filter_inherited_retrieval_states(
+    inherited_states: list["QueryExecutionState"],
+    metadata: dict[str, Any],
+) -> list["QueryExecutionState"]:
+    """Drop parent states that should contribute context but not retrieval artifacts."""
+    excluded_identifiers = _parse_retrieval_inheritance_exclusions(
+        metadata.get("disable_inherited_retrieval_from")
+    )
+    if not excluded_identifiers:
+        return inherited_states
+
+    filtered_states: list[QueryExecutionState] = []
+    for state in inherited_states:
+        candidate_identifiers = {state.query_id}
+        if state.variable_name:
+            candidate_identifiers.add(state.variable_name)
+        if candidate_identifiers.isdisjoint(excluded_identifiers):
+            filtered_states.append(state)
+
+    return filtered_states
 
 
 # Constants for query processing — read from params.yaml
@@ -3223,6 +3279,10 @@ def _process_single_query_with_error_handling(
         if parent_contexts:
             metadata["parent_contexts"] = _serialize_parent_contexts(parent_contexts)
         inherited_states = inherited_states or []
+        retrieval_inherited_states = _filter_inherited_retrieval_states(
+            inherited_states,
+            metadata,
+        )
         retrieval_guidance = None
         base_debug_row = _base_debug_row(
             query,
@@ -3270,7 +3330,7 @@ def _process_single_query_with_error_handling(
 
         inherited_prompt_sources = [
             state.retrieval_query
-            for state in inherited_states
+            for state in retrieval_inherited_states
             if state.retrieval_query and state.retrieval_query.strip()
         ]
         if inherited_prompt_sources:
@@ -3278,7 +3338,7 @@ def _process_single_query_with_error_handling(
                 [
                     *[
                         f"Upstream retrieval context from {state.query_id}:\n{state.retrieval_query}"
-                        for state in inherited_states
+                        for state in retrieval_inherited_states
                         if state.retrieval_query and state.retrieval_query.strip()
                     ],
                     retrieval_query,
@@ -3397,7 +3457,7 @@ def _process_single_query_with_error_handling(
 
         inherited_sections = [
             (state.query_id, state.completion_sections)
-            for state in inherited_states
+            for state in retrieval_inherited_states
             if state.completion_sections
         ]
         retrieval_merge_metadata: dict[str, list[str] | int] = {}

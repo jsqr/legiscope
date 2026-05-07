@@ -34,6 +34,16 @@ def _build_query_text(row: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _default_disabled_retrieval_parents(row: dict) -> str | None:
+    """Return parent IDs whose retrieval prompts should not be prepended by default."""
+    variable_name = _first_nonempty_text(row, "variable_name", "Variable")
+    if variable_name == "dp_exemption":
+        return "dp_type"
+    if variable_name.startswith("dp_exempt_"):
+        return "dp_exemption||dp_activity"
+    return None
+
+
 def adjust_drug_paraphernalia_queries(df: pl.DataFrame) -> pl.DataFrame:
     """Apply COEP-specific query adjustments for drug paraphernalia datasets.
 
@@ -52,6 +62,17 @@ def adjust_drug_paraphernalia_queries(df: pl.DataFrame) -> pl.DataFrame:
     if "query_text" in df.columns:
         questions = [_build_query_text(row) for row in df.to_dicts()]
         df = df.with_columns(pl.Series("question", questions))
+
+    if (
+        "variable_name" in df.columns
+        and "disable_inherited_retrieval_from" not in df.columns
+    ):
+        df = df.with_columns(
+            pl.Series(
+                "disable_inherited_retrieval_from",
+                [_default_disabled_retrieval_parents(row) for row in df.to_dicts()],
+            )
+        )
 
     # Exclude non-queryable variables
     if "variable_name" in df.columns:

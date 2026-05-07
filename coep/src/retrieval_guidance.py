@@ -434,7 +434,7 @@ _VARIABLE_OVERRIDES = {
             "Focus on operative sanction text. Do not elevate business-license revocation, permitting consequences, or other collateral remedies into Other when the coding rules exclude them."
         ),
         completion_instructions=(
-            "For dp_penalties, include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If the text supports only Unlawful and Civil Fine, do not add Other as a hedge."
+            "For dp_penalties, include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If the text supports only Unlawful and Civil Fine, do not add Other as a hedge. IGNORE business-side licensing or permitting consequences such as license revocation, suspension, or denial unless the coding rules explicitly require them; those consequences SHOULD NOT be coded as Other."
         ),
         anchor_terms=["civil penalty", "license revocation", "sanction"],
     ),
@@ -443,7 +443,7 @@ _VARIABLE_OVERRIDES = {
             "Focus on true paraphernalia carve-outs. Reject tobacco-only exceptions, zoning permissions, retail-business permissions, and other non-paraphernalia exceptions unless they clearly function as coded exemptions under the survey rules."
         ),
         completion_instructions=(
-            "For dp_exemption, include Other only for a real paraphernalia exemption that does not fit any listed label. Do not use Other to capture tobacco exceptions, business permissions, or other carve-outs that the coding instructions exclude."
+            "For dp_exemption, include Other only for a real paraphernalia exemption that does not fit any listed label. IGNORE tobacco-only exceptions, tobacco packaging carve-outs, zoning permissions, retail-business permissions, and other non-paraphernalia business carve-outs; they SHOULD NOT be coded as Other. When the ordinance incorporates a state definition, favor does not apply, does not include, exception, or incorporated definitional carve-out language over business-context permissions."
         ),
         anchor_terms=["exception", "does not apply", "authorized", "medical marijuana"],
     ),
@@ -841,6 +841,7 @@ def get_drug_paraphernalia_retrieval_guidance(
         ),
         relevance_instructions=guidance.relevance_instructions,
         anchor_terms=guidance.anchor_terms,
+        completion_instructions=guidance.completion_instructions,
     )
 
     return RetrievalGuidance(

@@ -132,26 +132,44 @@ class TestCoepQueryAdjustments:
     def test_split_query_dependency_columns_survive_adjustment(self):
         df = pl.DataFrame(
             {
-                "question_number": ["Q1", "Q1.1"],
-                "variable_name": ["dp_exemption", "dp_exempt_can_activity"],
-                "prepend_text": ["Context.", "Context."],
+                "question_number": ["Q0", "Q1", "Q1.1", "Q2", "Q2.1"],
+                "variable_name": [
+                    "dp_type",
+                    "dp_exemption",
+                    "dp_exempt_can_activity",
+                    "dp_collected",
+                    "dp_valid_imp",
+                ],
+                "prepend_text": ["Context.", "Context.", "Context.", "Context.", "Context."],
                 "query_text": [
+                    "What types of paraphernalia are covered?",
                     "Which exemptions exist?",
                     "If cannabis paraphernalia is exempted, which activities are exempted?",
+                    "What is the current through date?",
+                    "Is the current-through date known or imputed?",
                 ],
                 "response_options": [
+                    "Syringes AND/OR Pipes",
                     "Paraphernalia for consumption of cannabis, generally OR None",
                     "Sales AND/OR Use",
+                    "01/01/2024 OR Unknown",
+                    "Known OR Imputed",
                 ],
                 "coding_instructions": [
+                    "Select all that apply.",
                     "Select the best option.",
                     "Select all that apply.",
+                    "Enter the date if known.",
+                    "Select the best option.",
                 ],
-                REQUIRES_YES_COLUMN: ["", "dp_exemption"],
-                REQUIRES_DATA_COLUMN: ["", "dp_exemption"],
+                REQUIRES_YES_COLUMN: ["", "", "dp_exemption", "", ""],
+                REQUIRES_DATA_COLUMN: ["", "dp_type", "dp_exemption||dp_activity", "", "dp_collected"],
                 REQUIRES_LABELS_COLUMN: [
                     "",
+                    "",
                     "dp_exemption => Paraphernalia for consumption of cannabis, generally",
+                    "",
+                    "",
                 ],
             }
         )
@@ -167,13 +185,30 @@ class TestCoepQueryAdjustments:
                 query_adjuster=adjust_drug_paraphernalia_queries,
             )
 
-            assert [query.query_id for query in queries] == ["Q1", "Q1.1"]
-            child_query = queries[1]
+            assert [query.query_id for query in queries] == [
+                "Q0",
+                "Q1",
+                "Q1.1",
+                "Q2",
+                "Q2.1",
+            ]
+            exemption_query = queries[1]
+            child_query = queries[2]
+            same_surface_child = queries[4]
+            assert exemption_query.metadata["disable_inherited_retrieval_from"] == "dp_type"
+            assert (
+                child_query.metadata["disable_inherited_retrieval_from"]
+                == "dp_exemption||dp_activity"
+            )
+            assert (
+                same_surface_child.metadata["disable_inherited_retrieval_from"]
+                is None
+            )
             assert child_query.metadata["hierarchy"] == {
                 "query_id": "Q1.1",
-                "parent_ids": ["dp_exemption"],
+                "parent_ids": ["dp_exemption", "dp_activity"],
                 "boolean_parent_ids": ["dp_exemption"],
-                "context_parent_ids": ["dp_exemption"],
+                "context_parent_ids": ["dp_exemption", "dp_activity"],
                 "pass_parent_question": True,
                 "pass_parent_short_answer": True,
                 "label_blockers": [

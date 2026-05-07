@@ -7,11 +7,13 @@ from unittest.mock import Mock, patch
 import pytest
 from pydantic import BaseModel
 
+from legiscope.models import CodeRef, JurisdictionRef
 from legiscope.utils import (
     LLMConfig,
     DEFAULT_MAX_RETRIES,
     DEFAULT_TEMPERATURE,
     ask,
+    create_code_structure,
     create_jurisdiction_structure,
     resolve_model_default,
     str2bool,
@@ -333,28 +335,19 @@ class TestLLMConfig:
 class TestCreateJurisdictionStructure:
     """Test create_jurisdiction_structure function."""
 
-    def test_valid_creation(self):
+    def test_valid_creation(self, tmp_path, monkeypatch):
         """Test successful structure creation."""
-        with patch("os.makedirs") as mock_makedirs:
-            path = create_jurisdiction_structure("IL", "WindyTown")
+        data_root = tmp_path / "data"
+        monkeypatch.setenv("LEGISCOPE_DATA_DIR", str(data_root))
 
-            # Check return value
-            assert path == os.path.join("data", "laws", "IL-WindyTown")
+        path = create_jurisdiction_structure("IL", "WindyTown")
 
-            # Check directories created
-            # Base directory + 3 subdirectories = 4 calls
-            assert mock_makedirs.call_count == 4
+        laws_path = data_root / "laws" / "IL" / "WindyTown"
+        output_path = data_root / "output" / "IL-WindyTown"
 
-            # Check calls
-            base_path = os.path.join("data", "laws", "IL-WindyTown")
-            mock_makedirs.assert_any_call(base_path, exist_ok=True)
-            mock_makedirs.assert_any_call(os.path.join(base_path, "raw"), exist_ok=True)
-            mock_makedirs.assert_any_call(
-                os.path.join(base_path, "processed"), exist_ok=True
-            )
-            mock_makedirs.assert_any_call(
-                os.path.join(base_path, "tables"), exist_ok=True
-            )
+        assert path == str(laws_path)
+        assert laws_path.is_dir()
+        assert output_path.is_dir()
 
     def test_empty_inputs(self):
         """Test validation of empty inputs."""
@@ -378,9 +371,27 @@ class TestCreateJurisdictionStructure:
 
     def test_os_error_handling(self):
         """Test handling of OS errors."""
-        with patch("os.makedirs", side_effect=OSError("Permission denied")):
+        with patch("pathlib.Path.mkdir", side_effect=OSError("Permission denied")):
             with pytest.raises(OSError, match="Failed to create directory structure"):
                 create_jurisdiction_structure("IL", "WindyTown")
+
+
+class TestCreateCodeStructure:
+    """Test create_code_structure function."""
+
+    def test_creates_code_and_output_directories(self, tmp_path, monkeypatch):
+        data_root = tmp_path / "data"
+        monkeypatch.setenv("LEGISCOPE_DATA_DIR", str(data_root))
+        code_ref = CodeRef(
+            jurisdiction=JurisdictionRef(state="IL", locality="WindyTown"),
+            code_slug="municipal-code",
+        )
+
+        code_dir = create_code_structure(code_ref)
+
+        assert code_dir == data_root / "laws" / "IL" / "WindyTown" / "municipal-code"
+        assert (code_dir / "raw").is_dir()
+        assert (data_root / "output" / "IL-WindyTown").is_dir()
 
 
 class TestResolveModelDefault:

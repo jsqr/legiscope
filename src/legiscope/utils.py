@@ -200,7 +200,8 @@ def create_code_structure(code_ref: "CodeRef") -> Path:
     """Create the directory structure for a legal code.
 
     Creates the directory hierarchy under ``data/laws/`` for the given code
-    reference, including a ``raw/`` subdirectory for source files.
+    reference, including a ``raw/`` subdirectory for source files and the
+    matching benchmark output directory under ``data/output/``.
 
     Args:
         code_ref: A :class:`~legiscope.models.CodeRef` identifying the code.
@@ -211,14 +212,19 @@ def create_code_structure(code_ref: "CodeRef") -> Path:
     Raises:
         OSError: If directory creation fails.
     """
+    from legiscope import config as cfg
+
     code_dir = code_ref.full_data_dir
     raw_dir = code_dir / "raw"
+    output_dir = cfg.output_dir() / code_ref.jurisdiction.output_dir_name
 
     logger.info("Creating code structure for {}", code_ref.code_id)
 
     try:
         raw_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         logger.debug("Created directory: {}", raw_dir)
+        logger.debug("Created directory: {}", output_dir)
         logger.info("Successfully created code structure: {}", code_dir)
         return code_dir
     except OSError as e:
@@ -232,15 +238,15 @@ def create_jurisdiction_structure(state: str, locality: str) -> str:
     """
     Create the directory structure for a new jurisdiction.
 
-    Create the standard directory hierarchy under data/laws/ for a given
-    state and locality, following the pattern: data/laws/{state}-{locality}/
+    Create the standard jurisdiction-level roots under ``data/laws/`` and
+    ``data/output/`` for a given state and locality.
 
     Args:
         state: Two-letter state abbreviation (e.g., "IL", "CA", "NY")
         locality: Locality name (e.g., "WindyCity", "LosAngeles", "NewYork")
 
     Returns:
-        str: The base path to the created jurisdiction directory
+        str: The base laws path for the created jurisdiction directory
 
     Raises:
         ValueError: If state or locality is empty or contains invalid characters
@@ -248,13 +254,11 @@ def create_jurisdiction_structure(state: str, locality: str) -> str:
     Example:
         >>> base_path = create_jurisdiction_structure("CA", "LosAngeles")
         >>> print(base_path)
-        data/laws/CA-LosAngeles
+        data/laws/CA/LosAngeles
 
         # Creates directories:
-        # data/laws/CA-LosAngeles/
-        # ├── raw/
-        # ├── processed/
-        # └── tables/
+        # data/laws/CA/LosAngeles/
+        # data/output/CA-LosAngeles/
     """
     if not state or not state.strip():
         raise ValueError("State cannot be empty")
@@ -269,24 +273,22 @@ def create_jurisdiction_structure(state: str, locality: str) -> str:
     if not locality.replace("-", "").isalnum():
         raise ValueError("Locality must contain only alphanumeric characters")
 
-    jurisdiction_name = f"{state}-{locality}"
+    from legiscope import config as cfg
 
-    base_path = os.path.join("data", "laws", jurisdiction_name)
-    subdirs = ["raw", "processed", "tables"]
+    jurisdiction_name = f"{state}-{locality}"
+    base_path = cfg.laws_dir() / state / locality
+    output_path = cfg.output_dir() / jurisdiction_name
 
     logger.info("Creating jurisdiction structure for {}", jurisdiction_name)
 
     try:
-        os.makedirs(base_path, exist_ok=True)
+        base_path.mkdir(parents=True, exist_ok=True)
+        output_path.mkdir(parents=True, exist_ok=True)
         logger.debug("Created base directory: {}", base_path)
-
-        for subdir in subdirs:
-            subdir_path = os.path.join(base_path, subdir)
-            os.makedirs(subdir_path, exist_ok=True)
-            logger.debug("Created subdirectory: {}", subdir_path)
+        logger.debug("Created output directory: {}", output_path)
 
         logger.info("Successfully created jurisdiction structure: {}", base_path)
-        return base_path
+        return str(base_path)
 
     except OSError as e:
         logger.error("Failed to create jurisdiction structure: {}", str(e))

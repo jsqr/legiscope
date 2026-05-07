@@ -2923,3 +2923,127 @@ class TestHierarchicalQueryExecution:
             "Upstream retrieval context from Q1:\nParent retrieval prompt\n\n"
             "Child retrieval prompt"
         )
+
+    def test_run_queries_can_disable_inherited_retrieval_while_preserving_parent_context(
+        self, tmp_path
+    ):
+        sections_path = self._write_sections_parquet(tmp_path)
+        parent_results = SectionCollection(
+            sections=[self._make_section("s_parent", chunk_id="chunk_parent")],
+            query_info=QueryInfo(
+                original_query="parent query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        child_results = SectionCollection(
+            sections=[self._make_section("s_child", chunk_id="chunk_child")],
+            query_info=QueryInfo(
+                original_query="child query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            short_answer="Pipes AND/OR Other",
+            reasoning="Parent answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.9,
+            limitations="None",
+        )
+        child_response = LegalQueryResponse(
+            short_answer="None",
+            reasoning="Child answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("Q1",),
+            context_parent_ids=("Q1",),
+            inherit_parent_retrieval=True,
+        )
+
+        merged_section_ids: list[list[str]] = []
+        captured_parent_contexts: list[list[dict[str, str | None]]] = []
+
+        def fake_query_legal_documents(
+            retrieval_results,
+            _query,
+            _settings,
+            *,
+            query_metadata=None,
+            preselected_sections=None,
+            execution_capture=None,
+            **_kwargs,
+        ):
+            if execution_capture is not None:
+                execution_capture["completion_sections"] = list(
+                    preselected_sections or retrieval_results.sections
+                )
+            merged_sections = preselected_sections or retrieval_results.sections
+            merged_section_ids.append(
+                [section.chunk_id or section.section_id for section in merged_sections]
+            )
+            if query_metadata and query_metadata.get("query_id") == "Q1.1":
+                captured_parent_contexts.append(query_metadata.get("parent_contexts"))
+                return child_response, []
+            return parent_response, []
+
+        with patch(
+            "legiscope.query.retrieve_sections",
+            side_effect=[parent_results, child_results],
+        ) as mock_retrieve:
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=fake_query_legal_documents,
+            ):
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                    filter_relevance=False,
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Parent retrieval prompt",
+                            variable_name="dp_type",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy)
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Child retrieval prompt",
+                            variable_name="dp_exemption",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy),
+                                "disable_inherited_retrieval_from": "dp_type",
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert mock_retrieve.call_args_list[1].kwargs["query_text"] == (
+            "Child retrieval prompt"
+        )
+        assert merged_section_ids[0] == ["chunk_parent"]
+        assert merged_section_ids[1] == ["chunk_child"]
+        assert len(captured_parent_contexts) == 1
+        assert len(captured_parent_contexts[0]) == 1
+        parent_context = captured_parent_contexts[0][0]
+        assert parent_context["query_id"] == "Q1"
+        assert parent_context["question"] == "Parent retrieval prompt"
+        assert parent_context["short_answer"] == "Pipes AND/OR Other"
+        assert parent_context["variable_name"] == "dp_type"
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert child_row[0, "inherited_retrieval_prompt_sources"] == "[]"
+        assert child_row[0, "inherited_chunk_ids"] == "[]"
+        assert child_row[0, "merged_chunk_ids"] == "[]"
