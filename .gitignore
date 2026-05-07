@@ -198,3 +198,6 @@ tmp/validate_import.ok
 
 # Internal audit reports
 coep/docs/audit_logs
+
+# COEP analysis scripts
+coep/analysis

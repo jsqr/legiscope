@@ -429,6 +429,24 @@ _GUIDANCE_BY_FAMILY = {
 
 
 _VARIABLE_OVERRIDES = {
+    "dp_penalties": RetrievalGuidance(
+        relevance_instructions=(
+            "Focus on operative sanction text. Do not elevate business-license revocation, permitting consequences, or other collateral remedies into Other when the coding rules exclude them."
+        ),
+        completion_instructions=(
+            "For dp_penalties, include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If the text supports only Unlawful and Civil Fine, do not add Other as a hedge."
+        ),
+        anchor_terms=["civil penalty", "license revocation", "sanction"],
+    ),
+    "dp_exemption": RetrievalGuidance(
+        relevance_instructions=(
+            "Focus on true paraphernalia carve-outs. Reject tobacco-only exceptions, zoning permissions, retail-business permissions, and other non-paraphernalia exceptions unless they clearly function as coded exemptions under the survey rules."
+        ),
+        completion_instructions=(
+            "For dp_exemption, include Other only for a real paraphernalia exemption that does not fit any listed label. Do not use Other to capture tobacco exceptions, business permissions, or other carve-outs that the coding instructions exclude."
+        ),
+        anchor_terms=["exception", "does not apply", "authorized", "medical marijuana"],
+    ),
     "dp_state_fed_combined": RetrievalGuidance(
         relevance_instructions=(
             "For the combined survey question, answer yes only if the ordinance expressly incorporates, "
@@ -601,8 +619,11 @@ _COMPLETION_RULES_BY_FAMILY = {
     "prohibited_activity": (
         "List only activities that the ordinance expressly prohibits for drug paraphernalia used with controlled substances."
     ),
+    "penalty": (
+        "Code only penalties or sanction labels that the ordinance actually imposes. Use Other only for a genuine residual penalty that is clearly imposed and does not fit any named option. Do not use Other as a hedge, and do not treat excluded collateral remedies as Other unless the coding rules expressly require them."
+    ),
     "exemption_presence": (
-        "Identify only exemption language that actually creates a paraphernalia carve-out under the coding rules."
+        "Identify only exemption language that actually creates a paraphernalia carve-out under the coding rules. Do not use Other for tobacco-only exceptions, zoning permissions, business permissions, or other carve-outs that the coding rules exclude from paraphernalia exemptions."
     ),
     "exemption_activity_scope": (
         "Explain which activities remain allowed under the exemption, using the exemption text together with the operative activity language when necessary."
@@ -641,6 +662,12 @@ def _merge_guidance(
     if override and override.relevance_instructions:
         prompt_parts.append(override.relevance_instructions.strip())
 
+    completion_parts = []
+    if base.completion_instructions:
+        completion_parts.append(base.completion_instructions.strip())
+    if override and override.completion_instructions:
+        completion_parts.append(override.completion_instructions.strip())
+
     override_terms = override.anchor_terms if override else []
     merged_keywords = list(dict.fromkeys(base.anchor_terms + override_terms))
 
@@ -650,6 +677,9 @@ def _merge_guidance(
         retrieval_instructions=" ".join(retrieval_parts) if retrieval_parts else None,
         relevance_instructions=" ".join(prompt_parts) if prompt_parts else None,
         anchor_terms=merged_keywords,
+        completion_instructions=(
+            " ".join(completion_parts) if completion_parts else None
+        ),
     )
 
 
@@ -779,6 +809,9 @@ def _build_completion_instructions(guidance: RetrievalGuidance) -> str | None:
             + ", ".join(guidance.anchor_terms)
             + "."
         )
+
+    if guidance.completion_instructions:
+        parts.append(guidance.completion_instructions.strip())
 
     return " ".join(parts) if parts else None
 

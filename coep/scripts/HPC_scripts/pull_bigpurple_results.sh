@@ -251,7 +251,6 @@ EOF
 REMOTE_CODE_CHECK_CMD=$(cat <<EOF
 test -d '${REMOTE_CODE_DIR}' \
     -a -f '${REMOTE_CODE_DIR}/code.md' \
-    -a -f '${REMOTE_CODE_DIR}/heading_scan_debug.json' \
     -a -f '${REMOTE_CODE_DIR}/regions.parquet' \
     -a -f '${REMOTE_CODE_DIR}/chunks.parquet' \
     -a -f '${REMOTE_CODE_DIR}/segments.parquet' \
@@ -361,6 +360,7 @@ else
     if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
         report_local_artifact_status "${LOCAL_CODE_DIR}/code.md" "code.md" true
         report_local_artifact_status "${LOCAL_CODE_DIR}/code.txt" "code.txt"
+        report_local_artifact_status "${LOCAL_CODE_DIR}/heading_scan_debug.json" "heading_scan_debug.json"
         report_local_artifact_status "${LOCAL_CODE_DIR}/headings.parquet" "headings.parquet" true
         report_local_artifact_status "${LOCAL_CODE_DIR}/regions.parquet" "regions.parquet" true
         report_local_artifact_status "${LOCAL_CODE_DIR}/sections.parquet" "sections.parquet" true

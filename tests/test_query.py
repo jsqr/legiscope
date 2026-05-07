@@ -2445,6 +2445,8 @@ class TestHierarchicalQueryExecution:
         parent_short_answer: str,
         response_options: str,
         blocker_labels: tuple[str, ...],
+        parent_confidence: float = 0.9,
+        dependency_skip_confidence_threshold: float | None = None,
     ):
         sections_path = self._write_sections_parquet(tmp_path)
         retrieval_results = SectionCollection(
@@ -2458,7 +2460,7 @@ class TestHierarchicalQueryExecution:
             reasoning="Parent answer.",
             citations=[],
             supporting_passages=[],
-            confidence=0.9,
+            confidence=parent_confidence,
             limitations="None",
         )
         child_response = LegalQueryResponse(
@@ -2490,6 +2492,7 @@ class TestHierarchicalQueryExecution:
                 mock_client = Mock(spec=Instructor)
                 settings = BatchQuerySettings(
                     llm=LLMConfig(client=mock_client, model="test-model"),
+                    dependency_skip_confidence_threshold=dependency_skip_confidence_threshold,
                 )
 
                 results_df = run_queries(
@@ -2591,6 +2594,31 @@ class TestHierarchicalQueryExecution:
         assert child_row[0, "query_status"] == "skipped"
         assert child_row[0, "skip_reason"] == "label_blocker_not_satisfied"
         assert child_row[0, "label_match_method"] == "no_confident_match"
+
+    def test_run_queries_executes_child_when_label_blocker_parent_confidence_is_low(
+        self, tmp_path
+    ):
+        results_df, query_call_count = self._run_label_blocker_case(
+            tmp_path,
+            parent_short_answer="Syringes, generally",
+            response_options=(
+                "Pipes/smoking equipment, generally OR Syringes, generally"
+            ),
+            blocker_labels=("Pipes/smoking equipment, generally",),
+            parent_confidence=0.2,
+            dependency_skip_confidence_threshold=0.5,
+        )
+
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert query_call_count == 2
+        assert child_row[0, "query_status"] == "completed"
+        assert child_row[0, "label_match_method"] == "no_confident_match"
+        assert child_row[0, "dependency_override_applied"] is True
+        assert (
+            child_row[0, "dependency_override_reason"]
+            == "low_confidence_parent_label_blocker"
+        )
+        assert child_row[0, "dependency_override_parent_query_id"] == "Q1"
 
     def test_run_queries_passes_only_parent_question_and_short_answer_context(
         self, tmp_path

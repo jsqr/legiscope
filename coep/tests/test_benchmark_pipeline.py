@@ -341,6 +341,47 @@ class TestBenchmarkPipelineHelpers:
         assert expanded["evaluation_expected_present"].to_list() == [True, False]
         assert expanded["evaluation_generated_present"].to_list() == [True, False]
 
+    def test_expand_option_level_evaluation_rows_handles_midstring_new_suffixes(
+        self,
+    ):
+        df = pl.DataFrame(
+            {
+                "benchmark_row_id": [0],
+                "query": ["Question: Which exemptions exist?"],
+                "query_text": ["Which exemptions exist?"],
+                "variable_name": ["dp_exemption"],
+                "response_options": [
+                    "Paraphernalia for consumption of cannabis, generally or medical use AND/OR Drug checking/testing equipment, generally AND/OR Other"
+                ],
+                "coding_instructions": ["Select all that apply."],
+                "short_answer": [
+                    "Paraphernalia for consumption of cannabis, generally or medical use AND/OR Drug checking/testing equipment, generally"
+                ],
+                "raw_short_answer": [
+                    "Paraphernalia for consumption of cannabis, generally or medical use AND/OR Drug checking/testing equipment, generally"
+                ],
+                "reasoning": [
+                    "The ordinance exempts cannabis paraphernalia and drug-checking equipment."
+                ],
+                "supporting_passages": ["['section']"],
+                "ground_truth": [
+                    "Paraphernalia for consumption of cannabis, generally or medical use (NEW), Drug checking/testing equipment, generally"
+                ],
+                "ground_truth_available": [True],
+                "evaluation_status": ["scored_llm"],
+            }
+        )
+
+        expanded = benchmark_pipeline._expand_option_level_evaluation_rows(df)
+
+        assert expanded["evaluation_option"].to_list() == [
+            "Paraphernalia for consumption of cannabis, generally or medical use",
+            "Drug checking/testing equipment, generally",
+            "Other",
+        ]
+        assert expanded["evaluation_expected_present"].to_list() == [True, True, False]
+        assert expanded["evaluation_generated_present"].to_list() == [True, True, False]
+
     def test_score_skipped_queries_uses_option_expectation_for_subquestions(self):
         df = pl.DataFrame(
             {
@@ -354,8 +395,10 @@ class TestBenchmarkPipelineHelpers:
 
         assert scored[0, "eval_score"] == 0
         assert scored[0, "eval_label"] == "Incorrect"
+        assert scored[0, "eval_error_type"] == "dependency_skipped"
         assert scored[1, "eval_score"] == 10
         assert scored[1, "eval_label"] == "Correct"
+        assert scored[1, "eval_error_type"] == "none"
 
     def test_score_option_level_queries_uses_presence_flags_deterministically(self):
         df = pl.DataFrame(
@@ -381,12 +424,65 @@ class TestBenchmarkPipelineHelpers:
             "Correct",
             "Incorrect",
         ]
-        assert scored["eval_error_type"].to_list() == ["none", "none", "other"]
+        assert scored["eval_error_type"].to_list() == [
+            "none",
+            "none",
+            "option_presence_mismatch",
+        ]
         assert "correctly omitted this option" in scored[1, "eval_reason"]
         assert (
             "included this option even though the ground truth omits it"
             in scored[2, "eval_reason"]
         )
+
+    def test_attach_parent_benchmark_provenance_marks_blocked_by_incorrect_parent(
+        self,
+    ):
+        df = pl.DataFrame(
+            {
+                "query_id": ["Q1", "Q1", "Q1.1"],
+                "variable_name": [
+                    "dp_exemption",
+                    "dp_exemption",
+                    "dp_exempt_DCEgen_activity",
+                ],
+                "query_status": ["completed", "completed", "skipped"],
+                "blocking_parent_query_id": [None, None, "Q1"],
+                "configured_blocker_labels": [
+                    None,
+                    None,
+                    '["Drug checking/testing equipment, generally"]',
+                ],
+                "evaluation_mode": ["whole_answer", "response_option", "response_option"],
+                "evaluation_option": [
+                    None,
+                    "Drug checking/testing equipment, generally",
+                    "Sales",
+                ],
+                "confidence": [0.72, 0.72, 0.0],
+                "eval_score": [10, 0, 0],
+                "eval_label": ["Correct", "Incorrect", "Incorrect"],
+                "eval_error_type": [
+                    "none",
+                    "option_presence_mismatch",
+                    "dependency_skipped",
+                ],
+                "skip_reason": [None, None, "label_blocker_not_satisfied"],
+            }
+        )
+
+        enriched = benchmark_pipeline._attach_parent_benchmark_provenance(df)
+        child_row = enriched.filter(pl.col("query_id") == "Q1.1")
+
+        assert child_row[0, "blocking_parent_variable_name"] == "dp_exemption"
+        assert child_row[0, "blocking_parent_eval_label"] == "Correct"
+        assert child_row[0, "blocking_parent_has_any_incorrect_eval"] is True
+        assert child_row[0, "blocking_parent_has_matching_incorrect_option"] is True
+        assert (
+            "Drug checking/testing equipment, generally"
+            in child_row[0, "blocking_parent_incorrect_options"]
+        )
+        assert child_row[0, "eval_error_type"] == "blocked_by_incorrect_parent"
 
     def test_expand_option_level_evaluation_rows_skips_open_ended_date_questions(self):
         df = pl.DataFrame(

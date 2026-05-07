@@ -182,6 +182,9 @@ DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
 DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
     "fuzzy_match_threshold", 0.9
 )
+DEFAULT_DEPENDENCY_SKIP_CONFIDENCE_THRESHOLD: float | None = _qp.get(
+    "dependency", {}
+).get("low_confidence_skip_threshold", 0.35)
 
 DEBUG_SECTION_LIMIT = 5
 DEBUG_SEGMENT_LIMIT = 8
@@ -267,6 +270,7 @@ class QueryExecutionState:
     short_answer: str | None = None
     raw_short_answer: str | None = None
     variable_name: str | None = None
+    confidence: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     retrieval_query: str | None = None
     completion_sections: list[SectionResult] = field(default_factory=list)
@@ -300,11 +304,16 @@ class DependencyDecision:
     skip_reason: str | None = None
     blocking_parent_query_id: str | None = None
     blocking_parent_short_answer: str | None = None
+    blocking_parent_confidence: float | None = None
     missing_parent_ids: list[str] = field(default_factory=list)
     dependency_rules_evaluated: list[dict[str, Any]] = field(default_factory=list)
     passed_parent_context: list[ParentQueryContext] = field(default_factory=list)
     dependency_context_missing: bool = False
     executed_despite_missing_parent: bool = False
+    dependency_override_applied: bool = False
+    dependency_override_reason: str | None = None
+    dependency_override_parent_query_id: str | None = None
+    dependency_override_parent_confidence: float | None = None
     label_match: LabelMatchDiagnostic = field(default_factory=LabelMatchDiagnostic)
 
 
@@ -423,6 +432,9 @@ class BatchQuerySettings:
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
     retrieval_guidance_provider: RetrievalGuidanceProvider | None = None
+    dependency_skip_confidence_threshold: float | None = (
+        DEFAULT_DEPENDENCY_SKIP_CONFIDENCE_THRESHOLD
+    )
 
     # Debug output
     debug_dir: Path | None = None
@@ -436,6 +448,13 @@ class BatchQuerySettings:
         if not 0.0 <= self.relevance_threshold <= 1.0:
             raise ValueError(
                 f"relevance_threshold must be between 0 and 1, got {self.relevance_threshold}"
+            )
+        if self.dependency_skip_confidence_threshold is not None and not (
+            0.0 <= self.dependency_skip_confidence_threshold <= 1.0
+        ):
+            raise ValueError(
+                "dependency_skip_confidence_threshold must be between 0 and 1, "
+                f"got {self.dependency_skip_confidence_threshold}"
             )
 
         # Set default LLM if not provided (query analysis uses powerful model)
@@ -1615,6 +1634,7 @@ def run_queries(
         dependency_decision = _evaluate_dependency_decision(
             hierarchy=planned_query.hierarchy,
             state_by_query_id=state_by_query_id,
+            dependency_skip_confidence_threshold=settings.dependency_skip_confidence_threshold,
         )
         if dependency_decision.passed_parent_context:
             effective_query_metadata["parent_contexts"] = _serialize_parent_contexts(
@@ -1622,6 +1642,16 @@ def run_queries(
             )
         else:
             effective_query_metadata.pop("parent_contexts", None)
+
+        if dependency_decision.dependency_override_applied:
+            logger.warning(
+                "Executing query {} ({}) despite dependency blocker from parent {} because parent confidence {:.2f} is below threshold {:.2f}",
+                planned_query.hierarchy.query_id,
+                query_input.variable_name or "no-variable",
+                dependency_decision.dependency_override_parent_query_id or "none",
+                dependency_decision.dependency_override_parent_confidence or 0.0,
+                settings.dependency_skip_confidence_threshold or 0.0,
+            )
 
         if dependency_decision.should_skip:
             logger.warning(
@@ -1685,6 +1715,7 @@ def run_queries(
                 ),
                 status="skipped",
                 variable_name=query_input.variable_name,
+                confidence=0.0,
                 metadata=effective_query_metadata,
             )
             continue
@@ -1773,6 +1804,11 @@ def run_queries(
             short_answer=str(result.get("short_answer") or "").strip() or None,
             raw_short_answer=str(result.get("raw_short_answer") or "").strip() or None,
             variable_name=query_input.variable_name,
+            confidence=(
+                float(result.get("confidence"))
+                if result.get("confidence") is not None
+                else None
+            ),
             metadata=effective_query_metadata,
             retrieval_query=str(retrieval_query or "").strip() or None,
             completion_sections=list(completion_sections),
@@ -2312,11 +2348,8 @@ def _is_status_date_response_options(response_options: str) -> bool:
 def _strip_benchmark_option_annotations(text: str) -> str:
     """Remove benchmark-only option suffixes that should not affect matching."""
     stripped = text.strip()
-    while True:
-        updated = re.sub(r"\s*\((?:NEW)\)\s*$", "", stripped, flags=re.IGNORECASE)
-        if updated == stripped:
-            return stripped
-        stripped = updated.strip()
+    updated = re.sub(r"\s*\((?:NEW)\)", " ", stripped, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", updated).strip()
 
 
 def _normalize_option_text(text: str) -> str:
@@ -2806,10 +2839,24 @@ def _is_explicit_no_answer(answer: str | None) -> bool | None:
     return None
 
 
+def _should_override_dependency_skip_for_low_confidence(
+    parent_state: QueryExecutionState,
+    *,
+    threshold: float | None,
+) -> bool:
+    """Return whether a low-confidence parent should not hard-block a child query."""
+    if threshold is None:
+        return False
+    if parent_state.status != "completed" or parent_state.confidence is None:
+        return False
+    return parent_state.confidence < threshold
+
+
 def _evaluate_dependency_decision(
     *,
     hierarchy: QueryHierarchy,
     state_by_query_id: dict[str, QueryExecutionState],
+    dependency_skip_confidence_threshold: float | None = None,
 ) -> DependencyDecision:
     """Apply explicit skip rules while erring on execution when dependency state is uncertain."""
     decision = DependencyDecision()
@@ -2867,10 +2914,32 @@ def _evaluate_dependency_decision(
 
         explicit_no = _is_explicit_no_answer(parent_state.short_answer)
         if explicit_no is True:
+            if _should_override_dependency_skip_for_low_confidence(
+                parent_state,
+                threshold=dependency_skip_confidence_threshold,
+            ):
+                decision.dependency_override_applied = True
+                decision.dependency_override_reason = "low_confidence_parent_no"
+                decision.dependency_override_parent_query_id = parent_query_id
+                decision.dependency_override_parent_confidence = (
+                    parent_state.confidence
+                )
+                decision.dependency_rules_evaluated.append(
+                    {
+                        "rule_type": "requires_yes",
+                        "parent_query_id": parent_query_id,
+                        "status": "low_confidence_override",
+                        "parent_short_answer": parent_state.short_answer,
+                        "parent_confidence": parent_state.confidence,
+                        "threshold": dependency_skip_confidence_threshold,
+                    }
+                )
+                continue
             decision.should_skip = True
             decision.skip_reason = "requires_yes_not_satisfied"
             decision.blocking_parent_query_id = parent_query_id
             decision.blocking_parent_short_answer = parent_state.short_answer
+            decision.blocking_parent_confidence = parent_state.confidence
             decision.dependency_rules_evaluated.append(
                 {
                     "rule_type": "requires_yes",
@@ -2946,10 +3015,36 @@ def _evaluate_dependency_decision(
             continue
         if label_match.ambiguous:
             continue
+        if _should_override_dependency_skip_for_low_confidence(
+            parent_state,
+            threshold=dependency_skip_confidence_threshold,
+        ):
+            decision.dependency_override_applied = True
+            decision.dependency_override_reason = (
+                "low_confidence_parent_label_blocker"
+            )
+            decision.dependency_override_parent_query_id = label_rule.parent_query_id
+            decision.dependency_override_parent_confidence = parent_state.confidence
+            decision.dependency_rules_evaluated.append(
+                {
+                    "rule_type": "requires_labels",
+                    "parent_query_id": label_rule.parent_query_id,
+                    "status": "low_confidence_override",
+                    "parent_short_answer": parent_state.short_answer,
+                    "parent_labels": parent_labels,
+                    "configured_blocker_labels": list(label_rule.blocker_labels),
+                    "score": label_match.score,
+                    "ambiguous": label_match.ambiguous,
+                    "parent_confidence": parent_state.confidence,
+                    "threshold": dependency_skip_confidence_threshold,
+                }
+            )
+            continue
         decision.should_skip = True
         decision.skip_reason = "label_blocker_not_satisfied"
         decision.blocking_parent_query_id = label_rule.parent_query_id
         decision.blocking_parent_short_answer = parent_state.short_answer
+        decision.blocking_parent_confidence = parent_state.confidence
         return decision
 
     return decision
@@ -2992,9 +3087,14 @@ def _apply_dependency_fields(
             "skip_reason": decision.skip_reason,
             "blocking_parent_query_id": decision.blocking_parent_query_id,
             "blocking_parent_short_answer": decision.blocking_parent_short_answer,
+            "blocking_parent_confidence": decision.blocking_parent_confidence,
             "dependency_context_missing": decision.dependency_context_missing,
             "missing_parent_ids": _json_debug(decision.missing_parent_ids),
             "executed_despite_missing_parent": decision.executed_despite_missing_parent,
+            "dependency_override_applied": decision.dependency_override_applied,
+            "dependency_override_reason": decision.dependency_override_reason,
+            "dependency_override_parent_query_id": decision.dependency_override_parent_query_id,
+            "dependency_override_parent_confidence": decision.dependency_override_parent_confidence,
             "passed_parent_context": _json_debug(
                 _serialize_parent_contexts(decision.passed_parent_context)
             ),

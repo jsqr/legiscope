@@ -486,6 +486,156 @@ def _build_option_level_generated_answer(
     return "\n\n".join(lines)
 
 
+def _parse_string_list(value: object) -> list[str]:
+    """Parse a JSON- or Python-literal-encoded list of strings conservatively."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = ast.literal_eval(stripped)
+        except (SyntaxError, ValueError):
+            return [stripped]
+        if isinstance(parsed, (list, tuple)):
+            return [str(item).strip() for item in parsed if str(item).strip()]
+    return []
+
+
+def _attach_parent_benchmark_provenance(df: pl.DataFrame) -> pl.DataFrame:
+    """Attach parent benchmark provenance and refine deterministic skip error types."""
+    if (
+        df.is_empty()
+        or "query_id" not in df.columns
+        or "blocking_parent_query_id" not in df.columns
+    ):
+        return df
+
+    parent_whole_by_query_id: dict[str, dict[str, object]] = {}
+    parent_incorrect_options_by_query_id: dict[str, list[str]] = {}
+    parent_has_any_incorrect_eval: dict[str, bool] = {}
+
+    for row in df.select(
+        [
+            column
+            for column in [
+                "query_id",
+                "variable_name",
+                "query_status",
+                "confidence",
+                "eval_score",
+                "eval_label",
+                "eval_error_type",
+                "evaluation_mode",
+                "evaluation_option",
+            ]
+            if column in df.columns
+        ]
+    ).to_dicts():
+        query_id = str(row.get("query_id") or "").strip()
+        if not query_id:
+            continue
+
+        if row.get("evaluation_mode") == "whole_answer" and query_id not in parent_whole_by_query_id:
+            parent_whole_by_query_id[query_id] = {
+                "blocking_parent_variable_name": row.get("variable_name"),
+                "blocking_parent_query_status": row.get("query_status"),
+                "blocking_parent_eval_score": row.get("eval_score"),
+                "blocking_parent_eval_label": row.get("eval_label"),
+                "blocking_parent_eval_error_type": row.get("eval_error_type"),
+                "blocking_parent_confidence_from_parent_row": row.get("confidence"),
+            }
+
+        if row.get("eval_label") == "Incorrect":
+            parent_has_any_incorrect_eval[query_id] = True
+            option = str(row.get("evaluation_option") or "").strip()
+            if option:
+                options = parent_incorrect_options_by_query_id.setdefault(query_id, [])
+                if option not in options:
+                    options.append(option)
+        else:
+            parent_has_any_incorrect_eval.setdefault(query_id, False)
+
+    enriched_rows: list[dict[str, object]] = []
+
+    for row in df.to_dicts():
+        parent_query_id = str(row.get("blocking_parent_query_id") or "").strip()
+        parent_summary = parent_whole_by_query_id.get(parent_query_id, {})
+        incorrect_options = parent_incorrect_options_by_query_id.get(parent_query_id, [])
+        blocker_labels = _parse_string_list(row.get("configured_blocker_labels"))
+        normalized_incorrect_options = {
+            _normalize_option_text(option) for option in incorrect_options if option
+        }
+        normalized_blocker_labels = {
+            _normalize_option_text(label) for label in blocker_labels if label
+        }
+        has_matching_incorrect_option = bool(
+            normalized_incorrect_options & normalized_blocker_labels
+        )
+
+        eval_error_type = row.get("eval_error_type")
+        if row.get("query_status") == "skipped" and row.get("eval_label") == "Incorrect":
+            parent_whole_incorrect = (
+                parent_summary.get("blocking_parent_eval_label") == "Incorrect"
+            )
+            if has_matching_incorrect_option or parent_whole_incorrect:
+                eval_error_type = "blocked_by_incorrect_parent"
+            elif row.get("skip_reason"):
+                eval_error_type = "dependency_skipped"
+
+        enriched_row = dict(row)
+        enriched_row.update(
+            {
+                "blocking_parent_variable_name": parent_summary.get(
+                    "blocking_parent_variable_name"
+                ),
+                "blocking_parent_query_status": parent_summary.get(
+                    "blocking_parent_query_status"
+                ),
+                "blocking_parent_eval_score": parent_summary.get(
+                    "blocking_parent_eval_score"
+                ),
+                "blocking_parent_eval_label": parent_summary.get(
+                    "blocking_parent_eval_label"
+                ),
+                "blocking_parent_eval_error_type": parent_summary.get(
+                    "blocking_parent_eval_error_type"
+                ),
+                "blocking_parent_confidence_from_parent_row": parent_summary.get(
+                    "blocking_parent_confidence_from_parent_row"
+                ),
+                "blocking_parent_has_any_incorrect_eval": parent_has_any_incorrect_eval.get(
+                    parent_query_id, False
+                ),
+                "blocking_parent_incorrect_options": json.dumps(incorrect_options),
+                "blocking_parent_has_matching_incorrect_option": has_matching_incorrect_option,
+                "eval_error_type": eval_error_type,
+            }
+        )
+        enriched_rows.append(enriched_row)
+
+    ordered_columns = list(df.columns) + [
+        "blocking_parent_variable_name",
+        "blocking_parent_query_status",
+        "blocking_parent_eval_score",
+        "blocking_parent_eval_label",
+        "blocking_parent_eval_error_type",
+        "blocking_parent_confidence_from_parent_row",
+        "blocking_parent_has_any_incorrect_eval",
+        "blocking_parent_incorrect_options",
+        "blocking_parent_has_matching_incorrect_option",
+    ]
+    return pl.DataFrame(
+        {
+            column: [row.get(column) for row in enriched_rows]
+            for column in ordered_columns
+        }
+    )
+
+
 def _expand_option_level_evaluation_rows(df: pl.DataFrame) -> pl.DataFrame:
     """Explode discrete benchmark rows into per-option evaluation subquestions."""
     if df.is_empty():
@@ -683,7 +833,18 @@ def _score_skipped_queries(df: pl.DataFrame) -> pl.DataFrame:
             )
             .otherwise(pl.lit("Correct"))
             .alias("eval_label"),
-            pl.lit("other").alias("eval_error_type"),
+            pl.when(pl.col("ground_truth_available"))
+            .then(
+                pl.when(evaluation_expected_present.is_not_null())
+                .then(
+                    pl.when(evaluation_expected_present)
+                    .then(pl.lit("dependency_skipped"))
+                    .otherwise(pl.lit("none"))
+                )
+                .otherwise(pl.lit("dependency_skipped"))
+            )
+            .otherwise(pl.lit("none"))
+            .alias("eval_error_type"),
         ]
     )
 
@@ -741,7 +902,7 @@ def _score_option_level_queries(df: pl.DataFrame) -> pl.DataFrame:
             .alias("eval_label"),
             pl.when(is_match)
             .then(pl.lit("none"))
-            .otherwise(pl.lit("other"))
+            .otherwise(pl.lit("option_presence_mismatch"))
             .alias("eval_error_type"),
         ]
     )
@@ -950,9 +1111,11 @@ def _materialize_benchmark_outputs(
             [
                 pl.col(column_name)
                 .map_elements(
-                    lambda value: json.dumps(_json_ready_nested_value(value))
-                    if value is not None
-                    else None,
+                    lambda value: (
+                        json.dumps(_json_ready_nested_value(value))
+                        if value is not None
+                        else None
+                    ),
                     return_dtype=pl.String,
                 )
                 .alias(column_name)
@@ -1272,8 +1435,21 @@ def main():
             pl.col("evaluation_generated_answer").alias("comprehensive_answer"),
         ]
     )
+    final_df = _attach_parent_benchmark_provenance(final_df)
     final_df = prioritize_ground_truth_matches(final_df)
     final_df = _drop_redundant_query_columns(final_df)
+    eval_scored_df = final_df.filter(pl.col("eval_score").is_not_null()).select(
+        [
+            "benchmark_row_id",
+            "evaluation_mode",
+            "evaluation_row_id",
+            "evaluation_generated_answer",
+            "eval_score",
+            "eval_reason",
+            "eval_label",
+            "eval_error_type",
+        ]
+    )
 
     # =========================================================================
     # Step 8: Compute Summary Metrics
