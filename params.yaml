@@ -3,10 +3,10 @@
 
 # Jurisdiction targeting (override via: dvc exp run -S jurisdiction.state=CA ...)
 jurisdiction:
-  state: PA
-  locality: Philadelphia
+  state: FL
+  locality: Hollywood
   code_slug: municipal-code
-  code_name: Philadelphia Municipal Code
+  code_name: Hollywood Municipal Code
 
 # LLM configuration
 llm:
@@ -16,7 +16,7 @@ llm:
     openai:
       fast: Qwen/Qwen3.5-27B
       powerful: Qwen/Qwen3.5-27B
-      
+
     mistral:
       fast: mistral-small-2506
       powerful: mistral-large-2512
@@ -72,7 +72,7 @@ segmentation:
 retrieval:
   n_results: 10
   distance_metric: l2
-  debug: true  
+  debug: true
 
   lexical_overfetch_factor: 3
   lexical_reranking:
