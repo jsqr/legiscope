@@ -11,6 +11,9 @@ jurisdiction:
 # LLM configuration
 llm:
   default_provider: openai
+  # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
+  # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
+  source: self_hosted
 
   providers:
     openai:
@@ -28,7 +31,7 @@ llm:
 
   temperature: 0.0
   max_retries: 3
-  timeout: 500
+  timeout: 900
 
 parse:
   scan:
@@ -36,7 +39,7 @@ parse:
     max_iterations: 5
     score_threshold: 0.7
     max_retries: 3
-    timeout: 500
+    timeout: 900
     max_tokens: 2400
 
 # Embedding configuration
@@ -86,6 +89,9 @@ retrieval:
   relevance_filter:
     enabled: false
     threshold: 0.7
+    max_concurrency: 4
+    target_concurrent_prompt_tokens: 16000
+    prompt_overhead_tokens: 600
 
 # Benchmark evaluation settings
 benchmark:
@@ -99,3 +105,9 @@ query:
     enabled: true
     exact_match_threshold: 1.0
     fuzzy_match_threshold: 0.9
+  review:
+    enabled: true
+    topics:
+      - prohibited_activity
+      - penalty
+      - exemption_presence

@@ -505,3 +505,36 @@ class TestEvaluator:
             "Correct",
         ]
         assert state["max_active"] >= 2
+
+    def test_evaluator_disables_parallelism_for_external_default_source(self):
+        """Default evaluator concurrency should stay off for external APIs."""
+        mock_client = Mock()
+
+        with patch("legiscope.llm_config.Config") as mock_config:
+            mock_config.uses_self_hosted_llm.return_value = False
+            mock_config.get_powerful_client.return_value = mock_client
+            mock_config.get_llm_params.return_value = {
+                "temperature": 0.0,
+                "max_retries": 3,
+            }
+
+            evaluator = Evaluator(max_concurrency=4)
+
+        assert evaluator.max_concurrency == 1
+
+    def test_evaluator_allows_parallelism_for_self_hosted_custom_llm(self):
+        """Custom self-hosted configs can opt into concurrency with an explicit factory."""
+        from legiscope.utils import LLMConfig
+
+        factory = Mock(return_value=Mock())
+        evaluator = Evaluator(
+            llm_config=LLMConfig(
+                client=Mock(),
+                model="test-model",
+                source="self_hosted",
+                client_factory=factory,
+            ),
+            max_concurrency=4,
+        )
+
+        assert evaluator.max_concurrency == 4

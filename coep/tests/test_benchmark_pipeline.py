@@ -128,6 +128,7 @@ class TestBenchmarkPipelineHelpers:
         output_path = tmp_path / "benchmark_results.csv"
         timestamped_path = tmp_path / "benchmark_results_20260421_120000.csv"
         metrics_path = tmp_path / "benchmark_metrics.json"
+        timestamped_metrics_path = tmp_path / "benchmark_metrics_20260421_120000.json"
         metrics = {"avg_score": 8.0, "processed_queries": 1}
 
         benchmark_pipeline._materialize_benchmark_outputs(
@@ -136,13 +137,16 @@ class TestBenchmarkPipelineHelpers:
             timestamped_path=timestamped_path,
             metrics=metrics,
             metrics_path=metrics_path,
+            timestamped_metrics_path=timestamped_metrics_path,
         )
 
         assert output_path.exists()
         assert timestamped_path.exists()
         assert metrics_path.exists()
+        assert timestamped_metrics_path.exists()
         assert output_path.read_text() == timestamped_path.read_text()
         assert json.loads(metrics_path.read_text()) == metrics
+        assert json.loads(timestamped_metrics_path.read_text()) == metrics
 
     def test_materialize_benchmark_outputs_serializes_nested_columns_for_csv(
         self, tmp_path
@@ -164,6 +168,7 @@ class TestBenchmarkPipelineHelpers:
             timestamped_path=timestamped_path,
             metrics={"processed_queries": 1},
             metrics_path=metrics_path,
+            timestamped_metrics_path=metrics_path,
         )
 
         written_df = pl.read_csv(output_path)
@@ -453,7 +458,11 @@ class TestBenchmarkPipelineHelpers:
                     None,
                     '["Drug checking/testing equipment, generally"]',
                 ],
-                "evaluation_mode": ["whole_answer", "response_option", "response_option"],
+                "evaluation_mode": [
+                    "whole_answer",
+                    "response_option",
+                    "response_option",
+                ],
                 "evaluation_option": [
                     None,
                     "Drug checking/testing equipment, generally",
@@ -573,12 +582,12 @@ class TestBenchmarkPipelineHelpers:
         assert summary["processed_queries"] == 3
         assert summary["scored_queries"] == 2
         assert summary["unscored_queries"] == 1
-        assert round(summary["points_per_query"], 4) == 33.3333
-        assert round(summary["scored_point_ceiling"], 2) == 66.67
-        assert round(summary["earned_points"], 2) == 50.00
-        assert round(summary["score_percent"], 2) == 50.00
+        assert round(summary["points_per_query"], 2) == 50.00
+        assert round(summary["scored_point_ceiling"], 2) == 100.00
+        assert round(summary["earned_points"], 2) == 75.00
+        assert round(summary["score_percent"], 2) == 75.00
 
-    def test_summarize_weighted_query_score_treats_unscored_queries_as_zero_points(
+    def test_summarize_weighted_query_score_excludes_unscored_queries_from_denominator(
         self,
     ):
         df = pl.DataFrame(
@@ -595,8 +604,35 @@ class TestBenchmarkPipelineHelpers:
 
         assert summary["scored_queries"] == 1
         assert summary["unscored_queries"] == 3
-        assert round(summary["earned_points"], 2) == 25.00
-        assert round(summary["score_percent"], 2) == 25.00
+        assert round(summary["points_per_query"], 2) == 100.00
+        assert round(summary["scored_point_ceiling"], 2) == 100.00
+        assert round(summary["earned_points"], 2) == 100.00
+        assert round(summary["score_percent"], 2) == 100.00
+
+    def test_summarize_weighted_query_score_handles_empty_scored_frame(self):
+        df = pl.DataFrame(
+            {
+                "benchmark_row_id": [],
+                "eval_label": [],
+            },
+            schema={
+                "benchmark_row_id": pl.Int64,
+                "eval_label": pl.String,
+            },
+        )
+
+        summary = benchmark_pipeline._summarize_weighted_query_score(
+            df,
+            total_queries=4,
+        )
+
+        assert summary["processed_queries"] == 4
+        assert summary["scored_queries"] == 0
+        assert summary["unscored_queries"] == 4
+        assert summary["points_per_query"] == 0.0
+        assert summary["scored_point_ceiling"] == 0.0
+        assert summary["earned_points"] == 0.0
+        assert summary["score_percent"] == 0.0
 
     def test_eval_concat_preserves_columns_needed_for_scoring_summary(self):
         llm_eval_scored_df = pl.DataFrame(

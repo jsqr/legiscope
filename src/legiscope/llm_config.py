@@ -13,6 +13,20 @@ from loguru import logger
 from legiscope.params import load_params
 
 
+def _normalize_llm_source(value: object) -> str:
+    """Normalize configured LLM source labels to a small safe set."""
+    normalized = str(value or "external").strip().casefold().replace("-", "_")
+    if normalized in {"self_hosted", "local", "vllm", "hpc"}:
+        return "self_hosted"
+    if normalized in {"external", "cloud", "api", "remote"}:
+        return "external"
+
+    logger.warning(
+        f"Invalid llm.source={value!r}; defaulting to 'external' for concurrency safety."
+    )
+    return "external"
+
+
 def _provider_config() -> dict:
     """Build PROVIDER_CONFIG from params.yaml, enriched with instructor modes."""
     p = load_params()
@@ -43,6 +57,17 @@ def _get_provider_config() -> dict:
 
 class Config:
     """Global configuration for legiscope."""
+
+    @classmethod
+    def get_llm_source(cls) -> str:
+        """Return whether the active LLM is self-hosted or external."""
+        p = load_params()
+        return _normalize_llm_source(p.get("llm", {}).get("source", "external"))
+
+    @classmethod
+    def uses_self_hosted_llm(cls) -> bool:
+        """Return whether local threaded concurrency should be considered safe."""
+        return cls.get_llm_source() == "self_hosted"
 
     @classmethod
     def get_llm_provider(cls) -> str:

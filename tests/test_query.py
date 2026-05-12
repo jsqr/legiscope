@@ -16,6 +16,7 @@ from legiscope.utils import LLMConfig
 from legiscope.query import (
     LegalQueryResponse,
     format_query_response,
+    _repair_supporting_passages,
     _validate_supporting_passages,
     _prepare_legal_context,
     _build_legal_prompts,
@@ -206,6 +207,7 @@ class TestPromptContracts:
             "Declared response options: Sales AND/OR Use AND/OR Possession"
             in system_prompt
         )
+        assert "copy-paste exact verbatim quotes" in system_prompt
         assert "join selections with ` AND/OR `" in system_prompt
         assert "Apply these coding instructions exactly" in system_prompt
 
@@ -810,6 +812,58 @@ class TestValidateSupportingPassages:
         assert "DRIFT WARNING" in caplog.text
         assert "HALLUCINATION WARNING" in caplog.text
 
+    def test_repair_supporting_passages_snaps_near_exact_match_to_source_text(self):
+        response = LegalQueryResponse(
+            short_answer="Test",
+            reasoning="Test",
+            citations=[],
+            supporting_passages=["No person should sell drug paraphernalia items."],
+            confidence=0.9,
+            limitations="",
+        )
+
+        sections = self.create_test_sections(
+            body_text="Section 5-12-3: General rules.",
+            segment_texts=["No person shall sell drug paraphernalia."],
+        )
+
+        validation_result = _validate_supporting_passages(response, sections)
+        repaired_response, repaired_validation, repaired = _repair_supporting_passages(
+            response,
+            validation_result,
+        )
+
+        assert repaired is True
+        assert repaired_response.supporting_passages == [
+            "No person shall sell drug paraphernalia."
+        ]
+        assert repaired_validation.match_types == ["exact"]
+        assert repaired_validation.similarity_scores == [1.0]
+
+    def test_repair_supporting_passages_does_not_change_true_not_found_text(self):
+        response = LegalQueryResponse(
+            short_answer="Test",
+            reasoning="Test",
+            citations=[],
+            supporting_passages=["This passage is completely fabricated."],
+            confidence=0.9,
+            limitations="",
+        )
+
+        sections = self.create_test_sections(
+            body_text="Section 5-12-3: No person shall sell drug paraphernalia.",
+        )
+
+        validation_result = _validate_supporting_passages(response, sections)
+        repaired_response, repaired_validation, repaired = _repair_supporting_passages(
+            response,
+            validation_result,
+        )
+
+        assert repaired is False
+        assert repaired_response.supporting_passages == response.supporting_passages
+        assert repaired_validation.match_types == ["not_found"]
+
 
 class TestPrepareLegalContext:
     """Test _prepare_legal_context function."""
@@ -1273,8 +1327,147 @@ class TestQueryConfigBasics:
             assert response.confidence == 0.9
             assert len(response.citations) == 1
 
+    def test_query_legal_documents_runs_targeted_review_for_suspicious_penalty_answer(
+        self,
+    ):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Penalty",
+                    body_text=(
+                        "Penalty, see Section 10.99. A violation is punishable by a fine "
+                        "not to exceed $500 or imprisonment for a period not to exceed 60 days, "
+                        "or both such fine and imprisonment."
+                    ),
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="penalty",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            short_answer='"Unlawful" only',
+            reasoning="No explicit penalty located.",
+            citations=["§ 134.28"],
+            supporting_passages=["It is unlawful for any person..."],
+            confidence=0.62,
+            limitations="None",
+        )
+        second_response = LegalQueryResponse(
+            short_answer="Unspecified Fine AND/OR Incarceration",
+            reasoning="The cited penalty section provides both a fine and imprisonment.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days"
+            ],
+            confidence=0.88,
+            limitations="None",
+        )
+        debug_capture = {"query": {}}
+        prompts: list[str] = []
+
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What penalties apply?",
+                settings,
+                query_metadata={
+                    "response_options": 'Responses: "Unlawful" only AND/OR Infraction AND/OR Misdemeanor AND/OR Felony AND/OR Civil Fine AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure AND/OR Other',
+                    "guidance_topic": "penalty",
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert len(prompts) == 2
+        assert response.short_answer == "Unspecified Fine AND/OR Incarceration"
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert debug_capture["query"]["review_rerun_guidance_topic"] == "penalty"
+        assert "Review request:" in prompts[1]
+        assert 'Original short_answer: "Unlawful" only' in prompts[1]
+
+    def test_query_legal_documents_skips_review_when_supported_activity_answer_is_consistent(
+        self,
+    ):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Drug Paraphernalia",
+                    body_text=(
+                        "It is unlawful for any person to use or possess with intent to use drug paraphernalia. "
+                        "It is unlawful for any person to place any advertisement to promote the sale of objects designed for use as drug paraphernalia."
+                    ),
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="activity",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        response_payload = LegalQueryResponse(
+            short_answer="Possession, possession with intent to use, keep AND/OR Use AND/OR Advertising, display",
+            reasoning="The text expressly prohibits use/possess with intent to use and advertisement.",
+            citations=["§ 134.28(A)", "§ 134.28(C)"],
+            supporting_passages=[
+                "It is unlawful for any person to use or possess with intent to use drug paraphernalia.",
+                "It is unlawful for any person to place any advertisement to promote the sale of objects designed for use as drug paraphernalia.",
+            ],
+            confidence=0.84,
+            limitations="None",
+        )
+
+        with patch("legiscope.query.ask", return_value=response_payload) as mock_ask:
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "Which activities are prohibited?",
+                settings,
+                query_metadata={
+                    "response_options": "Responses: Sales, possession with intent to sell, offer for sale AND/OR Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR Give away, give, gift, free distribution AND/OR Possession, possession with intent to use, keep AND/OR Use AND/OR Advertising, display AND/OR Manufacturing, manufacture with intent to deliver or sell AND/OR Other AND/OR Not specified",
+                    "guidance_topic": "prohibited_activity",
+                },
+            )
+
+        assert mock_ask.call_count == 1
+        assert response.short_answer == response_payload.short_answer
+
     def test_query_with_relevance_filtering(self):
         """Test query with relevance filtering enabled."""
+        from legiscope.llm_config import Config
+
         mock_client = Mock(spec=Instructor)
 
         section = SectionResult(
@@ -1308,7 +1501,12 @@ class TestQueryConfigBasics:
                     query_info=QueryInfo(original_query="test query"),
                 )
 
-                llm_config = LLMConfig(client=mock_client, model="test-model")
+                llm_config = LLMConfig(
+                    client=mock_client,
+                    model=Config.get_fast_model(),
+                    source="self_hosted",
+                    client_factory=Config.get_fast_client,
+                )
                 guidance = RetrievalGuidance(guidance_topic="activity")
                 settings = QuerySettings(
                     llm=llm_config,
@@ -1324,6 +1522,66 @@ class TestQueryConfigBasics:
                 assert response.short_answer == "Test answer"
                 mock_filter.assert_called_once()
                 assert mock_filter.call_args.kwargs["retrieval_guidance"] is guidance
+                assert (
+                    mock_filter.call_args.kwargs["client_factory"].__func__
+                    is Config.get_fast_client.__func__
+                )
+
+    def test_query_with_relevance_filtering_uses_no_client_factory_for_external_llm(
+        self,
+    ):
+        """External LLM configs should not enable threaded relevance filtering."""
+        mock_client = Mock(spec=Instructor)
+
+        section = SectionResult(
+            section_id="s0",
+            heading_text="# Test Section",
+            body_text="Test content",
+            heading_level=1,
+            parent_id=None,
+            matching_segments=[],
+            relevance_score=0.1,
+            segment_count=1,
+        )
+
+        retrieval_results = SectionCollection(
+            sections=[section], query_info=QueryInfo(original_query="test query")
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="Test answer",
+            reasoning="Test reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        with patch("legiscope.query.filter_sections") as mock_filter:
+            with patch("legiscope.query.ask", return_value=mock_response):
+                mock_filter.return_value = SectionCollection(
+                    sections=[section],
+                    query_info=QueryInfo(original_query="test query"),
+                )
+
+                llm_config = LLMConfig(
+                    client=mock_client,
+                    model="external-model",
+                    source="external",
+                )
+                settings = QuerySettings(
+                    llm=llm_config,
+                    filter_relevance=True,
+                    relevance_threshold=0.7,
+                )
+
+                response, _similarity_scores = query_legal_documents(
+                    retrieval_results, "test query", settings
+                )
+
+                assert response.short_answer == "Test answer"
+                mock_filter.assert_called_once()
+                assert mock_filter.call_args.kwargs["client_factory"] is None
 
 
 class TestBatchQueryConfigBasics:

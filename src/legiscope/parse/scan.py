@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 import polars as pl
@@ -766,7 +767,15 @@ def _write_scan_debug_artifact(
 
     output_path = Path(debug_output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(payload, indent=2))
+    payload_json = json.dumps(payload, indent=2)
+    output_path.write_text(payload_json)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamped_output_path = output_path.with_name(
+        f"{output_path.stem}_{timestamp}{output_path.suffix}"
+    )
+    if timestamped_output_path != output_path:
+        timestamped_output_path.write_text(payload_json)
 
 
 # ── System prompt ──────────────────────────────────────────────────────

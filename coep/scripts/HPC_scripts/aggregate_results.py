@@ -23,6 +23,7 @@ Usage (on HPC, with conda env activated):
 """
 
 import argparse
+from datetime import datetime
 import json
 import re
 import subprocess
@@ -42,9 +43,11 @@ import polars as pl
 
 CANONICAL_RESULTS_NAME = "benchmark_results.csv"
 TIMESTAMPED_RESULTS_GLOB = "benchmark_results_*.csv"
-TIMESTAMPED_RESULTS_PATTERN = re.compile(
-    r"^benchmark_results_(\d{8}_\d{6})\.csv$"
-)
+TIMESTAMPED_RESULTS_PATTERN = re.compile(r"^benchmark_results_(\d{8}_\d{6})\.csv$")
+CANONICAL_METRICS_NAME = "benchmark_metrics.json"
+TIMESTAMPED_METRICS_GLOB = "benchmark_metrics_*.json"
+TIMESTAMPED_METRICS_PATTERN = re.compile(r"^benchmark_metrics_(\d{8}_\d{6})\.json$")
+AGGREGATE_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,7 +109,9 @@ def _iter_jurisdiction_output_dirs(output_dir: Path) -> list[Path]:
     for child in sorted(output_dir.iterdir()):
         if not child.is_dir():
             continue
-        has_metrics = (child / "benchmark_metrics.json").exists()
+        has_metrics = (child / CANONICAL_METRICS_NAME).exists() or any(
+            child.glob(TIMESTAMPED_METRICS_GLOB)
+        )
         has_canonical_results = (child / CANONICAL_RESULTS_NAME).exists()
         has_timestamped_results = any(child.glob(TIMESTAMPED_RESULTS_GLOB))
         if has_metrics or has_canonical_results or has_timestamped_results:
@@ -117,6 +122,14 @@ def _iter_jurisdiction_output_dirs(output_dir: Path) -> list[Path]:
 def _extract_results_timestamp(results_file: Path) -> str | None:
     """Extract a benchmark timestamp from a timestamped results filename."""
     match = TIMESTAMPED_RESULTS_PATTERN.match(results_file.name)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _extract_metrics_timestamp(metrics_file: Path) -> str | None:
+    """Extract a benchmark timestamp from a timestamped metrics filename."""
+    match = TIMESTAMPED_METRICS_PATTERN.match(metrics_file.name)
     if not match:
         return None
     return match.group(1)
@@ -136,6 +149,19 @@ def _select_results_file(jurisdiction_dir: Path) -> Path | None:
     canonical_results = jurisdiction_dir / CANONICAL_RESULTS_NAME
     if canonical_results.exists():
         return canonical_results
+
+    return None
+
+
+def _select_metrics_file(jurisdiction_dir: Path) -> Path | None:
+    """Pick the newest available metrics file for a jurisdiction."""
+    timestamped_files = sorted(jurisdiction_dir.glob(TIMESTAMPED_METRICS_GLOB))
+    if timestamped_files:
+        return timestamped_files[-1]
+
+    canonical_metrics = jurisdiction_dir / CANONICAL_METRICS_NAME
+    if canonical_metrics.exists():
+        return canonical_metrics
 
     return None
 
@@ -163,20 +189,59 @@ def _serialize_nested_columns_for_csv(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _timestamped_aggregate_output_path(
+    output_dir: Path, stem: str, timestamp: str
+) -> Path:
+    """Build a timestamped aggregate CSV output path."""
+    return output_dir / f"{stem}_{timestamp}.csv"
+
+
+def _prepend_jurisdiction_column(df: pl.DataFrame) -> pl.DataFrame:
+    """Add a left-most jurisdiction column derived from jurisdiction_id."""
+    if df.is_empty() or "jurisdiction_id" not in df.columns:
+        return df
+
+    jurisdiction_expr = (
+        pl.when(pl.col("jurisdiction").cast(pl.String).fill_null("") != "")
+        .then(pl.col("jurisdiction").cast(pl.String))
+        .otherwise(pl.col("jurisdiction_id").cast(pl.String))
+        .alias("jurisdiction")
+        if "jurisdiction" in df.columns
+        else pl.col("jurisdiction_id").cast(pl.String).alias("jurisdiction")
+    )
+    ordered_columns = [
+        "jurisdiction",
+        *[column for column in df.columns if column != "jurisdiction"],
+    ]
+    return df.with_columns(jurisdiction_expr).select(ordered_columns)
+
+
 def collect_metrics(output_dir: Path) -> pl.DataFrame:
     """Collect all benchmark_metrics.json files into a single DataFrame."""
     rows = []
-    for metrics_file in sorted(output_dir.rglob("benchmark_metrics.json")):
+    for jur_dir in _iter_jurisdiction_output_dirs(output_dir):
+        metrics_file = _select_metrics_file(jur_dir)
+        if metrics_file is None:
+            continue
         try:
             data = json.loads(metrics_file.read_text())
-            data.setdefault("jurisdiction_id", metrics_file.parent.name)
+            data.setdefault("jurisdiction_id", jur_dir.name)
             data["aggregate_metrics_path"] = str(metrics_file)
+            data["aggregate_metrics_source_file"] = metrics_file.name
+            data["aggregate_metrics_source_type"] = (
+                "timestamped"
+                if metrics_file.name != CANONICAL_METRICS_NAME
+                else "canonical"
+            )
+            data["aggregate_metrics_source_timestamp"] = _extract_metrics_timestamp(
+                metrics_file
+            )
             rows.append(data)
         except (json.JSONDecodeError, OSError) as e:
             print(f"  WARNING: Could not read {metrics_file}: {e}")
     if not rows:
         return pl.DataFrame()
-    return pl.DataFrame(rows)
+    return _prepend_jurisdiction_column(pl.DataFrame(rows))
 
 
 def collect_results(output_dir: Path) -> pl.DataFrame:
@@ -191,7 +256,9 @@ def collect_results(output_dir: Path) -> pl.DataFrame:
             df = pl.read_csv(str(results_file))
             jurisdiction_id_expr = (
                 pl.when(
-                    pl.col("jurisdiction_id").cast(pl.String).fill_null("")
+                    pl.col("jurisdiction_id")
+                    .cast(pl.String)
+                    .fill_null("")
                     .str.strip_chars()
                     == ""
                 )
@@ -229,7 +296,7 @@ def collect_results(output_dir: Path) -> pl.DataFrame:
             print(f"  WARNING: Could not read {results_file}: {e}")
     if not frames:
         return pl.DataFrame()
-    return pl.concat(frames, how="diagonal_relaxed")
+    return _prepend_jurisdiction_column(pl.concat(frames, how="diagonal_relaxed"))
 
 
 def check_slurm_jobs() -> str | None:
@@ -258,6 +325,7 @@ def check_slurm_jobs() -> str | None:
 def main() -> None:
     args = parse_args()
     output_dir = resolve_output_dir(args.output_dir)
+    run_timestamp = datetime.now().strftime(AGGREGATE_TIMESTAMP_FORMAT)
 
     print("=" * 70)
     print("LEGISCOPE — Aggregate Benchmark Results")
@@ -449,7 +517,9 @@ def main() -> None:
             )
 
         # Save metrics summary
-        metrics_out = output_dir / "all_jurisdictions_metrics.csv"
+        metrics_out = _timestamped_aggregate_output_path(
+            output_dir, "all_jurisdictions_metrics", run_timestamp
+        )
         _serialize_nested_columns_for_csv(metrics_df).write_csv(str(metrics_out))
         print(f"\n  Metrics saved to: {metrics_out}")
 
@@ -460,7 +530,9 @@ def main() -> None:
     if results_df.is_empty():
         print("  No benchmark_results.csv files found.")
     else:
-        combined_out = output_dir / "all_jurisdictions_benchmark.csv"
+        combined_out = _timestamped_aggregate_output_path(
+            output_dir, "all_jurisdictions_benchmark", run_timestamp
+        )
         results_df.write_csv(str(combined_out))
         timestamped_sources = results_df.filter(
             pl.col("_aggregate_source_type") == "timestamped"

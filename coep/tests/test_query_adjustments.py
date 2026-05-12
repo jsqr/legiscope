@@ -140,7 +140,13 @@ class TestCoepQueryAdjustments:
                     "dp_collected",
                     "dp_valid_imp",
                 ],
-                "prepend_text": ["Context.", "Context.", "Context.", "Context.", "Context."],
+                "prepend_text": [
+                    "Context.",
+                    "Context.",
+                    "Context.",
+                    "Context.",
+                    "Context.",
+                ],
                 "query_text": [
                     "What types of paraphernalia are covered?",
                     "Which exemptions exist?",
@@ -163,7 +169,13 @@ class TestCoepQueryAdjustments:
                     "Select the best option.",
                 ],
                 REQUIRES_YES_COLUMN: ["", "", "dp_exemption", "", ""],
-                REQUIRES_DATA_COLUMN: ["", "dp_type", "dp_exemption||dp_activity", "", "dp_collected"],
+                REQUIRES_DATA_COLUMN: [
+                    "",
+                    "dp_type",
+                    "dp_exemption||dp_activity",
+                    "",
+                    "dp_collected",
+                ],
                 REQUIRES_LABELS_COLUMN: [
                     "",
                     "",
@@ -195,14 +207,16 @@ class TestCoepQueryAdjustments:
             exemption_query = queries[1]
             child_query = queries[2]
             same_surface_child = queries[4]
-            assert exemption_query.metadata["disable_inherited_retrieval_from"] == "dp_type"
+            assert (
+                exemption_query.metadata["disable_inherited_retrieval_from"]
+                == "dp_type"
+            )
             assert (
                 child_query.metadata["disable_inherited_retrieval_from"]
                 == "dp_exemption||dp_activity"
             )
             assert (
-                same_surface_child.metadata["disable_inherited_retrieval_from"]
-                is None
+                same_surface_child.metadata["disable_inherited_retrieval_from"] is None
             )
             assert child_query.metadata["hierarchy"] == {
                 "query_id": "Q1.1",

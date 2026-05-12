@@ -95,8 +95,11 @@ class Evaluator:
 
             # We want a powerful model for evaluation (Judge)
             # Config.get_powerful_client() already returns an Instructor client
-            self._client_factory = Config.get_powerful_client
-            self.client = self._client_factory()
+            if Config.uses_self_hosted_llm():
+                self._client_factory = Config.get_powerful_client
+                self.client = self._client_factory()
+            else:
+                self.client = Config.get_powerful_client()
             self._request_params = Config.get_llm_params()
         else:
             # llm_config.client is already an Instructor client
@@ -105,11 +108,13 @@ class Evaluator:
                 "temperature": llm_config.temperature,
                 "max_retries": llm_config.max_retries,
             }
+            if llm_config.source == "self_hosted":
+                self._client_factory = llm_config.client_factory
 
         self.max_concurrency = self._normalize_max_concurrency(max_concurrency)
-        if llm_config is not None and self.max_concurrency > 1:
+        if self.max_concurrency > 1 and self._client_factory is None:
             logger.warning(
-                "Evaluator received a custom llm_config with max_concurrency > 1; "
+                "Evaluator max_concurrency > 1 requested without a self-hosted client factory; "
                 "falling back to sequential evaluation for reliability."
             )
             self.max_concurrency = 1

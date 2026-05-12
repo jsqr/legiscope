@@ -436,8 +436,8 @@ def convert_to_markdown(code_ref: CodeRef) -> Path:
     Returns:
         Path to the generated ``code.md`` file. Companion outputs
         ``headings.parquet`` and ``regions.parquet`` are written to the code
-        directory. ``heading_scan_debug.json`` is written to the jurisdiction's
-        output ``debug`` directory.
+        directory. ``heading_scan_debug.json`` and a timestamped historical
+        copy are written to the jurisdiction's output ``debug`` directory.
 
     Raises:
         FileNotFoundError: If the code directory, raw directory, or a

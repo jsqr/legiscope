@@ -1376,12 +1376,17 @@ This chapter contains general provisions.
                 )
 
             payload = json.loads(open(debug_path, encoding="utf-8").read())
+            timestamped_debug_paths = list(
+                Path(test_file).parent.glob(f"{Path(debug_path).stem}_*.json")
+            )
 
             assert result.iterations == 1
             assert payload["best_iteration"] == 1
             assert payload["best_score"] == 0.95
             assert len(payload["iterations"]) == 1
             assert payload["iterations"][0]["status"] == "scored"
+            assert len(timestamped_debug_paths) == 1
+            assert json.loads(timestamped_debug_paths[0].read_text()) == payload
             assert (
                 payload["iterations"][0]["generated_structure"]["heading_levels"][0][
                     "example_heading"

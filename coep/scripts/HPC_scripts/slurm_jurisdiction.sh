@@ -570,6 +570,43 @@ remove_shared_benchmark_artifacts() {
         "$SHARED_OUTPUT_DIR/benchmark_metrics.json"
 }
 
+ensure_benchmark_results_jurisdiction_column() {
+    local target_dir="$1"
+    local jurisdiction_value="${STATE}-${LOCALITY}"
+
+    [[ -d "$target_dir" ]] || return 0
+
+    python3 - "$target_dir" "$jurisdiction_value" <<'PY'
+import csv
+import sys
+from pathlib import Path
+
+target_dir = Path(sys.argv[1])
+jurisdiction = sys.argv[2]
+
+for csv_path in sorted(target_dir.glob("benchmark_results*.csv")):
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        fieldnames = reader.fieldnames
+        if not fieldnames:
+            continue
+        rows = list(reader)
+
+    reordered_fieldnames = [
+        "jurisdiction",
+        *[field for field in fieldnames if field != "jurisdiction"],
+    ]
+
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=reordered_fieldnames)
+        writer.writeheader()
+        for row in rows:
+            updated_row = {key: value for key, value in row.items() if key != "jurisdiction"}
+            updated_row["jurisdiction"] = jurisdiction
+            writer.writerow(updated_row)
+PY
+}
+
 sync_output_artifacts() {
     local reason="$1"
     local source_dir="${WORK_DIR}/${OUTPUT_DIR_REL}"
@@ -581,6 +618,8 @@ sync_output_artifacts() {
         echo "No benchmark output directory present for ${reason}; preserved timestamped history only"
         return 0
     fi
+
+    ensure_benchmark_results_jurisdiction_column "$source_dir"
 
     rsync -a "${source_dir}/" "${SHARED_OUTPUT_DIR}/"
 }

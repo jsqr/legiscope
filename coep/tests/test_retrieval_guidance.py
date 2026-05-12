@@ -61,12 +61,41 @@ class TestCoepRetrievalGuidance:
         assert "forfeiture" in guidance.anchor_terms
         assert guidance.retrieval_instructions is not None
         assert "Retrieve penalty sections" in guidance.retrieval_instructions
+        assert "Penalty, see §" in guidance.retrieval_instructions
         assert "Exact legal labels matter" in guidance.relevance_instructions
         assert guidance.retrieval_query is not None
         assert "misdemeanor" in guidance.retrieval_query
         assert guidance.completion_instructions is not None
+        assert "assign the exact labels" in guidance.completion_instructions
+        assert "DO NOT answer Unlawful only" in guidance.completion_instructions
         assert "license revocation" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
+
+    def test_returns_guidance_for_activity_variable_with_operative_only_rules(self):
+        request = RetrievalGuidanceRequest(
+            query="Which activities are prohibited?",
+            variable_name="dp_activity",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "prohibited_activity"
+        assert guidance.relevance_instructions is not None
+        assert (
+            "Code only activities directly prohibited by the legal text"
+            in guidance.relevance_instructions
+        )
+        assert "minors-only access restrictions" in guidance.relevance_instructions
+        assert guidance.completion_instructions is not None
+        assert (
+            "only code items found directly in the legal text"
+            in guidance.completion_instructions
+        )
+        assert (
+            "Advertising or display language by itself does not prove Sales"
+            in guidance.completion_instructions
+        )
 
     def test_returns_guidance_for_exemption_variable_with_strict_other_rules(self):
         request = RetrievalGuidanceRequest(
@@ -79,8 +108,17 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.guidance_topic == "exemption_presence"
         assert guidance.completion_instructions is not None
+        assert (
+            "only code labels found directly in operative exemption text"
+            in guidance.completion_instructions
+        )
         assert "tobacco-only exceptions" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
+        assert (
+            "syringe-exchange-facility text expressly authorizes"
+            in guidance.completion_instructions
+        )
+        assert "SSP and DCE labels" in guidance.completion_instructions
         assert (
             "favor does not apply, does not include, exception"
             in guidance.completion_instructions
@@ -286,6 +324,10 @@ class TestCoepRetrievalGuidance:
             "Answer No when the local ordinance is self-contained"
             in guidance.completion_instructions
         )
+        assert (
+            "smallest specific state or federal citation"
+            in guidance.completion_instructions
+        )
 
     def test_existence_guidance_adds_controlled_substance_anchors(self):
         request = RetrievalGuidanceRequest(
@@ -333,6 +375,10 @@ class TestCoepRetrievalGuidance:
         assert guidance.guidance_topic == "reference_necessity"
         assert "state law" in guidance.anchor_terms
         assert "A mere citation is not enough." in guidance.relevance_instructions
+        assert guidance.completion_instructions is not None
+        assert (
+            "DO NOT answer Yes for bare citations" in guidance.completion_instructions
+        )
 
     def test_returns_guidance_for_split_reference_citation_variable(self):
         request = RetrievalGuidanceRequest(
@@ -346,6 +392,12 @@ class TestCoepRetrievalGuidance:
         assert guidance.guidance_topic == "reference_necessity"
         assert guidance.retrieval_instructions is not None
         assert "self-contained definition text" in guidance.retrieval_instructions
+        assert guidance.completion_instructions is not None
+        assert "smallest specific statutory unit" in guidance.completion_instructions
+        assert (
+            "same sentence, subsection, or immediately adjacent chunk"
+            in guidance.completion_instructions
+        )
 
     def test_returns_guidance_for_split_current_through_variable(self):
         request = RetrievalGuidanceRequest(

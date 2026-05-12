@@ -38,6 +38,7 @@ from legiscope.query_hierarchy import (
 )
 from legiscope.retrieve import (
     filter_sections,
+    resolve_relevance_filter_client_factory,
     retrieve_sections,
     SectionCollection,
     SectionResult,
@@ -161,22 +162,10 @@ def _parse_retrieval_inheritance_exclusions(value: Any) -> set[str]:
         except json.JSONDecodeError:
             parsed = None
         if isinstance(parsed, list):
-            return {
-                str(item).strip()
-                for item in parsed
-                if str(item).strip()
-            }
-        return {
-            item.strip()
-            for item in text.split("||")
-            if item.strip()
-        }
+            return {str(item).strip() for item in parsed if str(item).strip()}
+        return {item.strip() for item in text.split("||") if item.strip()}
     if isinstance(value, (list, tuple, set)):
-        return {
-            str(item).strip()
-            for item in value
-            if str(item).strip()
-        }
+        return {str(item).strip() for item in value if str(item).strip()}
     normalized = str(value).strip()
     return {normalized} if normalized else set()
 
@@ -237,6 +226,16 @@ DEFAULT_VALIDATION_EXACT_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
 )
 DEFAULT_VALIDATION_FUZZY_MATCH_THRESHOLD: float = _qp.get("validation", {}).get(
     "fuzzy_match_threshold", 0.9
+)
+DEFAULT_SUPPORTING_PASSAGE_REPAIR_MAX_CHARS: int = int(
+    _qp.get("validation", {}).get("repair_max_chars", 1200)
+)
+DEFAULT_ANSWER_REVIEW_ENABLED: bool = _qp.get("review", {}).get("enabled", True)
+DEFAULT_ANSWER_REVIEW_TOPICS: tuple[str, ...] = tuple(
+    _qp.get("review", {}).get(
+        "topics",
+        ["prohibited_activity", "penalty", "exemption_presence"],
+    )
 )
 DEFAULT_DEPENDENCY_SKIP_CONFIDENCE_THRESHOLD: float | None = _qp.get(
     "dependency", {}
@@ -415,6 +414,8 @@ class QuerySettings:
 
     # Validation
     validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
+    enable_answer_review: bool = DEFAULT_ANSWER_REVIEW_ENABLED
+    answer_review_topics: tuple[str, ...] = DEFAULT_ANSWER_REVIEW_TOPICS
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
@@ -422,6 +423,9 @@ class QuerySettings:
             raise ValueError(
                 f"relevance_threshold must be between 0 and 1, got {self.relevance_threshold}"
             )
+        self.answer_review_topics = tuple(
+            topic.strip() for topic in self.answer_review_topics if str(topic).strip()
+        )
 
         # Use same LLM for filtering if not specified
         if self.filter_relevance and self.filter_llm is None:
@@ -487,6 +491,8 @@ class BatchQuerySettings:
     filter_relevance: bool = DEFAULT_RELEVANCE_FILTER_ENABLED
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
+    enable_answer_review: bool = DEFAULT_ANSWER_REVIEW_ENABLED
+    answer_review_topics: tuple[str, ...] = DEFAULT_ANSWER_REVIEW_TOPICS
     retrieval_guidance_provider: RetrievalGuidanceProvider | None = None
     dependency_skip_confidence_threshold: float | None = (
         DEFAULT_DEPENDENCY_SKIP_CONFIDENCE_THRESHOLD
@@ -512,12 +518,21 @@ class BatchQuerySettings:
                 "dependency_skip_confidence_threshold must be between 0 and 1, "
                 f"got {self.dependency_skip_confidence_threshold}"
             )
+        self.answer_review_topics = tuple(
+            topic.strip() for topic in self.answer_review_topics if str(topic).strip()
+        )
 
         # Set default LLM if not provided (query analysis uses powerful model)
         if self.llm is None:
             self.llm = LLMConfig(
                 client=Config.get_powerful_client(),
                 model=Config.get_powerful_model(),
+                source=Config.get_llm_source(),
+                client_factory=(
+                    Config.get_powerful_client
+                    if Config.uses_self_hosted_llm()
+                    else None
+                ),
             )
             logger.debug("BatchQuerySettings: Using default powerful client")
 
@@ -964,6 +979,7 @@ class SupportingPassageValidationResult:
 
     similarity_scores: list[float]
     match_types: list[str]
+    matched_source_texts: list[str | None] = field(default_factory=list)
 
 
 def _validate_supporting_passages(
@@ -994,7 +1010,7 @@ def _validate_supporting_passages(
         - Hallucination summary: "HALLUCINATION WARNING: 2/5 supporting passages not found..."
     """
     if not response.supporting_passages:
-        return SupportingPassageValidationResult([], [])
+        return SupportingPassageValidationResult([], [], [])
 
     logger.info(
         f"Validating {len(response.supporting_passages)} supporting passages against retrieved text"
@@ -1003,21 +1019,22 @@ def _validate_supporting_passages(
     # Collect text from matching retrieval units and segments only
     all_texts = []
     for section in sections:
+        for segment in section.matching_segments:
+            if segment.segment_text:
+                all_texts.append(segment.segment_text)
+
         if section.body_text:
             all_texts.append(section.body_text)
         else:
             all_texts.append("[No body text]")
 
-        for segment in section.matching_segments:
-            if segment.segment_text:
-                all_texts.append(segment.segment_text)
-
     if not all_texts:
         logger.warning("No text available to validate supporting passages against")
-        return SupportingPassageValidationResult([], [])
+        return SupportingPassageValidationResult([], [], [])
 
     similarity_scores = []
     match_types: list[str] = []
+    matched_source_texts: list[str | None] = []
     unmatched_count = 0
     near_exact_count = 0
 
@@ -1067,24 +1084,31 @@ def _validate_supporting_passages(
         passage_stripped = passage.strip()
         passage_variants = validation_variants(passage_stripped)
 
-        exact_match = any(passage_stripped in text for text in all_texts) or any(
-            passage_variant in text_variant
-            for passage_variant in passage_variants
-            for text_variants in normalized_text_variants
-            for text_variant in text_variants
-        )
+        exact_match = False
+        matched_source_text: str | None = None
+        for source_text, text_variants in zip(all_texts, normalized_text_variants):
+            if passage_stripped in source_text or any(
+                passage_variant in text_variant
+                for passage_variant in passage_variants
+                for text_variant in text_variants
+            ):
+                exact_match = True
+                matched_source_text = source_text
+                break
 
         if exact_match:
             logger.debug(f"Supporting passage {i + 1} validated (exact match)")
             similarity_scores.append(1.0)
             match_types.append("exact")
+            matched_source_texts.append(matched_source_text)
             continue
 
         best_similarity = 0.0
         best_match_text = ""
+        best_source_text: str | None = None
 
         for passage_variant in passage_variants:
-            for text_variants in normalized_text_variants:
+            for source_text, text_variants in zip(all_texts, normalized_text_variants):
                 for text_variant in text_variants:
                     alignment = fuzz.partial_ratio_alignment(
                         passage_variant, text_variant
@@ -1093,11 +1117,14 @@ def _validate_supporting_passages(
                         continue
 
                     score = alignment.score / 100.0
-                    if score > best_similarity:
+                    if score > best_similarity or (
+                        score == best_similarity
+                        and best_source_text is not None
+                        and len(source_text) < len(best_source_text)
+                    ):
                         best_similarity = score
-                        best_match_text = text_variant[
-                            alignment.dest_start : alignment.dest_end
-                        ]
+                        best_match_text = source_text
+                        best_source_text = source_text
 
                     if best_similarity >= exact_match_threshold:
                         break
@@ -1111,6 +1138,7 @@ def _validate_supporting_passages(
                 f"Supporting passage {i + 1} validated (fuzzy match: {best_similarity:.2f})"
             )
             match_types.append("exact")
+            matched_source_texts.append(best_source_text)
         elif best_similarity >= fuzzy_match_threshold:
             near_exact_count += 1
             logger.warning(
@@ -1120,6 +1148,7 @@ def _validate_supporting_passages(
                 f"  Best match:  {best_match_text[:150]}..."
             )
             match_types.append("near_exact")
+            matched_source_texts.append(best_source_text)
         else:
             unmatched_count += 1
             logger.warning(
@@ -1128,6 +1157,7 @@ def _validate_supporting_passages(
                 f"  Passage: {passage_stripped[:150]}..."
             )
             match_types.append("not_found")
+            matched_source_texts.append(None)
         similarity_scores.append(best_similarity)
 
     if near_exact_count > 0:
@@ -1142,7 +1172,65 @@ def _validate_supporting_passages(
             f"supporting passages not found in retrieved documents. "
             f"The LLM may have distorted or fabricated some supporting text."
         )
-    return SupportingPassageValidationResult(similarity_scores, match_types)
+    return SupportingPassageValidationResult(
+        similarity_scores,
+        match_types,
+        matched_source_texts,
+    )
+
+
+def _repair_supporting_passages(
+    response: LegalQueryResponse,
+    validation_result: SupportingPassageValidationResult,
+    max_chars: int = DEFAULT_SUPPORTING_PASSAGE_REPAIR_MAX_CHARS,
+) -> tuple[LegalQueryResponse, SupportingPassageValidationResult, bool]:
+    """Snap near-exact supporting passages to exact retrieved source text."""
+    if not response.supporting_passages:
+        return response, validation_result, False
+
+    repaired_passages = list(response.supporting_passages)
+    repaired_scores = list(validation_result.similarity_scores)
+    repaired_match_types = list(validation_result.match_types)
+    matched_source_texts = list(validation_result.matched_source_texts)
+    repaired_any = False
+
+    for index, match_type in enumerate(validation_result.match_types):
+        if match_type != "near_exact":
+            continue
+        source_text = validation_result.matched_source_texts[index]
+        if source_text is None:
+            continue
+        candidate = str(source_text).strip()
+        if not candidate or len(candidate) > max_chars:
+            continue
+        if repaired_passages[index].strip() == candidate:
+            continue
+        repaired_passages[index] = candidate
+        repaired_scores[index] = 1.0
+        repaired_match_types[index] = "exact"
+        matched_source_texts[index] = candidate
+        repaired_any = True
+
+    if not repaired_any:
+        return response, validation_result, False
+
+    logger.info(
+        "Snapped {} supporting passage(s) to exact retrieved text",
+        sum(
+            1
+            for old, new in zip(response.supporting_passages, repaired_passages)
+            if old != new
+        ),
+    )
+    return (
+        response.model_copy(update={"supporting_passages": repaired_passages}),
+        SupportingPassageValidationResult(
+            repaired_scores,
+            repaired_match_types,
+            matched_source_texts,
+        ),
+        True,
+    )
 
 
 def _resolve_completion_sections(
@@ -1188,6 +1276,9 @@ def _resolve_completion_sections(
                 relevance_threshold=settings.relevance_threshold,
                 model=settings.filter_llm.model,
                 retrieval_guidance=settings.retrieval_guidance,
+                client_factory=resolve_relevance_filter_client_factory(
+                    settings.filter_llm
+                ),
             )
             sections = filtered_results.sections
             if debug_capture is not None and filtered_results.filtering_metadata:
@@ -1408,6 +1499,9 @@ def query_legal_documents(
 
     try:
         response = None
+        query_attempts: list[dict[str, Any]] = []
+        review_decision = AnswerReviewDecision()
+        review_prompt: str | None = None
         overflow_attempt = 0
         while True:
             try:
@@ -1460,10 +1554,105 @@ def query_legal_documents(
         # Validate supporting passages against retrieved text
         similarity_scores = []
         similarity_match_types: list[str] = []
+        raw_supporting_passages = list(response.supporting_passages)
+        supporting_passages_repaired = False
         if settings.validate_supporting_passages:
             validation_result = _validate_supporting_passages(response, sections)
+            response, validation_result, supporting_passages_repaired = (
+                _repair_supporting_passages(response, validation_result)
+            )
             similarity_scores = validation_result.similarity_scores
             similarity_match_types = validation_result.match_types
+
+        query_attempts.append(
+            {
+                "attempt_index": 1,
+                "attempt_type": "initial",
+                "short_answer": response.short_answer,
+                "confidence": response.confidence,
+                "citations": list(response.citations),
+                "raw_supporting_passages": raw_supporting_passages,
+                "supporting_passages": list(response.supporting_passages),
+                "supporting_passages_repaired": supporting_passages_repaired,
+                "supporting_passage_validation_scores": list(similarity_scores),
+                "supporting_passage_validation_match_types": list(
+                    similarity_match_types
+                ),
+            }
+        )
+
+        review_decision = _build_answer_review_decision(
+            response=response,
+            sections=sections,
+            query_metadata=query_metadata,
+            settings=settings,
+        )
+        if review_decision.should_rerun:
+            logger.info(
+                "Running one targeted review pass for guidance topic {}",
+                review_decision.guidance_topic or "unknown",
+            )
+            review_prompt = _build_answer_review_prompt(
+                base_user_prompt=user_prompt,
+                response=response,
+                decision=review_decision,
+            )
+
+            def _invoke_review_llm():
+                return ask(
+                    client=settings.llm.client,
+                    prompt=review_prompt,
+                    response_model=LegalQueryResponse,
+                    system=system_prompt,
+                    model=cast(str, settings.llm.model),
+                    temperature=settings.llm.temperature,
+                    max_retries=settings.llm.max_retries,
+                )
+
+            reviewed_response = _run_with_timeout(_invoke_review_llm, timeout_seconds)
+            reviewed_similarity_scores: list[float] = []
+            reviewed_similarity_match_types: list[str] = []
+            reviewed_raw_supporting_passages = list(
+                reviewed_response.supporting_passages
+            )
+            reviewed_supporting_passages_repaired = False
+            if settings.validate_supporting_passages:
+                reviewed_validation = _validate_supporting_passages(
+                    reviewed_response,
+                    sections,
+                )
+                (
+                    reviewed_response,
+                    reviewed_validation,
+                    reviewed_supporting_passages_repaired,
+                ) = _repair_supporting_passages(
+                    reviewed_response,
+                    reviewed_validation,
+                )
+                reviewed_similarity_scores = reviewed_validation.similarity_scores
+                reviewed_similarity_match_types = reviewed_validation.match_types
+
+            query_attempts.append(
+                {
+                    "attempt_index": 2,
+                    "attempt_type": "review",
+                    "short_answer": reviewed_response.short_answer,
+                    "confidence": reviewed_response.confidence,
+                    "citations": list(reviewed_response.citations),
+                    "raw_supporting_passages": reviewed_raw_supporting_passages,
+                    "supporting_passages": list(reviewed_response.supporting_passages),
+                    "supporting_passages_repaired": reviewed_supporting_passages_repaired,
+                    "supporting_passage_validation_scores": list(
+                        reviewed_similarity_scores
+                    ),
+                    "supporting_passage_validation_match_types": list(
+                        reviewed_similarity_match_types
+                    ),
+                }
+            )
+            response = reviewed_response
+            similarity_scores = reviewed_similarity_scores
+            similarity_match_types = reviewed_similarity_match_types
 
         if execution_capture is not None:
             execution_capture["completion_sections"] = list(sections)
@@ -1475,7 +1664,9 @@ def query_legal_documents(
                     "short_answer": response.short_answer,
                     "reasoning": response.reasoning,
                     "citations": _json_debug(response.citations),
+                    "raw_supporting_passages": _json_debug(raw_supporting_passages),
                     "supporting_passages": _json_debug(response.supporting_passages),
+                    "supporting_passages_repaired": supporting_passages_repaired,
                     "confidence": response.confidence,
                     "limitations": response.limitations,
                     "supporting_passage_validation_scores": _json_debug(
@@ -1484,6 +1675,21 @@ def query_legal_documents(
                     "supporting_passage_validation_match_types": _json_debug(
                         similarity_match_types
                     ),
+                    "review_rerun_triggered": review_decision.should_rerun,
+                    "review_rerun_guidance_topic": review_decision.guidance_topic,
+                    "review_rerun_reason_count": len(review_decision.reasons),
+                    "review_rerun_reasons": _json_debug(
+                        [
+                            {
+                                "option": signal.option,
+                                "issue": signal.issue,
+                                "evidence_snippet": signal.evidence_snippet,
+                            }
+                            for signal in review_decision.reasons
+                        ]
+                    ),
+                    "review_rerun_prompt": review_prompt,
+                    "query_attempts": _json_debug(query_attempts),
                 }
             )
 
@@ -2199,8 +2405,9 @@ Guidelines for your analysis:
 6. Note any limitations or gaps in the available information
 
 When citing legal authority, use the provision or heading labels provided in the context. When including
-supporting passages, use direct quotes from the legal text that most strongly support
-your reasoning.
+supporting passages, copy-paste exact verbatim quotes from the legal text that most strongly support
+your reasoning. Do not paraphrase, summarize, clean up punctuation, splice non-adjacent text, or omit
+intermediate list items. Prefer short exact excerpts over long passages.
 
 Be precise and objective in your analysis. If the provided context does not contain
 sufficient information to answer the question definitively, acknowledge this limitation
@@ -2708,6 +2915,409 @@ def _normalize_structured_short_answer(
     return stripped
 
 
+@dataclass(frozen=True)
+class AnswerReviewSignal:
+    """Deterministic review signal for a suspicious structured answer."""
+
+    option: str
+    issue: str
+    evidence_snippet: str | None = None
+
+
+@dataclass(frozen=True)
+class AnswerReviewDecision:
+    """Structured outcome for a single answer-review pass."""
+
+    should_rerun: bool = False
+    guidance_topic: str | None = None
+    reasons: tuple[AnswerReviewSignal, ...] = ()
+
+
+def _extract_selected_response_options(
+    answer: str, response_options: str
+) -> tuple[str, ...]:
+    """Return canonical selected options from a normalized structured answer."""
+    options, separator = _split_response_options(response_options)
+    stripped = answer.strip()
+    if not stripped:
+        return ()
+
+    normalized_answer = _normalize_option_text(stripped)
+    if separator == " AND/OR ":
+        return tuple(
+            option
+            for option in options
+            if _normalize_option_text(option)
+            and re.search(
+                rf"(?<![a-z0-9]){re.escape(_normalize_option_text(option))}(?![a-z0-9])",
+                normalized_answer,
+            )
+        )
+
+    if separator == " OR ":
+        for option in options:
+            if _normalize_option_text(option) == normalized_answer:
+                return (option,)
+
+    return ()
+
+
+def _collect_review_text(sections: list[SectionResult]) -> str:
+    """Flatten retrieved completion sections into a single evidence string."""
+    parts: list[str] = []
+    for section in sections:
+        heading = str(section.heading_text or "").strip()
+        body = str(section.body_text or "").strip()
+        if heading:
+            parts.append(heading)
+        if body:
+            parts.append(body)
+    return "\n\n".join(parts)
+
+
+def _truncate_review_snippet(text: str, start: int, end: int) -> str:
+    """Return a compact evidence window around a deterministic regex hit."""
+    snippet_start = max(0, start - 90)
+    snippet_end = min(len(text), end + 90)
+    snippet = re.sub(r"\s+", " ", text[snippet_start:snippet_end]).strip()
+    if snippet_start > 0:
+        snippet = "... " + snippet
+    if snippet_end < len(text):
+        snippet = snippet + " ..."
+    return snippet
+
+
+def _first_matching_snippet(text: str, patterns: tuple[str, ...]) -> str | None:
+    """Return the first supporting snippet for any of the regex patterns."""
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return _truncate_review_snippet(text, match.start(), match.end())
+    return None
+
+
+def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
+    """Return strong evidence patterns keyed by normalized benchmark option label."""
+    if guidance_topic == "prohibited_activity":
+        return {
+            _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale"
+            ): (
+                r"\boffer for sale\b",
+                r"\bsell\b",
+                r"\bsale\b",
+                r"\bpossess(?:es|ed|ion)?\b[^.\n]{0,40}\bintent\b[^.\n]{0,20}\bsell\b",
+            ),
+            _normalize_option_text(
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
+            ): (
+                r"\bdeliver(?:y)?\b",
+                r"\bdistribution\b",
+                r"\bdistribute\b",
+                r"\btransfer\b",
+                r"\bfurnish\b",
+                r"\bexchange\b",
+                r"\bpossess(?:es|ed|ion)?\b[^.\n]{0,40}\bintent\b[^.\n]{0,20}\bdeliver\b",
+            ),
+            _normalize_option_text("Give away, give, gift, free distribution"): (
+                r"\bgive away\b",
+                r"\bgift\b",
+                r"\bfree distribution\b",
+            ),
+            _normalize_option_text("Possession, possession with intent to use, keep"): (
+                r"\bpossess(?:es|ed)? with intent to use\b",
+                r"\bpossess(?:es|ed)?\b[^.\n]{0,30}\bintent to use\b",
+                r"\bkeep\b",
+            ),
+            _normalize_option_text("Use"): (
+                r"\buse or possess with intent to use\b",
+                r"\bit is unlawful[^.\n]{0,60}\buse\b",
+                r"\bno person shall[^.\n]{0,60}\buse\b",
+            ),
+            _normalize_option_text("Advertising, display"): (
+                r"\badvertis(?:e|ement|ing)\b",
+                r"\bdisplay\b",
+            ),
+            _normalize_option_text(
+                "Manufacturing, manufacture with intent to deliver or sell"
+            ): (
+                r"\bmanufactur(?:e|ing)\b",
+                r"\bmanufacture with intent to deliver\b",
+                r"\bmanufacture with intent to sell\b",
+            ),
+        }
+
+    if guidance_topic == "penalty":
+        return {
+            _normalize_option_text('"Unlawful" only'): (),
+            _normalize_option_text("Infraction"): (r"\binfraction\b",),
+            _normalize_option_text("Misdemeanor"): (r"\bmisdemeanor\b",),
+            _normalize_option_text("Felony"): (r"\bfelony\b",),
+            _normalize_option_text("Civil Fine"): (r"\bcivil fine\b",),
+            _normalize_option_text("Criminal Fine"): (
+                r"\bcriminal fine\b",
+                r"\bfine\b[^.\n]{0,40}\bmisdemeanor\b",
+                r"\bmisdemeanor\b[^.\n]{0,40}\bfine\b",
+            ),
+            _normalize_option_text("Unspecified Fine"): (
+                r"\bfine\b",
+                r"\bfined\b",
+            ),
+            _normalize_option_text("Incarceration"): (
+                r"\bimprison(?:ment|ed)?\b",
+                r"\bjail\b",
+                r"\bincarceration\b",
+                r"\bconfine(?:ment)?\b",
+            ),
+            _normalize_option_text("Forfeiture/Seizure"): (
+                r"\bforfeit(?:ed|ure)?\b",
+                r"\bseiz(?:e|ed|ure)\b",
+            ),
+        }
+
+    if guidance_topic == "exemption_presence":
+        return {
+            _normalize_option_text("None"): (),
+            _normalize_option_text(
+                "Syringes for approved medical use (i.e. diabetes)"
+            ): (
+                r"\bhypodermic\b",
+                r"\bsyringe\b",
+                r"\bdiabet(?:es|ic)\b",
+                r"\bprescription\b",
+            ),
+            _normalize_option_text("Other paraphernalia for approved medical use"): (
+                r"\bmedical use\b",
+                r"\bprescription\b",
+                r"\bphysician\b",
+                r"\bdentist\b",
+            ),
+            _normalize_option_text(
+                "Paraphernalia for consumption of cannabis, generally or medical use"
+            ): (
+                r"\bcannabis\b",
+                r"\bmari(?:j|h)uana\b",
+                r"\bmedical marijuana\b",
+                r"\bcompassionate use\b",
+            ),
+            _normalize_option_text("Syringes, generally"): (
+                r"\bsyringes?\b",
+                r"\bhypodermic\b",
+            ),
+            _normalize_option_text(
+                "Syringes from syringe services, harm reduction programs, or supervised use sites"
+            ): (
+                r"\bsyringe exchange\b",
+                r"\bsyringe services\b",
+                r"\bharm reduction\b",
+                r"\bsupervised use\b",
+            ),
+            _normalize_option_text("Drug checking/testing equipment, generally"): (
+                r"\bdrug checking\b",
+                r"\bdrug testing\b",
+                r"\btest strip\b",
+                r"\btesting equipment\b",
+            ),
+            _normalize_option_text(
+                "Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites"
+            ): (
+                r"\bdrug checking\b",
+                r"\btesting equipment\b",
+                r"\bharm reduction\b",
+                r"\bsyringe exchange\b",
+            ),
+            _normalize_option_text(
+                "Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]"
+            ): (
+                r"\bpharmacist\b",
+                r"\bphysician\b",
+                r"\bpractitioner\b",
+                r"\bmanufacturer\b",
+            ),
+            _normalize_option_text(
+                "Public officials in the course of their duties, generally"
+            ): (
+                r"\bpeace officer\b",
+                r"\bpublic official\b",
+                r"\bofficial duties\b",
+                r"\bgovernment(?:al)? entit(?:y|ies)\b",
+            ),
+            _normalize_option_text("Lawful use of hypodermic syringes"): (
+                r"\blawful\b[^.\n]{0,40}\bhypodermic\b",
+                r"\bhypodermic\b[^.\n]{0,40}\bmade lawful\b",
+            ),
+            _normalize_option_text("Other"): (
+                r"\bexcept\b",
+                r"\bexception\b",
+                r"\bexemption\b",
+                r"\bdefense to prosecution\b",
+            ),
+        }
+
+    return {}
+
+
+def _build_answer_review_decision(
+    *,
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+    settings: QuerySettings,
+) -> AnswerReviewDecision:
+    """Evaluate whether a first-pass answer deserves one targeted review rerun."""
+    if not settings.enable_answer_review:
+        return AnswerReviewDecision()
+
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if not guidance_topic or guidance_topic not in settings.answer_review_topics:
+        return AnswerReviewDecision()
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return AnswerReviewDecision()
+
+    selected_options = _extract_selected_response_options(
+        response.short_answer,
+        response_options,
+    )
+    if not selected_options:
+        return AnswerReviewDecision()
+
+    option_patterns = _option_pattern_map(guidance_topic)
+    if not option_patterns:
+        return AnswerReviewDecision()
+
+    options, separator = _split_response_options(response_options)
+    if separator not in {" AND/OR ", " OR "}:
+        return AnswerReviewDecision()
+
+    evidence_text = _collect_review_text(sections)
+    evidence_text_lower = evidence_text.lower()
+    selected_lookup = {_normalize_option_text(option) for option in selected_options}
+    reasons: list[AnswerReviewSignal] = []
+
+    penalty_options_found = 0
+    if guidance_topic == "penalty":
+        for option in options:
+            normalized = _normalize_option_text(option)
+            if normalized == _normalize_option_text('"Unlawful" only'):
+                continue
+            patterns = option_patterns.get(normalized, ())
+            if patterns and _first_matching_snippet(evidence_text, patterns):
+                penalty_options_found += 1
+
+    for option in options:
+        normalized = _normalize_option_text(option)
+        patterns = option_patterns.get(normalized, ())
+        snippet = _first_matching_snippet(evidence_text, patterns) if patterns else None
+        if (
+            guidance_topic == "prohibited_activity"
+            and normalized
+            == _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale"
+            )
+            and snippet is not None
+            and re.search(
+                r"\b(advertis(?:e|ement|ing)|display|promote)\b", snippet, re.IGNORECASE
+            )
+            and not re.search(r"\boffer for sale\b", snippet, re.IGNORECASE)
+        ):
+            snippet = None
+        is_selected = normalized in selected_lookup
+
+        if guidance_topic == "penalty" and normalized == _normalize_option_text(
+            '"Unlawful" only'
+        ):
+            if is_selected and penalty_options_found > 0:
+                reasons.append(
+                    AnswerReviewSignal(
+                        option=option,
+                        issue="selected_unlawful_only_despite_other_penalty_cues",
+                    )
+                )
+            continue
+
+        if is_selected and patterns and snippet is None:
+            reasons.append(
+                AnswerReviewSignal(
+                    option=option,
+                    issue="selected_option_lacks_strong_text_support",
+                )
+            )
+            continue
+
+        if not is_selected and snippet is not None:
+            reasons.append(
+                AnswerReviewSignal(
+                    option=option,
+                    issue="unselected_option_has_strong_text_support",
+                    evidence_snippet=snippet,
+                )
+            )
+
+    if guidance_topic == "exemption_presence":
+        none_selected = _normalize_option_text("None") in selected_lookup
+        if none_selected:
+            specific_support = any(
+                signal.issue == "unselected_option_has_strong_text_support"
+                and _normalize_option_text(signal.option)
+                != _normalize_option_text("None")
+                for signal in reasons
+            )
+            return AnswerReviewDecision(
+                should_rerun=specific_support,
+                guidance_topic=guidance_topic,
+                reasons=tuple(reasons),
+            )
+
+    should_rerun = bool(reasons)
+    if guidance_topic == "prohibited_activity":
+        if re.search(r"\bparaphernalia shop\b", evidence_text_lower) and any(
+            _normalize_option_text(signal.option)
+            == _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale"
+            )
+            and signal.issue == "selected_option_lacks_strong_text_support"
+            for signal in reasons
+        ):
+            should_rerun = True
+
+    return AnswerReviewDecision(
+        should_rerun=should_rerun,
+        guidance_topic=guidance_topic,
+        reasons=tuple(reasons),
+    )
+
+
+def _build_answer_review_prompt(
+    *,
+    base_user_prompt: str,
+    response: LegalQueryResponse,
+    decision: AnswerReviewDecision,
+) -> str:
+    """Append a targeted, non-coercive review request to the original prompt."""
+    lines = [
+        base_user_prompt,
+        "",
+        "Review request:",
+        "You already answered this question once. Deterministic checks found possible inconsistencies between the answer and the retrieved legal text.",
+        "Re-read the same legal context above and decide whether the original answer should be kept or revised.",
+        "You are not required to change the answer. If the original answer is still the best-supported answer, keep it.",
+        f"Original short_answer: {response.short_answer}",
+        f"Original confidence: {response.confidence:.2f}",
+        "Possible issues:",
+    ]
+    for signal in decision.reasons[:6]:
+        lines.append(f"- {signal.option}: {signal.issue}")
+        if signal.evidence_snippet:
+            lines.append(f"  Evidence cue: {signal.evidence_snippet}")
+    lines.append(
+        "Return the full JSON response again. Keep the same answer if you remain confident it is supported by the evidence."
+    )
+    return "\n".join(lines)
+
+
 def _section_unit_id(section: SectionResult) -> str:
     """Build a stable identifier for retrieval-unit provenance and deduplication."""
     return str(section.chunk_id or section.section_id)
@@ -2977,9 +3587,7 @@ def _evaluate_dependency_decision(
                 decision.dependency_override_applied = True
                 decision.dependency_override_reason = "low_confidence_parent_no"
                 decision.dependency_override_parent_query_id = parent_query_id
-                decision.dependency_override_parent_confidence = (
-                    parent_state.confidence
-                )
+                decision.dependency_override_parent_confidence = parent_state.confidence
                 decision.dependency_rules_evaluated.append(
                     {
                         "rule_type": "requires_yes",
@@ -3076,9 +3684,7 @@ def _evaluate_dependency_decision(
             threshold=dependency_skip_confidence_threshold,
         ):
             decision.dependency_override_applied = True
-            decision.dependency_override_reason = (
-                "low_confidence_parent_label_blocker"
-            )
+            decision.dependency_override_reason = "low_confidence_parent_label_blocker"
             decision.dependency_override_parent_query_id = label_rule.parent_query_id
             decision.dependency_override_parent_confidence = parent_state.confidence
             decision.dependency_rules_evaluated.append(
@@ -3448,6 +4054,8 @@ def _process_single_query_with_error_handling(
             relevance_threshold=settings.relevance_threshold,
             retrieval_guidance=retrieval_guidance,
             validate_supporting_passages=settings.validate_supporting_passages,
+            enable_answer_review=settings.enable_answer_review,
+            answer_review_topics=settings.answer_review_topics,
         )
 
         debug_capture = {

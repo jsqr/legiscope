@@ -93,6 +93,7 @@ uv run python coep/scripts/benchmark_pipeline.py
 - Output file: `config.output_dir() / {jurisdiction_id} / benchmark_results.csv` (DVC-tracked)
 - Timestamped copy: `config.output_dir() / {jurisdiction_id} / benchmark_results_{timestamp}.csv`
 - Metrics: `config.output_dir() / {jurisdiction_id} / benchmark_metrics.json` (DVC metrics)
+- Timestamped metrics copy: `config.output_dir() / {jurisdiction_id} / benchmark_metrics_{timestamp}.json`
 - Series title: `params["benchmark"]["series_title"]` (fallback: `DPL_2025_Consolidated`)
 
 Jurisdiction, retrieval settings (including HYDE/relevance filtering and debug outputs), and query validation settings are read from `params.yaml`.
@@ -120,8 +121,10 @@ Jurisdiction, retrieval settings (including HYDE/relevance filtering and debug o
             blank ground truth counts as correct, non-blank ground truth counts as incorrect, and no judge-model call is made.
 3.  **Scoring**: The judge assigns a score (0-10) based on accuracy and provides a reasoning.
     - `benchmark_metrics.json` now exposes `primary_score` / `weighted_query_score` as the headline metric.
-    - Each original benchmark query is worth an equal share of 100 total points.
+    - A timestamped metrics copy is also written for historical auditing alongside the canonical DVC metrics file.
+    - Each scorable original benchmark query is worth an equal share of 100 total points.
     - If a query expands into multiple `AND/OR` response-option rows, that query's share is split evenly across those rows so the query can earn partial credit without inflating its weight.
+    - Queries with missing or excluded ground truth are omitted from the weighted-score denominator rather than reducing the score ceiling; their counts remain available in the metrics as `weighted_query_unscored` and related fields.
     - The legacy row-level `accuracy_rate` and strict collapsed `collapsed_query_accuracy_rate` remain in the metrics for comparison.
 4.  **Output**: A new CSV is saved containing original questions, generated answers (comprehensive), human answers, scores, and reasonings.
 

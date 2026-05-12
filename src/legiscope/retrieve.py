@@ -1,7 +1,9 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, cast
+from threading import local
+from typing import Any, Callable, cast
 
 import chromadb
 import polars as pl
@@ -12,7 +14,25 @@ from pydantic import BaseModel, Field
 from legiscope.embeddings import get_embedding_client, get_embeddings
 from legiscope.params import load_params
 from legiscope.retrieval_guidance import RetrievalGuidance
-from legiscope.utils import ask, resolve_model_default
+from legiscope.segment import _estimate_token_count
+from legiscope.utils import LLMConfig, ask, resolve_model_default
+
+
+def _safe_positive_int(value: Any, default: int, setting_name: str) -> int:
+    """Parse positive integer settings defensively."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        logger.warning(f"Invalid {setting_name}={value!r}; falling back to {default}.")
+        return default
+
+    if parsed < 1:
+        logger.warning(
+            f"Non-positive {setting_name}={parsed}; falling back to {default}."
+        )
+        return default
+
+    return parsed
 
 
 def _retrieval_params() -> dict[str, Any]:
@@ -35,6 +55,21 @@ DEFAULT_MAX_RETRIES = _lp.get("max_retries", 3)
 DEFAULT_HYDE_ENABLED = _rp.get("hyde", {}).get("enabled", False)
 DEFAULT_RELEVANCE_FILTER_ENABLED = _rp.get("relevance_filter", {}).get("enabled", False)
 DEFAULT_RELEVANCE_THRESHOLD = _rp.get("relevance_filter", {}).get("threshold", 0.5)
+DEFAULT_RELEVANCE_FILTER_MAX_CONCURRENCY = _safe_positive_int(
+    _rp.get("relevance_filter", {}).get("max_concurrency", 4),
+    4,
+    "retrieval.relevance_filter.max_concurrency",
+)
+DEFAULT_RELEVANCE_FILTER_TARGET_CONCURRENT_TOKENS = _safe_positive_int(
+    _rp.get("relevance_filter", {}).get("target_concurrent_prompt_tokens", 16000),
+    16000,
+    "retrieval.relevance_filter.target_concurrent_prompt_tokens",
+)
+DEFAULT_RELEVANCE_FILTER_PROMPT_OVERHEAD_TOKENS = _safe_positive_int(
+    _rp.get("relevance_filter", {}).get("prompt_overhead_tokens", 600),
+    600,
+    "retrieval.relevance_filter.prompt_overhead_tokens",
+)
 DEFAULT_LEXICAL_OVERFETCH_FACTOR = max(1, int(_rp.get("lexical_overfetch_factor", 3)))
 DEFAULT_LEXICAL_RERANKING_ENABLED = bool(
     _rp.get("lexical_reranking", {}).get("enabled", False)
@@ -740,6 +775,93 @@ def _updated_section_with_assessment(
     )
 
 
+def _build_section_assessment_text(section: SectionResult) -> str:
+    """Build the text payload evaluated by the relevance-filter LLM."""
+    return f"{section.heading_text}\n\n{section.body_text}".strip()
+
+
+def resolve_relevance_filter_client_factory(
+    llm_config: LLMConfig,
+) -> Callable[[], Instructor] | None:
+    """Return a safe client factory for concurrent relevance filtering when possible."""
+    if llm_config.source != "self_hosted":
+        return None
+    return llm_config.client_factory
+
+
+def _estimate_relevance_filter_prompt_tokens(
+    query: str,
+    section_text: str,
+    retrieval_guidance: RetrievalGuidance | None = None,
+) -> int:
+    """Estimate the token load of a single relevance-filter request."""
+    guidance_parts: list[str] = []
+    if retrieval_guidance and retrieval_guidance.has_content():
+        if retrieval_guidance.guidance_topic:
+            guidance_parts.append(retrieval_guidance.guidance_topic)
+        if retrieval_guidance.shared_context:
+            guidance_parts.append(retrieval_guidance.shared_context)
+        if retrieval_guidance.relevance_instructions:
+            guidance_parts.append(retrieval_guidance.relevance_instructions)
+        if retrieval_guidance.anchor_terms:
+            guidance_parts.append(" ".join(retrieval_guidance.anchor_terms))
+
+    prompt_text = "\n\n".join(
+        part for part in [query, section_text, *guidance_parts] if part
+    )
+    return max(
+        1,
+        _estimate_token_count(prompt_text)
+        + DEFAULT_RELEVANCE_FILTER_PROMPT_OVERHEAD_TOKENS,
+    )
+
+
+def _determine_relevance_filter_worker_count(
+    sections: list[SectionResult],
+    query: str,
+    retrieval_guidance: RetrievalGuidance | None,
+    requested_max_concurrency: int,
+) -> int:
+    """Choose a bounded worker count based on request count and prompt size."""
+    normalized_requested = _safe_positive_int(
+        requested_max_concurrency,
+        1,
+        "relevance filter max_concurrency",
+    )
+    if normalized_requested == 1 or len(sections) <= 1:
+        return 1
+
+    prompt_token_estimates = [
+        _estimate_relevance_filter_prompt_tokens(
+            query,
+            section_text,
+            retrieval_guidance,
+        )
+        for section in sections
+        if (section_text := _build_section_assessment_text(section))
+    ]
+    if not prompt_token_estimates:
+        return 1
+
+    max_prompt_tokens = max(prompt_token_estimates)
+    token_limited_workers = max(
+        1,
+        DEFAULT_RELEVANCE_FILTER_TARGET_CONCURRENT_TOKENS // max_prompt_tokens,
+    )
+    worker_count = max(
+        1,
+        min(normalized_requested, len(prompt_token_estimates), token_limited_workers),
+    )
+    if worker_count < min(normalized_requested, len(prompt_token_estimates)):
+        logger.info(
+            "Reducing relevance-filter concurrency from {} to {} based on prompt size (largest request ~{} tokens)",
+            normalized_requested,
+            worker_count,
+            max_prompt_tokens,
+        )
+    return worker_count
+
+
 def retrieve_segments(
     collection: Any,  # chromadb.Collection
     query_text: str,
@@ -1116,6 +1238,8 @@ def filter_sections(
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
     model: str | None = None,
     retrieval_guidance: RetrievalGuidance | None = None,
+    max_concurrency: int = DEFAULT_RELEVANCE_FILTER_MAX_CONCURRENCY,
+    client_factory: Callable[[], Instructor] | None = None,
 ) -> SectionCollection:
     """Filter retrieved context units by relevance using LLM-powered assessment.
 
@@ -1131,6 +1255,8 @@ def filter_sections(
         model: LLM model to use for relevance assessment. Uses Config.get_fast_model() if not specified
         retrieval_guidance: Optional query-specific instructions to inject into
             the relevance prompt
+        max_concurrency: Maximum number of concurrent relevance-filter requests
+        client_factory: Optional per-thread client factory for safe concurrent use
 
     Returns:
         SectionCollection: Filtered collection with retrieval units, query info, and filtering metadata
@@ -1156,70 +1282,138 @@ def filter_sections(
         raise ValueError("sections must be a list")
 
     original_count = len(sections)
+    requested_concurrency = _safe_positive_int(
+        max_concurrency,
+        1,
+        "relevance filter max_concurrency",
+    )
+    if requested_concurrency > 1 and client_factory is None:
+        logger.warning(
+            "Relevance filtering requested max_concurrency={} without a client factory; falling back to sequential filtering.",
+            requested_concurrency,
+        )
+        requested_concurrency = 1
+
+    worker_count = _determine_relevance_filter_worker_count(
+        sections,
+        query,
+        retrieval_guidance,
+        requested_concurrency,
+    )
+
     logger.info(
-        f"Filtering {original_count} retrieval units for query: '{query[:30]}...'"
+        "Filtering {} retrieval units for query '{}' with up to {} concurrent relevance checks",
+        original_count,
+        f"{query[:30]}...",
+        worker_count,
     )
 
     filtered_sections = []
     assessed_sections: list[tuple[SectionResult, RelevanceAssessment]] = []
     assessments = []
 
-    # Assess relevance for each retrieval unit
-    for i, section in enumerate(sections):
-        try:
-            # Prepare retrieval-unit text for LLM assessment
-            heading_text = section.heading_text
-            body_text = section.body_text
-            section_text = f"{heading_text}\n\n{body_text}".strip()
+    assessment_results: list[tuple[SectionResult, RelevanceAssessment] | None] = [
+        None
+    ] * len(sections)
 
-            if not section_text:
-                logger.warning(f"Retrieval unit {i} has no text content, skipping")
+    def _assess_single_section(
+        index: int,
+        section: SectionResult,
+        assessment_client: Instructor,
+    ) -> tuple[int, tuple[SectionResult, RelevanceAssessment] | None]:
+        section_text = _build_section_assessment_text(section)
+        if not section_text:
+            logger.warning(f"Retrieval unit {index} has no text content, skipping")
+            return index, None
+
+        assessment = is_relevant(
+            assessment_client,
+            query,
+            section_text,
+            model,
+            retrieval_guidance=retrieval_guidance,
+        )
+        return index, (section, assessment)
+
+    if worker_count == 1:
+        for i, section in enumerate(sections):
+            try:
+                _, assessment_result = _assess_single_section(i, section, client)
+                assessment_results[i] = assessment_result
+            except Exception as e:
+                logger.error(f"Error assessing retrieval unit {i}: {str(e)}")
                 continue
+    else:
+        thread_local = local()
 
-            # Assess relevance using LLM
-            assessment = is_relevant(
-                client,
-                query,
-                section_text,
-                model,
-                retrieval_guidance=retrieval_guidance,
-            )
-            assessed_sections.append((section, assessment))
+        def _get_thread_client() -> Instructor:
+            thread_client = getattr(thread_local, "client", None)
+            if thread_client is None:
+                assert client_factory is not None
+                thread_client = client_factory()
+                thread_local.client = thread_client
+            return cast(Instructor, thread_client)
 
-            keep_by_threshold = _assessment_passes_threshold(
-                assessment,
-                relevance_threshold,
-            )
+        def _assess_single_section_in_thread(
+            index: int,
+            section: SectionResult,
+        ) -> tuple[int, tuple[SectionResult, RelevanceAssessment] | None]:
+            return _assess_single_section(index, section, _get_thread_client())
 
-            # Store assessment for metadata
-            assessments.append(
-                {
-                    "index": i,
-                    "section_id": section.section_id,
-                    "relevance_score": assessment.relevance_score,
-                    "reasoning": assessment.reasoning,
-                    "kept": keep_by_threshold,
-                    "keep_reason": (
-                        "threshold" if keep_by_threshold else "below_threshold"
-                    ),
-                }
-            )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {
+                executor.submit(
+                    _assess_single_section_in_thread,
+                    i,
+                    section,
+                ): i
+                for i, section in enumerate(sections)
+            }
 
-            if keep_by_threshold:
-                filtered_sections.append(
-                    _updated_section_with_assessment(section, assessment)
-                )
-                logger.debug(
-                    f"Retrieval unit {i} kept: score={assessment.relevance_score:.2f}"
-                )
-            else:
-                logger.debug(
-                    f"Retrieval unit {i} filtered: score={assessment.relevance_score:.2f}"
-                )
+            for future in as_completed(futures):
+                i = futures[future]
+                try:
+                    index, assessment_result = future.result()
+                    assessment_results[index] = assessment_result
+                except Exception as e:
+                    logger.error(f"Error assessing retrieval unit {i}: {str(e)}")
 
-        except Exception as e:
-            logger.error(f"Error assessing retrieval unit {i}: {str(e)}")
+    for i, assessment_result in enumerate(assessment_results):
+        if assessment_result is None:
             continue
+
+        section, assessment = assessment_result
+        assessed_sections.append((section, assessment))
+
+        keep_by_threshold = _assessment_passes_threshold(
+            assessment,
+            relevance_threshold,
+        )
+
+        assessments.append(
+            {
+                "index": i,
+                "section_id": section.section_id,
+                "relevance_score": assessment.relevance_score,
+                "reasoning": assessment.reasoning,
+                "kept": keep_by_threshold,
+                "keep_reason": (
+                    "threshold" if keep_by_threshold else "below_threshold"
+                ),
+            }
+        )
+
+        if keep_by_threshold:
+            filtered_sections.append(
+                _updated_section_with_assessment(section, assessment)
+            )
+            logger.debug(
+                f"Retrieval unit {i} kept: score={assessment.relevance_score:.2f}"
+            )
+        else:
+            logger.debug(
+                f"Retrieval unit {i} filtered: score={assessment.relevance_score:.2f}"
+            )
 
     target_keep = min(DEFAULT_RELEVANCE_MIN_KEEP, len(assessed_sections))
     if len(filtered_sections) < target_keep:

@@ -539,7 +539,10 @@ def _attach_parent_benchmark_provenance(df: pl.DataFrame) -> pl.DataFrame:
         if not query_id:
             continue
 
-        if row.get("evaluation_mode") == "whole_answer" and query_id not in parent_whole_by_query_id:
+        if (
+            row.get("evaluation_mode") == "whole_answer"
+            and query_id not in parent_whole_by_query_id
+        ):
             parent_whole_by_query_id[query_id] = {
                 "blocking_parent_variable_name": row.get("variable_name"),
                 "blocking_parent_query_status": row.get("query_status"),
@@ -564,7 +567,9 @@ def _attach_parent_benchmark_provenance(df: pl.DataFrame) -> pl.DataFrame:
     for row in df.to_dicts():
         parent_query_id = str(row.get("blocking_parent_query_id") or "").strip()
         parent_summary = parent_whole_by_query_id.get(parent_query_id, {})
-        incorrect_options = parent_incorrect_options_by_query_id.get(parent_query_id, [])
+        incorrect_options = parent_incorrect_options_by_query_id.get(
+            parent_query_id, []
+        )
         blocker_labels = _parse_string_list(row.get("configured_blocker_labels"))
         normalized_incorrect_options = {
             _normalize_option_text(option) for option in incorrect_options if option
@@ -577,7 +582,10 @@ def _attach_parent_benchmark_provenance(df: pl.DataFrame) -> pl.DataFrame:
         )
 
         eval_error_type = row.get("eval_error_type")
-        if row.get("query_status") == "skipped" and row.get("eval_label") == "Incorrect":
+        if (
+            row.get("query_status") == "skipped"
+            and row.get("eval_label") == "Incorrect"
+        ):
             parent_whole_incorrect = (
                 parent_summary.get("blocking_parent_eval_label") == "Incorrect"
             )
@@ -1022,15 +1030,16 @@ def _summarize_weighted_query_score(
     *,
     total_queries: int,
 ) -> dict[str, int | float]:
-    """Return a 100-point query-weighted score with option-level partial credit.
+    """Return a 100-point score redistributed across scorable queries.
 
-    Each original benchmark query receives an equal share of 100 total points.
-    When a query expands into multiple response-option evaluation rows, that
-    query's share is divided evenly across those rows and earned row-by-row.
-    Queries without any scored evaluation rows contribute zero earned points.
+    Each scorable original benchmark query receives an equal share of 100 total
+    points. When a query expands into multiple response-option evaluation rows,
+    that query's share is divided evenly across those rows and earned row-by-row.
+    Queries without any scored evaluation rows are excluded from the weighted
+    denominator but still reported separately via ``unscored_queries``.
     """
     processed_queries = int(total_queries)
-    points_per_query = 100.0 / processed_queries if processed_queries else 0.0
+    points_per_query = 0.0
 
     if eval_scored_df.is_empty() or processed_queries == 0:
         return {
@@ -1052,6 +1061,7 @@ def _summarize_weighted_query_score(
 
     scored_queries = per_query.height
     unscored_queries = max(processed_queries - scored_queries, 0)
+    points_per_query = 100.0 / scored_queries if scored_queries else 0.0
     earned_points = (
         per_query.select(
             (
@@ -1062,7 +1072,7 @@ def _summarize_weighted_query_score(
         ).item()
         or 0.0
     )
-    scored_point_ceiling = points_per_query * scored_queries
+    scored_point_ceiling = 100.0 if scored_queries else 0.0
 
     return {
         "processed_queries": processed_queries,
@@ -1082,6 +1092,7 @@ def _materialize_benchmark_outputs(
     timestamped_path: Path,
     metrics: dict[str, object],
     metrics_path: Path,
+    timestamped_metrics_path: Path,
 ) -> None:
     """Write benchmark outputs and ensure the canonical DVC out is materialized."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1132,6 +1143,10 @@ def _materialize_benchmark_outputs(
 
     metrics_path.write_text(json.dumps(metrics, indent=2))
     logger.info(f"Metrics saved to {metrics_path}")
+
+    if timestamped_metrics_path != metrics_path:
+        shutil.copy2(metrics_path, timestamped_metrics_path)
+        logger.info(f"Timestamped metrics copy saved to {timestamped_metrics_path}")
 
 
 def main():
@@ -1184,6 +1199,8 @@ def main():
     timestamped_path = output_dir / f"benchmark_results_{timestamp}.csv"
     # DVC metrics file
     metrics_path = output_dir / "benchmark_metrics.json"
+    # Timestamped metrics copy for historical tracking (not DVC-tracked)
+    timestamped_metrics_path = output_dir / f"benchmark_metrics_{timestamp}.json"
     series_title = params.get("benchmark", {}).get(
         "series_title", "DPL_2025_Consolidated"
     )
@@ -1594,6 +1611,7 @@ def main():
         timestamped_path=timestamped_path,
         metrics=metrics,
         metrics_path=metrics_path,
+        timestamped_metrics_path=timestamped_metrics_path,
     )
 
 

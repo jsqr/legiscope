@@ -3,10 +3,9 @@ Utility functions for the legiscope package.
 """
 
 import argparse
-import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Type, TypeVar
+from typing import TYPE_CHECKING, Callable, Literal, Type, TypeVar
 
 if TYPE_CHECKING:
     from legiscope.models import CodeRef
@@ -53,6 +52,9 @@ class LLMConfig:
         model: Model name to use. If None, resolves to default in __post_init__
         temperature: Sampling temperature (0.0-1.0). Lower = more deterministic
         max_retries: Maximum number of retry attempts for failed API calls
+        source: Whether this client talks to a self-hosted or external LLM
+        client_factory: Optional factory used to create thread-local clients for
+            safe local concurrency
 
     Example:
         >>> from legiscope.llm_config import Config
@@ -74,6 +76,8 @@ class LLMConfig:
     model: str | None = None
     temperature: float | None = None
     max_retries: int | None = None
+    source: Literal["self_hosted", "external"] | None = None
+    client_factory: Callable[[], Instructor] | None = None
 
     def __post_init__(self):
         """Validate and set defaults after initialization."""
@@ -98,6 +102,11 @@ class LLMConfig:
         if self.max_retries < 0:
             raise ValueError(
                 f"max_retries must be non-negative, got {self.max_retries}"
+            )
+
+        if self.source is not None and self.source not in {"self_hosted", "external"}:
+            raise ValueError(
+                f"source must be 'self_hosted' or 'external', got {self.source}"
             )
 
 
@@ -214,7 +223,7 @@ def create_code_structure(code_ref: "CodeRef") -> Path:
     """
     from legiscope import config as cfg
 
-    code_dir = code_ref.full_data_dir
+    code_dir = cfg.laws_dir() / code_ref.data_dir
     raw_dir = code_dir / "raw"
     output_dir = cfg.output_dir() / code_ref.jurisdiction.output_dir_name
 

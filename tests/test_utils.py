@@ -1,7 +1,6 @@
 """Tests for legiscope.utils module."""
 
 import argparse
-import os
 from unittest.mock import Mock, patch
 
 import pytest

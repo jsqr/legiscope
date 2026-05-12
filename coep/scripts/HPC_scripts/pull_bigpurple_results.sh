@@ -295,6 +295,7 @@ RSYNC_FILTERS=(
     --include='*/'
     --include='benchmark_results_*.csv'
     --include='benchmark_metrics.json'
+    --include='benchmark_metrics_*.json'
     --include='debug/***'
 )
 
@@ -346,6 +347,12 @@ else
             say "benchmark_metrics.json: ok"
         else
             say "benchmark_metrics.json: missing"
+        fi
+        latest_timestamped_metrics_json="$(find "${LOCAL_TARGET_DIR}" -maxdepth 1 -type f -name 'benchmark_metrics_*.json' | sort | tail -n 1)"
+        if [[ -n "$latest_timestamped_metrics_json" ]]; then
+            say "latest timestamped metrics json: ${latest_timestamped_metrics_json}"
+        else
+            say "latest timestamped metrics json: not present"
         fi
         if [[ -d "${LOCAL_TARGET_DIR}/debug" ]]; then
             debug_file_count=$(find "${LOCAL_TARGET_DIR}/debug" -type f | wc -l | tr -d ' ')

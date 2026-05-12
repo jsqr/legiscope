@@ -39,15 +39,20 @@ _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
     "prohibited_activity": (
         "Retrieve operative prohibition text enumerating what acts are barred, especially sale, delivery, "
         "distribution, possession-with-intent, use, display, advertising, or manufacture of drug paraphernalia "
-        "used with controlled substances."
+        "used with controlled substances. Prefer directly operative prohibitions, not zoning, land-use, licensing, "
+        "head-shop, retail-display, or minors-only access restrictions unless that same text expressly creates the "
+        "general paraphernalia prohibition being coded."
     ),
     "penalty": (
         "Retrieve penalty sections, general penalty cross-references, and sanction language tied to the "
-        "paraphernalia ordinance."
+        "paraphernalia ordinance. Follow explicit cross-references such as `Penalty, see § ...` and treat the cited "
+        "penalty section as controlling sanction text."
     ),
     "exemption_presence": (
         "Retrieve exception, exclusion, does-not-apply, authorized-use, and incorporated state-definition "
-        "language that could create paraphernalia exemptions."
+        "language that could create paraphernalia exemptions. Also retrieve syringe-service, syringe-exchange, harm-"
+        "reduction, supervised-use, and drug-checking/test-strip provisions when they can function as direct "
+        "paraphernalia carve-outs."
     ),
     "exemption_activity_scope": (
         "Retrieve exemption text and nearby operative activity language showing which acts remain allowed "
@@ -332,13 +337,18 @@ _GUIDANCE_BY_FAMILY = {
     "prohibited_activity": RetrievalGuidance(
         guidance_topic="prohibited_activity",
         relevance_instructions=(
-            "Prefer text that explicitly enumerates prohibited acts. High-value passages state verbs "
+            "Prefer text that explicitly enumerates operative prohibited acts. High-value passages state verbs "
             "such as sell, offer for sale, deliver, distribute, transfer, possess with intent, use, "
-            "display, advertise, or manufacture. Apply the coding logic carefully: simple possession "
-            "is different from possession with intent to sell or deliver; use should only count if the "
-            "text explicitly prohibits use; and business-context activity may still be narrower than a "
-            "general prohibition. Focus on acts involving drug paraphernalia used with controlled substances. Reject nearby definition, date, or penalty text unless it directly "
-            "states the operative activity."
+            "display, advertise, or manufacture. Code only activities directly prohibited by the legal text. "
+            "Simple possession is different from possession with intent to sell or deliver; use should only count "
+            "if the text explicitly prohibits use; and business-context activity may be narrower than a general "
+            "prohibition. Do not count zoning, land-use, business-license, head-shop, retail-display, or minors-only "
+            "access restrictions as general prohibited activities unless the same text expressly creates the operative "
+            "paraphernalia prohibition. Treat advertising/display as distinct from sale, and do not infer sale or "
+            "delivery unless the text independently prohibits sale, offer for sale, delivery, distribution, transfer, "
+            "furnishing, exchange, or possession with intent. Focus on acts involving drug paraphernalia used with "
+            "controlled substances. Reject nearby definition, date, or penalty text unless it directly states the "
+            "operative activity."
         ),
         anchor_terms=[
             "sell",
@@ -358,9 +368,12 @@ _GUIDANCE_BY_FAMILY = {
         relevance_instructions=(
             "Prefer text that states penalties, sanctions, violation classes, fines, "
             "imprisonment, general penalty provisions, or explicit cross-references to penalty "
-            "sections. Exact legal labels matter here: misdemeanor, infraction, felony, forfeiture, "
-            "seizure, civil fine, criminal fine, and unlawful only should be grounded in the actual "
-            "text. Reject definitions and operative restrictions that do not specify consequences."
+            "sections. Follow explicit penalty cross-references such as `Penalty, see § ...` and treat the "
+            "cited section as governing sanction text. Exact legal labels matter here: misdemeanor, infraction, "
+            "felony, forfeiture, seizure, civil fine, criminal fine, and unlawful only should be grounded in the "
+            "actual text. Do not treat bare unlawfulness language as the full answer when a nearby or directly "
+            "cross-referenced section states a fine, imprisonment, offense class, forfeiture, or seizure. Reject "
+            "definitions and operative restrictions that do not specify consequences."
         ),
         anchor_terms=[
             "penalty",
@@ -384,9 +397,11 @@ _GUIDANCE_BY_FAMILY = {
             "or references to authorized uses. Search both the local ordinance and any specifically "
             "referenced state-law definition sections when the local text incorporates them. High-value "
             "passages may mention cannabis, marijuana, syringe services, harm reduction programs, "
-            "medical use, professionals acting in the course of business, or public officials. Reject "
-            "ordinary prohibitions, zoning restrictions, and business permissions unless they actually "
-            "function as a paraphernalia exemption under the coding logic."
+            "medical use, professionals acting in the course of business, public officials, needle exchange, "
+            "syringe exchange facilities, test strips, or drug checking. Code only exemptions directly supported "
+            "by the legal text. Reject ordinary prohibitions, zoning restrictions, business permissions, and "
+            "other nonoperative context unless they actually function as a paraphernalia exemption under the "
+            "coding logic."
         ),
         anchor_terms=[
             "except",
@@ -402,7 +417,11 @@ _GUIDANCE_BY_FAMILY = {
             "cannabis",
             "marihuana",
             "syringe services",
+            "needle exchange",
+            "syringe exchange",
             "harm reduction",
+            "test strip",
+            "drug checking",
         ],
     ),
     "exemption_activity_scope": RetrievalGuidance(
@@ -429,23 +448,87 @@ _GUIDANCE_BY_FAMILY = {
 
 
 _VARIABLE_OVERRIDES = {
-    "dp_penalties": RetrievalGuidance(
+    "dp_activity": RetrievalGuidance(
         relevance_instructions=(
-            "Focus on operative sanction text. Do not elevate business-license revocation, permitting consequences, or other collateral remedies into Other when the coding rules exclude them."
+            "For dp_activity, code only parent-query activity labels that appear directly in the operative prohibition text. "
+            "Do not count paraphernalia-shop zoning rules, retail-display or business-access restrictions, or minors-only "
+            "sales/display provisions as general prohibited activities unless that same text expressly creates the benchmarked "
+            "ordinance-wide prohibition."
         ),
         completion_instructions=(
-            "For dp_penalties, include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If the text supports only Unlawful and Civil Fine, do not add Other as a hedge. IGNORE business-side licensing or permitting consequences such as license revocation, suspension, or denial unless the coding rules explicitly require them; those consequences SHOULD NOT be coded as Other."
+            "For dp_activity, only code items found directly in the legal text. Count only operative prohibitions. DO NOT code "
+            "zoning, land-use, head-shop, retail-display, business-access, or minors-only restrictions as general activity labels. "
+            "DO NOT code Sales unless the text itself prohibits sale, offer for sale, possession with intent to sell, or a clearly "
+            "equivalent sales act. Advertising or display language by itself does not prove Sales."
+        ),
+        anchor_terms=["unlawful", "prohibited", "offer for sale"],
+    ),
+    "dp_penalties": RetrievalGuidance(
+        relevance_instructions=(
+            "Focus on operative sanction text. Follow direct cross-references such as `Penalty, see § ...`. Do not elevate "
+            "business-license revocation, permitting consequences, or other collateral remedies into Other when the coding rules "
+            "exclude them."
+        ),
+        completion_instructions=(
+            "For dp_penalties, assign the exact labels supported by the exact penalty terms found in the legal text. Treat `Penalty, "
+            "see § ...` or similar cross-references as part of the governing penalty text. If the text states a fine, imprisonment, "
+            "or both, DO NOT answer Unlawful only. Use Criminal Fine only when the text expressly ties the fine to a criminal "
+            "offense class or conviction; otherwise use Unspecified Fine unless another named fine label is directly supported. "
+            "Include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If "
+            "the text supports only Unlawful and Civil Fine, do not add Other as a hedge. IGNORE business-side licensing or "
+            "permitting consequences such as license revocation, suspension, or denial unless the coding rules explicitly require "
+            "them; those consequences SHOULD NOT be coded as Other."
         ),
         anchor_terms=["civil penalty", "license revocation", "sanction"],
     ),
     "dp_exemption": RetrievalGuidance(
         relevance_instructions=(
-            "Focus on true paraphernalia carve-outs. Reject tobacco-only exceptions, zoning permissions, retail-business permissions, and other non-paraphernalia exceptions unless they clearly function as coded exemptions under the survey rules."
+            "Focus on true paraphernalia carve-outs. Reject tobacco-only exceptions, zoning permissions, retail-business "
+            "permissions, and other non-paraphernalia exceptions unless they clearly function as coded exemptions under the "
+            "survey rules. If syringe-service, syringe-exchange, harm-reduction, supervised-use, or test-strip/drug-checking "
+            "text is retrieved, treat it as high-value only when it directly creates an operative exemption."
         ),
         completion_instructions=(
-            "For dp_exemption, include Other only for a real paraphernalia exemption that does not fit any listed label. IGNORE tobacco-only exceptions, tobacco packaging carve-outs, zoning permissions, retail-business permissions, and other non-paraphernalia business carve-outs; they SHOULD NOT be coded as Other. When the ordinance incorporates a state definition, favor does not apply, does not include, exception, or incorporated definitional carve-out language over business-context permissions."
+            "For dp_exemption, only code labels found directly in operative exemption text, incorporated definition text, or other "
+            "true carve-out language. Include Other only for a real paraphernalia exemption that does not fit any listed label. "
+            "IGNORE tobacco-only exceptions, tobacco packaging carve-outs, zoning permissions, retail-business permissions, and "
+            "other non-paraphernalia business carve-outs; they SHOULD NOT be coded as Other. When the ordinance incorporates a "
+            "state definition, favor does not apply, does not include, exception, or incorporated definitional carve-out language "
+            "over business-context permissions. If syringe-service, syringe-exchange, harm-reduction, supervised-use, or syringe-"
+            "exchange-facility text expressly authorizes syringes, needles, test strips, drug-checking equipment, or similar "
+            "paraphernalia, code the corresponding SSP and DCE labels instead of defaulting to None or cannabis-only."
         ),
-        anchor_terms=["exception", "does not apply", "authorized", "medical marijuana"],
+        anchor_terms=[
+            "exception",
+            "does not apply",
+            "authorized",
+            "medical marijuana",
+            "needle exchange",
+            "syringe exchange",
+            "test strip",
+            "drug checking",
+        ],
+    ),
+    "dp_state_fed_reference": RetrievalGuidance(
+        relevance_instructions=(
+            "For dp_state_fed_reference, answer Yes only when the local text expressly incorporates, adopts, or depends on an "
+            "outside statute or definition for meaning, scope, or elements. Mere citations, authority statements, mirrored text, "
+            "penalty references, or background references are not enough."
+        ),
+        completion_instructions=(
+            "For dp_state_fed_reference, answer Yes only when the local ordinance expressly makes outside law necessary to interpret "
+            "the benchmarked paraphernalia rule. DO NOT answer Yes for bare citations, general authority references, parallel wording, "
+            "or penalty/enforcement cross-references."
+        ),
+        anchor_terms=["incorporated by reference", "as defined in", "pursuant to"],
+    ),
+    "dp_state_fed_citation": RetrievalGuidance(
+        completion_instructions=(
+            "For dp_state_fed_citation, return only the smallest specific statutory unit that the ordinance actually incorporates or "
+            "depends on. Cite only provisions appearing in the same sentence, subsection, or immediately adjacent chunk as the "
+            "dependency-triggering language. DO NOT dump every citation appearing anywhere in the retrieved chapter set."
+        ),
+        anchor_terms=["incorporated by reference", "as defined in", "et seq."],
     ),
     "dp_state_fed_combined": RetrievalGuidance(
         relevance_instructions=(
@@ -453,6 +536,11 @@ _VARIABLE_OVERRIDES = {
             "adopts, or depends on the external law such that reviewing that outside law is required. "
             "Answer no when the local ordinance remains self-contained and the outside law is only cited "
             "or mentioned."
+        ),
+        completion_instructions=(
+            "For dp_state_fed_combined, answer Yes only when outside law is actually necessary to interpret the local rule, and if Yes "
+            "return only the smallest specific statutory unit that must be reviewed. Do not dump every citation in the surrounding "
+            "chapter set."
         ),
         anchor_terms=[
             "incorporated by reference",
@@ -617,13 +705,28 @@ _COMPLETION_RULES_BY_FAMILY = {
         "definition or closely linked operative text."
     ),
     "prohibited_activity": (
-        "List only activities that the ordinance expressly prohibits for drug paraphernalia used with controlled substances."
+        "List only activity labels that the ordinance expressly and operatively prohibits for drug paraphernalia used "
+        "with controlled substances. Code an activity only when the legal text directly bars that activity or a clearly "
+        "synonymous act. Do not infer sale from advertising or display language, and do not convert zoning, land-use, "
+        "business-license, retail-display, or minors-only access restrictions into general prohibited activities."
     ),
     "penalty": (
-        "Code only penalties or sanction labels that the ordinance actually imposes. Use Other only for a genuine residual penalty that is clearly imposed and does not fit any named option. Do not use Other as a hedge, and do not treat excluded collateral remedies as Other unless the coding rules expressly require them."
+        "Assign penalty labels from the exact terms found in the legal text or directly cited penalty section. Do not "
+        "infer misdemeanor, felony, infraction, civil fine, or criminal fine unless the text actually supports that label. "
+        "If the ordinance states a fine, imprisonment, forfeiture, seizure, or offense class, do not answer Unlawful only. "
+        "Use Unlawful only only when the operative and directly cross-referenced penalty text contains no specific sanction "
+        "beyond unlawfulness. Use Other only for a genuine residual penalty that is clearly imposed and does not fit any "
+        "named option. Do not use Other as a hedge, and do not treat excluded collateral remedies as Other unless the coding "
+        "rules expressly require them."
     ),
     "exemption_presence": (
-        "Identify only exemption language that actually creates a paraphernalia carve-out under the coding rules. Do not use Other for tobacco-only exceptions, zoning permissions, business permissions, or other carve-outs that the coding rules exclude from paraphernalia exemptions."
+        "Identify only labels directly supported by exemption text, incorporated definition text, or other operative carve-out "
+        "language. Code a label only when the legal text itself expressly creates that exemption or clearly includes it within "
+        "the carve-out. Do not use Other for tobacco-only exceptions, zoning permissions, business permissions, or other "
+        "carve-outs that the coding rules exclude from paraphernalia exemptions. If retrieved text includes syringe services, "
+        "harm reduction, supervised use, needle exchange, or syringe exchange facility provisions, evaluate whether they "
+        "expressly allow syringes, needles, test strips, drug-checking equipment, or other paraphernalia before answering "
+        "None or cannabis-only."
     ),
     "exemption_activity_scope": (
         "Explain which activities remain allowed under the exemption, using the exemption text together with the operative activity language when necessary."
@@ -635,9 +738,9 @@ _COMPLETION_RULES_BY_FAMILY = {
         "local ordinance is self-contained, or when outside law is only cited as background authority, "
         "parallel wording, a penalty cross-reference, an enforcement reference, or some other incidental "
         "mention. Do not treat a bare citation as making outside-law review necessary. If the answer is "
-        "Yes, identify the specific state or federal citation that must be reviewed. If the answer is No, "
+        "Yes, identify only the smallest specific state or federal citation that must be reviewed. If the answer is No, "
         "say that no outside-law review is necessary and do not elevate incidental citations as the "
-        "relevant law."
+        "relevant law. Do not dump every citation found in the retrieved chapter set."
     ),
 }
 

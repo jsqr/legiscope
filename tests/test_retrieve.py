@@ -1418,3 +1418,150 @@ class TestFilterSections:
 
         with pytest.raises(ValueError, match="client is required"):
             filter_sections(None, Mock(), "query")  # type: ignore
+
+    def test_relevance_filter_worker_count_drops_for_large_prompts(self, monkeypatch):
+        """Large prompt payloads should reduce the allowed parallelism."""
+        from legiscope.retrieve import (
+            SectionResult,
+            _determine_relevance_filter_worker_count,
+        )
+
+        monkeypatch.setattr(
+            "legiscope.retrieve.DEFAULT_RELEVANCE_FILTER_TARGET_CONCURRENT_TOKENS",
+            1000,
+        )
+
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="H1",
+                body_text="long " * 300,
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.0,
+                segment_count=1,
+            ),
+            SectionResult(
+                section_id="s2",
+                heading_text="H2",
+                body_text="short body",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.0,
+                segment_count=1,
+            ),
+        ]
+
+        worker_count = _determine_relevance_filter_worker_count(
+            sections,
+            query="query",
+            retrieval_guidance=None,
+            requested_max_concurrency=4,
+        )
+
+        assert worker_count == 1
+
+    def test_filter_sections_uses_client_factory_for_concurrent_assessment(
+        self, monkeypatch
+    ):
+        """Concurrent filtering should obtain per-thread clients from the supplied factory."""
+        from legiscope.retrieve import (
+            QueryInfo,
+            RelevanceAssessment,
+            SectionCollection,
+            SectionResult,
+            filter_sections,
+        )
+
+        monkeypatch.setattr(
+            "legiscope.retrieve.DEFAULT_RELEVANCE_FILTER_TARGET_CONCURRENT_TOKENS",
+            20000,
+        )
+
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="H1",
+                body_text="B1",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.0,
+                segment_count=1,
+            ),
+            SectionResult(
+                section_id="s2",
+                heading_text="H2",
+                body_text="B2",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.0,
+                segment_count=1,
+            ),
+        ]
+
+        input_results = SectionCollection(
+            sections=sections,
+            query_info=QueryInfo(original_query="query"),
+        )
+
+        created_clients: list[object] = []
+        seen_client_ids: set[int] = set()
+
+        def client_factory() -> Instructor:
+            client = Mock(spec=Instructor)
+            created_clients.append(client)
+            return client
+
+        def fake_is_relevant(
+            client: Instructor,
+            query: str,
+            text: str,
+            model: str | None = None,
+            retrieval_guidance: RetrievalGuidance | None = None,
+        ) -> RelevanceAssessment:
+            seen_client_ids.add(id(client))
+            return RelevanceAssessment(
+                relevance_score=0.9 if "B1" in text else 0.2,
+                reasoning="ok",
+            )
+
+        with patch("legiscope.retrieve.is_relevant", side_effect=fake_is_relevant):
+            result = filter_sections(
+                Mock(spec=Instructor),
+                input_results,
+                "query",
+                relevance_threshold=0.5,
+                max_concurrency=2,
+                client_factory=client_factory,
+            )
+
+        assert len(created_clients) >= 1
+        assert seen_client_ids == {id(client) for client in created_clients}
+        assert [section.section_id for section in result.sections] == ["s1"]
+
+    def test_resolve_relevance_filter_client_factory_requires_self_hosted_source(self):
+        """Only self-hosted configs with an explicit factory should enable concurrency."""
+        from legiscope.retrieve import resolve_relevance_filter_client_factory
+        from legiscope.utils import LLMConfig
+
+        local_factory = Mock(spec=Instructor)
+
+        external_llm = LLMConfig(
+            client=Mock(spec=Instructor),
+            model="test-model",
+            source="external",
+            client_factory=local_factory,
+        )
+        self_hosted_llm = LLMConfig(
+            client=Mock(spec=Instructor),
+            model="test-model",
+            source="self_hosted",
+            client_factory=local_factory,
+        )
+
+        assert resolve_relevance_filter_client_factory(external_llm) is None
+        assert resolve_relevance_filter_client_factory(self_hosted_llm) is local_factory

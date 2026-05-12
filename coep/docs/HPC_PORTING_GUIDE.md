@@ -359,6 +359,7 @@ combined query plus judge workload for your target node shape.
 | Benchmark results (DVC-tracked) | `data/output/{STATE}-{Locality}/benchmark_results.csv` |
 | Benchmark results (timestamped copy) | `data/output/{STATE}-{Locality}/benchmark_results_{timestamp}.csv` |
 | Benchmark metrics (DVC metrics) | `data/output/{STATE}-{Locality}/benchmark_metrics.json` |
+| Benchmark metrics (timestamped copy) | `data/output/{STATE}-{Locality}/benchmark_metrics_{timestamp}.json` |
 | Debug artifacts (optional) | `data/output/{STATE}-{Locality}/debug/` containing `retrieval_stage_<timestamp>.csv`, `relevance_stage_<timestamp>.csv`, and `query_stage_<timestamp>.csv` |
 
 ### Benchmark Query Construction
@@ -1592,8 +1593,8 @@ The script produces:
 
 | Output File | Contents |
 |-------------|----------|
-| `all_jurisdictions_metrics.csv` | Per-jurisdiction accuracy, scores, and counts (ranked) |
-| `all_jurisdictions_benchmark.csv` | All per-query results concatenated into one CSV |
+| `all_jurisdictions_metrics_<YYYYMMDD_HHMMSS>.csv` | Per-jurisdiction accuracy, scores, and counts (ranked) |
+| `all_jurisdictions_benchmark_<YYYYMMDD_HHMMSS>.csv` | All per-query results concatenated into one CSV |
 | Terminal report | Formatted summary with per-jurisdiction accuracy and overall stats |
 
 When `--docx-dir` is provided, the script also reports which expected
