@@ -210,37 +210,83 @@ else
     say ">>> Keeping existing .env"
 fi
 
-QUERY_FILE_NAME="$(awk -F'"' '/default_queries_file:/ {print $2; exit}' config.yaml)"
-MONQCLE_REL_PATH="$(awk -F'"' '/monqcle_report:/ {print $2; exit}' config.yaml)"
-QUERY_PATH="data/queries/${QUERY_FILE_NAME}"
-MONQCLE_PATH="${MONQCLE_REL_PATH}"
+read_config_scalar_or_list() {
+    local key="$1"
+    awk -v key="$key" '
+        function trim_quotes(value) {
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            gsub(/^"/, "", value)
+            gsub(/"$/, "", value)
+            return value
+        }
+        {
+            if ($0 ~ "^[[:space:]]*" key ":[[:space:]]*\"") {
+                line = $0
+                sub("^[[:space:]]*" key ":[[:space:]]*", "", line)
+                print trim_quotes(line)
+                in_list = 0
+                next
+            }
+            if ($0 ~ "^[[:space:]]*" key ":[[:space:]]*$") {
+                in_list = 1
+                next
+            }
+            if (in_list && $0 ~ "^[[:space:]]*-[[:space:]]*\"") {
+                line = $0
+                sub("^[[:space:]]*-[[:space:]]*", "", line)
+                print trim_quotes(line)
+                next
+            }
+            if (in_list && $0 ~ "^[[:space:]]*[[:alnum:]_]+:") {
+                in_list = 0
+            }
+        }
+    ' config.yaml
+}
 
-if [[ -z "$QUERY_FILE_NAME" ]]; then
+readarray -t QUERY_FILE_NAMES < <(read_config_scalar_or_list "default_queries_file")
+readarray -t MONQCLE_REL_PATHS < <(read_config_scalar_or_list "monqcle_report")
+
+if [[ ${#QUERY_FILE_NAMES[@]} -eq 0 ]]; then
     echo "Error: could not determine paths.default_queries_file from config.yaml" >&2
     exit 1
 fi
 
+if [[ ${#MONQCLE_REL_PATHS[@]} -eq 0 ]]; then
+    echo "Error: could not determine paths.monqcle_report from config.yaml" >&2
+    exit 1
+fi
+
 say ">>> Active inputs from config.yaml"
-say "Query CSV    : ${QUERY_PATH}"
-say "MonQcle CSV  : ${MONQCLE_PATH}"
+for query_file_name in "${QUERY_FILE_NAMES[@]}"; do
+    say "Query CSV    : data/queries/${query_file_name}"
+done
+for monqcle_rel_path in "${MONQCLE_REL_PATHS[@]}"; do
+    say "MonQcle CSV  : ${monqcle_rel_path}"
+done
 say ""
 
 missing=0
 
 say ">>> Verifying expected inputs"
-if [[ -f "$QUERY_PATH" ]]; then
-    say "[ok] Query CSV present"
-else
-    warn "Query CSV missing: ${QUERY_PATH}"
-    missing=$((missing + 1))
-fi
+for query_file_name in "${QUERY_FILE_NAMES[@]}"; do
+    query_path="data/queries/${query_file_name}"
+    if [[ -f "$query_path" ]]; then
+        say "[ok] Query CSV present: ${query_path}"
+    else
+        warn "Query CSV missing: ${query_path}"
+        missing=$((missing + 1))
+    fi
+done
 
-if [[ -f "$MONQCLE_PATH" ]]; then
-    say "[ok] MonQcle CSV present"
-else
-    warn "MonQcle CSV missing: ${MONQCLE_PATH}"
-    missing=$((missing + 1))
-fi
+for monqcle_path in "${MONQCLE_REL_PATHS[@]}"; do
+    if [[ -f "$monqcle_path" ]]; then
+        say "[ok] MonQcle CSV present: ${monqcle_path}"
+    else
+        warn "MonQcle CSV missing: ${monqcle_path}"
+        missing=$((missing + 1))
+    fi
+done
 
 docx_count=0
 if compgen -G "${DOCX_STAGE_DIR}/*.docx" >/dev/null; then

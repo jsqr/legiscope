@@ -26,6 +26,45 @@ _SPEC.loader.exec_module(benchmark_pipeline)
 
 
 class TestBenchmarkPipelineHelpers:
+    def test_build_ground_truth_df_from_reports_merges_distinct_variable_families(
+        self, tmp_path
+    ):
+        dpl_path = tmp_path / "Drug_Paraphernalia_Laws_Standard_Report_20260501.csv"
+        ssp_path = tmp_path / "SSP_Laws_Standard_Report_20260513.csv"
+        pl.DataFrame(
+            {
+                "name": ["Jurisdiction A"],
+                "series_title": ["DPL_2025_Consolidated"],
+                "dp_law": ["Yes"],
+            }
+        ).write_csv(dpl_path)
+        pl.DataFrame(
+            {
+                "name": ["Jurisdiction A"],
+                "series_title": ["SSP_2025_Consolidated"],
+                "ssp_law": ["No"],
+            }
+        ).write_csv(ssp_path)
+
+        combined = benchmark_pipeline._build_ground_truth_df_from_reports(
+            [dpl_path, ssp_path],
+            "Jurisdiction A",
+            ["dp_law", "ssp_law"],
+        )
+
+        assert combined.sort("variable_name")["variable_name"].to_list() == [
+            "dp_law",
+            "ssp_law",
+        ]
+        assert (
+            combined.filter(pl.col("variable_name") == "dp_law")[0, "ground_truth"]
+            == "Yes"
+        )
+        assert (
+            combined.filter(pl.col("variable_name") == "ssp_law")[0, "ground_truth"]
+            == "No"
+        )
+
     def test_ensure_generation_outcome_columns_derives_filtered_and_abstention_flags(
         self,
     ):
@@ -633,6 +672,66 @@ class TestBenchmarkPipelineHelpers:
         assert summary["scored_point_ceiling"] == 0.0
         assert summary["earned_points"] == 0.0
         assert summary["score_percent"] == 0.0
+
+    def test_combined_query_set_scoring_includes_ssp_multi_response_rows(self):
+        """Mixed DPL+SSP benchmark summaries should count all combined queries."""
+        eval_scored_df = pl.DataFrame(
+            {
+                "benchmark_row_id": [0, 1, 2, 2, 2],
+                "variable_name": [
+                    "dp_law",
+                    "ssp_law",
+                    "ssp_restrict",
+                    "ssp_restrict",
+                    "ssp_restrict",
+                ],
+                "evaluation_mode": [
+                    "whole_answer",
+                    "whole_answer",
+                    "response_option",
+                    "response_option",
+                    "response_option",
+                ],
+                "eval_label": [
+                    "Correct",
+                    "Incorrect",
+                    "Correct",
+                    "Incorrect",
+                    "Correct",
+                ],
+            }
+        )
+
+        scoring_methods = benchmark_pipeline._summarize_scoring_methods(eval_scored_df)
+        collapsed = benchmark_pipeline._summarize_collapsed_query_accuracy(
+            eval_scored_df,
+            total_queries=4,
+        )
+        weighted = benchmark_pipeline._summarize_weighted_query_score(
+            eval_scored_df,
+            total_queries=4,
+        )
+
+        assert scoring_methods == {
+            "whole_answer_rows": 2,
+            "response_option_rows": 3,
+            "and_or_questions_scored_option_level": 1,
+        }
+
+        assert collapsed["processed_queries"] == 4
+        assert collapsed["scored_queries"] == 3
+        assert collapsed["unscored_queries"] == 1
+        assert collapsed["correct_queries"] == 1
+        assert collapsed["incorrect_queries"] == 3
+        assert round(collapsed["accuracy_rate"], 2) == 25.00
+
+        assert weighted["processed_queries"] == 4
+        assert weighted["scored_queries"] == 3
+        assert weighted["unscored_queries"] == 1
+        assert round(weighted["points_per_query"], 2) == 33.33
+        assert round(weighted["scored_point_ceiling"], 2) == 100.00
+        assert round(weighted["earned_points"], 2) == 55.56
+        assert round(weighted["score_percent"], 2) == 55.56
 
     def test_eval_concat_preserves_columns_needed_for_scoring_summary(self):
         llm_eval_scored_df = pl.DataFrame(

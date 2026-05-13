@@ -22,6 +22,7 @@ from legiscope.query import (
     _build_legal_prompts,
     _normalize_option_text,
     _normalize_structured_short_answer,
+    combine_query_input_batches,
     load_queries,
     QueryInput,
     QuerySettings,
@@ -290,7 +291,6 @@ class TestLoadQueries:
             assert queries[0].metadata["priority"] == 1
         finally:
             os.unlink(temp_path)
-
     def test_load_queries_custom_adjuster(self):
         """Test caller-provided query adjuster hook."""
         df = pl.DataFrame(
@@ -387,6 +387,55 @@ class TestLoadQueries:
             }
         finally:
             os.unlink(temp_path)
+
+
+class TestCombineQueryInputBatches:
+    def test_rekeys_duplicate_question_numbers_to_variable_names(self):
+        hierarchy = hierarchy_to_metadata(QueryHierarchy(query_id="Q1"))
+
+        combined = combine_query_input_batches(
+            [
+                [
+                    QueryInput(
+                        question="Drug paraphernalia law?",
+                        variable_name="dp_law",
+                        metadata={
+                            "question_number": "Q1",
+                            "query_id": "Q1",
+                            "hierarchy": hierarchy,
+                        },
+                        query_id="Q1",
+                    )
+                ],
+                [
+                    QueryInput(
+                        question="SSP law?",
+                        variable_name="ssp_law",
+                        metadata={
+                            "question_number": "Q1",
+                            "query_id": "Q1",
+                            "hierarchy": hierarchy,
+                        },
+                        query_id="Q1",
+                    )
+                ],
+            ]
+        )
+
+        assert [query.query_id for query in combined] == ["dp_law", "ssp_law"]
+        assert combined[0].metadata["query_id"] == "dp_law"
+        assert combined[1].metadata["query_id"] == "ssp_law"
+        assert combined[0].metadata["hierarchy"]["query_id"] == "dp_law"
+        assert combined[1].metadata["hierarchy"]["query_id"] == "ssp_law"
+
+    def test_rejects_duplicate_variable_names_across_batches(self):
+        with pytest.raises(ValueError, match="Duplicate variable_name values"):
+            combine_query_input_batches(
+                [
+                    [QueryInput(question="Q1", variable_name="shared_var")],
+                    [QueryInput(question="Q2", variable_name="shared_var")],
+                ]
+            )
 
 
 @pytest.fixture(autouse=True)

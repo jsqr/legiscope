@@ -177,7 +177,6 @@ query:
     enabled: true
 
 benchmark:
-  series_title: "DPL_2025_Consolidated"
   evaluation:
     max_concurrency: 4
 ```
@@ -323,11 +322,11 @@ and runs automatically as part of `dvc exp run`.
 
 ### Workflow
 
-1. **Load queries** from `config.default_queries_path()`
+1. **Load queries** from `config.default_queries_paths()`
   (structured CSV with `variable_name`, `query_text`, `coding_instructions`,
   `response_options`, and optional context fields such as `prepend_text`)
-2. **Load MonQcle data** from `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv`,
-   filter to target jurisdiction
+2. **Load MonQcle data** from all configured report paths in `config.yaml`,
+   filter each report to the target jurisdiction, and merge them by `variable_name`
 3. **Construct stage-specific prompts**: `coep/src/query.py` builds the
   completion-oriented `question`, while `coep/src/retrieval_guidance.py`
   derives retrieval, relevance, and completion guidance from
@@ -347,8 +346,8 @@ combined query plus judge workload for your target node shape.
 
 | Input | Path | Notes |
 |-------|------|-------|
-| Queries | `data/queries/<paths.default_queries_file>` | Config-driven benchmark query CSV; same file is used for all jurisdictions |
-| MonQcle ground truth | `coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv` | **One file with data for all cities**; filtered by jurisdiction ID at runtime |
+| Queries | `data/queries/<paths.default_queries_file>` | Config-driven benchmark query CSV list; all listed files are concatenated in query order |
+| MonQcle ground truth | `paths.monqcle_report` entries under `coep/data/monqcle_data/` | All listed files are filtered by jurisdiction and merged by `variable_name` at runtime |
 | ChromaDB index | `data/chroma_db/` | Must be pre-built via DVC pipeline |
 | Sections parquet | `data/laws/{STATE}/{Locality}/{code-slug}/sections.parquet` | Pre-built via DVC pipeline |
 
@@ -1475,7 +1474,8 @@ The benchmark pipeline automatically:
 
 1. Maps the `jurisdiction_id` (e.g., `PA-Philadelphia`) to the full MonQcle
    locality name using `jurisdiction_id_to_monqcle_name()` in `coep/src/eval.py`
-2. Filters the CSV to the matching row + series title
+2. Filters the CSV to the matching row and the hard-coded report-specific series title
+3. If multiple rows still match, selects the one with the most recent `through_to` date
 3. Melts to long format (one row per variable)
 4. Joins with RAG query results by `variable_name`
 

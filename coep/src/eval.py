@@ -5,6 +5,7 @@ against ground truth human-authored answers.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from threading import local
 from typing import Any, Literal, TypeAlias
 
@@ -25,6 +26,19 @@ EvaluationErrorType: TypeAlias = Literal[
     "output_contract_error",
     "other",
 ]
+
+
+_SERIES_TITLE_BY_MONQCLE_REPORT_NAME = {
+    "Drug_Paraphernalia_Laws_Standard_Report_20260501.csv": "DPL_2025_Consolidated",
+    "SSP_Laws_Standard_Report_20260513.csv": "SSP_2025_Consolidated",
+}
+
+
+def expected_series_title_for_monqcle_report(
+    monqcle_path: str | Path,
+) -> str | None:
+    """Return the project-specific series title for a known MonQcle report."""
+    return _SERIES_TITLE_BY_MONQCLE_REPORT_NAME.get(Path(monqcle_path).name)
 
 
 class EvaluationResult(BaseModel):
@@ -317,7 +331,7 @@ class Evaluator:
 def load_and_filter_monqcle(
     monqcle_path: str,
     jurisdiction_name: str,
-    series_title: str = "DPL_2025_Consolidated",
+    series_title: str | None = None,
 ) -> pl.DataFrame:
     """
     Load MonQcle Standard Report and filter to target jurisdiction.
@@ -328,34 +342,75 @@ def load_and_filter_monqcle(
     Args:
         monqcle_path: Path to MonQcle Standard Report CSV
         jurisdiction_name: Full jurisdiction name (e.g., "Philadelphia, Philadelphia County, Pennsylvania, United States")
-        series_title: Series to filter on (default: DPL_2025_Consolidated)
+        series_title: Series to filter on. When omitted, known COEP reports use
+            a hard-coded project-specific series title based on the report name.
+            If the requested series is absent for this jurisdiction, a
+            report-local single available series is used as a fallback.
 
     Returns:
         DataFrame with single row for target jurisdiction
     """
     df = pl.read_csv(monqcle_path)
-
-    # Filter to target jurisdiction and series
-    filtered = df.filter(
-        (pl.col("name") == jurisdiction_name) & (pl.col("series_title") == series_title)
+    resolved_series_title = series_title or expected_series_title_for_monqcle_report(
+        monqcle_path
     )
 
-    if len(filtered) == 0:
-        available = (
-            df.filter(pl.col("series_title") == series_title)["name"]
-            .unique()
-            .sort()
-            .to_list()
-        )
+    jurisdiction_rows = df.filter(pl.col("name") == jurisdiction_name)
+    if len(jurisdiction_rows) == 0:
+        available = df["name"].unique().sort().to_list()
         raise ValueError(
-            f"No records found for jurisdiction '{jurisdiction_name}' with series '{series_title}'. "
+            f"No records found for jurisdiction '{jurisdiction_name}'. "
             f"Available jurisdictions: {available[:20]}"
         )
 
-    if len(filtered) > 1:
-        logger.warning(
-            f"Multiple records found for {jurisdiction_name}, using first one"
+    filtered = jurisdiction_rows
+    if resolved_series_title:
+        filtered = jurisdiction_rows.filter(
+            pl.col("series_title") == resolved_series_title
         )
+        if len(filtered) == 0:
+            available_series = (
+                jurisdiction_rows["series_title"].drop_nulls().unique().sort().to_list()
+            )
+            if len(available_series) == 1:
+                inferred_series = str(available_series[0])
+                logger.info(
+                    f"Series '{resolved_series_title}' not found in {monqcle_path} for "
+                    f"{jurisdiction_name}; using only available series '{inferred_series}'"
+                )
+                filtered = jurisdiction_rows.filter(
+                    pl.col("series_title") == inferred_series
+                )
+            else:
+                raise ValueError(
+                    f"No records found for jurisdiction '{jurisdiction_name}' with series '{resolved_series_title}'. "
+                    f"Available series for this jurisdiction: {available_series}"
+                )
+
+    if len(filtered) > 1:
+        if "through_to" in filtered.columns:
+            filtered = (
+                filtered.with_columns(
+                    pl.col("through_to")
+                    .cast(pl.String)
+                    .str.strptime(pl.Date, strict=False)
+                    .alias("_through_to_date")
+                )
+                .sort(
+                    by=["_through_to_date", "through_to"],
+                    descending=[True, True],
+                    nulls_last=True,
+                )
+                .drop("_through_to_date")
+            )
+            logger.warning(
+                "Multiple MonQcle rows matched %s; using the row with the most recent through_to date (%s)"
+                % (jurisdiction_name, filtered["through_to"][0])
+            )
+        else:
+            logger.warning(
+                f"Multiple records found for {jurisdiction_name}, using first one"
+            )
         filtered = filtered.head(1)
 
     logger.info(f"Found MonQcle record for {jurisdiction_name}")

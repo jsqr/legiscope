@@ -95,7 +95,6 @@ retrieval:
 
 # Benchmark evaluation settings
 benchmark:
-  series_title: DPL_2025_Consolidated
   evaluation:
     max_concurrency: 4
 

@@ -51,7 +51,7 @@ This script is **config-driven**:
 - Jurisdiction is read from `params.yaml` (`jurisdiction.*`)
 - Query/retrieval behavior is read from `params.yaml` (via `BatchQuerySettings`)
 - Paths are read from `config.yaml` (`paths.default_queries_file`, `paths.monqcle_report`, `paths.output_dir`)
-- Benchmark series title is read from `params.yaml` at `benchmark.series_title`
+- MonQcle series titles are chosen inside COEP based on the configured report filenames.
 
 ### Quick Start (Standalone)
 ```bash
@@ -68,7 +68,7 @@ uv run python coep/scripts/benchmark_pipeline.py --test-limit 5
 ### Full Configuration
 ```bash
 # Example config-first workflow
-# 1) Set jurisdiction + benchmark options in params.yaml 
+# 1) Set jurisdiction + benchmark evaluation/retrieval options in params.yaml 
 #    (to get transparent debug files, set retrieval.debug to true)
 # 2) Set query/report/output paths in config.yaml
 # 3) Run:
@@ -88,23 +88,24 @@ uv run python coep/scripts/benchmark_pipeline.py
 
 ### Key Resolved Inputs (from config/params)
 
-- Queries CSV: `config.default_queries_path()`
-- MonQcle report CSV: `config.monqcle_report_path()` (repo-root-relative by default, not under `data_dir`)
+- Queries CSVs: `config.default_queries_paths()`
+- MonQcle report CSVs: `config.monqcle_report_paths()` (repo-root-relative by default, not under `data_dir`)
 - Output file: `config.output_dir() / {jurisdiction_id} / benchmark_results.csv` (DVC-tracked)
 - Timestamped copy: `config.output_dir() / {jurisdiction_id} / benchmark_results_{timestamp}.csv`
 - Metrics: `config.output_dir() / {jurisdiction_id} / benchmark_metrics.json` (DVC metrics)
 - Timestamped metrics copy: `config.output_dir() / {jurisdiction_id} / benchmark_metrics_{timestamp}.json`
-- Series title: `params["benchmark"]["series_title"]` (fallback: `DPL_2025_Consolidated`)
+- Series selection: hard-coded per report in `coep/src/eval.py` (`DPL_2025_Consolidated` for the DPL report and `SSP_2025_Consolidated` for the SSP report)
 
 Jurisdiction, retrieval settings (including HYDE/relevance filtering and debug outputs), and query validation settings are read from `params.yaml`.
 
 ## How it Works
 
-1.  **Generation**: The script executes the RAG pipeline for the configured queries CSV (optionally truncated by `--test-limit`).
+1.  **Generation**: The script executes the RAG pipeline for the configured query CSV list (optionally truncated by `--test-limit`).
     - It uses `run_queries` with `n-results` retrieved segments.
     - Optionally applies **HYDE** (Hypothetical Document Embeddings) to improve retrieval.
     - Optionally applies **Relevance Filtering** to remove irrelevant segments before generation.
-    - It reads in the MonQcle Standard Report, isolates the correct record, and melts it to a question-answer pair format.
+    - It reads all configured MonQcle Standard Reports, isolates the correct record from each report, and merges them into one question-answer pair table keyed by `variable_name`.
+    - If a report contains multiple matching rows for the same jurisdiction and series, the row with the most recent `through_to` date is selected.
     - It applies COEP-specific query preprocessing via `adjust_drug_paraphernalia_queries()`.
         - Split MonQcle variables are the primary benchmark surface. Legacy combined variables such as
             `dp_collected_combined` and `dp_state_fed_combined` are expanded only as compatibility aliases when

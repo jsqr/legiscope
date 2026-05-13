@@ -5,8 +5,8 @@ Loads ``config.yaml`` (deployment/environment-specific settings) and exposes
 a singleton ``Config`` accessor with dot-path key lookup.
 
 Most path helpers are rooted at ``data_dir()`` and therefore follow the
-``LEGISCOPE_DATA_DIR`` override. ``monqcle_report_path()`` is the intentional
-exception: it points to a COEP-specific dataset outside the main data root, so
+``LEGISCOPE_DATA_DIR`` override. MonQcle report paths are the intentional
+exception: they point to COEP-specific datasets outside the main data root, so
 relative values are resolved from the repository/config root instead.
 """
 
@@ -124,25 +124,62 @@ def output_dir() -> Path:
     return data_dir() / get("paths.output_dir", "output")
 
 
+def _coerce_config_paths(value: Any, *, default: str) -> list[Path]:
+    """Normalize a config path value into a non-empty list of raw paths."""
+    if value is None:
+        return [Path(default)]
+    if isinstance(value, (str, os.PathLike)):
+        return [Path(value)]
+    if isinstance(value, list):
+        normalized_paths = [Path(item) for item in value if str(item).strip()]
+        if normalized_paths:
+            return normalized_paths
+    raise ValueError(
+        "Config path entries must be a string or a non-empty list of strings."
+    )
+
+
+def default_queries_paths() -> list[Path]:
+    """Return the configured benchmark/query CSV paths."""
+    raw_paths = _coerce_config_paths(
+        get("paths.default_queries_file"),
+        default="queries.csv",
+    )
+    return [queries_dir() / raw_path for raw_path in raw_paths]
+
+
 def default_queries_path() -> Path:
-    """Return the default queries CSV path."""
-    return queries_dir() / get("paths.default_queries_file", "queries.csv")
+    """Return the first configured queries CSV path."""
+    return default_queries_paths()[0]
+
+
+def _resolve_repo_relative_paths(raw_paths: list[Path]) -> list[Path]:
+    """Resolve repo-relative config paths against the directory containing config.yaml."""
+    config_root = _find_config_path().parent
+    resolved_paths: list[Path] = []
+    for raw_path in raw_paths:
+        if raw_path.is_absolute():
+            resolved_paths.append(raw_path)
+        else:
+            resolved_paths.append(config_root / raw_path)
+    return resolved_paths
+
+
+def monqcle_report_paths() -> list[Path]:
+    """Return the configured COEP MonQcle report paths."""
+    raw_paths = _coerce_config_paths(
+        get("paths.monqcle_report"),
+        default="coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
+    )
+    return _resolve_repo_relative_paths(raw_paths)
 
 
 def monqcle_report_path() -> Path:
-    """Return the COEP MonQcle report path.
+    """Return the first configured COEP MonQcle report path.
 
     Unlike the other convenience path helpers, this location is intentionally
     not nested under ``data_dir()`` because the benchmark fixture lives in the
     repository's COEP data tree. Absolute config values are returned as-is;
     relative values are resolved from the directory containing ``config.yaml``.
     """
-    raw_path = Path(
-        get(
-            "paths.monqcle_report",
-            "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
-        )
-    )
-    if raw_path.is_absolute():
-        return raw_path
-    return _find_config_path().parent / raw_path
+    return monqcle_report_paths()[0]

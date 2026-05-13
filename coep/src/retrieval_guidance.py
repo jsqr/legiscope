@@ -14,23 +14,67 @@ _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
         "Retrieve operative ordinance text that establishes whether the jurisdiction bans or regulates "
         "drug paraphernalia used with controlled substances beyond narrow business-only rules."
     ),
+    "ssp_scope": (
+        "Retrieve operative municipal ordinance text establishing whether the jurisdiction authorizes, "
+        "prohibits, or limits syringe service programs, syringe exchanges, needle exchanges, harm-reduction "
+        "syringe distribution, or closely synonymous SSP operations. Distinguish true SSP programs from "
+        "syringe buyback or disposal-only programs."
+    ),
     "date_enactment": (
         "Retrieve ordinance metadata and amendment history that identify enactment, adoption, approval, "
         "or became-law dates for the target paraphernalia ordinance."
+    ),
+    "ssp_date_enactment": (
+        "Retrieve ordinance metadata and amendment history that identify enactment, adoption, approval, "
+        "or passed dates for the target SSP ordinance."
     ),
     "date_effective": (
         "Retrieve effective-date clauses and ordinance metadata stating when the target paraphernalia law "
         "takes effect or becomes effective."
     ),
+    "ssp_date_effective": (
+        "Retrieve effective-date clauses and ordinance metadata stating when the target SSP ordinance takes "
+        "effect or becomes effective."
+    ),
     "date_current_through": (
         "Retrieve code-level recency statements, current-through notices, edition headers, or update "
         "metadata for the municipal code source."
+    ),
+    "ssp_date_current_through": (
+        "Retrieve code-level recency statements, current-through notices, edition headers, update metadata, "
+        "or ordinance-ratification dates relevant to when the SSP ordinance source was current."
+    ),
+    "ssp_current_through_status": (
+        "Retrieve official current-through notices, partial current-through statements, edition metadata, "
+        "or if none exist the most recent ratified ordinance date used as the fallback source for the SSP "
+        "current-through answer."
     ),
     "reference_necessity": (
         "Retrieve definition, incorporation, adoption, and scope clauses showing whether state or federal "
         "law must actually be read to interpret the local paraphernalia ordinance. Also retrieve local "
         "self-contained definition text that shows the ordinance can be answered from local law alone. "
         "Mere citations and authority references are low value. "
+    ),
+    "ssp_reference_necessity": (
+        "Retrieve incorporation, adoption, authorization, prohibition, and restriction clauses showing whether "
+        "state or federal law must actually be read to determine the local SSP rule. Also retrieve local "
+        "self-contained SSP text showing the answer can be resolved from local law alone. Mere citations and "
+        "authority references are low value."
+    ),
+    "ssp_prohibition": (
+        "Retrieve operative ordinance text stating whether SSPs are prohibited, banned, unlawful, not "
+        "permitted, or barred, including any carve-out for programs authorized by a state health department "
+        "or other state entity."
+    ),
+    "ssp_authorization": (
+        "Retrieve operative ordinance text stating whether SSPs are authorized, permitted, approved, allowed, "
+        "or established, including any condition limiting authorization to a declared public health emergency "
+        "or disease outbreak."
+    ),
+    "ssp_restriction": (
+        "Retrieve operative SSP restriction text covering caps on program sites, distance buffers from schools "
+        "or parks, visit frequency limits, syringe-quantity limits, mobile-site limits, permit or license "
+        "requirements, or similar operational restrictions."
     ),
     "definition_type": (
         "Retrieve definition sections and closely linked operative text that describe covered paraphernalia "
@@ -178,18 +222,28 @@ def _expected_exemption_dependency_labels(
 
 _FAMILY_BY_VARIABLE = {
     "dp_law": "existence_scope",
+    "ssp_law": "ssp_scope",
     "dp_enacted": "date_enactment",
+    "ssp_enacted": "ssp_date_enactment",
     "dp_effective_dt": "date_effective",
+    "ssp_effective_dt": "ssp_date_effective",
     "dp_collected": "date_current_through",
     "dp_valid_imp": "date_current_through",
     "dp_collected_combined": "date_current_through",
+    "ssp_collected": "ssp_date_current_through",
+    "ssp_current_imp": "ssp_current_through_status",
     "dp_state_fed_reference": "reference_necessity",
     "dp_state_fed_citation": "reference_necessity",
     "dp_state_fed_combined": "reference_necessity",
+    "ssp_state_fed_reference": "ssp_reference_necessity",
+    "ssp_state_fed_citation": "ssp_reference_necessity",
     "dp_type": "definition_type",
     "dp_activity": "prohibited_activity",
     "dp_penalties": "penalty",
     "dp_exemption": "exemption_presence",
+    "ssp_prohibit": "ssp_prohibition",
+    "ssp_permit": "ssp_authorization",
+    "ssp_restrict": "ssp_restriction",
     "dp_exempt_sygen_activity": "exemption_activity_scope",
     "dp_exempt_sy_ssp_activity": "exemption_activity_scope",
     "dp_exempt_can_activity": "exemption_activity_scope",
@@ -229,6 +283,25 @@ _GUIDANCE_BY_FAMILY = {
             "inhalation device",
         ],
     ),
+    "ssp_scope": RetrievalGuidance(
+        guidance_topic="ssp_scope",
+        relevance_instructions=(
+            "Prefer operative local ordinance text that actually authorizes, prohibits, or limits syringe service "
+            "programs. High-value text expressly uses SSP, syringe exchange, needle exchange, harm reduction, or "
+            "similar program language. Reject syringe buyback, disposal-only, or generic public-health background "
+            "text unless it directly creates the local SSP rule being coded."
+        ),
+        anchor_terms=[
+            "syringe service program",
+            "syringe services",
+            "needle exchange",
+            "syringe exchange",
+            "harm reduction",
+            "hypodermic",
+            "needle dispensary",
+            "public health",
+        ],
+    ),
     "date_enactment": RetrievalGuidance(
         guidance_topic="date_enactment",
         relevance_instructions=(
@@ -251,6 +324,25 @@ _GUIDANCE_BY_FAMILY = {
             "amended",
         ],
     ),
+    "ssp_date_enactment": RetrievalGuidance(
+        guidance_topic="ssp_date_enactment",
+        relevance_instructions=(
+            "Prefer ordinance metadata and text that explicitly states when the SSP law was enacted, passed, "
+            "adopted, or approved. Amendment dates are also high value when the coding logic asks for the most "
+            "recent amendment in the target window. Reject effective dates and current-through dates unless the "
+            "date label is genuinely unknown and the ordinance-end date functions as the only enactment marker."
+        ),
+        anchor_terms=[
+            "enacted",
+            "passed",
+            "adopted",
+            "approved",
+            "ordinance no",
+            "amended",
+            "needle exchange",
+            "syringe service",
+        ],
+    ),
     "date_effective": RetrievalGuidance(
         guidance_topic="date_effective",
         relevance_instructions=(
@@ -265,6 +357,23 @@ _GUIDANCE_BY_FAMILY = {
             "takes effect",
             "become effective",
             "effective date",
+        ],
+    ),
+    "ssp_date_effective": RetrievalGuidance(
+        guidance_topic="ssp_date_effective",
+        relevance_instructions=(
+            "Prefer text explicitly labeled as the effective date for the SSP ordinance or language such as shall "
+            "take effect, takes effect, become effective, or eff. Reject enactment dates, approval dates, and "
+            "unlabeled dates. If the text does not clearly tie a date to effectiveness, it is low value."
+        ),
+        anchor_terms=[
+            "effective",
+            "eff",
+            "take effect",
+            "takes effect",
+            "become effective",
+            "effective date",
+            "syringe service",
         ],
     ),
     "date_current_through": RetrievalGuidance(
@@ -284,6 +393,40 @@ _GUIDANCE_BY_FAMILY = {
             "supplement",
             "updated",
             "ordinances passed through",
+        ],
+    ),
+    "ssp_date_current_through": RetrievalGuidance(
+        guidance_topic="ssp_date_current_through",
+        relevance_instructions=(
+            "Prefer source- or code-level recency statements describing when the municipal code or SSP ordinance "
+            "source was last updated, such as current through language, edition notices, update banners, or publisher "
+            "metadata. Reject ordinary section amendment dates unless the coding logic says to fall back to the most "
+            "recently ratified ordinance because no official current-through date is present."
+        ),
+        anchor_terms=[
+            "current through",
+            "current as of",
+            "supplement",
+            "edition",
+            "updated",
+            "ordinances passed through",
+            "syringe service",
+        ],
+    ),
+    "ssp_current_through_status": RetrievalGuidance(
+        guidance_topic="ssp_current_through_status",
+        relevance_instructions=(
+            "Prefer official current-through notices, partial published current-through dates, edition metadata, or "
+            "the enactment date of the most recently ratified ordinance used as the fallback source for the SSP "
+            "current-through answer. A pure data-collection date is low value unless no ordinance-derived date exists."
+        ),
+        anchor_terms=[
+            "current through",
+            "supplement",
+            "updated",
+            "ratified ordinance",
+            "passed",
+            "adopted",
         ],
     ),
     "reference_necessity": RetrievalGuidance(
@@ -309,6 +452,81 @@ _GUIDANCE_BY_FAMILY = {
             "federal law",
             "35 p.s.",
             "u.s.c.",
+        ],
+    ),
+    "ssp_reference_necessity": RetrievalGuidance(
+        guidance_topic="ssp_reference_necessity",
+        relevance_instructions=(
+            "Prefer text showing whether a cited state or federal law must actually be consulted to answer the SSP "
+            "survey question. A mere citation is not enough. High-value text either says the local ordinance adopts, "
+            "incorporates, or depends on an outside authorization, prohibition, or restriction standard, or makes clear "
+            "that the local SSP rule is self-contained."
+        ),
+        anchor_terms=[
+            "incorporate",
+            "adopt",
+            "as defined in",
+            "state health department",
+            "state law",
+            "federal law",
+            "public health law",
+            "administrative code",
+        ],
+    ),
+    "ssp_prohibition": RetrievalGuidance(
+        guidance_topic="ssp_prohibition",
+        relevance_instructions=(
+            "Prefer operative text that expressly bans, prohibits, or makes SSP operation unlawful. High-value passages "
+            "state that syringe exchange, needle exchange, or syringe service programs may not operate or are prohibited. "
+            "Reject mere permit requirements or narrower restrictions unless the same text creates a full ban."
+        ),
+        anchor_terms=[
+            "prohibited",
+            "unlawful",
+            "shall not operate",
+            "may not operate",
+            "needle exchange",
+            "syringe service",
+            "state health department",
+        ],
+    ),
+    "ssp_authorization": RetrievalGuidance(
+        guidance_topic="ssp_authorization",
+        relevance_instructions=(
+            "Prefer operative text that expressly authorizes, permits, or establishes SSPs. High-value passages say SSPs "
+            "may operate, are authorized, are permitted, or are allowed, including conditions tied to a declared public "
+            "health emergency or disease outbreak. Reject restrictions or the mere absence of a ban unless the text itself "
+            "creates affirmative authorization."
+        ),
+        anchor_terms=[
+            "authorized",
+            "permitted",
+            "may operate",
+            "allowed",
+            "public health emergency",
+            "disease outbreak",
+            "needle exchange",
+            "syringe service",
+        ],
+    ),
+    "ssp_restriction": RetrievalGuidance(
+        guidance_topic="ssp_restriction",
+        relevance_instructions=(
+            "Prefer operative SSP restriction text that expressly limits how programs may operate. High-value passages "
+            "state caps on sites, distance restrictions from schools or parks, visit-frequency limits, syringe-quantity "
+            "limits, mobile-site limits, permit or license requirements, or similar operational conditions. Reject outright "
+            "prohibitions when the question asks about restrictions rather than total bans."
+        ),
+        anchor_terms=[
+            "distance",
+            "schools",
+            "childcare",
+            "parks",
+            "mobile",
+            "permit",
+            "license",
+            "quantity of syringes",
+            "frequency of visits",
         ],
     ),
     "definition_type": RetrievalGuidance(
@@ -530,6 +748,24 @@ _VARIABLE_OVERRIDES = {
         ),
         anchor_terms=["incorporated by reference", "as defined in", "et seq."],
     ),
+    "ssp_current_imp": RetrievalGuidance(
+        completion_instructions=(
+            "For ssp_current_imp, code a Known option whenever the answer can be grounded in an official current-through notice, "
+            "a partial published current-through notice with month or day imputed, or the enactment date of the most recently "
+            "ratified ordinance used as the fallback for ssp_collected. Use Unknown, reflects date of data collection only when "
+            "the date truly comes from the data-collection date rather than any ordinance-derived date."
+        ),
+        anchor_terms=["current through", "supplement", "ratified ordinance", "data collection"],
+    ),
+    "ssp_state_fed_citation": RetrievalGuidance(
+        completion_instructions=(
+            "For ssp_state_fed_citation, return only the smallest specific statutory, regulatory, or administrative unit that the "
+            "local SSP ordinance actually depends on. Cite only provisions appearing in the same sentence, subsection, or "
+            "immediately adjacent chunk as the dependency-triggering language. Do not dump every state or federal citation "
+            "appearing anywhere in the retrieved materials."
+        ),
+        anchor_terms=["state health department", "public health law", "administrative code"],
+    ),
     "dp_state_fed_combined": RetrievalGuidance(
         relevance_instructions=(
             "For the combined survey question, answer yes only if the ordinance expressly incorporates, "
@@ -700,6 +936,27 @@ _COMPLETION_RULES_BY_FAMILY = {
         "Interpret the question as asking whether the ordinance prohibits or regulates drug paraphernalia "
         "used with controlled substances, not tobacco-only or other non-controlled-substance paraphernalia."
     ),
+    "ssp_scope": (
+        "Interpret the question as asking whether a local ordinance expressly authorizes, prohibits, or limits syringe service "
+        "programs, syringe exchange programs, needle exchange programs, or closely synonymous harm-reduction syringe programs. "
+        "Do not count syringe buyback or disposal-only programs as SSP authorization."
+    ),
+    "ssp_date_enactment": (
+        "Return only the enacted, passed, adopted, or approved date for the SSP ordinance. Do not substitute effective dates or "
+        "current-through dates unless the coding logic explicitly treats an unlabeled ordinance-end date as the only enactment marker."
+    ),
+    "ssp_date_effective": (
+        "Return only a date clearly tied to effectiveness for the SSP ordinance. If the date is unlabeled or tied only to passage or "
+        "approval, it is not enough."
+    ),
+    "ssp_date_current_through": (
+        "Prefer the official current-through source date for the SSP ordinance. If no official current-through date exists, the coding "
+        "logic may fall back to the most recently ratified ordinance date."
+    ),
+    "ssp_current_through_status": (
+        "For status coding, Known includes both published current-through notices and ordinance-derived fallback dates. Unknown is "
+        "reserved for dates that truly reflect only the date of data collection."
+    ),
     "definition_type": (
         "Describe only paraphernalia types tied to controlled-substance use and ground the answer in the legal "
         "definition or closely linked operative text."
@@ -741,6 +998,27 @@ _COMPLETION_RULES_BY_FAMILY = {
         "Yes, identify only the smallest specific state or federal citation that must be reviewed. If the answer is No, "
         "say that no outside-law review is necessary and do not elevate incidental citations as the "
         "relevant law. Do not dump every citation found in the retrieved chapter set."
+    ),
+    "ssp_reference_necessity": (
+        "Decision rule: Answer Yes only when the local SSP ordinance expressly incorporates, adopts, or depends on a state or "
+        "federal statute, regulation, or agency authorization such that reviewing that outside law is required to determine whether "
+        "SSPs are authorized, prohibited, or restricted. Answer No when the local ordinance is self-contained or the outside law is "
+        "only cited as background authority, implementation context, or an incidental reference. If the answer is Yes, identify only "
+        "the smallest specific outside-law citation that must be reviewed."
+    ),
+    "ssp_prohibition": (
+        "Answer Yes only when the ordinance expressly prohibits all SSPs. Restrictions, permit requirements, or regulation short of an "
+        "outright ban are not enough. Use the state-authorized exception label only when the ordinance bans SSPs but expressly carves "
+        "out programs authorized by a state health department or other state entity."
+    ),
+    "ssp_authorization": (
+        "Answer Yes only when the ordinance expressly authorizes or permits SSP operation. Restrictions or the mere absence of a ban "
+        "are not enough. Use the emergency-conditional label only when authorization is expressly limited to a declared local public "
+        "health emergency or disease outbreak."
+    ),
+    "ssp_restriction": (
+        "Select only restrictions explicitly supported by the operative legal text. Do not count outright bans as restrictions. Use No "
+        "restrictions listed only when the ordinance addresses SSPs but does not impose any listed operational restriction."
     ),
 }
 

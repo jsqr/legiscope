@@ -25,6 +25,7 @@ import ast
 import json
 import shutil
 import sys
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -53,11 +54,13 @@ from legiscope.query import (
     _normalize_option_text,
     _normalize_structured_short_answer,
     _split_response_options,
+    combine_query_input_batches,
     load_queries,
     run_queries,
 )
 from coep.src.eval import (
     Evaluator,
+    expected_series_title_for_monqcle_report,
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
     prepare_ground_truth_for_variables,
@@ -937,6 +940,72 @@ def _build_ground_truth_df(
     return prepare_ground_truth_for_variables(monqcle_row, variable_names)
 
 
+def _load_query_inputs_from_paths(query_paths: list[Path]):
+    """Load and combine benchmark query inputs from one or more CSV files."""
+    query_batches = []
+    for query_path in query_paths:
+        batch = load_queries(
+            str(query_path),
+            adjust_for_dataset=True,
+            query_adjuster=adjust_drug_paraphernalia_queries,
+        )
+        logger.info(f"Loaded {len(batch)} queries from {query_path}")
+        query_batches.append(batch)
+
+    return combine_query_input_batches(query_batches)
+
+
+def _build_ground_truth_df_from_reports(
+    monqcle_paths: list[Path],
+    monqcle_name: str,
+    variable_names: list[str],
+) -> pl.DataFrame:
+    """Load and merge long-form ground truth across one or more MonQcle reports."""
+    ground_truth_batches: list[pl.DataFrame] = []
+
+    for monqcle_path in monqcle_paths:
+        monqcle_row = load_and_filter_monqcle(
+            str(monqcle_path),
+            monqcle_name,
+            expected_series_title_for_monqcle_report(monqcle_path),
+        )
+        try:
+            ground_truth_df = _build_ground_truth_df(monqcle_row, variable_names)
+        except ValueError as exc:
+            if "No valid variable names found in MonQcle data" not in str(exc):
+                raise
+            logger.info(
+                f"Skipping MonQcle report with no matching variables for this benchmark run: {monqcle_path}"
+            )
+            continue
+
+        logger.info(
+            f"Loaded ground truth for {len(ground_truth_df)} variables from {monqcle_path}"
+        )
+        ground_truth_batches.append(ground_truth_df)
+
+    if not ground_truth_batches:
+        raise ValueError(
+            "None of the configured MonQcle reports contained ground-truth columns for the requested variables."
+        )
+
+    combined_ground_truth = pl.concat(ground_truth_batches, how="vertical_relaxed")
+    duplicate_variable_names = sorted(
+        variable_name
+        for variable_name, count in Counter(
+            combined_ground_truth["variable_name"].to_list()
+        ).items()
+        if count > 1
+    )
+    if duplicate_variable_names:
+        raise ValueError(
+            "Duplicate variable_name values were found across the configured MonQcle reports: "
+            + ", ".join(duplicate_variable_names)
+        )
+
+    return combined_ground_truth
+
+
 def _summarize_eval_error_types(df: pl.DataFrame) -> dict[str, int]:
     """Return compact counts for evaluation error types."""
     if "eval_error_type" not in df.columns or df.is_empty():
@@ -1189,8 +1258,8 @@ def main():
         logger.info(f"Debug mode enabled, writing debug files to {debug_dir}")
 
     # Resolve paths and settings from config/params
-    queries_path = config.default_queries_path()
-    monqcle_path = config.monqcle_report_path()
+    query_paths = config.default_queries_paths()
+    monqcle_paths = config.monqcle_report_paths()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = config.output_dir() / output_dir_name
     # DVC-tracked output (deterministic name for dvc.yaml outs:)
@@ -1201,9 +1270,6 @@ def main():
     metrics_path = output_dir / "benchmark_metrics.json"
     # Timestamped metrics copy for historical tracking (not DVC-tracked)
     timestamped_metrics_path = output_dir / f"benchmark_metrics_{timestamp}.json"
-    series_title = params.get("benchmark", {}).get(
-        "series_title", "DPL_2025_Consolidated"
-    )
     evaluation_max_concurrency = (
         params.get("benchmark", {}).get("evaluation", {}).get("max_concurrency", 1)
     )
@@ -1212,11 +1278,7 @@ def main():
     # Step 1: Load Queries
     # =========================================================================
     # Uses shared query loading logic (returns list[QueryInput])
-    query_inputs = load_queries(
-        str(queries_path),
-        adjust_for_dataset=True,
-        query_adjuster=adjust_drug_paraphernalia_queries,
-    )
+    query_inputs = _load_query_inputs_from_paths(query_paths)
 
     if args.test_limit:
         query_inputs = query_inputs[: args.test_limit]
@@ -1226,11 +1288,13 @@ def main():
     # Step 2: Load and Filter MonQcle Ground Truth
     # =========================================================================
     monqcle_name = jurisdiction_id_to_monqcle_name(jurisdiction_id)
-    monqcle_row = load_and_filter_monqcle(str(monqcle_path), monqcle_name, series_title)
-
     # Get variable names from query inputs for filtering ground truth
     variable_names = _requested_variable_names(query_inputs)
-    ground_truth_df = _build_ground_truth_df(monqcle_row, variable_names)
+    ground_truth_df = _build_ground_truth_df_from_reports(
+        monqcle_paths,
+        monqcle_name,
+        variable_names,
+    )
 
     # =========================================================================
     # Step 3: Initialize Resources

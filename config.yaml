@@ -10,11 +10,15 @@ paths:
   chroma_db_dir: "chroma_db"
   queries_dir: "queries"
   output_dir: "output"
-  default_queries_file: "DPL_queries_expanded_nested_fixed_20260501.csv"
+  default_queries_file:
+    - "DPL_queries_expanded_nested_fixed_20260501.csv"
+    - "SSP_queries_20260513.csv"
   # COEP-specific benchmark fixture path. Unlike the directories above, this is
   # resolved relative to the repository/config root (or used as-is if absolute),
   # not under data_dir.
-  monqcle_report: "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report_20260501.csv"
+  monqcle_report:
+    - "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report_20260501.csv"
+    - "coep/data/monqcle_data/SSP_Laws_Standard_Report_20260513.csv"
 
 database:
   chromadb:

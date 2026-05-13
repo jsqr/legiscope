@@ -14,6 +14,7 @@ import pytest
 from coep.src.eval import (
     Evaluator,
     EvaluationResult,
+    expected_series_title_for_monqcle_report,
     expand_combined_variables,
     jurisdiction_id_to_monqcle_name,
     load_and_filter_monqcle,
@@ -44,6 +45,20 @@ class TestJurisdictionMapping:
 
 class TestMonqcleLoading:
     """Test loading and filtering of MonQcle data."""
+
+    def test_expected_series_title_for_known_report_names(self):
+        assert (
+            expected_series_title_for_monqcle_report(
+                "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report_20260501.csv"
+            )
+            == "DPL_2025_Consolidated"
+        )
+        assert (
+            expected_series_title_for_monqcle_report(
+                "coep/data/monqcle_data/SSP_Laws_Standard_Report_20260513.csv"
+            )
+            == "SSP_2025_Consolidated"
+        )
 
     def test_load_and_filter_success(self):
         """Test successful loading and filtering."""
@@ -83,6 +98,53 @@ class TestMonqcleLoading:
                 load_and_filter_monqcle(
                     temp_path, "Jurisdiction B", series_title="Series 1"
                 )
+        finally:
+            os.unlink(temp_path)
+
+    def test_load_and_filter_falls_back_to_only_available_series(self):
+        """A single-series report should still load when the requested series differs."""
+        df = pl.DataFrame(
+            {
+                "name": ["Jurisdiction A"],
+                "series_title": ["Series SSP"],
+                "var1": ["val1"],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            df.write_csv(f.name)
+            temp_path = f.name
+
+        try:
+            result = load_and_filter_monqcle(
+                temp_path, "Jurisdiction A", series_title="Series DPL"
+            )
+            assert len(result) == 1
+            assert result["series_title"][0] == "Series SSP"
+        finally:
+            os.unlink(temp_path)
+
+    def test_load_and_filter_prefers_more_recent_through_to(self):
+        df = pl.DataFrame(
+            {
+                "name": ["Jurisdiction A", "Jurisdiction A"],
+                "series_title": ["Series 1", "Series 1"],
+                "through_to": ["2024-01-31", "2024-12-31"],
+                "var1": ["older", "newer"],
+            }
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            df.write_csv(f.name)
+            temp_path = f.name
+
+        try:
+            result = load_and_filter_monqcle(
+                temp_path, "Jurisdiction A", series_title="Series 1"
+            )
+            assert len(result) == 1
+            assert result["through_to"][0] == "2024-12-31"
+            assert result["var1"][0] == "newer"
         finally:
             os.unlink(temp_path)
 

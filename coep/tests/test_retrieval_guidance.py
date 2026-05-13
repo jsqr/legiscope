@@ -412,6 +412,124 @@ class TestCoepRetrievalGuidance:
         assert guidance.retrieval_instructions is not None
         assert "current-through notices" in guidance.retrieval_instructions
 
+    def test_all_ssp_variables_are_mapped(self):
+        variable_names = [
+            "ssp_law",
+            "ssp_enacted",
+            "ssp_effective_dt",
+            "ssp_collected",
+            "ssp_current_imp",
+            "ssp_state_fed_reference",
+            "ssp_state_fed_citation",
+            "ssp_prohibit",
+            "ssp_permit",
+            "ssp_restrict",
+        ]
+
+        for variable_name in variable_names:
+            guidance = get_drug_paraphernalia_retrieval_guidance(
+                RetrievalGuidanceRequest(
+                    query=f"Guidance for {variable_name}",
+                    variable_name=variable_name,
+                    metadata={
+                        "prepend_text": (
+                            "This query refers to legal municipal ordinance governing "
+                            "syringe service programs (SSPs)."
+                        )
+                    },
+                )
+            )
+
+            assert guidance is not None, variable_name
+
+    def test_returns_guidance_for_ssp_existence_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="Does the jurisdiction have an SSP law?",
+            variable_name="ssp_law",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance governing syringe "
+                    "service programs (SSPs)."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_scope"
+        assert "syringe exchange" in guidance.anchor_terms
+        assert guidance.retrieval_instructions is not None
+        assert "Distinguish true SSP programs from syringe buyback" in guidance.retrieval_instructions
+        assert guidance.completion_instructions is not None
+        assert "Do not count syringe buyback" in guidance.completion_instructions
+
+    def test_returns_guidance_for_ssp_current_imp_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="Is the current-through date known or imputed?",
+            variable_name="ssp_current_imp",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance governing syringe "
+                    "service programs (SSPs)."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_current_through_status"
+        assert guidance.relevance_instructions is not None
+        assert "official current-through notices" in guidance.relevance_instructions
+        assert guidance.completion_instructions is not None
+        assert "ratified ordinance used as the fallback for ssp_collected" in guidance.completion_instructions
+        assert "date of data collection" in guidance.completion_instructions
+
+    def test_returns_guidance_for_ssp_restriction_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="Does the ordinance require any restrictions on SSPs?",
+            variable_name="ssp_restrict",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance governing syringe "
+                    "service programs (SSPs)."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_restriction"
+        assert guidance.retrieval_instructions is not None
+        assert "distance buffers from schools or parks" in guidance.retrieval_instructions
+        assert guidance.completion_instructions is not None
+        assert "Do not count outright bans as restrictions" in guidance.completion_instructions
+        assert "No restrictions listed" in guidance.completion_instructions
+
+    def test_returns_guidance_for_ssp_reference_citation_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="If yes, what is the citation of the relevant law?",
+            variable_name="ssp_state_fed_citation",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance governing syringe "
+                    "service programs (SSPs)."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_reference_necessity"
+        assert guidance.retrieval_instructions is not None
+        assert "state or federal law must actually be read to determine the local SSP rule" in guidance.retrieval_instructions
+        assert guidance.completion_instructions is not None
+        assert "smallest specific statutory, regulatory, or administrative unit" in guidance.completion_instructions
+        assert "immediately adjacent chunk" in guidance.completion_instructions
+
     def test_returns_none_for_unmapped_variable(self):
         request = RetrievalGuidanceRequest(
             query="Unknown variable",

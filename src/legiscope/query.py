@@ -875,6 +875,70 @@ def load_queries(
     ]
 
 
+def combine_query_input_batches(
+    query_batches: list[list[QueryInput]],
+) -> list[QueryInput]:
+    """Flatten multiple query batches and normalize IDs when files collide.
+
+    Multi-file benchmark/query configurations commonly reuse `question_number`
+    values such as `Q1`, `Q1.2`, etc. When duplicate query IDs are detected,
+    re-key the combined inputs to `variable_name`, which remains unique across
+    the supported benchmark datasets and is already accepted as a dependency
+    alias by the hierarchy planner.
+    """
+
+    combined = [query_input for batch in query_batches for query_input in batch]
+    if not combined:
+        return []
+
+    variable_names = [str(query_input.variable_name or "").strip() for query_input in combined]
+    duplicate_variable_names = sorted(
+        variable_name
+        for variable_name, count in Counter(variable_names).items()
+        if variable_name and count > 1
+    )
+    if duplicate_variable_names:
+        raise ValueError(
+            "Duplicate variable_name values are not allowed when combining query files: "
+            + ", ".join(duplicate_variable_names)
+        )
+
+    query_ids = [str(query_input.query_id or "").strip() for query_input in combined]
+    duplicate_query_ids = {
+        query_id for query_id, count in Counter(query_ids).items() if query_id and count > 1
+    }
+    if not duplicate_query_ids:
+        return combined
+
+    rekeyed: list[QueryInput] = []
+    for query_input in combined:
+        variable_name = str(query_input.variable_name or "").strip()
+        if not variable_name:
+            raise ValueError(
+                "Cannot automatically disambiguate duplicate query IDs across combined query files "
+                "without unique variable_name values."
+            )
+
+        metadata = dict(query_input.metadata or {})
+        hierarchy_payload = metadata.get("hierarchy")
+        if isinstance(hierarchy_payload, dict):
+            updated_hierarchy = dict(hierarchy_payload)
+            updated_hierarchy["query_id"] = variable_name
+            metadata["hierarchy"] = updated_hierarchy
+        metadata["query_id"] = variable_name
+
+        rekeyed.append(
+            QueryInput(
+                question=query_input.question,
+                variable_name=query_input.variable_name,
+                metadata=metadata,
+                query_id=variable_name,
+            )
+        )
+
+    return rekeyed
+
+
 def _column_is_effectively_empty(series: pl.Series) -> bool:
     """Return whether a query-input column carries no meaningful values."""
     non_null_values = [value for value in series.to_list() if value is not None]

@@ -34,7 +34,12 @@ from legiscope import config
 from legiscope.embeddings import EMBEDDING_PROVIDER, CollectionConfig
 from legiscope.models import CodeRef
 from legiscope.params import load_params
-from legiscope.query import BatchQuerySettings, load_queries, run_queries
+from legiscope.query import (
+    BatchQuerySettings,
+    combine_query_input_batches,
+    load_queries,
+    run_queries,
+)
 
 
 def main():
@@ -42,9 +47,12 @@ def main():
 
     code_ref = CodeRef.from_params()
 
-    queries_path = config.default_queries_path()
-    queries = load_queries(str(queries_path))
-    logger.info(f"Loaded {len(queries)} queries from {queries_path}")
+    query_paths = config.default_queries_paths()
+    query_batches = [load_queries(str(query_path)) for query_path in query_paths]
+    queries = combine_query_input_batches(query_batches)
+    logger.info(
+        f"Loaded {len(queries)} combined queries from {len(query_paths)} file(s)"
+    )
 
     sections_parquet_path = code_ref.full_data_dir / "sections.parquet"
 
