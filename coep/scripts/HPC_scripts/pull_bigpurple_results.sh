@@ -14,10 +14,14 @@ LOCAL_DIR="${LOCAL_PROJECT_ROOT}/data/output"
 LOCAL_LAWS_DIR="${LOCAL_PROJECT_ROOT}/data/laws"
 SSH_JUMP=""
 DRY_RUN=false
+SSH_SOCKET_DIR="/tmp/legiscope-ssh"
+CONTROL_PATH=""
+SSH_MASTER_STARTED=false
 INCLUDE_CODE_ARTIFACTS=false
 SKIP_BENCHMARK=false
 CODE_SLUG="municipal-code"
 OPEN_AFTER=false
+SSH_COMMON_ARGS=()
 
 usage() {
     cat <<'EOF'
@@ -153,6 +157,47 @@ require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+build_rsync_rsh() {
+    local ssh_parts=(ssh)
+
+    if [[ -n "$SSH_JUMP" ]]; then
+        ssh_parts+=(-J "$SSH_JUMP")
+    fi
+
+    if [[ -n "$CONTROL_PATH" ]]; then
+        ssh_parts+=(-o "ControlMaster=auto" -o "ControlPersist=600" -o "ControlPath=${CONTROL_PATH}")
+    fi
+
+    RSYNC_RSH="$(printf '%q ' "${ssh_parts[@]}")"
+    RSYNC_RSH="${RSYNC_RSH% }"
+}
+
+cleanup_ssh_transport() {
+    if [[ "$SSH_MASTER_STARTED" == true && -n "$REMOTE" ]]; then
+        ssh "${SSH_COMMON_ARGS[@]}" -O exit "$REMOTE" >/dev/null 2>&1 || true
+    fi
+}
+
+setup_ssh_transport() {
+    mkdir -p "$SSH_SOCKET_DIR"
+
+    CONTROL_PATH="${SSH_SOCKET_DIR}/%C-$$"
+    SSH_COMMON_ARGS=()
+    if [[ -n "$SSH_JUMP" ]]; then
+        SSH_COMMON_ARGS+=(-J "$SSH_JUMP")
+    fi
+    SSH_COMMON_ARGS+=(-o "ControlMaster=auto" -o "ControlPersist=600" -o "ControlPath=${CONTROL_PATH}")
+
+    build_rsync_rsh
+
+    say ">>> Opening shared SSH connection"
+    if ! ssh "${SSH_COMMON_ARGS[@]}" -o "ControlMaster=yes" -fN "$REMOTE"; then
+        die "failed to open shared SSH connection to ${REMOTE}"
+    fi
+
+    SSH_MASTER_STARTED=true
+}
+
 require_cmd ssh
 require_cmd rsync
 
@@ -160,11 +205,7 @@ ssh_run() {
     local remote="$1"
     local command="$2"
 
-    if [[ -n "$SSH_JUMP" ]]; then
-        ssh -J "$SSH_JUMP" "$remote" "$command"
-    else
-        ssh "$remote" "$command"
-    fi
+    ssh "${SSH_COMMON_ARGS[@]}" "$remote" "$command"
 }
 
 open_file() {
@@ -217,10 +258,9 @@ LOCAL_TARGET_DIR="${LOCAL_DIR%/}/${JURISDICTION}"
 REMOTE_CODE_DIR="${PROJECT_ROOT}/data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}"
 LOCAL_CODE_DIR="${LOCAL_LAWS_DIR%/}/${STATE}/${LOCALITY}/${CODE_SLUG}"
 
-RSYNC_RSH="ssh"
-if [[ -n "$SSH_JUMP" ]]; then
-    RSYNC_RSH="ssh -J ${SSH_JUMP}"
-fi
+build_rsync_rsh
+trap cleanup_ssh_transport EXIT
+setup_ssh_transport
 
 # Use checksums instead of rsync's default size-plus-mtime quick check so
 # regenerated artifacts are refreshed even when remote timestamps are unchanged.

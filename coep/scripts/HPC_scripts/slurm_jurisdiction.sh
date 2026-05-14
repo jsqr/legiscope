@@ -43,6 +43,7 @@
 #   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx,SLURM_NOTIFY=1,SLURM_NOTIFY_EMAIL=you@nyulangone.org,SLURM_NOTIFY_EVENTS=start,end,fail \
 #       coep/scripts/HPC_scripts/slurm_jurisdiction.sh
 #
+
 set -Eeo pipefail
 
 # ── Validate required inputs ─────────────────────────────────────

@@ -33,6 +33,7 @@
 #   SLURM_NOTIFY_EMAIL          - Email address to notify if local `mail` command exists
 #   SLURM_NOTIFY_SUBJECT_PREFIX - Subject prefix for email notifications
 #
+
 set -Eeo pipefail
 
 SLURM_NOTIFY="${SLURM_NOTIFY:-1}"

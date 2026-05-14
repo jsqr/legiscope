@@ -17,8 +17,8 @@ llm:
 
   providers:
     openai:
-      fast: Qwen/Qwen3.5-27B
-      powerful: Qwen/Qwen3.5-27B
+      fast: Qwen/Qwen3.5-4B
+      powerful: Qwen/Qwen3.5-4B
       
     mistral:
       fast: mistral-small-2506
@@ -69,7 +69,7 @@ embeddings:
 # Segmentation settings
 segmentation:
   embedding_model_token_limit: 1024
-  llm_context_limit: 65536
+  llm_context_limit: 16384
 
 # Retrieval: vector search and post-retrieval filtering
 retrieval:
