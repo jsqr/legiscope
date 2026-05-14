@@ -1002,7 +1002,9 @@ def combine_query_input_batches(
     if not combined:
         return []
 
-    variable_names = [str(query_input.variable_name or "").strip() for query_input in combined]
+    variable_names = [
+        str(query_input.variable_name or "").strip() for query_input in combined
+    ]
     duplicate_variable_names = sorted(
         variable_name
         for variable_name, count in Counter(variable_names).items()
@@ -1016,7 +1018,9 @@ def combine_query_input_batches(
 
     query_ids = [str(query_input.query_id or "").strip() for query_input in combined]
     duplicate_query_ids = {
-        query_id for query_id, count in Counter(query_ids).items() if query_id and count > 1
+        query_id
+        for query_id, count in Counter(query_ids).items()
+        if query_id and count > 1
     }
     if not duplicate_query_ids:
         return combined
@@ -2335,7 +2339,9 @@ def run_queries(
             metadata=effective_query_metadata,
             retrieval_query=str(retrieval_query or "").strip() or None,
             completion_sections=list(completion_sections),
-            option_evidence=_deserialize_parent_option_evidence(option_evidence_payload),
+            option_evidence=_deserialize_parent_option_evidence(
+                option_evidence_payload
+            ),
         )
 
         if "Error:" not in result["short_answer"]:
@@ -2640,7 +2646,9 @@ def _build_structured_answer_contract(
         lines.append(
             "For selected options, provide at least one citation and one supporting passage whenever the retrieved text allows it."
         )
-        normalized_options = {_normalize_option_text(option): option for option in options}
+        normalized_options = {
+            _normalize_option_text(option): option for option in options
+        }
         if _normalize_option_text("None") in normalized_options:
             lines.append(
                 "Select `None` only if no specific option is supported by the retrieved text, and never select `None` together with any specific option."
@@ -2691,7 +2699,8 @@ def _build_structured_answer_contract(
                 ]
                 if selected_parent_options:
                     lines.append(
-                        "  Parent selected options: " + " AND/OR ".join(selected_parent_options)
+                        "  Parent selected options: "
+                        + " AND/OR ".join(selected_parent_options)
                     )
     elif prior_answers:
         lines.append("Prior structured answers for dependency context:")
@@ -3257,7 +3266,9 @@ def _normalize_response_option_evidence(
     query_metadata: dict[str, Any] | None,
 ) -> LegalQueryResponse:
     """Canonicalize option-evidence labels to the declared response-option surface."""
-    response_options = _clean_response_options((query_metadata or {}).get("response_options"))
+    response_options = _clean_response_options(
+        (query_metadata or {}).get("response_options")
+    )
     if not response_options or not response.option_evidence:
         return response
 
@@ -3291,7 +3302,9 @@ def _normalize_response_option_evidence(
         )
 
     ordered_items = [
-        normalized_by_option[option] for option in options if option in normalized_by_option
+        normalized_by_option[option]
+        for option in options
+        if option in normalized_by_option
     ]
     return response.model_copy(update={"option_evidence": ordered_items})
 
@@ -3311,9 +3324,9 @@ def _selected_response_options_from_short_answer(
         None,
         metadata,
     )
-    if _is_status_date_response_options(response_options) or _is_scalar_placeholder_response_options(
+    if _is_status_date_response_options(
         response_options
-    ):
+    ) or _is_scalar_placeholder_response_options(response_options):
         return None
 
     if response_options == "Yes OR No":
@@ -3397,7 +3410,9 @@ def _option_evidence_review_signals(
             )
         )
 
-    selected_options = {item.option for item in response.option_evidence if item.selected}
+    selected_options = {
+        item.option for item in response.option_evidence if item.selected
+    }
     none_selected = any(
         _normalize_option_text(item.option) == _normalize_option_text("None")
         and item.selected
@@ -3428,9 +3443,9 @@ def _option_evidence_review_signals(
                     issue="selected_option_missing_citation",
                 )
             )
-        if _normalize_option_text(item.option) == _normalize_option_text("Other") and not (
-            item.citations or item.supporting_passages
-        ):
+        if _normalize_option_text(item.option) == _normalize_option_text(
+            "Other"
+        ) and not (item.citations or item.supporting_passages):
             reasons.append(
                 AnswerReviewSignal(
                     option=item.option,
@@ -4083,12 +4098,16 @@ def _evaluate_dependency_decision(
                 raw_short_answer=parent_state.raw_short_answer,
                 variable_name=parent_state.variable_name,
                 response_options=(
-                    _clean_response_options(parent_state.metadata.get("response_options"))
+                    _clean_response_options(
+                        parent_state.metadata.get("response_options")
+                    )
                     or None
                 )
                 if parent_state.option_evidence
                 else None,
-                confidence=(parent_state.confidence if parent_state.option_evidence else None),
+                confidence=(
+                    parent_state.confidence if parent_state.option_evidence else None
+                ),
                 option_evidence=list(parent_state.option_evidence),
             )
         )

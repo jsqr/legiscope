@@ -209,7 +209,9 @@ class TestCoepRetrievalGuidance:
             in guidance.shared_context
         )
 
-    def test_exemption_activity_guidance_uses_parent_option_evidence_and_inherited_anchors(self):
+    def test_exemption_activity_guidance_uses_parent_option_evidence_and_inherited_anchors(
+        self,
+    ):
         hierarchy = QueryHierarchy(
             query_id="Q2.1",
             parent_ids=("Q1",),
@@ -518,7 +520,10 @@ class TestCoepRetrievalGuidance:
         assert guidance.guidance_topic == "ssp_scope"
         assert "syringe exchange" in guidance.anchor_terms
         assert guidance.retrieval_instructions is not None
-        assert "Distinguish true SSP programs from syringe buyback" in guidance.retrieval_instructions
+        assert (
+            "Distinguish true SSP programs from syringe buyback"
+            in guidance.retrieval_instructions
+        )
         assert guidance.completion_instructions is not None
         assert "Do not count syringe buyback" in guidance.completion_instructions
 
@@ -541,7 +546,10 @@ class TestCoepRetrievalGuidance:
         assert guidance.relevance_instructions is not None
         assert "official current-through notices" in guidance.relevance_instructions
         assert guidance.completion_instructions is not None
-        assert "ratified ordinance used as the fallback for ssp_collected" in guidance.completion_instructions
+        assert (
+            "ratified ordinance used as the fallback for ssp_collected"
+            in guidance.completion_instructions
+        )
         assert "date of data collection" in guidance.completion_instructions
 
     def test_returns_guidance_for_ssp_restriction_variable(self):
@@ -561,9 +569,14 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.guidance_topic == "ssp_restriction"
         assert guidance.retrieval_instructions is not None
-        assert "distance buffers from schools or parks" in guidance.retrieval_instructions
+        assert (
+            "distance buffers from schools or parks" in guidance.retrieval_instructions
+        )
         assert guidance.completion_instructions is not None
-        assert "Do not count outright bans as restrictions" in guidance.completion_instructions
+        assert (
+            "Do not count outright bans as restrictions"
+            in guidance.completion_instructions
+        )
         assert "No restrictions listed" in guidance.completion_instructions
 
     def test_returns_guidance_for_ssp_reference_citation_variable(self):
@@ -583,9 +596,15 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.guidance_topic == "ssp_reference_necessity"
         assert guidance.retrieval_instructions is not None
-        assert "state or federal law must actually be read to determine the local SSP rule" in guidance.retrieval_instructions
+        assert (
+            "state or federal law must actually be read to determine the local SSP rule"
+            in guidance.retrieval_instructions
+        )
         assert guidance.completion_instructions is not None
-        assert "smallest specific statutory, regulatory, or administrative unit" in guidance.completion_instructions
+        assert (
+            "smallest specific statutory, regulatory, or administrative unit"
+            in guidance.completion_instructions
+        )
         assert "immediately adjacent chunk" in guidance.completion_instructions
 
     def test_returns_none_for_unmapped_variable(self):

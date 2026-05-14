@@ -811,7 +811,12 @@ _VARIABLE_OVERRIDES = {
             "ratified ordinance used as the fallback for ssp_collected. Use Unknown, reflects date of data collection only when "
             "the date truly comes from the data-collection date rather than any ordinance-derived date."
         ),
-        anchor_terms=["current through", "supplement", "ratified ordinance", "data collection"],
+        anchor_terms=[
+            "current through",
+            "supplement",
+            "ratified ordinance",
+            "data collection",
+        ],
     ),
     "ssp_state_fed_citation": RetrievalGuidance(
         completion_instructions=(
@@ -820,7 +825,11 @@ _VARIABLE_OVERRIDES = {
             "immediately adjacent chunk as the dependency-triggering language. Do not dump every state or federal citation "
             "appearing anywhere in the retrieved materials."
         ),
-        anchor_terms=["state health department", "public health law", "administrative code"],
+        anchor_terms=[
+            "state health department",
+            "public health law",
+            "administrative code",
+        ],
     ),
     "dp_state_fed_combined": RetrievalGuidance(
         relevance_instructions=(
@@ -1081,7 +1090,11 @@ _COMPLETION_RULES_BY_FAMILY = {
 
 _EXEMPTION_OPTION_ANCHOR_TERMS_BY_LABEL = {
     _normalize_label_text(label): list(
-        (_VARIABLE_OVERRIDES.get(variable_name).anchor_terms if _VARIABLE_OVERRIDES.get(variable_name) else [])
+        (
+            _VARIABLE_OVERRIDES.get(variable_name).anchor_terms
+            if _VARIABLE_OVERRIDES.get(variable_name)
+            else []
+        )
     )
     for variable_name, labels in _LEGACY_EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE.items()
     for label in labels
@@ -1197,9 +1210,7 @@ def _build_query_context(request: RetrievalGuidanceRequest) -> str:
             if citation:
                 evidence_line += f" Citation: {citation}."
             if passage:
-                evidence_line += (
-                    " Passage: " + _truncate_context_passage(passage)
-                )
+                evidence_line += " Passage: " + _truncate_context_passage(passage)
             context_parts.append(evidence_line)
         if activity_short_answer:
             context_parts.append(

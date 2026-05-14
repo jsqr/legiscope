@@ -73,7 +73,9 @@ class TestProperties:
             "coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv",
         )
         raw_paths = value if isinstance(value, list) else [value]
-        return [cfg._find_config_path().parent / Path(raw_path) for raw_path in raw_paths]
+        return [
+            cfg._find_config_path().parent / Path(raw_path) for raw_path in raw_paths
+        ]
 
     def test_laws_dir(self):
         assert cfg.laws_dir() == Path("data/laws")
@@ -88,7 +90,10 @@ class TestProperties:
         assert cfg.output_dir() == Path("data/output")
 
     def test_default_queries_path(self):
-        assert cfg.default_queries_path() == cfg.queries_dir() / self._expected_query_files()[0]
+        assert (
+            cfg.default_queries_path()
+            == cfg.queries_dir() / self._expected_query_files()[0]
+        )
 
     def test_default_queries_paths(self):
         assert cfg.default_queries_paths() == [
@@ -134,7 +139,8 @@ class TestProperties:
             },
         )
         assert cfg.monqcle_report_paths() == [
-            cfg._find_config_path().parent / Path("coep/data/monqcle_data/report_a.csv"),
+            cfg._find_config_path().parent
+            / Path("coep/data/monqcle_data/report_a.csv"),
             Path("/tmp/monqcle/custom_report.csv"),
         ]
 

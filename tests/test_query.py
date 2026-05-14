@@ -170,17 +170,22 @@ class TestTimeoutExecution:
                 retrieval_results,
                 "What is the current-through date of the ordinance?",
                 settings,
-                query_metadata={"response_options": "Responses: <current-through date>"},
+                query_metadata={
+                    "response_options": "Responses: <current-through date>"
+                },
                 debug_capture=debug_capture,
             )
 
         assert response.short_answer == "Error: LLM call timed out."
         assert debug_capture["query"]["stage_status"] == "timeout"
-        assert debug_capture["query"]["query_attempts"].count(
-            '"attempt_type": "initial"'
-        ) == 1
+        assert (
+            debug_capture["query"]["query_attempts"].count('"attempt_type": "initial"')
+            == 1
+        )
 
-    def test_query_legal_documents_does_not_add_extra_initial_attempt_on_review_timeout(self):
+    def test_query_legal_documents_does_not_add_extra_initial_attempt_on_review_timeout(
+        self,
+    ):
         mock_client = Mock(spec=Instructor)
         retrieval_results = SectionCollection(
             sections=[
@@ -264,12 +269,14 @@ class TestTimeoutExecution:
             )
 
         assert response.short_answer == "Error: LLM call timed out."
-        assert debug_capture["query"]["query_attempts"].count(
-            '"attempt_type": "initial"'
-        ) == 1
-        assert debug_capture["query"]["query_attempts"].count(
-            '"attempt_type": "review"'
-        ) == 1
+        assert (
+            debug_capture["query"]["query_attempts"].count('"attempt_type": "initial"')
+            == 1
+        )
+        assert (
+            debug_capture["query"]["query_attempts"].count('"attempt_type": "review"')
+            == 1
+        )
 
     def test_normalizes_citation_only_output_for_state_fed_combined(self):
         normalized = _normalize_structured_short_answer(
@@ -386,10 +393,19 @@ class TestPromptContracts:
             },
         )
 
-        assert "fill `option_evidence` with one entry per declared response option" in system_prompt
-        assert "Treat `short_answer` as the final authoritative coded answer" in system_prompt
+        assert (
+            "fill `option_evidence` with one entry per declared response option"
+            in system_prompt
+        )
+        assert (
+            "Treat `short_answer` as the final authoritative coded answer"
+            in system_prompt
+        )
         assert "Select `None` only if no specific option is supported" in system_prompt
-        assert "Select `Other` only when the legal text clearly supports an answer not captured" in system_prompt
+        assert (
+            "Select `Other` only when the legal text clearly supports an answer not captured"
+            in system_prompt
+        )
 
 
 class TestLoadQueries:
@@ -470,6 +486,7 @@ class TestLoadQueries:
             assert queries[0].metadata["priority"] == 1
         finally:
             os.unlink(temp_path)
+
     def test_load_queries_custom_adjuster(self):
         """Test caller-provided query adjuster hook."""
         df = pl.DataFrame(
@@ -1895,9 +1912,10 @@ class TestQueryConfigBasics:
             debug_capture["query"]["review_rerun_guidance_topic"]
             == "response_option_consistency"
         )
-        assert "short_answer_conflicts_with_option_evidence" in debug_capture["query"][
-            "review_rerun_reasons"
-        ]
+        assert (
+            "short_answer_conflicts_with_option_evidence"
+            in debug_capture["query"]["review_rerun_reasons"]
+        )
         assert '"attempt_type": "review"' in debug_capture["query"]["query_attempts"]
 
     def test_query_legal_documents_reruns_when_option_evidence_is_missing(self):
@@ -1998,7 +2016,9 @@ class TestQueryConfigBasics:
             debug_capture["query"]["review_rerun_guidance_topic"]
             == "response_option_consistency"
         )
-        assert "missing_option_evidence" in debug_capture["query"]["review_rerun_reasons"]
+        assert (
+            "missing_option_evidence" in debug_capture["query"]["review_rerun_reasons"]
+        )
 
     def test_query_legal_documents_skips_review_for_scalar_date_placeholder(self):
         mock_client = Mock(spec=Instructor)
@@ -2823,7 +2843,9 @@ class TestBatchQueryConfigBasics:
         )
 
         with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
-            with patch("legiscope.query.ask", side_effect=[first_response, second_response]):
+            with patch(
+                "legiscope.query.ask", side_effect=[first_response, second_response]
+            ):
                 settings = BatchQuerySettings(
                     llm=LLMConfig(client=Mock(spec=Instructor), model="test-model"),
                     debug_dir=debug_dir,
@@ -2851,7 +2873,10 @@ class TestBatchQueryConfigBasics:
         query_debug = pl.read_csv(debug_dir / f"query_stage_{debug_timestamp}.csv")
         assert len(query_debug) == 1
         assert query_debug[0, "review_rerun_triggered"] is True
-        assert query_debug[0, "review_rerun_guidance_topic"] == "response_option_consistency"
+        assert (
+            query_debug[0, "review_rerun_guidance_topic"]
+            == "response_option_consistency"
+        )
         assert '"attempt_type": "initial"' in query_debug[0, "query_attempts"]
         assert '"attempt_type": "review"' in query_debug[0, "query_attempts"]
 
@@ -2890,7 +2915,9 @@ class TestBatchQueryConfigBasics:
             ),
         )
 
-        failure = Exception("The output is incomplete due to a max_tokens length limit.")
+        failure = Exception(
+            "The output is incomplete due to a max_tokens length limit."
+        )
 
         with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
             with patch("legiscope.query.ask", side_effect=failure):
@@ -3860,7 +3887,9 @@ class TestHierarchicalQueryExecution:
             ]
         ]
 
-    def test_run_queries_carries_parent_option_evidence_into_child_context(self, tmp_path):
+    def test_run_queries_carries_parent_option_evidence_into_child_context(
+        self, tmp_path
+    ):
         sections_path = self._write_sections_parquet(tmp_path)
         retrieval_results = SectionCollection(
             sections=[self._make_section("s1")],
@@ -3969,7 +3998,10 @@ class TestHierarchicalQueryExecution:
         assert len(captured_parent_contexts[0]) == 1
         parent_context = captured_parent_contexts[0][0]
         assert parent_context["short_answer"] == "Unspecified Fine"
-        assert parent_context["response_options"] == "Unspecified Fine AND/OR Incarceration"
+        assert (
+            parent_context["response_options"]
+            == "Unspecified Fine AND/OR Incarceration"
+        )
         assert parent_context["confidence"] == 0.9
         assert parent_context["option_evidence"] == [
             {

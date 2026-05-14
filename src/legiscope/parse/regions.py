@@ -254,7 +254,11 @@ def _classify_record(
         first_numbered_body_heading_id is None
         or element_id < first_numbered_body_heading_id
     ):
-        return "legal_intro", 0.9, "current-through source metadata before numbered body"
+        return (
+            "legal_intro",
+            0.9,
+            "current-through source metadata before numbered body",
+        )
 
     if _PUBLISHER_PAT.search(text):
         return "publisher_boilerplate", 0.95, "publisher or publication marker"
