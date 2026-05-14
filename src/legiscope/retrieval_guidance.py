@@ -16,6 +16,18 @@ class RetrievalGuidanceRequest:
 
 
 @dataclass
+class ParentOptionEvidence:
+    """Compact per-option evidence that may safely flow into child queries."""
+
+    option: str
+    selected: bool
+    confidence: float | None = None
+    citations: list[str] = field(default_factory=list)
+    supporting_passages: list[str] = field(default_factory=list)
+    anchor_terms: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ParentQueryContext:
     """Minimal upstream state that may safely flow into child queries."""
 
@@ -24,6 +36,9 @@ class ParentQueryContext:
     short_answer: str
     raw_short_answer: str | None = None
     variable_name: str | None = None
+    response_options: str | None = None
+    confidence: float | None = None
+    option_evidence: list[ParentOptionEvidence] = field(default_factory=list)
 
 
 @dataclass

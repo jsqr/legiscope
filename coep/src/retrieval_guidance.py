@@ -1,5 +1,7 @@
 """COEP-specific retrieval guidance provider hooks."""
 
+import re
+
 from legiscope.retrieval_guidance import RetrievalGuidance, RetrievalGuidanceRequest
 
 
@@ -190,6 +192,17 @@ def _dedupe_preserving_order(values: list[str]) -> list[str]:
     return deduped
 
 
+def _normalize_label_text(value: str) -> str:
+    """Normalize benchmark option labels for conservative matching."""
+    normalized = value.strip().lower()
+    normalized = normalized.replace("and/or", " and or ")
+    normalized = normalized.replace("/", " ")
+    normalized = normalized.replace("-", " ")
+    normalized = re.sub(r"[\[\](){}]", " ", normalized)
+    normalized = re.sub(r"[^a-z0-9\s]", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
 def _expected_exemption_dependency_labels(
     request: RetrievalGuidanceRequest,
 ) -> list[str]:
@@ -218,6 +231,49 @@ def _expected_exemption_dependency_labels(
             [],
         )
     )
+
+
+def _matching_selected_option_evidence(
+    request: RetrievalGuidanceRequest,
+) -> list[tuple[str, str | None, str | None, list[str]]]:
+    """Return selected exemption-option evidence relevant to the current child query."""
+    context_by_variable = {
+        context.variable_name: context
+        for context in request.parent_contexts
+        if context.variable_name
+    }
+    exemption_context = context_by_variable.get("dp_exemption")
+    if exemption_context is None or not exemption_context.option_evidence:
+        return []
+
+    expected_labels = _expected_exemption_dependency_labels(request)
+    expected_keys = {_normalize_label_text(label) for label in expected_labels}
+    matched: list[tuple[str, str | None, str | None, list[str]]] = []
+    fallback: list[tuple[str, str | None, str | None, list[str]]] = []
+    for item in exemption_context.option_evidence:
+        if not item.selected:
+            continue
+        citation = item.citations[0] if item.citations else None
+        passage = item.supporting_passages[0] if item.supporting_passages else None
+        anchor_terms = item.anchor_terms if item.anchor_terms else []
+        record = (item.option, citation, passage, anchor_terms)
+        fallback.append(record)
+        if expected_keys and _normalize_label_text(item.option) in expected_keys:
+            matched.append(record)
+
+    if matched:
+        return matched
+    return fallback
+
+
+def _truncate_context_passage(text: str | None, limit: int = 220) -> str | None:
+    """Trim carried-forward evidence passages so child prompts stay compact."""
+    if text is None:
+        return None
+    stripped = text.strip()
+    if len(stripped) <= limit:
+        return stripped
+    return stripped[: limit - 3].rstrip() + "..."
 
 
 _FAMILY_BY_VARIABLE = {
@@ -1023,6 +1079,35 @@ _COMPLETION_RULES_BY_FAMILY = {
 }
 
 
+_EXEMPTION_OPTION_ANCHOR_TERMS_BY_LABEL = {
+    _normalize_label_text(label): list(
+        (_VARIABLE_OVERRIDES.get(variable_name).anchor_terms if _VARIABLE_OVERRIDES.get(variable_name) else [])
+    )
+    for variable_name, labels in _LEGACY_EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE.items()
+    for label in labels
+}
+
+
+def _inherited_exemption_option_anchor_terms(
+    request: RetrievalGuidanceRequest,
+) -> list[str]:
+    """Return option-specific anchor terms inherited from selected parent evidence."""
+    inherited: list[str] = []
+    for option, _citation, _passage, anchor_terms in _matching_selected_option_evidence(
+        request
+    ):
+        if anchor_terms:
+            inherited.extend(anchor_terms)
+            continue
+        inherited.extend(
+            _EXEMPTION_OPTION_ANCHOR_TERMS_BY_LABEL.get(
+                _normalize_label_text(option),
+                [],
+            )
+        )
+    return _dedupe_preserving_order(inherited)
+
+
 def _merge_guidance(
     base: RetrievalGuidance,
     override: RetrievalGuidance | None,
@@ -1106,6 +1191,16 @@ def _build_query_context(request: RetrievalGuidanceRequest) -> str:
             context_parts.append(
                 f"Previously coded exemption answer: {exemption_short_answer}."
             )
+        selected_evidence = _matching_selected_option_evidence(request)
+        for option, citation, passage, _anchor_terms in selected_evidence:
+            evidence_line = f"Selected exemption option with evidence: {option}."
+            if citation:
+                evidence_line += f" Citation: {citation}."
+            if passage:
+                evidence_line += (
+                    " Passage: " + _truncate_context_passage(passage)
+                )
+            context_parts.append(evidence_line)
         if activity_short_answer:
             context_parts.append(
                 f"Previously coded prohibited activities: {activity_short_answer}."
@@ -1213,6 +1308,11 @@ def get_drug_paraphernalia_retrieval_guidance(
         _VARIABLE_OVERRIDES.get(request.variable_name),
     )
     query_context = _build_query_context(request)
+    inherited_anchor_terms = (
+        _inherited_exemption_option_anchor_terms(request)
+        if family == "exemption_activity_scope"
+        else []
+    )
     guidance = RetrievalGuidance(
         guidance_topic=guidance.guidance_topic,
         shared_context=query_context,
@@ -1221,7 +1321,9 @@ def get_drug_paraphernalia_retrieval_guidance(
             family,
         ),
         relevance_instructions=guidance.relevance_instructions,
-        anchor_terms=guidance.anchor_terms,
+        anchor_terms=_dedupe_preserving_order(
+            list(guidance.anchor_terms) + inherited_anchor_terms
+        ),
         completion_instructions=guidance.completion_instructions,
     )
 

@@ -6,7 +6,11 @@ from legiscope.query_hierarchy import (
     QueryHierarchy,
     hierarchy_to_metadata,
 )
-from legiscope.retrieval_guidance import ParentQueryContext, RetrievalGuidanceRequest
+from legiscope.retrieval_guidance import (
+    ParentOptionEvidence,
+    ParentQueryContext,
+    RetrievalGuidanceRequest,
+)
 
 
 class TestCoepRetrievalGuidance:
@@ -204,6 +208,60 @@ class TestCoepRetrievalGuidance:
             "This subquestion is only in scope if the earlier exemption answer included: Custom cannabis label."
             in guidance.shared_context
         )
+
+    def test_exemption_activity_guidance_uses_parent_option_evidence_and_inherited_anchors(self):
+        hierarchy = QueryHierarchy(
+            query_id="Q2.1",
+            parent_ids=("Q1",),
+            label_blockers=(
+                LabelBlockerRule(
+                    parent_query_id="Q1",
+                    blocker_labels=(
+                        "Paraphernalia for consumption of cannabis, generally or medical use",
+                    ),
+                ),
+            ),
+        )
+        request = RetrievalGuidanceRequest(
+            query="If cannabis paraphernalia is exempted, which activities are exempted?",
+            variable_name="dp_exempt_can_activity",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance that prohibits "
+                    "drug paraphernalia used with controlled substances."
+                ),
+                "hierarchy": hierarchy_to_metadata(hierarchy),
+            },
+            parent_contexts=[
+                ParentQueryContext(
+                    query_id="Q1",
+                    variable_name="dp_exemption",
+                    question="Which paraphernalia exemptions exist?",
+                    short_answer="Paraphernalia for consumption of cannabis, generally or medical use",
+                    option_evidence=[
+                        ParentOptionEvidence(
+                            option="Paraphernalia for consumption of cannabis, generally or medical use",
+                            selected=True,
+                            confidence=0.88,
+                            citations=["§ 12-4-10(C)(3)"],
+                            supporting_passages=[
+                                "Nothing in this section shall be construed to establish a criminal penalty for possession of paraphernalia for the exclusive purpose of cannabis use."
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.shared_context is not None
+        assert "Selected exemption option with evidence" in guidance.shared_context
+        assert "Citation: § 12-4-10(C)(3)." in guidance.shared_context
+        assert guidance.anchor_terms is not None
+        assert "cannabis" in guidance.anchor_terms
+        assert "marijuana" in guidance.anchor_terms
 
     def test_returns_guidance_for_existence_variable(self):
         request = RetrievalGuidanceRequest(

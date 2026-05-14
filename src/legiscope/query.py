@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from legiscope.llm_config import Config
 from legiscope.params import load_params
 from legiscope.retrieval_guidance import (
+    ParentOptionEvidence,
     ParentQueryContext,
     RetrievalGuidance,
     RetrievalGuidanceProvider,
@@ -329,6 +330,7 @@ class QueryExecutionState:
     metadata: dict[str, Any] = field(default_factory=dict)
     retrieval_query: str | None = None
     completion_sections: list[SectionResult] = field(default_factory=list)
+    option_evidence: list[ParentOptionEvidence] = field(default_factory=list)
 
 
 @dataclass
@@ -550,16 +552,84 @@ def _serialize_parent_contexts(
     parent_contexts: list[ParentQueryContext],
 ) -> list[dict[str, Any]]:
     """Convert parent contexts into metadata-safe dictionaries."""
-    return [
-        {
+    serialized: list[dict[str, Any]] = []
+    for context in parent_contexts:
+        payload: dict[str, Any] = {
             "query_id": context.query_id,
             "question": context.question,
             "short_answer": context.short_answer,
             "raw_short_answer": context.raw_short_answer,
             "variable_name": context.variable_name,
         }
-        for context in parent_contexts
+        if context.response_options:
+            payload["response_options"] = context.response_options
+        if context.confidence is not None:
+            payload["confidence"] = context.confidence
+        if context.option_evidence:
+            payload["option_evidence"] = _serialize_parent_option_evidence(
+                context.option_evidence
+            )
+        serialized.append(payload)
+
+    return serialized
+
+
+def _serialize_parent_option_evidence(
+    option_evidence: list[ParentOptionEvidence],
+) -> list[dict[str, Any]]:
+    """Convert parent option evidence into metadata-safe dictionaries."""
+    return [
+        {
+            "option": item.option,
+            "selected": item.selected,
+            "confidence": item.confidence,
+            "citations": list(item.citations),
+            "supporting_passages": list(item.supporting_passages),
+            "anchor_terms": list(item.anchor_terms),
+        }
+        for item in option_evidence
     ]
+
+
+def _deserialize_parent_option_evidence(payload: Any) -> list[ParentOptionEvidence]:
+    """Convert serialized parent option evidence into dataclasses."""
+    if not isinstance(payload, list):
+        return []
+
+    evidence_items: list[ParentOptionEvidence] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        option = str(item.get("option") or "").strip()
+        if not option:
+            continue
+        evidence_items.append(
+            ParentOptionEvidence(
+                option=option,
+                selected=bool(item.get("selected")),
+                confidence=(
+                    float(item.get("confidence"))
+                    if item.get("confidence") is not None
+                    else None
+                ),
+                citations=[
+                    str(value).strip()
+                    for value in item.get("citations", [])
+                    if str(value).strip()
+                ],
+                supporting_passages=[
+                    str(value).strip()
+                    for value in item.get("supporting_passages", [])
+                    if str(value).strip()
+                ],
+                anchor_terms=[
+                    str(value).strip()
+                    for value in item.get("anchor_terms", [])
+                    if str(value).strip()
+                ],
+            )
+        )
+    return evidence_items
 
 
 def _deserialize_parent_contexts(payload: Any) -> list[ParentQueryContext]:
@@ -578,6 +648,12 @@ def _deserialize_parent_contexts(payload: Any) -> list[ParentQueryContext]:
             continue
         raw_short_answer = str(item.get("raw_short_answer") or "").strip() or None
         variable_name = str(item.get("variable_name") or "").strip() or None
+        response_options = str(item.get("response_options") or "").strip() or None
+        confidence = (
+            float(item.get("confidence"))
+            if item.get("confidence") is not None
+            else None
+        )
         contexts.append(
             ParentQueryContext(
                 query_id=query_id,
@@ -585,9 +661,38 @@ def _deserialize_parent_contexts(payload: Any) -> list[ParentQueryContext]:
                 short_answer=short_answer,
                 raw_short_answer=raw_short_answer,
                 variable_name=variable_name,
+                response_options=response_options,
+                confidence=confidence,
+                option_evidence=_deserialize_parent_option_evidence(
+                    item.get("option_evidence")
+                ),
             )
         )
     return contexts
+
+
+def _serialize_response_option_evidence(
+    option_evidence: list["ResponseOptionEvidence"],
+) -> list[dict[str, Any]]:
+    """Convert response option evidence into JSON-safe dictionaries."""
+    return [item.model_dump() for item in option_evidence]
+
+
+def _parent_option_evidence_from_response(
+    option_evidence: list["ResponseOptionEvidence"],
+) -> list[ParentOptionEvidence]:
+    """Convert response option evidence into parent-context dataclasses."""
+    return [
+        ParentOptionEvidence(
+            option=item.option,
+            selected=item.selected,
+            confidence=item.confidence,
+            citations=list(item.citations),
+            supporting_passages=list(item.supporting_passages),
+            anchor_terms=list(item.anchor_terms),
+        )
+        for item in option_evidence
+    ]
 
 
 def _build_query_hierarchy_for_input(
@@ -1015,9 +1120,6 @@ def _is_abstention_response(short_answer: str | None) -> bool:
 class LegalQueryResponse(BaseModel):
     """Structured response for legal queries with citations and reasoning."""
 
-    short_answer: str = Field(
-        description="A concise, direct answer to the user's legal question"
-    )
     reasoning: str = Field(
         description="Detailed explanation of the legal reasoning used to arrive at the answer"
     )
@@ -1035,6 +1137,48 @@ class LegalQueryResponse(BaseModel):
     limitations: str = Field(
         description="Any limitations or caveats to the answer based on the available information"
     )
+    option_evidence: list["ResponseOptionEvidence"] = Field(
+        default_factory=list,
+        description=(
+            "Per-option evidence for discrete response-option fields. "
+            "When response options are declared, include one entry per option in declared order."
+        ),
+    )
+    short_answer: str = Field(
+        description=(
+            "A concise, direct benchmark-facing answer that must match the declared response contract exactly"
+        )
+    )
+
+
+class ResponseOptionEvidence(BaseModel):
+    """Structured per-option evidence for response-option coded queries."""
+
+    option: str = Field(description="Exact response option label being evaluated")
+    selected: bool = Field(
+        description="Whether this option should appear in the final short_answer"
+    )
+    confidence: float | None = Field(
+        default=None,
+        description="Confidence score 0-1 for this option-specific decision",
+        ge=0.0,
+        le=1.0,
+    )
+    citations: list[str] = Field(
+        default_factory=list,
+        description="Specific citations supporting this option decision",
+    )
+    supporting_passages: list[str] = Field(
+        default_factory=list,
+        description="Supporting passages tied specifically to this option decision",
+    )
+    anchor_terms: list[str] = Field(
+        default_factory=list,
+        description="Optional option-specific lexical anchors for downstream guidance",
+    )
+
+
+LegalQueryResponse.model_rebuild()
 
 
 @dataclass
@@ -1608,6 +1752,7 @@ def query_legal_documents(
                 )
 
         assert response is not None
+        response = _normalize_response_option_evidence(response, query_metadata)
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
@@ -1637,6 +1782,9 @@ def query_legal_documents(
                 "citations": list(response.citations),
                 "raw_supporting_passages": raw_supporting_passages,
                 "supporting_passages": list(response.supporting_passages),
+                "option_evidence": _serialize_response_option_evidence(
+                    response.option_evidence
+                ),
                 "supporting_passages_repaired": supporting_passages_repaired,
                 "supporting_passage_validation_scores": list(similarity_scores),
                 "supporting_passage_validation_match_types": list(
@@ -1674,6 +1822,10 @@ def query_legal_documents(
                 )
 
             reviewed_response = _run_with_timeout(_invoke_review_llm, timeout_seconds)
+            reviewed_response = _normalize_response_option_evidence(
+                reviewed_response,
+                query_metadata,
+            )
             reviewed_similarity_scores: list[float] = []
             reviewed_similarity_match_types: list[str] = []
             reviewed_raw_supporting_passages = list(
@@ -1705,6 +1857,9 @@ def query_legal_documents(
                     "citations": list(reviewed_response.citations),
                     "raw_supporting_passages": reviewed_raw_supporting_passages,
                     "supporting_passages": list(reviewed_response.supporting_passages),
+                    "option_evidence": _serialize_response_option_evidence(
+                        reviewed_response.option_evidence
+                    ),
                     "supporting_passages_repaired": reviewed_supporting_passages_repaired,
                     "supporting_passage_validation_scores": list(
                         reviewed_similarity_scores
@@ -1715,6 +1870,8 @@ def query_legal_documents(
                 }
             )
             response = reviewed_response
+            raw_supporting_passages = reviewed_raw_supporting_passages
+            supporting_passages_repaired = reviewed_supporting_passages_repaired
             similarity_scores = reviewed_similarity_scores
             similarity_match_types = reviewed_similarity_match_types
 
@@ -1730,6 +1887,9 @@ def query_legal_documents(
                     "citations": _json_debug(response.citations),
                     "raw_supporting_passages": _json_debug(raw_supporting_passages),
                     "supporting_passages": _json_debug(response.supporting_passages),
+                    "option_evidence": _json_debug(
+                        _serialize_response_option_evidence(response.option_evidence)
+                    ),
                     "supporting_passages_repaired": supporting_passages_repaired,
                     "confidence": response.confidence,
                     "limitations": response.limitations,
@@ -2096,6 +2256,7 @@ def run_queries(
         query_debug_row = result.pop("_debug_query_row", None)
         completion_sections = result.pop("_completion_sections", [])
         retrieval_query = result.pop("_retrieval_query", None)
+        option_evidence_payload = result.pop("_option_evidence_payload", [])
 
         if retrieval_debug_row is not None:
             retrieval_debug_rows.append(retrieval_debug_row)
@@ -2138,6 +2299,7 @@ def run_queries(
             metadata=effective_query_metadata,
             retrieval_query=str(retrieval_query or "").strip() or None,
             completion_sections=list(completion_sections),
+            option_evidence=_deserialize_parent_option_evidence(option_evidence_payload),
         )
 
         if "Error:" not in result["short_answer"]:
@@ -2402,7 +2564,29 @@ def _build_structured_answer_contract(
         "The `short_answer` field is benchmark-facing and must satisfy the declared response contract exactly.",
         f"Declared response options: {response_options}",
         "Put explanation, caveats, and nuance in `reasoning`, not in `short_answer`.",
+        "Treat `short_answer` as the final authoritative coded answer, but make it consistent with `option_evidence`.",
     ]
+
+    options, separator = _split_response_options(response_options)
+    if separator in {" AND/OR ", " OR "}:
+        lines.append(
+            "Before finalizing `short_answer`, fill `option_evidence` with one entry per declared response option in the declared order."
+        )
+        lines.append(
+            "Each `option_evidence` entry must include the exact option label, an explicit selected true/false decision, a confidence score, citations, and supporting passages."
+        )
+        lines.append(
+            "For selected options, provide at least one citation and one supporting passage whenever the retrieved text allows it."
+        )
+        normalized_options = {_normalize_option_text(option): option for option in options}
+        if _normalize_option_text("None") in normalized_options:
+            lines.append(
+                "Select `None` only if no specific option is supported by the retrieved text, and never select `None` together with any specific option."
+            )
+        if _normalize_option_text("Other") in normalized_options:
+            lines.append(
+                "Select `Other` only when the legal text clearly supports an answer not captured by the declared options, and include option-specific citation and supporting passage for `Other`."
+            )
 
     if " AND/OR " in response_options:
         lines.append(
@@ -2439,6 +2623,14 @@ def _build_structured_answer_contract(
         for context in parent_contexts:
             lines.append(f"- Parent question ({context.query_id}): {context.question}")
             lines.append(f"  Parent short answer: {context.short_answer}")
+            if context.option_evidence:
+                selected_parent_options = [
+                    item.option for item in context.option_evidence if item.selected
+                ]
+                if selected_parent_options:
+                    lines.append(
+                        "  Parent selected options: " + " AND/OR ".join(selected_parent_options)
+                    )
     elif prior_answers:
         lines.append("Prior structured answers for dependency context:")
         for variable_name, payload in prior_answers.items():
@@ -2979,6 +3171,171 @@ def _normalize_structured_short_answer(
     return stripped
 
 
+def _normalize_response_option_evidence(
+    response: LegalQueryResponse,
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Canonicalize option-evidence labels to the declared response-option surface."""
+    response_options = _clean_response_options((query_metadata or {}).get("response_options"))
+    if not response_options or not response.option_evidence:
+        return response
+
+    options, _separator = _split_response_options(response_options)
+    canonical_by_key = {
+        _normalize_option_text(option): option for option in options if option.strip()
+    }
+    normalized_by_option: dict[str, ResponseOptionEvidence] = {}
+
+    for item in response.option_evidence:
+        canonical_option = canonical_by_key.get(_normalize_option_text(item.option))
+        if not canonical_option or canonical_option in normalized_by_option:
+            continue
+        normalized_by_option[canonical_option] = item.model_copy(
+            update={
+                "option": canonical_option,
+                "citations": [
+                    str(value).strip() for value in item.citations if str(value).strip()
+                ],
+                "supporting_passages": [
+                    str(value).strip()
+                    for value in item.supporting_passages
+                    if str(value).strip()
+                ],
+                "anchor_terms": [
+                    str(value).strip()
+                    for value in item.anchor_terms
+                    if str(value).strip()
+                ],
+            }
+        )
+
+    ordered_items = [
+        normalized_by_option[option] for option in options if option in normalized_by_option
+    ]
+    return response.model_copy(update={"option_evidence": ordered_items})
+
+
+def _selected_response_options_from_short_answer(
+    short_answer: str,
+    query_metadata: dict[str, Any] | None,
+) -> tuple[str, ...] | None:
+    """Return the canonical selected response options implied by short_answer."""
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return None
+
+    normalized_answer = _normalize_structured_short_answer(
+        short_answer,
+        None,
+        metadata,
+    )
+    if _is_status_date_response_options(response_options) or _is_scalar_date_response_options(
+        response_options
+    ):
+        return None
+
+    if response_options == "Yes OR No":
+        binary = _normalize_binary_answer(normalized_answer)
+        if binary in {"Yes", "No"}:
+            return (binary,)
+        return ()
+
+    if response_options == "Yes, <citation> OR No":
+        binary = _normalize_yes_no_citation_answer(normalized_answer)
+        if binary == "No":
+            return ("No",)
+        if binary.startswith("Yes"):
+            return ("Yes, <citation>",)
+        return ()
+
+    if " AND/OR " in response_options or " OR " in response_options:
+        return _extract_selected_response_options(normalized_answer, response_options)
+
+    return None
+
+
+def _selected_response_options_from_option_evidence(
+    option_evidence: list[ResponseOptionEvidence],
+) -> tuple[str, ...]:
+    """Return the canonical selected response options implied by option_evidence."""
+    return tuple(item.option for item in option_evidence if item.selected)
+
+
+def _option_evidence_review_signals(
+    response: LegalQueryResponse,
+    query_metadata: dict[str, Any] | None,
+) -> tuple["AnswerReviewSignal", ...]:
+    """Return generic review signals derived from option-evidence inconsistencies."""
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options or not response.option_evidence:
+        return ()
+
+    reasons: list[AnswerReviewSignal] = []
+    short_answer_selected = _selected_response_options_from_short_answer(
+        response.short_answer,
+        metadata,
+    )
+    evidence_selected = _selected_response_options_from_option_evidence(
+        response.option_evidence
+    )
+    if short_answer_selected is not None and short_answer_selected != evidence_selected:
+        reasons.append(
+            AnswerReviewSignal(
+                option="short_answer",
+                issue="short_answer_conflicts_with_option_evidence",
+                evidence_snippet=(
+                    f"short_answer selects {list(short_answer_selected)}; "
+                    f"option_evidence selects {list(evidence_selected)}"
+                ),
+            )
+        )
+
+    selected_options = {item.option for item in response.option_evidence if item.selected}
+    none_selected = any(
+        _normalize_option_text(item.option) == _normalize_option_text("None")
+        and item.selected
+        for item in response.option_evidence
+    )
+    if none_selected and len(selected_options) > 1:
+        reasons.append(
+            AnswerReviewSignal(
+                option="None",
+                issue="none_selected_alongside_specific_option",
+            )
+        )
+
+    for item in response.option_evidence:
+        if not item.selected:
+            continue
+        if not item.supporting_passages:
+            reasons.append(
+                AnswerReviewSignal(
+                    option=item.option,
+                    issue="selected_option_missing_supporting_passage",
+                )
+            )
+        if not item.citations:
+            reasons.append(
+                AnswerReviewSignal(
+                    option=item.option,
+                    issue="selected_option_missing_citation",
+                )
+            )
+        if _normalize_option_text(item.option) == _normalize_option_text("Other") and not (
+            item.citations or item.supporting_passages
+        ):
+            reasons.append(
+                AnswerReviewSignal(
+                    option=item.option,
+                    issue="other_selected_without_option_specific_support",
+                )
+            )
+
+    return tuple(reasons)
+
+
 @dataclass(frozen=True)
 class AnswerReviewSignal:
     """Deterministic review signal for a suspicious structured answer."""
@@ -3233,13 +3590,24 @@ def _build_answer_review_decision(
         return AnswerReviewDecision()
 
     metadata = query_metadata or {}
+    generic_reasons = _option_evidence_review_signals(response, metadata)
     guidance_topic = str(metadata.get("guidance_topic") or "").strip()
     if not guidance_topic or guidance_topic not in settings.answer_review_topics:
+        if generic_reasons:
+            return AnswerReviewDecision(
+                should_rerun=True,
+                guidance_topic=guidance_topic or "response_option_consistency",
+                reasons=generic_reasons,
+            )
         return AnswerReviewDecision()
 
     response_options = _clean_response_options(metadata.get("response_options"))
     if not response_options:
-        return AnswerReviewDecision()
+        return AnswerReviewDecision(
+            should_rerun=bool(generic_reasons),
+            guidance_topic=guidance_topic,
+            reasons=generic_reasons,
+        )
 
     selected_options = _extract_selected_response_options(
         response.short_answer,
@@ -3259,7 +3627,7 @@ def _build_answer_review_decision(
     evidence_text = _collect_review_text(sections)
     evidence_text_lower = evidence_text.lower()
     selected_lookup = {_normalize_option_text(option) for option in selected_options}
-    reasons: list[AnswerReviewSignal] = []
+    reasons: list[AnswerReviewSignal] = list(generic_reasons)
 
     penalty_options_found = 0
     if guidance_topic == "penalty":
@@ -3330,7 +3698,7 @@ def _build_answer_review_decision(
                 for signal in reasons
             )
             return AnswerReviewDecision(
-                should_rerun=specific_support,
+                should_rerun=bool(generic_reasons) or specific_support,
                 guidance_topic=guidance_topic,
                 reasons=tuple(reasons),
             )
@@ -3609,6 +3977,14 @@ def _evaluate_dependency_decision(
                 short_answer=short_answer,
                 raw_short_answer=parent_state.raw_short_answer,
                 variable_name=parent_state.variable_name,
+                response_options=(
+                    _clean_response_options(parent_state.metadata.get("response_options"))
+                    or None
+                )
+                if parent_state.option_evidence
+                else None,
+                confidence=(parent_state.confidence if parent_state.option_evidence else None),
+                option_evidence=list(parent_state.option_evidence),
             )
         )
 
@@ -4245,6 +4621,9 @@ def _process_single_query_with_error_handling(
                 query_response.citations
             ),  # Convert list to string for DataFrame
             "supporting_passages": str(query_response.supporting_passages),
+            "option_evidence": _json_debug(
+                _serialize_response_option_evidence(query_response.option_evidence)
+            ),
             "confidence": query_response.confidence,
             "limitations": query_response.limitations,
             "sections_found": sections_found,
@@ -4315,6 +4694,9 @@ def _process_single_query_with_error_handling(
             "_debug_query_row": query_debug_row,
             "_completion_sections": completion_sections,
             "_retrieval_query": retrieval_query,
+            "_option_evidence_payload": _serialize_response_option_evidence(
+                query_response.option_evidence
+            ),
         }
         _apply_dependency_fields(
             result,

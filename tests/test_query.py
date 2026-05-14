@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from legiscope.utils import LLMConfig
 from legiscope.query import (
     LegalQueryResponse,
+    ResponseOptionEvidence,
     format_query_response,
     _repair_supporting_passages,
     _validate_supporting_passages,
@@ -211,6 +212,20 @@ class TestPromptContracts:
         assert "copy-paste exact verbatim quotes" in system_prompt
         assert "join selections with ` AND/OR `" in system_prompt
         assert "Apply these coding instructions exactly" in system_prompt
+
+    def test_build_legal_prompts_adds_option_evidence_and_none_other_rules(self):
+        system_prompt, _user_prompt = _build_legal_prompts(
+            "Which exemptions apply?",
+            "Section 1: exception language.",
+            query_metadata={
+                "response_options": "Responses: None AND/OR Cannabis AND/OR Other",
+            },
+        )
+
+        assert "fill `option_evidence` with one entry per declared response option" in system_prompt
+        assert "Treat `short_answer` as the final authoritative coded answer" in system_prompt
+        assert "Select `None` only if no specific option is supported" in system_prompt
+        assert "Select `Other` only when the legal text clearly supports an answer not captured" in system_prompt
 
 
 class TestLoadQueries:
@@ -1513,6 +1528,143 @@ class TestQueryConfigBasics:
         assert mock_ask.call_count == 1
         assert response.short_answer == response_payload.short_answer
 
+    def test_query_legal_documents_reruns_when_short_answer_conflicts_with_option_evidence(
+        self,
+    ):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Penalty",
+                    body_text=(
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ),
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="penalty",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            reasoning="The text includes a fine and imprisonment.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+            ],
+            confidence=0.73,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option='"Unlawful" only',
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Unspecified Fine",
+                    selected=True,
+                    confidence=0.84,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Incarceration",
+                    selected=True,
+                    confidence=0.81,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+            ],
+            short_answer='"Unlawful" only',
+        )
+        second_response = LegalQueryResponse(
+            reasoning="The text expressly provides both a fine and imprisonment.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+            ],
+            confidence=0.9,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option='"Unlawful" only',
+                    selected=False,
+                    confidence=0.02,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Unspecified Fine",
+                    selected=True,
+                    confidence=0.9,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Incarceration",
+                    selected=True,
+                    confidence=0.89,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+            ],
+            short_answer="Unspecified Fine AND/OR Incarceration",
+        )
+        debug_capture = {"query": {}}
+        prompts: list[str] = []
+
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What penalties apply?",
+                settings,
+                query_metadata={
+                    "response_options": 'Responses: "Unlawful" only AND/OR Infraction AND/OR Misdemeanor AND/OR Felony AND/OR Civil Fine AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure AND/OR Other',
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert len(prompts) == 2
+        assert response.short_answer == "Unspecified Fine AND/OR Incarceration"
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert (
+            debug_capture["query"]["review_rerun_guidance_topic"]
+            == "response_option_consistency"
+        )
+        assert "short_answer_conflicts_with_option_evidence" in debug_capture["query"][
+            "review_rerun_reasons"
+        ]
+        assert '"attempt_type": "review"' in debug_capture["query"]["query_attempts"]
+
     def test_query_with_relevance_filtering(self):
         """Test query with relevance filtering enabled."""
         from legiscope.llm_config import Config
@@ -2098,6 +2250,148 @@ class TestBatchQueryConfigBasics:
             "full completion query\n\nVariable-specific guidance:\nUse enactment-specific coding logic."
         )
         assert query_debug[0, "short_answer"] == "12/21/2011"
+
+    def test_run_queries_writes_review_attempts_to_query_debug_csv(self, tmp_path):
+        sections_path = tmp_path / "sections.parquet"
+        debug_dir = tmp_path / "debug"
+        debug_timestamp = "20260513_2015"
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Penalty"],
+                "body_text": [
+                    "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                ],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s_penalty",
+                    heading_text="# Penalty",
+                    body_text=(
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ),
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="penalty",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            reasoning="The text includes a fine and imprisonment.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+            ],
+            confidence=0.73,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option='"Unlawful" only',
+                    selected=False,
+                    confidence=0.05,
+                ),
+                ResponseOptionEvidence(
+                    option="Unspecified Fine",
+                    selected=True,
+                    confidence=0.84,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Incarceration",
+                    selected=True,
+                    confidence=0.81,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+            ],
+            short_answer='"Unlawful" only',
+        )
+        second_response = LegalQueryResponse(
+            reasoning="The text expressly provides both a fine and imprisonment.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+            ],
+            confidence=0.9,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option='"Unlawful" only',
+                    selected=False,
+                    confidence=0.02,
+                ),
+                ResponseOptionEvidence(
+                    option="Unspecified Fine",
+                    selected=True,
+                    confidence=0.9,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Incarceration",
+                    selected=True,
+                    confidence=0.89,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+            ],
+            short_answer="Unspecified Fine AND/OR Incarceration",
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch("legiscope.query.ask", side_effect=[first_response, second_response]):
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=Mock(spec=Instructor), model="test-model"),
+                    debug_dir=debug_dir,
+                    debug_timestamp=debug_timestamp,
+                    filter_relevance=False,
+                    validate_supporting_passages=False,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="What penalties apply?",
+                            variable_name="dp_penalties",
+                            metadata={
+                                "response_options": 'Responses: "Unlawful" only AND/OR Infraction AND/OR Misdemeanor AND/OR Felony AND/OR Civil Fine AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure AND/OR Other',
+                            },
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        query_debug = pl.read_csv(debug_dir / f"query_stage_{debug_timestamp}.csv")
+        assert len(query_debug) == 1
+        assert query_debug[0, "review_rerun_triggered"] is True
+        assert query_debug[0, "review_rerun_guidance_topic"] == "response_option_consistency"
+        assert '"attempt_type": "initial"' in query_debug[0, "query_attempts"]
+        assert '"attempt_type": "review"' in query_debug[0, "query_attempts"]
 
     def test_run_queries_postprocesses_structured_date_answers(self, tmp_path):
         """Structured date answers should be normalized in results and debug output."""
@@ -3032,6 +3326,136 @@ class TestHierarchicalQueryExecution:
                     "variable_name": "dp_activity",
                 }
             ]
+        ]
+
+    def test_run_queries_carries_parent_option_evidence_into_child_context(self, tmp_path):
+        sections_path = self._write_sections_parquet(tmp_path)
+        retrieval_results = SectionCollection(
+            sections=[self._make_section("s1")],
+            query_info=QueryInfo(
+                original_query="query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            reasoning="Parent answer.",
+            citations=["§ 10.99"],
+            supporting_passages=["A violation is punishable by a fine."],
+            confidence=0.9,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Unspecified Fine",
+                    selected=True,
+                    confidence=0.9,
+                    citations=["§ 10.99"],
+                    supporting_passages=["A violation is punishable by a fine."],
+                ),
+                ResponseOptionEvidence(
+                    option="Incarceration",
+                    selected=False,
+                    confidence=0.1,
+                ),
+            ],
+            short_answer="Unspecified Fine",
+        )
+        child_response = LegalQueryResponse(
+            reasoning="Child answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+            short_answer="Allowed uses",
+        )
+
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("dp_penalties",),
+            context_parent_ids=("dp_penalties",),
+        )
+
+        captured_parent_contexts: list[list[dict[str, object]]] = []
+
+        def fake_query_legal_documents(
+            retrieval_results,
+            _query,
+            _settings,
+            *,
+            query_metadata=None,
+            preselected_sections=None,
+            execution_capture=None,
+            **_kwargs,
+        ):
+            if execution_capture is not None:
+                execution_capture["completion_sections"] = list(
+                    preselected_sections or retrieval_results.sections
+                )
+            if query_metadata and query_metadata.get("query_id") == "Q1.1":
+                captured_parent_contexts.append(query_metadata.get("parent_contexts"))
+                return child_response, []
+            return parent_response, []
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=fake_query_legal_documents,
+            ):
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=Mock(spec=Instructor), model="test-model"),
+                    filter_relevance=False,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Question: Which penalties apply?",
+                            variable_name="dp_penalties",
+                            metadata={
+                                "query_text": "Which penalties apply?",
+                                "response_options": "Responses: Unspecified Fine AND/OR Incarceration",
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy),
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Question: If exempted, which activities stay allowed?",
+                            variable_name="dp_exempt_can_activity",
+                            metadata={
+                                "query_text": "If exempted, which activities stay allowed?",
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy),
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert len(captured_parent_contexts) == 1
+        assert len(captured_parent_contexts[0]) == 1
+        parent_context = captured_parent_contexts[0][0]
+        assert parent_context["short_answer"] == "Unspecified Fine"
+        assert parent_context["response_options"] == "Unspecified Fine AND/OR Incarceration"
+        assert parent_context["confidence"] == 0.9
+        assert parent_context["option_evidence"] == [
+            {
+                "option": "Unspecified Fine",
+                "selected": True,
+                "confidence": 0.9,
+                "citations": ["§ 10.99"],
+                "supporting_passages": ["A violation is punishable by a fine."],
+                "anchor_terms": [],
+            },
+            {
+                "option": "Incarceration",
+                "selected": False,
+                "confidence": 0.1,
+                "citations": [],
+                "supporting_passages": [],
+                "anchor_terms": [],
+            },
         ]
 
     def test_run_queries_uses_only_child_retrieval_units_for_completion(self, tmp_path):
