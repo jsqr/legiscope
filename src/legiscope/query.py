@@ -279,6 +279,12 @@ _CONTEXT_OVERFLOW_PATTERNS = (
     "prompt is too long",
     "too many tokens",
 )
+_MAX_TOKEN_LIMIT_PATTERNS = (
+    "max_tokens length limit",
+    "output is incomplete due to a max_tokens length limit",
+    "finish_reason='length'",
+    'finish_reason="length"',
+)
 _CITATION_PATTERNS = [
     re.compile(
         r"(?:relevant\s+)?citation\s*(?:is|:)\s*(?P<citation>[^\n]+)",
@@ -1704,10 +1710,10 @@ def query_legal_documents(
         )
 
     timeout_seconds = DEFAULT_LLM_TIMEOUT_SECONDS
+    query_attempts: list[dict[str, Any]] = []
 
     try:
         response = None
-        query_attempts: list[dict[str, Any]] = []
         review_decision = AnswerReviewDecision()
         review_prompt: str | None = None
         overflow_attempt = 0
@@ -1717,6 +1723,11 @@ def query_legal_documents(
                 break
             except Exception as error:
                 if not _is_context_overflow_error(error):
+                    _append_failed_query_attempt(
+                        query_attempts,
+                        attempt_type="initial",
+                        error=error,
+                    )
                     raise
                 if (
                     overflow_attempt >= DEFAULT_CONTEXT_OVERFLOW_RETRIES
@@ -1821,7 +1832,18 @@ def query_legal_documents(
                     max_retries=settings.llm.max_retries,
                 )
 
-            reviewed_response = _run_with_timeout(_invoke_review_llm, timeout_seconds)
+            try:
+                reviewed_response = _run_with_timeout(
+                    _invoke_review_llm,
+                    timeout_seconds,
+                )
+            except Exception as error:
+                _append_failed_query_attempt(
+                    query_attempts,
+                    attempt_type="review",
+                    error=error,
+                )
+                raise
             reviewed_response = _normalize_response_option_evidence(
                 reviewed_response,
                 query_metadata,
@@ -1920,6 +1942,11 @@ def query_legal_documents(
         return response, similarity_scores
 
     except FutureTimeoutError:
+        _append_failed_query_attempt(
+            query_attempts,
+            attempt_type="initial",
+            error=FutureTimeoutError(),
+        )
         logger.error(
             f"LLM call timed out after {timeout_seconds:.0f}s; returning fallback response"
         )
@@ -1929,6 +1956,7 @@ def query_legal_documents(
                     "stage_status": "timeout",
                     "supporting_passage_validation_scores": "[]",
                     "supporting_passage_validation_match_types": "[]",
+                    "query_attempts": _json_debug(query_attempts),
                 }
             )
         return LegalQueryResponse(
@@ -1940,6 +1968,11 @@ def query_legal_documents(
             limitations="Timeout while waiting for LLM response.",
         ), []
     except ValidationError as ve:
+        _append_failed_query_attempt(
+            query_attempts,
+            attempt_type="initial",
+            error=ve,
+        )
         logger.error("LLM returned invalid response payload", exc_info=ve)
         if debug_capture is not None:
             debug_capture["query"].update(
@@ -1947,6 +1980,7 @@ def query_legal_documents(
                     "stage_status": "validation_error",
                     "supporting_passage_validation_scores": "[]",
                     "supporting_passage_validation_match_types": "[]",
+                    "query_attempts": _json_debug(query_attempts),
                 }
             )
         return LegalQueryResponse(
@@ -1959,6 +1993,13 @@ def query_legal_documents(
         ), []
     except Exception as e:
         logger.error(f"Query processing failed: {str(e)}")
+        if debug_capture is not None:
+            debug_capture.setdefault("query", {}).update(
+                {
+                    "stage_status": "error",
+                    "query_attempts": _json_debug(query_attempts),
+                }
+            )
         raise
 
 
@@ -2460,6 +2501,32 @@ def _is_context_overflow_error(error: Exception) -> bool:
     """Return whether an exception appears to be a provider context-window overflow."""
     message = str(error).lower()
     return any(pattern in message for pattern in _CONTEXT_OVERFLOW_PATTERNS)
+
+
+def _is_max_token_limit_error(error: Exception) -> bool:
+    """Return whether an exception appears to be a completion-length failure."""
+    message = str(error).lower()
+    return any(pattern in message for pattern in _MAX_TOKEN_LIMIT_PATTERNS)
+
+
+def _append_failed_query_attempt(
+    query_attempts: list[dict[str, Any]],
+    *,
+    attempt_type: str,
+    error: Exception,
+) -> None:
+    """Record a failed LLM attempt in a compact debug-friendly structure."""
+    query_attempts.append(
+        {
+            "attempt_index": len(query_attempts) + 1,
+            "attempt_type": attempt_type,
+            "status": "error",
+            "error_type": type(error).__name__,
+            "error_message": str(error),
+            "context_overflow": _is_context_overflow_error(error),
+            "max_token_limited": _is_max_token_limit_error(error),
+        }
+    )
 
 
 def _record_overflow_retry_drop(
@@ -3269,10 +3336,32 @@ def _option_evidence_review_signals(
     """Return generic review signals derived from option-evidence inconsistencies."""
     metadata = query_metadata or {}
     response_options = _clean_response_options(metadata.get("response_options"))
-    if not response_options or not response.option_evidence:
+    if not response_options:
         return ()
 
+    declared_options, _separator = _split_response_options(response_options)
     reasons: list[AnswerReviewSignal] = []
+    if not response.option_evidence:
+        reasons.append(
+            AnswerReviewSignal(
+                option="option_evidence",
+                issue="missing_option_evidence",
+            )
+        )
+        return tuple(reasons)
+
+    if len(response.option_evidence) < len(declared_options):
+        reasons.append(
+            AnswerReviewSignal(
+                option="option_evidence",
+                issue="incomplete_option_evidence",
+                evidence_snippet=(
+                    f"expected {len(declared_options)} response options, got "
+                    f"{len(response.option_evidence)} option_evidence entries"
+                ),
+            )
+        )
+
     short_answer_selected = _selected_response_options_from_short_answer(
         response.short_answer,
         metadata,

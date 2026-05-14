@@ -1506,6 +1506,77 @@ class TestQueryConfigBasics:
             ],
             confidence=0.84,
             limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Sales, possession with intent to sell, offer for sale",
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange",
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Give away, give, gift, free distribution",
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Possession, possession with intent to use, keep",
+                    selected=True,
+                    confidence=0.88,
+                    citations=["§ 134.28(A)"],
+                    supporting_passages=[
+                        "It is unlawful for any person to use or possess with intent to use drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Use",
+                    selected=True,
+                    confidence=0.88,
+                    citations=["§ 134.28(A)"],
+                    supporting_passages=[
+                        "It is unlawful for any person to use or possess with intent to use drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Advertising, display",
+                    selected=True,
+                    confidence=0.86,
+                    citations=["§ 134.28(C)"],
+                    supporting_passages=[
+                        "It is unlawful for any person to place any advertisement to promote the sale of objects designed for use as drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Manufacturing, manufacture with intent to deliver or sell",
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Other",
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Not specified",
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+            ],
         )
 
         with patch("legiscope.query.ask", return_value=response_payload) as mock_ask:
@@ -1664,6 +1735,106 @@ class TestQueryConfigBasics:
             "review_rerun_reasons"
         ]
         assert '"attempt_type": "review"' in debug_capture["query"]["query_attempts"]
+
+    def test_query_legal_documents_reruns_when_option_evidence_is_missing(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Exemptions",
+                    body_text=(
+                        "This article does not apply to syringes distributed through a syringe exchange program."
+                    ),
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="exemption",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            short_answer="None",
+            reasoning="No exemption is clear.",
+            citations=["§ 1.23"],
+            supporting_passages=[
+                "This article does not apply to syringes distributed through a syringe exchange program."
+            ],
+            confidence=0.58,
+            limitations="None",
+            option_evidence=[],
+        )
+        second_response = LegalQueryResponse(
+            short_answer="Syringes from syringe services, harm reduction programs, or supervised use sites",
+            reasoning="The text expressly exempts syringes distributed through a syringe exchange program.",
+            citations=["§ 1.23"],
+            supporting_passages=[
+                "This article does not apply to syringes distributed through a syringe exchange program."
+            ],
+            confidence=0.88,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="None",
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Syringes from syringe services, harm reduction programs, or supervised use sites",
+                    selected=True,
+                    confidence=0.88,
+                    citations=["§ 1.23"],
+                    supporting_passages=[
+                        "This article does not apply to syringes distributed through a syringe exchange program."
+                    ],
+                ),
+            ],
+        )
+        debug_capture = {"query": {}}
+        prompts: list[str] = []
+
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "Are there any exemptions?",
+                settings,
+                query_metadata={
+                    "response_options": "Responses: None AND/OR Syringes from syringe services, harm reduction programs, or supervised use sites",
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert len(prompts) == 2
+        assert (
+            response.short_answer
+            == "Syringes from syringe services, harm reduction programs, or supervised use sites"
+        )
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert (
+            debug_capture["query"]["review_rerun_guidance_topic"]
+            == "response_option_consistency"
+        )
+        assert "missing_option_evidence" in debug_capture["query"]["review_rerun_reasons"]
 
     def test_query_with_relevance_filtering(self):
         """Test query with relevance filtering enabled."""
@@ -2392,6 +2563,76 @@ class TestBatchQueryConfigBasics:
         assert query_debug[0, "review_rerun_guidance_topic"] == "response_option_consistency"
         assert '"attempt_type": "initial"' in query_debug[0, "query_attempts"]
         assert '"attempt_type": "review"' in query_debug[0, "query_attempts"]
+
+    def test_run_queries_writes_failed_attempts_to_query_debug_csv(self, tmp_path):
+        sections_path = tmp_path / "sections.parquet"
+        debug_dir = tmp_path / "debug"
+        debug_timestamp = "20260513_230500"
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["It is unlawful to deliver drug paraphernalia."],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Test",
+                    body_text="It is unlawful to deliver drug paraphernalia.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="activity",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+
+        failure = Exception("The output is incomplete due to a max_tokens length limit.")
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch("legiscope.query.ask", side_effect=failure):
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=Mock(spec=Instructor), model="test-model"),
+                    debug_dir=debug_dir,
+                    debug_timestamp=debug_timestamp,
+                    filter_relevance=False,
+                    validate_supporting_passages=False,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Which activities are prohibited?",
+                            variable_name="dp_activity",
+                            metadata={
+                                "response_options": "Responses: Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR Other",
+                            },
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        query_debug = pl.read_csv(debug_dir / f"query_stage_{debug_timestamp}.csv")
+        assert len(query_debug) == 1
+        assert query_debug[0, "stage_status"] == "error"
+        assert '"attempt_type": "initial"' in query_debug[0, "query_attempts"]
+        assert '"status": "error"' in query_debug[0, "query_attempts"]
+        assert '"max_token_limited": true' in query_debug[0, "query_attempts"]
 
     def test_run_queries_postprocesses_structured_date_answers(self, tmp_path):
         """Structured date answers should be normalized in results and debug output."""

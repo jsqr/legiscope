@@ -585,6 +585,14 @@ from pathlib import Path
 target_dir = Path(sys.argv[1])
 jurisdiction = sys.argv[2]
 
+limit = sys.maxsize
+while True:
+    try:
+        csv.field_size_limit(limit)
+        break
+    except OverflowError:
+        limit //= 10
+
 for csv_path in sorted(target_dir.glob("benchmark_results*.csv")):
     with csv_path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
