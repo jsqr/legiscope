@@ -13,6 +13,7 @@ from instructor import Instructor
 from pydantic import ValidationError
 
 from legiscope.utils import LLMConfig
+import legiscope.query as query_module
 from legiscope.query import (
     LegalQueryResponse,
     ResponseOptionEvidence,
@@ -106,6 +107,30 @@ class TestStructuredShortAnswerNormalization:
         )
 
         assert normalized == "Yes, 35 P.S. § 780-102"
+
+
+class TestTimeoutExecution:
+    """Test timeout behavior for wrapped LLM calls."""
+
+    def test_run_with_timeout_does_not_wait_for_timed_out_worker(self):
+        fake_future = Mock()
+        fake_future.result.side_effect = query_module.FutureTimeoutError()
+        fake_executor = Mock()
+        fake_executor.submit.return_value = fake_future
+
+        with patch.object(
+            query_module,
+            "ThreadPoolExecutor",
+            return_value=fake_executor,
+        ):
+            with pytest.raises(query_module.FutureTimeoutError):
+                query_module._run_with_timeout(lambda: None, 0.01)
+
+        fake_future.cancel.assert_called_once_with()
+        fake_executor.shutdown.assert_called_once_with(
+            wait=False,
+            cancel_futures=True,
+        )
 
     def test_normalizes_citation_only_output_for_state_fed_combined(self):
         normalized = _normalize_structured_short_answer(
@@ -1835,6 +1860,133 @@ class TestQueryConfigBasics:
             == "response_option_consistency"
         )
         assert "missing_option_evidence" in debug_capture["query"]["review_rerun_reasons"]
+
+    def test_query_legal_documents_skips_review_for_scalar_date_placeholder(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Ordinance history",
+                    body_text="(Ord. 96-1973; Am. Ord. 2-1981; Am. Ord. 2018-005; Am. Ord. 2022-009)",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="enacted",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        response_payload = LegalQueryResponse(
+            short_answer="07/15/2022",
+            reasoning="The latest amendment date in range is 2022.",
+            citations=["Ord. 2022-009"],
+            supporting_passages=[
+                "(Ord. 96-1973; Am. Ord. 2-1981; Am. Ord. 2018-005; Am. Ord. 2022-009)"
+            ],
+            confidence=0.85,
+            limitations="None",
+            option_evidence=[],
+        )
+        debug_capture = {"query": {}}
+
+        with patch("legiscope.query.ask", return_value=response_payload) as mock_ask:
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "On which date was the ordinance enacted?",
+                settings,
+                query_metadata={
+                    "response_options": "Responses: <enactment date> OR Unknown",
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert mock_ask.call_count == 1
+        assert response.short_answer == "07/15/2022"
+        assert debug_capture["query"].get("review_rerun_triggered") in (None, False)
+
+    def test_query_legal_documents_skips_review_for_scalar_citation_placeholder(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# State law reference",
+                    body_text="This section incorporates the State Controlled Substances Act, Sections 30-31-1 et seq. NMSA 1978.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="citation",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        response_payload = LegalQueryResponse(
+            short_answer="Sections 30-31-1 et seq. NMSA 1978",
+            reasoning="The state law citation is explicit.",
+            citations=["§ 12-4-10"],
+            supporting_passages=[
+                "This section incorporates the State Controlled Substances Act, Sections 30-31-1 et seq. NMSA 1978."
+            ],
+            confidence=0.95,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="<citation>",
+                    selected=True,
+                    confidence=0.95,
+                    citations=["§ 12-4-10"],
+                    supporting_passages=[
+                        "This section incorporates the State Controlled Substances Act, Sections 30-31-1 et seq. NMSA 1978."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Unknown",
+                    selected=False,
+                    confidence=0.0,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+            ],
+        )
+        debug_capture = {"query": {}}
+
+        with patch("legiscope.query.ask", return_value=response_payload) as mock_ask:
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "If yes, what is the citation of the relevant law?",
+                settings,
+                query_metadata={
+                    "response_options": "Responses: <citation> OR Unknown",
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert mock_ask.call_count == 1
+        assert response.short_answer == "Sections 30-31-1 et seq. NMSA 1978"
+        assert debug_capture["query"].get("review_rerun_triggered") in (None, False)
 
     def test_query_with_relevance_filtering(self):
         """Test query with relevance filtering enabled."""

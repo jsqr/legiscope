@@ -2915,6 +2915,25 @@ def _is_scalar_date_response_options(response_options: str) -> bool:
     )
 
 
+def _is_scalar_placeholder_response_options(response_options: str) -> bool:
+    """Detect scalar-coded options like `<citation>` or `<date> OR Unknown`."""
+    options, separator = _split_response_options(response_options)
+    if not options:
+        return False
+
+    first_option = options[0].strip()
+    if not (first_option.startswith("<") and first_option.endswith(">")):
+        return False
+
+    if separator is None:
+        return True
+
+    if separator == " OR " and len(options) == 2:
+        return True
+
+    return False
+
+
 def _is_status_date_response_options(response_options: str) -> bool:
     """Detect response-option shapes like `Known, <date> OR Unknown, <date>`."""
     options, separator = _split_response_options(response_options)
@@ -3297,7 +3316,7 @@ def _selected_response_options_from_short_answer(
         None,
         metadata,
     )
-    if _is_status_date_response_options(response_options) or _is_scalar_date_response_options(
+    if _is_status_date_response_options(response_options) or _is_scalar_placeholder_response_options(
         response_options
     ):
         return None
@@ -3337,6 +3356,8 @@ def _option_evidence_review_signals(
     metadata = query_metadata or {}
     response_options = _clean_response_options(metadata.get("response_options"))
     if not response_options:
+        return ()
+    if _is_scalar_placeholder_response_options(response_options):
         return ()
 
     declared_options, _separator = _split_response_options(response_options)
@@ -4372,9 +4393,19 @@ def _build_skipped_query_result(
 
 def _run_with_timeout(func, timeout_seconds: float, *args, **kwargs):
     """Run a callable with a hard timeout using a thread executor."""
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *args, **kwargs)
+    try:
         return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError:
+        future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    except Exception:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True, cancel_futures=False)
 
 
 def _process_single_query_with_error_handling(
