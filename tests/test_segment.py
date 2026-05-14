@@ -604,6 +604,66 @@ This section sets out the basic powers of the city."""
         all_chunk_text = "\n".join(chunks_df["body_text"].fill_null("").to_list())
         assert "GUIDE TO THE CHARTER" not in all_chunk_text
 
+    def test_segment_legal_code_writes_chunks_with_current_through_metadata(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """chunks.parquet should retain pre-code current-through metadata but not publisher boilerplate."""
+        input_text = """Current through Ordinance 24-11.
+
+Published by Civic Publishing.
+
+ARTICLE I ADMINISTRATION
+
+1-100. Executive Branch.
+
+The executive authority is vested in a mayor and administrative departments."""
+
+        structure = HeadingStructure(
+            levels=[
+                HeadingLevel(
+                    level=1,
+                    regex_pattern=r"^ARTICLE\s+[IVXLCDM]+(?:\s+.+)?$",
+                    markdown_prefix="#",
+                    example_heading="ARTICLE I ADMINISTRATION",
+                    type_label="article",
+                    number_regex=r"[IVXLCDM]+",
+                ),
+                HeadingLevel(
+                    level=2,
+                    regex_pattern=r"^\d+(?:-\d+)+\.\s+.+$",
+                    markdown_prefix="##",
+                    example_heading="1-100. Executive Branch.",
+                    type_label="section",
+                    number_regex=r"\d+(?:-\d+)+",
+                ),
+            ],
+            total_levels=2,
+            file_sample_size=5,
+            code_start_element_id=0,
+            code_start_line=1,
+        )
+
+        code_ref = TestSegmentLegalCodeCanonicalFiltering._write_parse_outputs(
+            tmp_path,
+            monkeypatch,
+            input_text,
+            structure,
+        )
+        segment_legal_code(
+            code_ref,
+            embedding_model_token_limit=128,
+            llm_context_limit=32768,
+        )
+
+        chunks_df = pl.read_parquet(code_ref.full_data_dir / "chunks.parquet")
+        region_chunks = chunks_df.filter(pl.col("source_kind") == "region")
+        region_text = "\n".join(region_chunks["body_text"].fill_null("").to_list())
+
+        assert "Current through Ordinance 24-11." in region_text
+        assert "Published by Civic Publishing." not in region_text
+
 
 class TestBuildChunks:
     """Unit tests for derived chunk construction."""

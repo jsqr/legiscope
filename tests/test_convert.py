@@ -2383,6 +2383,7 @@ An independent auditor reviews annual accounts."""
         regions_df = self._render_regions(input_text, structure)
         roles = regions_df["region_role"].to_list()
         assert roles == [
+            "legal_intro",
             "publisher_boilerplate",
             "toc",
             "legal_intro",
@@ -2392,10 +2393,11 @@ An independent auditor reviews annual accounts."""
         ]
 
         rows = regions_df.to_dicts()
-        assert rows[0]["include_in_default_chunks"] is False
-        assert rows[1]["include_in_canonical_sections"] is False
-        assert rows[3]["include_in_canonical_sections"] is True
-        assert rows[4]["include_in_default_chunks"] is True
+        assert rows[0]["include_in_default_chunks"] is True
+        assert rows[1]["include_in_default_chunks"] is False
+        assert rows[2]["include_in_canonical_sections"] is False
+        assert rows[4]["include_in_canonical_sections"] is True
+        assert rows[5]["include_in_default_chunks"] is True
 
     def test_text2md_paragraph_handling(self):
         """Test proper paragraph handling with single and double newlines."""

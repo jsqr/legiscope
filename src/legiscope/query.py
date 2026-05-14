@@ -1942,11 +1942,6 @@ def query_legal_documents(
         return response, similarity_scores
 
     except FutureTimeoutError:
-        _append_failed_query_attempt(
-            query_attempts,
-            attempt_type="initial",
-            error=FutureTimeoutError(),
-        )
         logger.error(
             f"LLM call timed out after {timeout_seconds:.0f}s; returning fallback response"
         )

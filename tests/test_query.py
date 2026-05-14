@@ -132,6 +132,145 @@ class TestTimeoutExecution:
             cancel_futures=True,
         )
 
+    def test_query_legal_documents_records_initial_timeout_once(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Test Section",
+                    body_text="Current through Ordinance 24-11.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="current through",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        debug_capture = {"query": {}}
+
+        with patch.object(
+            query_module,
+            "_run_with_timeout",
+            side_effect=query_module.FutureTimeoutError(),
+        ):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What is the current-through date of the ordinance?",
+                settings,
+                query_metadata={"response_options": "Responses: <current-through date>"},
+                debug_capture=debug_capture,
+            )
+
+        assert response.short_answer == "Error: LLM call timed out."
+        assert debug_capture["query"]["stage_status"] == "timeout"
+        assert debug_capture["query"]["query_attempts"].count(
+            '"attempt_type": "initial"'
+        ) == 1
+
+    def test_query_legal_documents_does_not_add_extra_initial_attempt_on_review_timeout(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Penalty",
+                    body_text=(
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ),
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="penalty",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            reasoning="The text includes a fine and imprisonment.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+            ],
+            confidence=0.73,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option='"Unlawful" only',
+                    selected=False,
+                    confidence=0.05,
+                    citations=[],
+                    supporting_passages=[],
+                ),
+                ResponseOptionEvidence(
+                    option="Unspecified Fine",
+                    selected=True,
+                    confidence=0.84,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Incarceration",
+                    selected=True,
+                    confidence=0.81,
+                    citations=["§ 10.99"],
+                    supporting_passages=[
+                        "A violation is punishable by a fine not to exceed $500 or imprisonment for a period not to exceed 60 days."
+                    ],
+                ),
+            ],
+            short_answer='"Unlawful" only',
+        )
+        debug_capture = {"query": {}}
+
+        with patch.object(
+            query_module,
+            "_run_with_timeout",
+            side_effect=[first_response, query_module.FutureTimeoutError()],
+        ):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What penalties apply?",
+                settings,
+                query_metadata={
+                    "response_options": 'Responses: "Unlawful" only AND/OR Infraction AND/OR Misdemeanor AND/OR Felony AND/OR Civil Fine AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure AND/OR Other',
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert response.short_answer == "Error: LLM call timed out."
+        assert debug_capture["query"]["query_attempts"].count(
+            '"attempt_type": "initial"'
+        ) == 1
+        assert debug_capture["query"]["query_attempts"].count(
+            '"attempt_type": "review"'
+        ) == 1
+
     def test_normalizes_citation_only_output_for_state_fed_combined(self):
         normalized = _normalize_structured_short_answer(
             "35 P.S. § 780-102",

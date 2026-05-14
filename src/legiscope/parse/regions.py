@@ -38,6 +38,10 @@ _PUBLISHER_PAT = re.compile(
     r"https?://|www\.|click here|\b\d{3}-\d{3}-\d{4}\b)",
     re.IGNORECASE,
 )
+_CURRENT_THROUGH_METADATA_PAT = re.compile(
+    r"(?:current through|current to|current as of|ordinances passed through)",
+    re.IGNORECASE,
+)
 _LEGAL_INTRO_PAT = re.compile(
     r"^(?:preamble|preface|foreword|introduction)\b|\b(?:adopted|approved|"
     r"effective|pursuant|electors|home rule|charter commission|general assembly)\b",
@@ -245,6 +249,12 @@ def _classify_record(
 
     if _APPENDIX_PAT.match(first_line):
         return "appendix", 0.95, "appendix heading"
+
+    if _CURRENT_THROUGH_METADATA_PAT.search(text) and (
+        first_numbered_body_heading_id is None
+        or element_id < first_numbered_body_heading_id
+    ):
+        return "legal_intro", 0.9, "current-through source metadata before numbered body"
 
     if _PUBLISHER_PAT.search(text):
         return "publisher_boilerplate", 0.95, "publisher or publication marker"
