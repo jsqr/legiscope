@@ -31,7 +31,7 @@ llm:
 
   temperature: 0.0
   max_retries: 3
-  timeout: 600
+  timeout: 800
 
 parse:
   scan:
@@ -87,7 +87,7 @@ retrieval:
 
   # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
-    enabled: false
+    enabled: true
     threshold: 0.7
     max_concurrency: 4
     target_concurrent_prompt_tokens: 16000
