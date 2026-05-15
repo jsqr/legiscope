@@ -181,3 +181,26 @@ class TestAggregateQueryScoping:
         assert rows[("DPL", "A")]["query_count"] == 2
         assert rows[("DPL", "A")]["query_weighted_score_pct"] == 75.0
         assert rows[("DPL", "B")]["query_weighted_score_pct"] == 25.0
+
+    def test_summarize_metrics_excludes_dependency_skipped_queries_from_denominator(self):
+        scored_df = pl.DataFrame(
+            {
+                "query_instance_id": ["A::benchmark:0"],
+                "eval_label": ["Correct"],
+            }
+        )
+        dimension_df = pl.DataFrame(
+            {
+                "query_instance_id": ["A::benchmark:0", "A::benchmark:1"],
+                "dataset": ["SSP", "SSP"],
+                "jurisdiction": ["A", "A"],
+                "counts_toward_query_metrics": [True, False],
+            }
+        )
+
+        metrics = llm_accuracy.summarize_metrics(scored_df, dimension_df)
+
+        assert metrics.processed_queries == 1
+        assert metrics.scored_queries == 1
+        assert metrics.fully_correct_queries == 1
+        assert round(metrics.query_accuracy_pct, 2) == 100.0

@@ -982,6 +982,64 @@ def _score_option_level_queries(df: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _annotate_benchmark_rows_for_scoring(df: pl.DataFrame) -> pl.DataFrame:
+    """Mark which benchmark rows count toward metrics and whether they are scorable."""
+    if df.is_empty():
+        return df.with_columns(
+            [
+                pl.lit(False).alias("counts_toward_query_metrics"),
+                pl.lit("missing_ground_truth", dtype=pl.String).alias(
+                    "evaluation_status"
+                ),
+            ]
+        )
+
+    is_dependency_skipped = pl.col("query_status").cast(pl.Utf8).eq("skipped")
+    return df.with_columns(
+        [
+            (~is_dependency_skipped).alias("counts_toward_query_metrics"),
+            pl.when(is_dependency_skipped)
+            .then(pl.lit("excluded_dependency_skip"))
+            .when(pl.col("ground_truth_available"))
+            .then(pl.lit("scored_llm"))
+            .otherwise(pl.lit("missing_ground_truth"))
+            .alias("evaluation_status"),
+        ]
+    )
+
+
+def _sort_benchmark_output_rows(df: pl.DataFrame) -> pl.DataFrame:
+    """Emit DPL rows before SSP rows while preserving in-dataset query order."""
+    if df.is_empty() or "variable_name" not in df.columns:
+        return df
+
+    sort_columns = ["_benchmark_dataset_order"]
+    descending = [False]
+
+    if "benchmark_row_id" in df.columns:
+        sort_columns.append("benchmark_row_id")
+        descending.append(False)
+    if "evaluation_subquestion_index" in df.columns:
+        sort_columns.append("evaluation_subquestion_index")
+        descending.append(False)
+    elif "evaluation_row_id" in df.columns:
+        sort_columns.append("evaluation_row_id")
+        descending.append(False)
+
+    return (
+        df.with_columns(
+            pl.when(pl.col("variable_name").cast(pl.Utf8).str.starts_with("dp_"))
+            .then(pl.lit(0))
+            .when(pl.col("variable_name").cast(pl.Utf8).str.starts_with("ssp_"))
+            .then(pl.lit(1))
+            .otherwise(pl.lit(2))
+            .alias("_benchmark_dataset_order")
+        )
+        .sort(by=sort_columns, descending=descending, nulls_last=True)
+        .drop("_benchmark_dataset_order")
+    )
+
+
 def _requested_variable_names(query_inputs) -> list[str]:
     """Return distinct benchmark variable names in query order."""
     seen: set[str] = set()
@@ -1417,15 +1475,8 @@ def main():
                 & (pl.col("ground_truth") != "-")
             ).alias("ground_truth_available")
         )
-        .with_columns(
-            pl.when(pl.col("query_status").cast(pl.Utf8).eq("skipped"))
-            .then(pl.lit("scored_skipped"))
-            .when(pl.col("ground_truth_available"))
-            .then(pl.lit("scored_llm"))
-            .otherwise(pl.lit("missing_ground_truth"))
-            .alias("evaluation_status")
-        )
     )
+    joined_df = _annotate_benchmark_rows_for_scoring(joined_df)
     joined_df = _expand_option_level_evaluation_rows(joined_df)
     joined_df = _ensure_evaluation_prompt_columns(joined_df).with_row_index(
         "evaluation_row_id"
@@ -1479,15 +1530,8 @@ def main():
     llm_eval_input_df = llm_eval_input_df.filter(
         pl.col("evaluation_mode") != "response_option"
     )
-    skipped_eval_df = _score_skipped_queries(
-        joined_df.filter(pl.col("evaluation_status") == "scored_skipped")
-    )
 
-    if (
-        len(llm_eval_input_df) == 0
-        and len(option_eval_df) == 0
-        and len(skipped_eval_df) == 0
-    ):
+    if len(llm_eval_input_df) == 0 and len(option_eval_df) == 0:
         logger.error("No rows with ground truth to evaluate!")
         sys.exit(1)
 
@@ -1513,11 +1557,6 @@ def main():
             }
         )
 
-    skipped_eval_df = skipped_eval_df.with_columns(
-        pl.col("evaluation_generated_answer")
-        .cast(pl.String)
-        .alias("evaluation_generated_answer")
-    )
     eval_scored_df = pl.concat(
         [
             llm_eval_scored_df.select(
@@ -1533,18 +1572,6 @@ def main():
                 ]
             ),
             option_eval_df.select(
-                [
-                    "benchmark_row_id",
-                    "evaluation_mode",
-                    "evaluation_row_id",
-                    "evaluation_generated_answer",
-                    "eval_score",
-                    "eval_reason",
-                    "eval_label",
-                    "eval_error_type",
-                ]
-            ),
-            skipped_eval_df.select(
                 [
                     "benchmark_row_id",
                     "evaluation_mode",
@@ -1583,6 +1610,7 @@ def main():
     final_df = _refine_eval_error_types(final_df)
     final_df = prioritize_ground_truth_matches(final_df)
     final_df = _drop_redundant_query_columns(final_df)
+    final_df = _sort_benchmark_output_rows(final_df)
     eval_scored_df = final_df.filter(pl.col("eval_score").is_not_null()).select(
         [
             "benchmark_row_id",
@@ -1608,7 +1636,8 @@ def main():
     processed_count = final_df.height
     scored_count = eval_scored_df.height
     unscored_count = processed_count - scored_count
-    core_query_count = joined_df.select("benchmark_row_id").n_unique()
+    metric_scope_df = joined_df.filter(pl.col("counts_toward_query_metrics"))
+    core_query_count = metric_scope_df.select("benchmark_row_id").n_unique()
     no_retrieval_units_count = final_df.filter(
         pl.col("no_retrieval_units_found")
     ).height

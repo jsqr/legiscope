@@ -495,6 +495,40 @@ class TestBenchmarkPipelineHelpers:
         assert scored[1, "eval_label"] == "Correct"
         assert scored[1, "eval_error_type"] == "none"
 
+    def test_annotate_benchmark_rows_for_scoring_excludes_dependency_skips(self):
+        df = pl.DataFrame(
+            {
+                "query_status": ["completed", "skipped", "completed"],
+                "ground_truth_available": [True, True, False],
+            }
+        )
+
+        annotated = benchmark_pipeline._annotate_benchmark_rows_for_scoring(df)
+
+        assert annotated[0, "counts_toward_query_metrics"] is True
+        assert annotated[0, "evaluation_status"] == "scored_llm"
+        assert annotated[1, "counts_toward_query_metrics"] is False
+        assert annotated[1, "evaluation_status"] == "excluded_dependency_skip"
+        assert annotated[2, "counts_toward_query_metrics"] is True
+        assert annotated[2, "evaluation_status"] == "missing_ground_truth"
+
+    def test_sort_benchmark_output_rows_places_dpl_before_ssp(self):
+        df = pl.DataFrame(
+            {
+                "variable_name": ["dp_type", "ssp_law", "dp_law", "ssp_permit"],
+                "benchmark_row_id": [1, 2, 0, 3],
+            }
+        )
+
+        ordered = benchmark_pipeline._sort_benchmark_output_rows(df)
+
+        assert ordered["variable_name"].to_list() == [
+            "dp_law",
+            "dp_type",
+            "ssp_law",
+            "ssp_permit",
+        ]
+
     def test_score_option_level_queries_uses_presence_flags_deterministically(self):
         df = pl.DataFrame(
             {
