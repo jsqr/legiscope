@@ -1078,6 +1078,20 @@ The dispatcher runs on the **login node** (no GPU needed). It:
 3. Calls `sbatch --export=... coep/scripts/HPC_scripts/slurm_jurisdiction.sh` for each file
 4. Reports how many jobs were submitted (and any files that couldn't be parsed)
 
+To submit a curated seven-jurisdiction subset instead of the full staging directory:
+
+```bash
+tmpdir=$(mktemp -d /gpfs/data/cerdalab/LegalAI/docx_dispatch_XXXXXX) && \
+ln -s /gpfs/data/cerdalab/LegalAI/docx_sources/NM_Albuquerque.docx "$tmpdir"/ && \
+ln -s /gpfs/data/cerdalab/LegalAI/docx_sources/OH_Cleveland.docx "$tmpdir"/ && \
+ln -s /gpfs/data/cerdalab/LegalAI/docx_sources/TX_Dallas.docx "$tmpdir"/ && \
+ln -s /gpfs/data/cerdalab/LegalAI/docx_sources/FL_Hollywood.docx "$tmpdir"/ && \
+ln -s /gpfs/data/cerdalab/LegalAI/docx_sources/PA_Philadelphia.docx "$tmpdir"/ && \
+ln -s /gpfs/data/cerdalab/LegalAI/docx_sources/CA_LosAngeles.docx "$tmpdir"/ && \
+ln -s /gpfs/data/cerdalab/LegalAI/docx_sources/NH_Manchester.docx "$tmpdir"/ && \
+bash coep/scripts/HPC_scripts/slurm_dispatch.sh "$tmpdir"
+```
+
 The dispatcher does **not** override the SLURM job name. Submitted jobs keep
 the fixed name from `slurm_jurisdiction.sh` (`legiscope-jurisdiction`), which
 is what the monitoring and aggregation commands in Section 13 filter on.

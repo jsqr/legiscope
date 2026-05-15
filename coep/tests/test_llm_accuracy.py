@@ -204,3 +204,39 @@ class TestAggregateQueryScoping:
         assert metrics.scored_queries == 1
         assert metrics.fully_correct_queries == 1
         assert round(metrics.query_accuracy_pct, 2) == 100.0
+
+
+class TestOutputRouting:
+    def test_extract_results_timestamp_from_aggregate_file(self):
+        timestamp = llm_accuracy.extract_results_timestamp(
+            Path("data/output/all_jurisdictions/20260515_104348/all_jurisdictions_benchmark_20260515_104348.csv")
+        )
+
+        assert timestamp == "20260515_104348"
+
+    def test_resolve_output_dir_uses_matching_all_jurisdictions_run_folder(self):
+        input_path = (
+            PROJECT_ROOT
+            / "data"
+            / "output"
+            / "all_jurisdictions"
+            / "20260515_104348"
+            / "all_jurisdictions_benchmark_20260515_104348.csv"
+        )
+
+        output_dir = llm_accuracy.resolve_output_dir(input_path, None)
+
+        assert output_dir == input_path.parent
+
+    def test_resolve_output_dir_routes_timestamped_input_to_all_jurisdictions_folder(self):
+        input_path = PROJECT_ROOT / "data" / "output" / "PA-Philadelphia" / "benchmark_results_20260515_104348.csv"
+
+        output_dir = llm_accuracy.resolve_output_dir(input_path, None)
+
+        assert output_dir == (
+            PROJECT_ROOT
+            / "data"
+            / "output"
+            / "all_jurisdictions"
+            / "20260515_104348"
+        )

@@ -78,7 +78,7 @@ Examples:
 
   ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
     --netid tmh8501 \
-        --jurisdictions PA-Philadelphia,CA-LosAngeles \
+        --jurisdictions PA-Philadelphia,CA-LosAngeles,OH-Cleveland,NM-Albuquerque,FL-Hollywood,TX-Dallas,NH-Manchester \
         --local-dir ~/Downloads/legiscope-results \
         --include-code-artifacts
 

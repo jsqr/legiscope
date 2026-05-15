@@ -29,24 +29,36 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SLURM_SCRIPT="${SCRIPT_DIR}/slurm_jurisdiction.sh"
+PROFILE_HELPER="${SCRIPT_DIR}/slurm_vllm_profile.sh"
+
+if [[ ! -f "$PROFILE_HELPER" ]]; then
+    echo "Error: profile helper not found: $PROFILE_HELPER" >&2
+    exit 1
+fi
+
+# shellcheck source=coep/scripts/HPC_scripts/slurm_vllm_profile.sh
+source "$PROFILE_HELPER"
 
 # ── Argument parsing ──────────────────────────────────────────────
 DRY_RUN=false
+QUANTIZATION="fp16"
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--dry-run] DOCX_DIR
+Usage: $(basename "$0") [--dry-run] [--quantization fp16|awq] DOCX_DIR
 
 Scan DOCX_DIR for *.docx files named STATE_Locality[_code-slug].docx and
 submit a SLURM job for each one.
 
 Options:
-  --dry-run    Show what would be submitted without actually submitting
-  -h, --help   Show this help
+  --dry-run                 Show what would be submitted without actually submitting
+  --quantization MODE       Submission profile for vLLM serving: fp16 or awq
+  -h, --help                Show this help
 
 Examples:
   $(basename "$0") /gpfs/data/cerdalab/LegalAI/docx_sources
-  $(basename "$0") --dry-run /gpfs/data/cerdalab/LegalAI/docx_sources
+  $(basename "$0") --quantization awq /gpfs/data/cerdalab/LegalAI/docx_sources
+  $(basename "$0") --dry-run --quantization fp16 /gpfs/data/cerdalab/LegalAI/docx_sources
 EOF
     exit "${1:-0}"
 }
@@ -55,11 +67,21 @@ DOCX_DIR=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)   DRY_RUN=true; shift ;;
+        --quantization)
+            [[ $# -ge 2 ]] || { echo "Error: --quantization requires a value" >&2; usage 1; }
+            QUANTIZATION="$2"
+            shift 2
+            ;;
         -h|--help)   usage 0 ;;
         -*)          echo "Error: unknown option '$1'" >&2; usage 1 ;;
         *)           DOCX_DIR="$1"; shift ;;
     esac
 done
+
+QUANTIZATION="$(normalize_vllm_quantization "$QUANTIZATION")"
+SBATCH_PARTITION="$(vllm_profile_partition "$QUANTIZATION")"
+SBATCH_GRES="$(vllm_profile_gres "$QUANTIZATION")"
+PROFILE_LABEL="$(vllm_profile_label "$QUANTIZATION")"
 
 if [[ -z "$DOCX_DIR" ]]; then
     echo "Error: DOCX_DIR is required." >&2
@@ -85,6 +107,9 @@ SKIPPED=0
 
 echo "=== Legiscope Batch Dispatcher ==="
 echo "DOCX directory: $DOCX_DIR"
+echo "Quantization : ${PROFILE_LABEL}"
+echo "Partition    : ${SBATCH_PARTITION}"
+echo "GRES         : ${SBATCH_GRES}"
 echo ""
 
 for docx in "$DOCX_DIR"/*.docx; do
@@ -111,11 +136,13 @@ for docx in "$DOCX_DIR"/*.docx; do
     fi
 
     if [[ "$DRY_RUN" == true ]]; then
-        echo "  [dry-run] ${STATE}-${LOCALITY} (${CODE_SLUG}) ← ${DOCX_ABS}"
+        echo "  [dry-run] ${STATE}-${LOCALITY} (${CODE_SLUG}) ← ${DOCX_ABS} [${PROFILE_LABEL}]"
     else
-        echo "  Submitting: ${STATE}-${LOCALITY} (${CODE_SLUG})"
+        echo "  Submitting: ${STATE}-${LOCALITY} (${CODE_SLUG}) [${PROFILE_LABEL}]"
         sbatch \
-            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0" \
+            --partition="${SBATCH_PARTITION}" \
+            --gres="${SBATCH_GRES}" \
+            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,VLLM_QUANTIZATION=${QUANTIZATION}" \
             "$SLURM_SCRIPT"
     fi
 

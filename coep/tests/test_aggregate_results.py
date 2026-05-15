@@ -26,12 +26,30 @@ _SPEC.loader.exec_module(aggregate_results)
 
 
 class TestAggregateResults:
-    def test_timestamped_aggregate_output_path_uses_run_timestamp(self, tmp_path):
-        output_path = aggregate_results._timestamped_aggregate_output_path(
-            tmp_path, "all_jurisdictions_metrics", "20260508_153000"
+    def test_aggregate_run_output_dir_nests_under_all_jurisdictions(self, tmp_path):
+        output_dir = aggregate_results._aggregate_run_output_dir(
+            tmp_path, "20260508_153000"
         )
 
-        assert output_path == tmp_path / "all_jurisdictions_metrics_20260508_153000.csv"
+        assert (
+            output_dir
+            == tmp_path / "all_jurisdictions" / "20260508_153000"
+        )
+
+    def test_timestamped_aggregate_output_path_uses_run_timestamp(self, tmp_path):
+        output_path = aggregate_results._timestamped_aggregate_output_path(
+            tmp_path / "all_jurisdictions" / "20260508_153000",
+            "all_jurisdictions_metrics",
+            "20260508_153000",
+        )
+
+        assert (
+            output_path
+            == tmp_path
+            / "all_jurisdictions"
+            / "20260508_153000"
+            / "all_jurisdictions_metrics_20260508_153000.csv"
+        )
 
     def test_select_results_file_prefers_latest_timestamped_copy(self, tmp_path):
         jurisdiction_dir = tmp_path / "PA-Philadelphia"

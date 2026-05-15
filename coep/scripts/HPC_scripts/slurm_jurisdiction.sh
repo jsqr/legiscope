@@ -30,6 +30,7 @@
 # Optional env vars:
 #   CODE_SLUG  - Code slug (default: municipal-code)
 #   CODE_NAME  - Display name (default: "{Locality} Municipal Code")
+#   VLLM_QUANTIZATION      - vLLM serving profile: fp16 (8 GPUs) or awq (4 GPUs)
 #   SLURM_NOTIFY           - 1/true to enable notifications (default: 1)
 #   SLURM_NOTIFY_EVENTS    - Comma-separated events: start,end,fail (default: start,end,fail)
 #   SLURM_NOTIFY_EMAIL     - Email address to notify if local `mail` command exists
@@ -37,12 +38,159 @@
 #
 # Usage:
 #   # Via dispatcher (recommended):
-#   bash coep/scripts/HPC_scripts/slurm_dispatch.sh /path/to/docx/folder
+#   bash coep/scripts/HPC_scripts/slurm_dispatch.sh --quantization awq /path/to/docx/folder
 #
-#   # Manual single submission:
-#   sbatch --export=ALL,STATE=CA,LOCALITY=LosAngeles,DOCX_PATH=/gpfs/.../CA_LosAngeles.docx,SLURM_NOTIFY=1,SLURM_NOTIFY_EMAIL=you@nyulangone.org,SLURM_NOTIFY_EVENTS=start,end,fail \
-#       coep/scripts/HPC_scripts/slurm_jurisdiction.sh
+#   # Manual single submission with submission-time profile selection:
+#   bash coep/scripts/HPC_scripts/slurm_jurisdiction.sh \
+#       --state CA --locality LosAngeles --docx-path /gpfs/.../CA_LosAngeles.docx \
+#       --quantization awq --notify-email you@nyulangone.org
 #
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_HELPER="${SCRIPT_DIR}/slurm_vllm_profile.sh"
+
+if [[ ! -f "$PROFILE_HELPER" ]]; then
+    echo "ERROR: profile helper not found: $PROFILE_HELPER" >&2
+    exit 1
+fi
+
+# shellcheck source=coep/scripts/HPC_scripts/slurm_vllm_profile.sh
+source "$PROFILE_HELPER"
+
+submit_self() {
+    local state=""
+    local locality=""
+    local docx_path=""
+    local code_slug="municipal-code"
+    local code_name=""
+    local quantization="fp16"
+    local notify="1"
+    local notify_events="start,end,fail"
+    local notify_email=""
+    local subject_prefix="[legiscope]"
+
+    usage_submit() {
+        cat <<EOF
+Usage: $(basename "$0") --state XX --locality Name --docx-path /abs/path/file.docx [options]
+
+Submit one jurisdiction pipeline job with a quantization-driven Slurm profile.
+
+Options:
+  --state XX                   Two-letter state code
+  --locality Name              PascalCase locality name
+  --docx-path PATH             Absolute path to source DOCX file
+  --code-slug SLUG             Code slug (default: municipal-code)
+  --code-name NAME             Display name override
+  --quantization MODE          Submission profile: fp16 or awq
+  --notify 0|1                 Enable notifications (default: 1)
+  --notify-events CSV          Notification events (default: start,end,fail)
+  --notify-email EMAIL         Notification email
+  --subject-prefix PREFIX      Notification subject prefix
+  -h, --help                   Show this help
+
+Examples:
+  $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx
+  $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx --quantization awq
+EOF
+        exit "${1:-0}"
+    }
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --state)
+                [[ $# -ge 2 ]] || { echo "Error: --state requires a value" >&2; usage_submit 1; }
+                state="$2"
+                shift 2
+                ;;
+            --locality)
+                [[ $# -ge 2 ]] || { echo "Error: --locality requires a value" >&2; usage_submit 1; }
+                locality="$2"
+                shift 2
+                ;;
+            --docx-path)
+                [[ $# -ge 2 ]] || { echo "Error: --docx-path requires a value" >&2; usage_submit 1; }
+                docx_path="$2"
+                shift 2
+                ;;
+            --code-slug)
+                [[ $# -ge 2 ]] || { echo "Error: --code-slug requires a value" >&2; usage_submit 1; }
+                code_slug="$2"
+                shift 2
+                ;;
+            --code-name)
+                [[ $# -ge 2 ]] || { echo "Error: --code-name requires a value" >&2; usage_submit 1; }
+                code_name="$2"
+                shift 2
+                ;;
+            --quantization)
+                [[ $# -ge 2 ]] || { echo "Error: --quantization requires a value" >&2; usage_submit 1; }
+                quantization="$2"
+                shift 2
+                ;;
+            --notify)
+                [[ $# -ge 2 ]] || { echo "Error: --notify requires a value" >&2; usage_submit 1; }
+                notify="$2"
+                shift 2
+                ;;
+            --notify-events)
+                [[ $# -ge 2 ]] || { echo "Error: --notify-events requires a value" >&2; usage_submit 1; }
+                notify_events="$2"
+                shift 2
+                ;;
+            --notify-email)
+                [[ $# -ge 2 ]] || { echo "Error: --notify-email requires a value" >&2; usage_submit 1; }
+                notify_email="$2"
+                shift 2
+                ;;
+            --subject-prefix)
+                [[ $# -ge 2 ]] || { echo "Error: --subject-prefix requires a value" >&2; usage_submit 1; }
+                subject_prefix="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage_submit 0
+                ;;
+            -*)
+                echo "Error: unknown option '$1'" >&2
+                usage_submit 1
+                ;;
+            *)
+                echo "Error: unexpected positional argument '$1'" >&2
+                usage_submit 1
+                ;;
+        esac
+    done
+
+    if [[ -z "$state" || -z "$locality" || -z "$docx_path" ]]; then
+        echo "Error: --state, --locality, and --docx-path are required" >&2
+        usage_submit 1
+    fi
+
+    if [[ ! -f "$docx_path" ]]; then
+        echo "Error: DOCX file not found: $docx_path" >&2
+        exit 1
+    fi
+
+    quantization="$(normalize_vllm_quantization "$quantization")"
+
+    local partition
+    local gres
+    partition="$(vllm_profile_partition "$quantization")"
+    gres="$(vllm_profile_gres "$quantization")"
+    docx_path="$(realpath "$docx_path")"
+
+    echo "Submitting $(basename "$0") with quantization=${quantization}, partition=${partition}, gres=${gres}" >&2
+    sbatch \
+        --partition="$partition" \
+        --gres="$gres" \
+        --export="ALL,STATE=${state},LOCALITY=${locality},DOCX_PATH=${docx_path},CODE_SLUG=${code_slug},CODE_NAME=${code_name},SLURM_NOTIFY=${notify},SLURM_NOTIFY_EVENTS=${notify_events},SLURM_NOTIFY_EMAIL=${notify_email},SLURM_NOTIFY_SUBJECT_PREFIX=${subject_prefix},VLLM_QUANTIZATION=${quantization}" \
+        "$0"
+}
+
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+    submit_self "$@"
+    exit $?
+fi
 
 set -Eeo pipefail
 
@@ -61,6 +209,10 @@ fi
 
 CODE_SLUG="${CODE_SLUG:-municipal-code}"
 CODE_NAME="${CODE_NAME:-${LOCALITY} Municipal Code}"
+VLLM_QUANTIZATION="$(normalize_vllm_quantization "${VLLM_QUANTIZATION:-fp16}")"
+VLLM_PROFILE_LABEL="$(vllm_profile_label "$VLLM_QUANTIZATION")"
+VLLM_EXPECTED_PARTITION="$(vllm_profile_partition "$VLLM_QUANTIZATION")"
+VLLM_EXPECTED_GPU_COUNT="$(vllm_profile_gpu_count "$VLLM_QUANTIZATION")"
 SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
 SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
 SLURM_NOTIFY_SUBJECT_PREFIX="${SLURM_NOTIFY_SUBJECT_PREFIX:-[legiscope]}"
@@ -72,6 +224,8 @@ echo "=== Legiscope Pipeline: ${STATE}-${LOCALITY} ==="
 echo "Job ID  : ${SLURM_JOB_ID}"
 echo "Node    : $(hostname)"
 echo "Code    : ${CODE_SLUG} (${CODE_NAME})"
+echo "Profile : ${VLLM_PROFILE_LABEL}"
+echo "Expect  : ${VLLM_EXPECTED_PARTITION}, ${VLLM_EXPECTED_GPU_COUNT} GPUs"
 echo "DOCX    : ${DOCX_PATH}"
 echo "Started : $(date)"
 echo "==========================================="
@@ -806,35 +960,44 @@ bash scripts/convert_docx.sh "$RAW_DIR"
 # that may share this compute node.
 MODEL_ID="$(resolve_vllm_model_from_params)"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
-VLLM_TP_SIZE="${VLLM_TP_SIZE:-8}"
+VLLM_TP_SIZE="${VLLM_TP_SIZE:-$(vllm_profile_tp_size "$VLLM_QUANTIZATION")}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
 echo "Resolved model from params.yaml: ${MODEL_ID}"
+echo "Using quantization profile ${VLLM_PROFILE_LABEL}"
 echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
 echo "Using tensor parallel size ${VLLM_TP_SIZE}"
 echo "Using gpu memory utilization ${VLLM_GPU_MEMORY_UTILIZATION}"
 
 start_gpu_metrics_capture
 
+VLLM_SERVER_ARGS=(
+    --model "$MODEL_ID"
+    --host 0.0.0.0
+    --port "$VLLM_PORT"
+    --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION"
+    --max-model-len "$VLLM_MAX_MODEL_LEN"
+    --api-key "$API_KEY"
+    --served-model-name "$MODEL_ID"
+    --download-dir /gpfs/scratch/"$USER"/hf_cache
+    --generation-config vllm
+    --tensor-parallel-size "$VLLM_TP_SIZE"
+    --disable-custom-all-reduce
+    --reasoning-parser qwen3
+    --default-chat-template-kwargs '{"enable_thinking": false}'
+    --language-model-only
+    --dtype float16
+    --enforce-eager
+)
+
+if [[ "$VLLM_QUANTIZATION" == "awq" ]]; then
+    VLLM_SERVER_ARGS+=(--quantization awq)
+fi
+
 python -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL_ID" \
-    --host 0.0.0.0 \
-    --port "$VLLM_PORT" \
-    --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION" \
-    --max-model-len "$VLLM_MAX_MODEL_LEN" \
-    --api-key "$API_KEY" \
-    --served-model-name "$MODEL_ID" \
-    --download-dir /gpfs/scratch/"$USER"/hf_cache \
-    --generation-config vllm \
-    --tensor-parallel-size "$VLLM_TP_SIZE" \
-    --disable-custom-all-reduce \
-    --reasoning-parser qwen3 \
-    --default-chat-template-kwargs '{"enable_thinking": false}' \
-    --language-model-only \
-    --dtype float16 \
-    --enforce-eager \
+    "${VLLM_SERVER_ARGS[@]}" \
     > >(tee -a "$VLLM_LOG_FILE") \
     2> >(tee -a "$VLLM_LOG_FILE" >&2) &
 

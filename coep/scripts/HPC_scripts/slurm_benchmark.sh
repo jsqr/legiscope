@@ -25,17 +25,122 @@
 # Usage:
 #   # Rebuild shared index first, then submit benchmark:
 #   bash coep/scripts/HPC_scripts/rebuild_index.sh --clean
-#   sbatch coep/scripts/HPC_scripts/slurm_benchmark.sh
+#   bash coep/scripts/HPC_scripts/slurm_benchmark.sh --quantization awq
 #
 # Optional env vars:
+#   VLLM_QUANTIZATION         - vLLM serving profile: fp16 (8 GPUs) or awq (4 GPUs)
 #   SLURM_NOTIFY                - 1/true to enable notifications (default: 1)
 #   SLURM_NOTIFY_EVENTS         - Comma-separated events: start,end,fail (default: start,end,fail)
 #   SLURM_NOTIFY_EMAIL          - Email address to notify if local `mail` command exists
 #   SLURM_NOTIFY_SUBJECT_PREFIX - Subject prefix for email notifications
 #
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROFILE_HELPER="${SCRIPT_DIR}/slurm_vllm_profile.sh"
+
+if [[ ! -f "$PROFILE_HELPER" ]]; then
+    echo "ERROR: profile helper not found: $PROFILE_HELPER" >&2
+    exit 1
+fi
+
+# shellcheck source=coep/scripts/HPC_scripts/slurm_vllm_profile.sh
+source "$PROFILE_HELPER"
+
+submit_self() {
+    local quantization="fp16"
+    local notify="1"
+    local notify_events="start,end,fail"
+    local notify_email=""
+    local subject_prefix="[legiscope]"
+
+    usage_submit() {
+        cat <<EOF
+Usage: $(basename "$0") [--quantization fp16|awq] [notification options]
+
+Submit the benchmark-only job with a quantization-driven Slurm profile.
+
+Options:
+  --quantization MODE          Submission profile: fp16 or awq
+  --notify 0|1                 Enable notifications (default: 1)
+  --notify-events CSV          Notification events (default: start,end,fail)
+  --notify-email EMAIL         Notification email
+  --subject-prefix PREFIX      Notification subject prefix
+  -h, --help                   Show this help
+
+Examples:
+  $(basename "$0")
+  $(basename "$0") --quantization awq
+EOF
+        exit "${1:-0}"
+    }
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --quantization)
+                [[ $# -ge 2 ]] || { echo "Error: --quantization requires a value" >&2; usage_submit 1; }
+                quantization="$2"
+                shift 2
+                ;;
+            --notify)
+                [[ $# -ge 2 ]] || { echo "Error: --notify requires a value" >&2; usage_submit 1; }
+                notify="$2"
+                shift 2
+                ;;
+            --notify-events)
+                [[ $# -ge 2 ]] || { echo "Error: --notify-events requires a value" >&2; usage_submit 1; }
+                notify_events="$2"
+                shift 2
+                ;;
+            --notify-email)
+                [[ $# -ge 2 ]] || { echo "Error: --notify-email requires a value" >&2; usage_submit 1; }
+                notify_email="$2"
+                shift 2
+                ;;
+            --subject-prefix)
+                [[ $# -ge 2 ]] || { echo "Error: --subject-prefix requires a value" >&2; usage_submit 1; }
+                subject_prefix="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage_submit 0
+                ;;
+            -*)
+                echo "Error: unknown option '$1'" >&2
+                usage_submit 1
+                ;;
+            *)
+                echo "Error: unexpected positional argument '$1'" >&2
+                usage_submit 1
+                ;;
+        esac
+    done
+
+    quantization="$(normalize_vllm_quantization "$quantization")"
+
+    local partition
+    local gres
+    partition="$(vllm_profile_partition "$quantization")"
+    gres="$(vllm_profile_gres "$quantization")"
+
+    echo "Submitting $(basename "$0") with quantization=${quantization}, partition=${partition}, gres=${gres}" >&2
+    sbatch \
+        --partition="$partition" \
+        --gres="$gres" \
+        --export="ALL,SLURM_NOTIFY=${notify},SLURM_NOTIFY_EVENTS=${notify_events},SLURM_NOTIFY_EMAIL=${notify_email},SLURM_NOTIFY_SUBJECT_PREFIX=${subject_prefix},VLLM_QUANTIZATION=${quantization}" \
+        "$0"
+}
+
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+    submit_self "$@"
+    exit $?
+fi
+
 set -Eeo pipefail
 
+VLLM_QUANTIZATION="$(normalize_vllm_quantization "${VLLM_QUANTIZATION:-fp16}")"
+VLLM_PROFILE_LABEL="$(vllm_profile_label "$VLLM_QUANTIZATION")"
+VLLM_EXPECTED_PARTITION="$(vllm_profile_partition "$VLLM_QUANTIZATION")"
+VLLM_EXPECTED_GPU_COUNT="$(vllm_profile_gpu_count "$VLLM_QUANTIZATION")"
 SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
 SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
 SLURM_NOTIFY_SUBJECT_PREFIX="${SLURM_NOTIFY_SUBJECT_PREFIX:-[legiscope]}"
@@ -624,11 +729,13 @@ print(int(load_params().get("segmentation", {}).get("llm_context_limit", 32768))
 MODEL_ID="$(resolve_vllm_model_from_params)"
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
-VLLM_TP_SIZE="${VLLM_TP_SIZE:-8}"
+VLLM_TP_SIZE="${VLLM_TP_SIZE:-$(vllm_profile_tp_size "$VLLM_QUANTIZATION")}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
 echo "Resolved model from params.yaml: ${MODEL_ID}"
+echo "Using quantization profile ${VLLM_PROFILE_LABEL}"
+echo "Expected partition ${VLLM_EXPECTED_PARTITION} with ${VLLM_EXPECTED_GPU_COUNT} GPUs"
 echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
 echo "Using tensor parallel size ${VLLM_TP_SIZE}"
 echo "Using gpu memory utilization ${VLLM_GPU_MEMORY_UTILIZATION}"
@@ -637,20 +744,31 @@ VLLM_HOST=127.0.0.1
 
 start_gpu_metrics_capture
 
+VLLM_SERVER_ARGS=(
+    --model "$MODEL_ID"
+    --host 0.0.0.0
+    --port "$VLLM_PORT"
+    --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION"
+    --max-model-len "$VLLM_MAX_MODEL_LEN"
+    --api-key "$API_KEY"
+    --served-model-name "$MODEL_ID"
+    --download-dir /gpfs/scratch/$USER/hf_cache
+    --generation-config vllm
+    --tensor-parallel-size "$VLLM_TP_SIZE"
+    --disable-custom-all-reduce
+    --reasoning-parser qwen3
+    --default-chat-template-kwargs '{"enable_thinking": false}'
+    --language-model-only
+    --dtype float16
+    --enforce-eager
+)
+
+if [[ "$VLLM_QUANTIZATION" == "awq" ]]; then
+    VLLM_SERVER_ARGS+=(--quantization awq)
+fi
+
 python -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL_ID" \
-    --host 0.0.0.0 --port "$VLLM_PORT" \
-    --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION" --max-model-len "$VLLM_MAX_MODEL_LEN" \
-    --api-key "$API_KEY" \
-    --served-model-name "$MODEL_ID" \
-    --download-dir /gpfs/scratch/$USER/hf_cache \
-    --generation-config vllm \
-    --tensor-parallel-size "$VLLM_TP_SIZE" \
-    --disable-custom-all-reduce \
-    --reasoning-parser qwen3 \
-    --default-chat-template-kwargs '{"enable_thinking": false}' \
-    --language-model-only \
-    --dtype float16 --enforce-eager \
+    "${VLLM_SERVER_ARGS[@]}" \
     > >(tee -a "$VLLM_LOG_FILE") \
     2> >(tee -a "$VLLM_LOG_FILE" >&2) &
 

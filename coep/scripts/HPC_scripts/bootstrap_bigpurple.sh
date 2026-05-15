@@ -307,8 +307,8 @@ fi
 say ""
 say ">>> Next commands"
 say "Local sync: bash coep/scripts/HPC_scripts/sync_bigpurple_inputs.sh --netid <netid> --docx-dir ~/legiscope-docx"
-say "Single run : sbatch --export=\"ALL,STATE=PA,LOCALITY=Philadelphia,DOCX_PATH=${DOCX_STAGE_DIR}/PA_Philadelphia.docx\" coep/scripts/HPC_scripts/slurm_jurisdiction.sh"
-say "Batch run  : bash coep/scripts/HPC_scripts/slurm_dispatch.sh ${DOCX_STAGE_DIR}"
+say "Single run : bash coep/scripts/HPC_scripts/slurm_jurisdiction.sh --state PA --locality Philadelphia --docx-path ${DOCX_STAGE_DIR}/PA_Philadelphia.docx --quantization fp16"
+say "Batch run  : bash coep/scripts/HPC_scripts/slurm_dispatch.sh --quantization awq ${DOCX_STAGE_DIR}"
 
 if [[ "$STRICT" == true && $missing -gt 0 ]]; then
     echo "Error: bootstrap checks found ${missing} missing item(s)" >&2

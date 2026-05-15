@@ -48,6 +48,7 @@ CANONICAL_METRICS_NAME = "benchmark_metrics.json"
 TIMESTAMPED_METRICS_GLOB = "benchmark_metrics_*.json"
 TIMESTAMPED_METRICS_PATTERN = re.compile(r"^benchmark_metrics_(\d{8}_\d{6})\.json$")
 AGGREGATE_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
+ALL_JURISDICTIONS_DIR_NAME = "all_jurisdictions"
 
 
 def parse_args() -> argparse.Namespace:
@@ -196,6 +197,16 @@ def _timestamped_aggregate_output_path(
     return output_dir / f"{stem}_{timestamp}.csv"
 
 
+def _all_jurisdictions_output_dir(output_dir: Path) -> Path:
+    """Return the root directory for aggregate cross-jurisdiction outputs."""
+    return output_dir / ALL_JURISDICTIONS_DIR_NAME
+
+
+def _aggregate_run_output_dir(output_dir: Path, run_timestamp: str) -> Path:
+    """Return the timestamped aggregate output directory for this run."""
+    return _all_jurisdictions_output_dir(output_dir) / run_timestamp
+
+
 def _prepend_jurisdiction_column(df: pl.DataFrame) -> pl.DataFrame:
     """Add a left-most jurisdiction column derived from jurisdiction_id."""
     if df.is_empty() or "jurisdiction_id" not in df.columns:
@@ -326,15 +337,19 @@ def main() -> None:
     args = parse_args()
     output_dir = resolve_output_dir(args.output_dir)
     run_timestamp = datetime.now().strftime(AGGREGATE_TIMESTAMP_FORMAT)
+    aggregate_output_dir = _aggregate_run_output_dir(output_dir, run_timestamp)
 
     print("=" * 70)
     print("LEGISCOPE — Aggregate Benchmark Results")
     print("=" * 70)
-    print(f"Output directory: {output_dir}")
+    print(f"Jurisdiction output root: {output_dir}")
+    print(f"Aggregate output directory: {aggregate_output_dir}")
 
     if not output_dir.exists():
         print(f"\nERROR: Output directory does not exist: {output_dir}")
         sys.exit(1)
+
+    aggregate_output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Check expected vs completed jurisdictions ──────────────
     completed_dirs = [d.name for d in _iter_jurisdiction_output_dirs(output_dir)]
@@ -518,7 +533,7 @@ def main() -> None:
 
         # Save metrics summary
         metrics_out = _timestamped_aggregate_output_path(
-            output_dir, "all_jurisdictions_metrics", run_timestamp
+            aggregate_output_dir, "all_jurisdictions_metrics", run_timestamp
         )
         _serialize_nested_columns_for_csv(metrics_df).write_csv(str(metrics_out))
         print(f"\n  Metrics saved to: {metrics_out}")
@@ -531,7 +546,7 @@ def main() -> None:
         print("  No benchmark_results.csv files found.")
     else:
         combined_out = _timestamped_aggregate_output_path(
-            output_dir, "all_jurisdictions_benchmark", run_timestamp
+            aggregate_output_dir, "all_jurisdictions_benchmark", run_timestamp
         )
         results_df.write_csv(str(combined_out))
         timestamped_sources = results_df.filter(
