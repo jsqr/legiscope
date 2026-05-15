@@ -435,9 +435,26 @@ class TestCoepRetrievalGuidance:
         assert guidance.guidance_topic == "reference_necessity"
         assert "state law" in guidance.anchor_terms
         assert "A mere citation is not enough." in guidance.relevance_instructions
+        assert guidance.shared_context is not None
+        assert (
+            "Outside-law review is only relevant if it is necessary to answer one of these exact non-date benchmark questions"
+            in guidance.shared_context
+        )
+        assert (
+            "What types of drug paraphernalia are included in the law?"
+            in guidance.shared_context
+        )
+        assert (
+            "Which specific drug paraphernalia-related activities are prohibited?"
+            in guidance.shared_context
+        )
         assert guidance.completion_instructions is not None
         assert (
             "DO NOT answer Yes for bare citations" in guidance.completion_instructions
+        )
+        assert (
+            "Treat the benchmark-question list in the query context as exhaustive"
+            in guidance.completion_instructions
         )
 
     def test_returns_guidance_for_split_reference_citation_variable(self):
@@ -452,10 +469,50 @@ class TestCoepRetrievalGuidance:
         assert guidance.guidance_topic == "reference_necessity"
         assert guidance.retrieval_instructions is not None
         assert "self-contained definition text" in guidance.retrieval_instructions
+        assert guidance.shared_context is not None
+        assert (
+            "Does the ordinance specify any of the following types of violations or penalties for violating drug paraphernalia laws?"
+            in guidance.shared_context
+        )
         assert guidance.completion_instructions is not None
         assert "smallest specific statutory unit" in guidance.completion_instructions
         assert (
             "same sentence, subsection, or immediately adjacent chunk"
+            in guidance.completion_instructions
+        )
+
+    def test_returns_guidance_for_ssp_reference_variable_with_ssp_question_scope(self):
+        request = RetrievalGuidanceRequest(
+            query="Does local law require review of outside SSP law?",
+            variable_name="ssp_state_fed_reference",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance governing syringe "
+                    "service programs (SSPs)."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_reference_necessity"
+        assert guidance.shared_context is not None
+        assert (
+            "Does the ordinance specifically prohibit all SSPs?"
+            in guidance.shared_context
+        )
+        assert (
+            "Does the ordinance explicitly authorize SSPs?"
+            in guidance.shared_context
+        )
+        assert (
+            "Does the ordinance require any of the following restrictions on SSPs?"
+            in guidance.shared_context
+        )
+        assert guidance.completion_instructions is not None
+        assert (
+            "Treat the benchmark-question list in the query context as exhaustive"
             in guidance.completion_instructions
         )
 

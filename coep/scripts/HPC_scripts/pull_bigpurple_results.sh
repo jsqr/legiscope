@@ -9,7 +9,7 @@ LOCAL_PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 NETID=""
 HOST="bigpurple.nyumc.org"
 PROJECT_ROOT="/gpfs/data/cerdalab/LegalAI/legiscope"
-JURISDICTION=""
+JURISDICTIONS=()
 LOCAL_DIR="${LOCAL_PROJECT_ROOT}/data/output"
 LOCAL_LAWS_DIR="${LOCAL_PROJECT_ROOT}/data/laws"
 SSH_JUMP=""
@@ -22,22 +22,27 @@ SKIP_BENCHMARK=false
 CODE_SLUG="municipal-code"
 OPEN_AFTER=false
 SSH_COMMON_ARGS=()
+OPEN_TARGETS=()
 
 usage() {
     cat <<'EOF'
 Usage: pull_bigpurple_results.sh --netid NETID --jurisdiction STATE-Locality [options]
 
-Pull benchmark artifacts for a jurisdiction from BigPurple onto your local
-machine. Benchmark downloads use timestamped benchmark_results_*.csv files as
-the primary result artifact. Optionally also pull the jurisdiction's source
-and pipeline artifacts from data/laws for debugging and inspection, including
-code.md, code.txt, raw inputs, heading scan debug output, headings/regions,
-sections/chunks/segments,
-relations/external references, and embeddings when present.
+   or: pull_bigpurple_results.sh --netid NETID --jurisdictions STATE-Locality,STATE-Locality [options]
+
+Pull benchmark artifacts for one or more jurisdictions from BigPurple onto
+your local machine. Benchmark downloads use timestamped benchmark_results_*.csv
+files as the primary result artifact. Optionally also pull each jurisdiction's
+source and pipeline artifacts from data/laws for debugging and inspection,
+including code.md, code.txt, raw inputs, heading scan debug output,
+headings/regions, sections/chunks/segments, relations/external references,
+and embeddings when present.
 
 Required:
   --netid NETID               BigPurple username
-  --jurisdiction ID           Jurisdiction output dir, e.g. PA-Philadelphia
+    --jurisdiction ID           Jurisdiction output dir, e.g. PA-Philadelphia
+                                                            May be passed multiple times
+    --jurisdictions IDS         Comma-separated jurisdiction list
 
 Options:
   --host HOST                 Remote host (default: bigpurple.nyumc.org)
@@ -65,9 +70,15 @@ Examples:
     --jurisdiction PA-Philadelphia \
     --open
 
+    ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
+        --netid tmh8501 \
+        --jurisdiction PA-Philadelphia \
+        --jurisdiction CA-LosAngeles \
+        --include-code-artifacts
+
   ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
     --netid tmh8501 \
-    --jurisdiction PA-Philadelphia \
+        --jurisdictions PA-Philadelphia,CA-LosAngeles \
         --local-dir ~/Downloads/legiscope-results \
         --include-code-artifacts
 
@@ -79,6 +90,19 @@ Examples:
 EOF
 }
 
+append_jurisdiction_csv() {
+        local raw_list="$1"
+        local entry=""
+
+        IFS=',' read -r -a csv_entries <<< "$raw_list"
+        for entry in "${csv_entries[@]}"; do
+        entry="${entry#"${entry%%[![:space:]]*}"}"
+        entry="${entry%"${entry##*[![:space:]]}"}"
+                [[ -n "$entry" ]] || continue
+                JURISDICTIONS+=("$entry")
+        done
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --netid)
@@ -86,7 +110,11 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --jurisdiction)
-            JURISDICTION="$2"
+            JURISDICTIONS+=("$2")
+            shift 2
+            ;;
+        --jurisdictions)
+            append_jurisdiction_csv "$2"
             shift 2
             ;;
         --host)
@@ -241,22 +269,183 @@ report_local_artifact_status() {
     fi
 }
 
+pull_jurisdiction() {
+    local jurisdiction="$1"
+    local state="${jurisdiction%%-*}"
+    local locality="${jurisdiction#*-}"
+    local remote_output_dir="${PROJECT_ROOT}/data/output/${jurisdiction}"
+    local local_target_dir="${LOCAL_DIR%/}/${jurisdiction}"
+    local remote_code_dir="${PROJECT_ROOT}/data/laws/${state}/${locality}/${CODE_SLUG}"
+    local local_code_dir="${LOCAL_LAWS_DIR%/}/${state}/${locality}/${CODE_SLUG}"
+    local remote_benchmark_check_cmd=""
+    local remote_code_check_cmd=""
+    local latest_timestamped_csv=""
+    local latest_timestamped_metrics_json=""
+    local debug_file_count="0"
+    local raw_file_count="0"
+
+    say "=== Pull BigPurple Artifacts ==="
+    say "Remote        : ${REMOTE}"
+    say "Jurisdiction  : ${jurisdiction}"
+    if [[ "$SKIP_BENCHMARK" == false ]]; then
+        say "Benchmark dir : ${remote_output_dir}"
+        say "Local results : ${local_target_dir}"
+    fi
+    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+        say "Code dir      : ${remote_code_dir}"
+        say "Local code dir: ${local_code_dir}"
+    fi
+    say ""
+
+    remote_benchmark_check_cmd=$(cat <<EOF
+test -d '${remote_output_dir}' && \
+find '${remote_output_dir}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' | grep -q .
+EOF
+)
+
+    remote_code_check_cmd=$(cat <<EOF
+test -d '${remote_code_dir}' \
+    -a -f '${remote_code_dir}/code.md' \
+    -a -f '${remote_code_dir}/regions.parquet' \
+    -a -f '${remote_code_dir}/chunks.parquet' \
+    -a -f '${remote_code_dir}/segments.parquet' \
+    -a -f '${remote_code_dir}/sections.parquet' \
+    -a -f '${remote_code_dir}/headings.parquet'
+EOF
+)
+
+    if [[ "$SKIP_BENCHMARK" == false ]]; then
+        say ">>> Checking remote benchmark output exists"
+        if [[ "$DRY_RUN" == true ]]; then
+            say "ssh ${REMOTE} \"${remote_benchmark_check_cmd}\""
+        else
+            if ! ssh_run "$REMOTE" "$remote_benchmark_check_cmd"; then
+                die "remote benchmark results not found at ${remote_output_dir}"
+            fi
+        fi
+    fi
+
+    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+        say ">>> Checking remote code artifacts exist"
+        if [[ "$DRY_RUN" == true ]]; then
+            say "ssh ${REMOTE} \"${remote_code_check_cmd}\""
+        else
+            if ! ssh_run "$REMOTE" "$remote_code_check_cmd"; then
+                die "remote code artifacts not found at ${remote_code_dir}"
+            fi
+        fi
+    fi
+
+    if [[ "$SKIP_BENCHMARK" == false ]]; then
+        say ">>> Ensuring local benchmark directory exists"
+        mkdir -p "$local_target_dir"
+    fi
+
+    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+        say ">>> Ensuring local code directory exists"
+        mkdir -p "$local_code_dir"
+    fi
+
+    if [[ "$SKIP_BENCHMARK" == false ]]; then
+        say ">>> Pulling benchmark artifacts"
+        rsync "${RSYNC_ARGS[@]}" \
+            "${RSYNC_FILTERS[@]}" \
+            -e "$RSYNC_RSH" \
+            "${REMOTE}:${remote_output_dir}/" \
+            "${local_target_dir}/"
+    fi
+
+    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+        say ">>> Pulling code artifacts"
+        rsync "${RSYNC_ARGS[@]}" \
+            --include='raw/***' \
+            --include='code.txt' \
+            --include='code.md' \
+            --include='heading_scan_debug.json' \
+            --include='regions.parquet' \
+            --include='sections.parquet' \
+            --include='chunks.parquet' \
+            --include='segments.parquet' \
+            --include='relations.parquet' \
+            --include='external_references.parquet' \
+            --include='embeddings.parquet' \
+            --include='headings.parquet' \
+            --exclude='*' \
+            -e "$RSYNC_RSH" \
+            "${REMOTE}:${remote_code_dir}/" \
+            "${local_code_dir}/"
+    fi
+
+    say ">>> Local verification"
+    if [[ "$DRY_RUN" == true ]]; then
+        if [[ "$SKIP_BENCHMARK" == false ]]; then
+            say "Would verify files under ${local_target_dir}"
+        fi
+        if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+            say "Would verify files under ${local_code_dir}"
+        fi
+        return 0
+    fi
+
+    if [[ "$SKIP_BENCHMARK" == false ]]; then
+        latest_timestamped_csv="$(latest_timestamped_benchmark_file "${local_target_dir}")"
+        [[ -n "$latest_timestamped_csv" ]] || die "download completed but no benchmark_results_*.csv files were found locally"
+        if [[ -f "${local_target_dir}/benchmark_metrics.json" ]]; then
+            say "benchmark_metrics.json: ok"
+        else
+            say "benchmark_metrics.json: missing"
+        fi
+        latest_timestamped_metrics_json="$(find "${local_target_dir}" -maxdepth 1 -type f -name 'benchmark_metrics_*.json' | sort | tail -n 1)"
+        if [[ -n "$latest_timestamped_metrics_json" ]]; then
+            say "latest timestamped metrics json: ${latest_timestamped_metrics_json}"
+        else
+            say "latest timestamped metrics json: not present"
+        fi
+        if [[ -d "${local_target_dir}/debug" ]]; then
+            debug_file_count=$(find "${local_target_dir}/debug" -type f | wc -l | tr -d ' ')
+            say "debug artifacts: ${debug_file_count} file(s)"
+        else
+            say "debug artifacts: not present"
+        fi
+        say "latest benchmark csv: ${latest_timestamped_csv}"
+        say "benchmark path: ${local_target_dir}"
+        OPEN_TARGETS+=("$latest_timestamped_csv")
+    fi
+
+    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+        report_local_artifact_status "${local_code_dir}/code.md" "code.md" true
+        report_local_artifact_status "${local_code_dir}/code.txt" "code.txt"
+        report_local_artifact_status "${local_code_dir}/heading_scan_debug.json" "heading_scan_debug.json"
+        report_local_artifact_status "${local_code_dir}/headings.parquet" "headings.parquet" true
+        report_local_artifact_status "${local_code_dir}/regions.parquet" "regions.parquet" true
+        report_local_artifact_status "${local_code_dir}/sections.parquet" "sections.parquet" true
+        report_local_artifact_status "${local_code_dir}/chunks.parquet" "chunks.parquet" true
+        report_local_artifact_status "${local_code_dir}/segments.parquet" "segments.parquet" true
+        report_local_artifact_status "${local_code_dir}/relations.parquet" "relations.parquet"
+        report_local_artifact_status "${local_code_dir}/external_references.parquet" "external_references.parquet"
+        report_local_artifact_status "${local_code_dir}/embeddings.parquet" "embeddings.parquet"
+        if [[ -d "${local_code_dir}/raw" ]]; then
+            raw_file_count=$(find "${local_code_dir}/raw" -type f | wc -l | tr -d ' ')
+            say "raw inputs: ${raw_file_count} file(s)"
+        else
+            say "raw inputs: missing"
+        fi
+        say "code artifact path: ${local_code_dir}"
+    fi
+}
+
 [[ -n "$NETID" ]] || die "--netid is required"
-[[ -n "$JURISDICTION" ]] || die "--jurisdiction is required"
-[[ "$JURISDICTION" == *-* ]] || die "--jurisdiction must look like STATE-Locality"
+[[ ${#JURISDICTIONS[@]} -gt 0 ]] || die "at least one --jurisdiction or --jurisdictions entry is required"
+
+for jurisdiction in "${JURISDICTIONS[@]}"; do
+    [[ "$jurisdiction" == *-* ]] || die "jurisdiction must look like STATE-Locality: ${jurisdiction}"
+done
 
 if [[ "$SKIP_BENCHMARK" == true && "$INCLUDE_CODE_ARTIFACTS" == false ]]; then
     die "--skip-benchmark requires --include-code-artifacts"
 fi
 
-STATE="${JURISDICTION%%-*}"
-LOCALITY="${JURISDICTION#*-}"
-
 REMOTE="${NETID}@${HOST}"
-REMOTE_OUTPUT_DIR="${PROJECT_ROOT}/data/output/${JURISDICTION}"
-LOCAL_TARGET_DIR="${LOCAL_DIR%/}/${JURISDICTION}"
-REMOTE_CODE_DIR="${PROJECT_ROOT}/data/laws/${STATE}/${LOCALITY}/${CODE_SLUG}"
-LOCAL_CODE_DIR="${LOCAL_LAWS_DIR%/}/${STATE}/${LOCALITY}/${CODE_SLUG}"
 
 build_rsync_rsh
 trap cleanup_ssh_transport EXIT
@@ -269,68 +458,6 @@ if [[ "$DRY_RUN" == true ]]; then
     RSYNC_ARGS+=(-n)
 fi
 
-say "=== Pull BigPurple Artifacts ==="
-say "Remote        : ${REMOTE}"
-say "Jurisdiction  : ${JURISDICTION}"
-if [[ "$SKIP_BENCHMARK" == false ]]; then
-    say "Benchmark dir : ${REMOTE_OUTPUT_DIR}"
-    say "Local results : ${LOCAL_TARGET_DIR}"
-fi
-if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-    say "Code dir      : ${REMOTE_CODE_DIR}"
-    say "Local code dir: ${LOCAL_CODE_DIR}"
-fi
-say ""
-
-REMOTE_BENCHMARK_CHECK_CMD=$(cat <<EOF
-test -d '${REMOTE_OUTPUT_DIR}' && \
-find '${REMOTE_OUTPUT_DIR}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' | grep -q .
-EOF
-)
-
-REMOTE_CODE_CHECK_CMD=$(cat <<EOF
-test -d '${REMOTE_CODE_DIR}' \
-    -a -f '${REMOTE_CODE_DIR}/code.md' \
-    -a -f '${REMOTE_CODE_DIR}/regions.parquet' \
-    -a -f '${REMOTE_CODE_DIR}/chunks.parquet' \
-    -a -f '${REMOTE_CODE_DIR}/segments.parquet' \
-    -a -f '${REMOTE_CODE_DIR}/sections.parquet' \
-    -a -f '${REMOTE_CODE_DIR}/headings.parquet'
-EOF
-)
-
-if [[ "$SKIP_BENCHMARK" == false ]]; then
-    say ">>> Checking remote benchmark output exists"
-    if [[ "$DRY_RUN" == true ]]; then
-        say "ssh ${REMOTE} \"${REMOTE_BENCHMARK_CHECK_CMD}\""
-    else
-        if ! ssh_run "$REMOTE" "$REMOTE_BENCHMARK_CHECK_CMD"; then
-            die "remote benchmark results not found at ${REMOTE_OUTPUT_DIR}"
-        fi
-    fi
-fi
-
-if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-    say ">>> Checking remote code artifacts exist"
-    if [[ "$DRY_RUN" == true ]]; then
-        say "ssh ${REMOTE} \"${REMOTE_CODE_CHECK_CMD}\""
-    else
-        if ! ssh_run "$REMOTE" "$REMOTE_CODE_CHECK_CMD"; then
-            die "remote code artifacts not found at ${REMOTE_CODE_DIR}"
-        fi
-    fi
-fi
-
-if [[ "$SKIP_BENCHMARK" == false ]]; then
-    say ">>> Ensuring local benchmark directory exists"
-    mkdir -p "$LOCAL_TARGET_DIR"
-fi
-
-if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-    say ">>> Ensuring local code directory exists"
-    mkdir -p "$LOCAL_CODE_DIR"
-fi
-
 RSYNC_FILTERS=(
     --include='*/'
     --include='benchmark_results_*.csv'
@@ -341,96 +468,17 @@ RSYNC_FILTERS=(
 
 RSYNC_FILTERS+=(--exclude='*')
 
-if [[ "$SKIP_BENCHMARK" == false ]]; then
-    say ">>> Pulling benchmark artifacts"
-    rsync "${RSYNC_ARGS[@]}" \
-        "${RSYNC_FILTERS[@]}" \
-        -e "$RSYNC_RSH" \
-        "${REMOTE}:${REMOTE_OUTPUT_DIR}/" \
-        "${LOCAL_TARGET_DIR}/"
-fi
-
-if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-    say ">>> Pulling code artifacts"
-    rsync "${RSYNC_ARGS[@]}" \
-        --include='raw/***' \
-        --include='code.txt' \
-        --include='code.md' \
-        --include='heading_scan_debug.json' \
-        --include='regions.parquet' \
-        --include='sections.parquet' \
-        --include='chunks.parquet' \
-        --include='segments.parquet' \
-        --include='relations.parquet' \
-        --include='external_references.parquet' \
-        --include='embeddings.parquet' \
-        --include='headings.parquet' \
-        --exclude='*' \
-        -e "$RSYNC_RSH" \
-        "${REMOTE}:${REMOTE_CODE_DIR}/" \
-        "${LOCAL_CODE_DIR}/"
-fi
-
-say ">>> Local verification"
-if [[ "$DRY_RUN" == true ]]; then
-    if [[ "$SKIP_BENCHMARK" == false ]]; then
-        say "Would verify files under ${LOCAL_TARGET_DIR}"
-    fi
-    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-        say "Would verify files under ${LOCAL_CODE_DIR}"
-    fi
-else
-    if [[ "$SKIP_BENCHMARK" == false ]]; then
-        latest_timestamped_csv="$(latest_timestamped_benchmark_file "${LOCAL_TARGET_DIR}")"
-        [[ -n "$latest_timestamped_csv" ]] || die "download completed but no benchmark_results_*.csv files were found locally"
-        if [[ -f "${LOCAL_TARGET_DIR}/benchmark_metrics.json" ]]; then
-            say "benchmark_metrics.json: ok"
-        else
-            say "benchmark_metrics.json: missing"
-        fi
-        latest_timestamped_metrics_json="$(find "${LOCAL_TARGET_DIR}" -maxdepth 1 -type f -name 'benchmark_metrics_*.json' | sort | tail -n 1)"
-        if [[ -n "$latest_timestamped_metrics_json" ]]; then
-            say "latest timestamped metrics json: ${latest_timestamped_metrics_json}"
-        else
-            say "latest timestamped metrics json: not present"
-        fi
-        if [[ -d "${LOCAL_TARGET_DIR}/debug" ]]; then
-            debug_file_count=$(find "${LOCAL_TARGET_DIR}/debug" -type f | wc -l | tr -d ' ')
-            say "debug artifacts: ${debug_file_count} file(s)"
-        else
-            say "debug artifacts: not present"
-        fi
-        say "latest benchmark csv: ${latest_timestamped_csv}"
-        say "benchmark path: ${LOCAL_TARGET_DIR}"
-    fi
-
-    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-        report_local_artifact_status "${LOCAL_CODE_DIR}/code.md" "code.md" true
-        report_local_artifact_status "${LOCAL_CODE_DIR}/code.txt" "code.txt"
-        report_local_artifact_status "${LOCAL_CODE_DIR}/heading_scan_debug.json" "heading_scan_debug.json"
-        report_local_artifact_status "${LOCAL_CODE_DIR}/headings.parquet" "headings.parquet" true
-        report_local_artifact_status "${LOCAL_CODE_DIR}/regions.parquet" "regions.parquet" true
-        report_local_artifact_status "${LOCAL_CODE_DIR}/sections.parquet" "sections.parquet" true
-        report_local_artifact_status "${LOCAL_CODE_DIR}/chunks.parquet" "chunks.parquet" true
-        report_local_artifact_status "${LOCAL_CODE_DIR}/segments.parquet" "segments.parquet" true
-        report_local_artifact_status "${LOCAL_CODE_DIR}/relations.parquet" "relations.parquet"
-        report_local_artifact_status "${LOCAL_CODE_DIR}/external_references.parquet" "external_references.parquet"
-        report_local_artifact_status "${LOCAL_CODE_DIR}/embeddings.parquet" "embeddings.parquet"
-        if [[ -d "${LOCAL_CODE_DIR}/raw" ]]; then
-            raw_file_count=$(find "${LOCAL_CODE_DIR}/raw" -type f | wc -l | tr -d ' ')
-            say "raw inputs: ${raw_file_count} file(s)"
-        else
-            say "raw inputs: missing"
-        fi
-        say "code artifact path: ${LOCAL_CODE_DIR}"
-    fi
-fi
+for jurisdiction in "${JURISDICTIONS[@]}"; do
+    pull_jurisdiction "$jurisdiction"
+    say ""
+done
 
 if [[ "$OPEN_AFTER" == true && "$DRY_RUN" == false && "$SKIP_BENCHMARK" == false ]]; then
-    latest_timestamped_csv="$(latest_timestamped_benchmark_file "${LOCAL_TARGET_DIR}")"
-    [[ -n "$latest_timestamped_csv" ]] || die "cannot open benchmark results because no benchmark_results_*.csv files were downloaded"
+    [[ ${#OPEN_TARGETS[@]} -gt 0 ]] || die "cannot open benchmark results because no benchmark_results_*.csv files were downloaded"
     say ">>> Opening latest timestamped benchmark results"
-    open_file "$latest_timestamped_csv"
+    for latest_timestamped_csv in "${OPEN_TARGETS[@]}"; do
+        open_file "$latest_timestamped_csv"
+    done
 fi
 
 say ""

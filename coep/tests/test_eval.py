@@ -397,6 +397,18 @@ class TestEvaluator:
         assert result.accuracy_label == "Incorrect"
         assert result.error_type == "retrieval_failure"
 
+    def test_evaluation_result_accepts_new_error_types(self):
+        result = EvaluationResult.model_validate(
+            {
+                "score": 0,
+                "reasoning": "The model timed out.",
+                "accuracy_label": "Incorrect",
+                "error_type": "llm_failure",
+            }
+        )
+
+        assert result.error_type == "llm_failure"
+
     def test_evaluate_response(self):
         """Test single response evaluation with mocked LLM."""
         mock_client = Mock()

@@ -147,6 +147,69 @@ def _ensure_generation_outcome_columns(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(derived_columns)
 
 
+def _refine_eval_error_types(df: pl.DataFrame) -> pl.DataFrame:
+    """Refine coarse judge error types using deterministic generation outcomes."""
+    if "eval_error_type" not in df.columns or df.is_empty():
+        return df
+
+    def _string_expr(column_name: str) -> pl.Expr:
+        if column_name not in df.columns:
+            return pl.lit("")
+        return pl.col(column_name).cast(pl.Utf8).fill_null("")
+
+    def _bool_expr(column_name: str) -> pl.Expr:
+        if column_name not in df.columns:
+            return pl.lit(False)
+        return pl.col(column_name).cast(pl.Boolean, strict=False).fill_null(False)
+
+    def _positive_number_expr(column_name: str) -> pl.Expr:
+        if column_name not in df.columns:
+            return pl.lit(False)
+        return pl.col(column_name).cast(pl.Float64, strict=False).fill_null(0.0).gt(0.0)
+
+    eval_label = _string_expr("eval_label")
+    eval_error_type = _string_expr("eval_error_type")
+    query_status = _string_expr("query_status")
+    query_stage_status = _string_expr("query_stage_status")
+    generated_error_response = _bool_expr("generated_error_response")
+    no_retrieval_units_found = _bool_expr("no_retrieval_units_found")
+    all_retrieval_units_filtered_out = _bool_expr("all_retrieval_units_filtered_out")
+    has_retrieval_context = pl.any_horizontal(
+        [
+            query_stage_status.eq("completed"),
+            _positive_number_expr("retrieval_units_found"),
+            _positive_number_expr("sections_found"),
+        ]
+    )
+    is_incorrect = eval_label.is_in(["Incorrect", "Partially Correct"])
+    is_llm_failure = is_incorrect & (
+        query_status.eq("failed")
+        | generated_error_response
+        | query_stage_status.is_in(["timeout", "validation_error", "error"])
+    )
+    is_true_retrieval_failure = is_incorrect & (
+        no_retrieval_units_found | all_retrieval_units_filtered_out
+    )
+    is_retrieval_noise = (
+        is_incorrect
+        & eval_error_type.eq("retrieval_failure")
+        & ~is_llm_failure
+        & ~is_true_retrieval_failure
+        & has_retrieval_context
+    )
+
+    return df.with_columns(
+        pl.when(is_llm_failure)
+        .then(pl.lit("llm_failure"))
+        .when(is_true_retrieval_failure)
+        .then(pl.lit("retrieval_failure"))
+        .when(is_retrieval_noise)
+        .then(pl.lit("retrieval_noise"))
+        .otherwise(pl.col("eval_error_type"))
+        .alias("eval_error_type")
+    )
+
+
 def _has_supporting_passage_validation_drift(value: object) -> bool:
     """Return True when any passage has near-exact formatting drift."""
     if value is None:
@@ -1517,6 +1580,7 @@ def main():
         ]
     )
     final_df = _attach_parent_benchmark_provenance(final_df)
+    final_df = _refine_eval_error_types(final_df)
     final_df = prioritize_ground_truth_matches(final_df)
     final_df = _drop_redundant_query_columns(final_df)
     eval_scored_df = final_df.filter(pl.col("eval_score").is_not_null()).select(

@@ -11,6 +11,24 @@ _DEFAULT_QUERY_CONTEXT = (
 )
 
 
+_REFERENCE_SCOPE_QUESTIONS_BY_FAMILY = {
+    "reference_necessity": [
+        "Does the jurisdiction have an ordinance that prohibits drug paraphernalia-related activities?",
+        "What types of drug paraphernalia are included in the law?",
+        "Which specific drug paraphernalia-related activities are prohibited?",
+        "Does the ordinance specify any of the following types of violations or penalties for violating drug paraphernalia laws?",
+        "Are there any exemptions, such as for syringes, drug test strips, or other paraphernalia?",
+        "If an exemption exists, for which prohibited activities does it apply?",
+    ],
+    "ssp_reference_necessity": [
+        "Does the jurisdiction have a law that authorizes, prohibits, or limits syringe service programs (SSPs)?",
+        "Does the ordinance specifically prohibit all SSPs?",
+        "Does the ordinance explicitly authorize SSPs?",
+        "Does the ordinance require any of the following restrictions on SSPs?",
+    ],
+}
+
+
 _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
     "existence_scope": (
         "Retrieve operative ordinance text that establishes whether the jurisdiction bans or regulates "
@@ -190,6 +208,19 @@ def _dedupe_preserving_order(values: list[str]) -> list[str]:
         seen.add(stripped)
         deduped.append(stripped)
     return deduped
+
+
+def _format_reference_scope_questions(family: str | None) -> str | None:
+    questions = _REFERENCE_SCOPE_QUESTIONS_BY_FAMILY.get(family or "", [])
+    if not questions:
+        return None
+
+    formatted_questions = " | ".join(f'"{question}"' for question in questions)
+    return (
+        "Outside-law review is only relevant if it is necessary to answer one of these exact non-date benchmark questions: "
+        + formatted_questions
+        + "."
+    )
 
 
 def _normalize_label_text(value: str) -> str:
@@ -1062,14 +1093,14 @@ _COMPLETION_RULES_BY_FAMILY = {
         "mention. Do not treat a bare citation as making outside-law review necessary. If the answer is "
         "Yes, identify only the smallest specific state or federal citation that must be reviewed. If the answer is No, "
         "say that no outside-law review is necessary and do not elevate incidental citations as the "
-        "relevant law. Do not dump every citation found in the retrieved chapter set."
+        "relevant law. Treat the benchmark-question list in the query context as exhaustive. Do not dump every citation found in the retrieved chapter set."
     ),
     "ssp_reference_necessity": (
         "Decision rule: Answer Yes only when the local SSP ordinance expressly incorporates, adopts, or depends on a state or "
         "federal statute, regulation, or agency authorization such that reviewing that outside law is required to determine whether "
         "SSPs are authorized, prohibited, or restricted. Answer No when the local ordinance is self-contained or the outside law is "
-        "only cited as background authority, implementation context, or an incidental reference. If the answer is Yes, identify only "
-        "the smallest specific outside-law citation that must be reviewed."
+        "only cited as background authority, implementation context, or an incidental reference. Treat the benchmark-question list in the "
+        "query context as exhaustive. If the answer is Yes, identify only the smallest specific outside-law citation that must be reviewed."
     ),
     "ssp_prohibition": (
         "Answer Yes only when the ordinance expressly prohibits all SSPs. Restrictions, permit requirements, or regulation short of an "
@@ -1165,17 +1196,19 @@ def _merge_guidance(
 def _build_query_context(request: RetrievalGuidanceRequest) -> str:
     """Build concise legal-scope context for ambiguous subquestions."""
     prepend_text = (request.metadata.get("prepend_text") or "").strip()
+    family = _FAMILY_BY_VARIABLE.get(request.variable_name or "")
     context_parts = []
     if prepend_text:
         context_parts.append(prepend_text.rstrip(". ") + ".")
     else:
         context_parts.append(_DEFAULT_QUERY_CONTEXT)
 
+    reference_scope = _format_reference_scope_questions(family)
+    if reference_scope:
+        context_parts.append(reference_scope)
+
     prior_answers = request.metadata.get("prior_answers") or {}
-    if (
-        _FAMILY_BY_VARIABLE.get(request.variable_name or "")
-        == "exemption_activity_scope"
-    ):
+    if family == "exemption_activity_scope":
         context_by_variable = {
             context.variable_name: context
             for context in request.parent_contexts

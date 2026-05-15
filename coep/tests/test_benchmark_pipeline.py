@@ -85,6 +85,57 @@ class TestBenchmarkPipelineHelpers:
         assert enriched[0, "no_retrieval_units_found"] is False
         assert enriched[1, "generated_error_response"] is True
 
+    def test_refine_eval_error_types_maps_failed_rows_to_llm_failure(self):
+        df = pl.DataFrame(
+            {
+                "eval_label": ["Incorrect"],
+                "eval_error_type": ["other"],
+                "query_status": ["failed"],
+                "query_stage_status": ["timeout"],
+                "generated_error_response": [True],
+            }
+        )
+
+        refined = benchmark_pipeline._refine_eval_error_types(df)
+
+        assert refined[0, "eval_error_type"] == "llm_failure"
+
+    def test_refine_eval_error_types_maps_completed_retrieval_failure_to_noise(self):
+        df = pl.DataFrame(
+            {
+                "eval_label": ["Incorrect"],
+                "eval_error_type": ["retrieval_failure"],
+                "query_status": ["completed"],
+                "query_stage_status": ["completed"],
+                "generated_error_response": [False],
+                "no_retrieval_units_found": [False],
+                "all_retrieval_units_filtered_out": [False],
+                "retrieval_units_found": [5],
+            }
+        )
+
+        refined = benchmark_pipeline._refine_eval_error_types(df)
+
+        assert refined[0, "eval_error_type"] == "retrieval_noise"
+
+    def test_refine_eval_error_types_preserves_true_no_context_retrieval_failure(self):
+        df = pl.DataFrame(
+            {
+                "eval_label": ["Incorrect"],
+                "eval_error_type": ["hallucination"],
+                "query_status": ["completed"],
+                "query_stage_status": ["no_sections_after_filtering"],
+                "generated_error_response": [False],
+                "no_retrieval_units_found": [False],
+                "all_retrieval_units_filtered_out": [True],
+                "retrieval_units_found": [0],
+            }
+        )
+
+        refined = benchmark_pipeline._refine_eval_error_types(df)
+
+        assert refined[0, "eval_error_type"] == "retrieval_failure"
+
     def test_ensure_supporting_passage_validation_columns_flags_drift_and_not_found(
         self,
     ):

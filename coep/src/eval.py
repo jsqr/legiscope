@@ -21,6 +21,8 @@ EvaluationErrorType: TypeAlias = Literal[
     "none",
     "abstention",
     "retrieval_failure",
+    "retrieval_noise",
+    "llm_failure",
     "reasoning_error",
     "hallucination",
     "output_contract_error",
@@ -61,8 +63,8 @@ class EvaluationResult(BaseModel):
         ...,
         description=(
             "Primary failure category for imperfect answers. Use `none` for correct answers, "
-            "or one of: abstention, retrieval_failure, reasoning_error, hallucination, "
-            "output_contract_error, other."
+            "or one of: abstention, retrieval_failure, retrieval_noise, llm_failure, "
+            "reasoning_error, hallucination, output_contract_error, other."
         ),
     )
 
@@ -207,6 +209,8 @@ class Evaluator:
                                     - `none` for correct answers with no material failure
                                     - `abstention` when the system declines to answer or says it cannot answer
                                     - `retrieval_failure` when the answer appears limited by missing or filtered-out evidence
+                                    - `retrieval_noise` when retrieved legal text is present but the answer is driven by off-target, noisy, or non-controlling context
+                                    - `llm_failure` when the model times out, errors, or returns an unusable payload rather than a substantive answer
                                     - `reasoning_error` when evidence exists but the answer extracts or combines it incorrectly
                                     - `hallucination` when the answer invents unsupported facts
                                     - `output_contract_error` when the answer violates the required response format

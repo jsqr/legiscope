@@ -109,6 +109,147 @@ class TestStructuredShortAnswerNormalization:
         assert normalized == "Yes, 35 P.S. § 780-102"
 
 
+class TestAuthoritativeOptionEvidenceGate:
+    def test_promotes_supported_penalties_over_unlawful_only(self):
+        response = LegalQueryResponse(
+            short_answer='"Unlawful" only',
+            reasoning="Initial answer undercalled the penalties.",
+            citations=["§ 10.99"],
+            supporting_passages=["A violation is punishable by a fine and imprisonment."],
+            confidence=0.4,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=True),
+                ResponseOptionEvidence(option="Unspecified Fine", selected=False),
+                ResponseOptionEvidence(option="Incarceration", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="# Penalty",
+                body_text=(
+                    "A violation is punishable by a fine not to exceed $500 or imprisonment for up to 60 days."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Unspecified Fine AND/OR Incarceration',
+            },
+        )
+
+        assert gated.short_answer == "Unspecified Fine AND/OR Incarceration"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Unspecified Fine",
+            "Incarceration",
+        ]
+
+    def test_rewrites_unsupported_sales_to_display_only(self):
+        response = LegalQueryResponse(
+            short_answer="Sales, possession with intent to sell, offer for sale",
+            reasoning="Initial answer overcalled sales.",
+            citations=["§ 12-1"],
+            supporting_passages=["It is unlawful to display drug paraphernalia for advertising purposes."],
+            confidence=0.5,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Sales, possession with intent to sell, offer for sale",
+                    selected=True,
+                ),
+                ResponseOptionEvidence(option="Advertising, display", selected=False),
+                ResponseOptionEvidence(option="Not specified", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s2",
+                heading_text="# Activity",
+                body_text="It is unlawful to display or advertise drug paraphernalia.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Sales, possession with intent to sell, offer for sale AND/OR "
+                    "Advertising, display AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Advertising, display"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Advertising, display"
+        ]
+
+    def test_promotes_supported_exemption_over_none(self):
+        response = LegalQueryResponse(
+            short_answer="None",
+            reasoning="Initial answer missed the exemption.",
+            citations=["§ 5-10"],
+            supporting_passages=["Nothing in this section shall apply to cannabis paraphernalia."],
+            confidence=0.4,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="None", selected=True),
+                ResponseOptionEvidence(
+                    option="Paraphernalia for consumption of cannabis, generally or medical use",
+                    selected=False,
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s3",
+                heading_text="# Exemptions",
+                body_text="Nothing in this section shall apply to cannabis paraphernalia or medical marijuana accessories.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "exemption_presence",
+                "response_options": (
+                    "None AND/OR Paraphernalia for consumption of cannabis, generally or medical use"
+                ),
+            },
+        )
+
+        assert (
+            gated.short_answer
+            == "Paraphernalia for consumption of cannabis, generally or medical use"
+        )
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Paraphernalia for consumption of cannabis, generally or medical use"
+        ]
+
+
 class TestTimeoutExecution:
     """Test timeout behavior for wrapped LLM calls."""
 

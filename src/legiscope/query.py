@@ -1768,6 +1768,11 @@ def query_legal_documents(
 
         assert response is not None
         response = _normalize_response_option_evidence(response, query_metadata)
+        response = _apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            query_metadata,
+        )
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
@@ -1850,6 +1855,11 @@ def query_legal_documents(
                 raise
             reviewed_response = _normalize_response_option_evidence(
                 reviewed_response,
+                query_metadata,
+            )
+            reviewed_response = _apply_authoritative_option_evidence_gate(
+                reviewed_response,
+                sections,
                 query_metadata,
             )
             reviewed_similarity_scores: list[float] = []
@@ -3354,6 +3364,149 @@ def _selected_response_options_from_option_evidence(
 ) -> tuple[str, ...]:
     """Return the canonical selected response options implied by option_evidence."""
     return tuple(item.option for item in option_evidence if item.selected)
+
+
+_AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
+    "prohibited_activity",
+    "penalty",
+    "exemption_presence",
+}
+
+_FALLBACK_OPTION_BY_GUIDANCE_TOPIC = {
+    "prohibited_activity": "Not specified",
+    "penalty": '"Unlawful" only',
+    "exemption_presence": "None",
+}
+
+
+def _authoritative_option_supports_selection(
+    *,
+    guidance_topic: str,
+    option: str,
+    item: ResponseOptionEvidence | None,
+    evidence_text: str,
+    option_patterns: dict[str, tuple[str, ...]],
+) -> bool:
+    """Return whether a benchmark option has strong enough support to survive gating."""
+    normalized = _normalize_option_text(option)
+    fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC.get(guidance_topic)
+    if fallback_option and normalized == _normalize_option_text(fallback_option):
+        return False
+
+    has_option_specific_support = bool(
+        item and (item.citations or item.supporting_passages)
+    )
+    if normalized == _normalize_option_text("Other"):
+        return has_option_specific_support
+
+    patterns = option_patterns.get(normalized, ())
+    snippet = _first_matching_snippet(evidence_text, patterns) if patterns else None
+    if (
+        guidance_topic == "prohibited_activity"
+        and normalized
+        == _normalize_option_text(
+            "Sales, possession with intent to sell, offer for sale"
+        )
+        and snippet is not None
+        and re.search(
+            r"\b(advertis(?:e|ement|ing)|display|promote)\b",
+            snippet,
+            re.IGNORECASE,
+        )
+        and not re.search(r"\boffer for sale\b", snippet, re.IGNORECASE)
+    ):
+        snippet = None
+
+    if guidance_topic in {"prohibited_activity", "penalty"}:
+        return bool(snippet) or (not patterns and has_option_specific_support)
+
+    return bool(snippet) or has_option_specific_support
+
+
+def _authoritative_response_options_from_evidence(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> tuple[str, ...] | None:
+    """Return the conservative final option set for high-risk benchmark families."""
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if guidance_topic not in _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS:
+        return None
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options or not response.option_evidence:
+        return None
+
+    options, separator = _split_response_options(response_options)
+    if separator != " AND/OR ":
+        return None
+
+    evidence_text = _collect_review_text(sections)
+    option_patterns = _option_pattern_map(guidance_topic)
+    evidence_by_option = {item.option: item for item in response.option_evidence}
+    supported_options = [
+        option
+        for option in options
+        if _authoritative_option_supports_selection(
+            guidance_topic=guidance_topic,
+            option=option,
+            item=evidence_by_option.get(option),
+            evidence_text=evidence_text,
+            option_patterns=option_patterns,
+        )
+    ]
+    if supported_options:
+        return tuple(supported_options)
+
+    fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC.get(guidance_topic)
+    if fallback_option and fallback_option in options:
+        return (fallback_option,)
+    return None
+
+
+def _apply_authoritative_option_evidence_gate(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Make validated option evidence authoritative for high-risk coded answers."""
+    final_options = _authoritative_response_options_from_evidence(
+        response,
+        sections,
+        query_metadata,
+    )
+    if final_options is None:
+        return response
+
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return response
+    _options, separator = _split_response_options(response_options)
+    if separator != " AND/OR ":
+        return response
+
+    current_options = _selected_response_options_from_option_evidence(
+        response.option_evidence
+    )
+    gated_short_answer = separator.join(final_options)
+    if current_options == final_options and response.short_answer == gated_short_answer:
+        return response
+
+    selected_lookup = {_normalize_option_text(option) for option in final_options}
+    gated_option_evidence = [
+        item.model_copy(
+            update={"selected": _normalize_option_text(item.option) in selected_lookup}
+        )
+        for item in response.option_evidence
+    ]
+    return response.model_copy(
+        update={
+            "short_answer": gated_short_answer,
+            "option_evidence": gated_option_evidence,
+        }
+    )
 
 
 def _option_evidence_review_signals(

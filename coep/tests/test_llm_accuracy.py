@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import polars as pl
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 for candidate in (PROJECT_ROOT, PROJECT_ROOT / "src"):
@@ -106,3 +108,76 @@ class TestDeriveQuestionType:
         )
 
         assert question_type == "Categorical"
+
+
+class TestAggregateQueryScoping:
+    def test_summarize_metrics_scopes_queries_by_jurisdiction(self):
+        scored_df = pl.DataFrame(
+            {
+                "query_instance_id": [
+                    "A::benchmark:0",
+                    "B::benchmark:0",
+                    "B::benchmark:0",
+                ],
+                "eval_label": ["Correct", "Correct", "Incorrect"],
+            }
+        )
+        dimension_df = pl.DataFrame(
+            {
+                "query_instance_id": ["A::benchmark:0", "B::benchmark:0"],
+                "dataset": ["DPL", "DPL"],
+                "jurisdiction": ["A", "B"],
+            }
+        )
+
+        metrics = llm_accuracy.summarize_metrics(scored_df, dimension_df)
+
+        assert metrics.processed_queries == 2
+        assert metrics.fully_correct_queries == 1
+        assert round(metrics.query_accuracy_pct, 2) == 50.0
+        assert round(metrics.query_weighted_score_pct, 2) == 75.0
+
+    def test_error_summary_excludes_none_like_error_types(self):
+        scored_df = pl.DataFrame(
+            {
+                "eval_label": [
+                    "Incorrect",
+                    "Incorrect",
+                    "Partially Correct",
+                    "Incorrect",
+                ],
+                "eval_error_type": [
+                    "none",
+                    "retrieval_failure",
+                    "Unspecified",
+                    "hallucination",
+                ],
+            }
+        )
+
+        summary = llm_accuracy.make_error_type_summary(scored_df, top_n=10)
+
+        rows = {row["eval_error_type"]: row["count"] for row in summary.to_dicts()}
+        assert rows == {
+            "retrieval_failure": 1,
+            "hallucination": 1,
+        }
+
+    def test_jurisdiction_score_summary_uses_query_weighted_score(self):
+        query_credit_df = pl.DataFrame(
+            {
+                "dataset": ["DPL", "DPL", "DPL"],
+                "jurisdiction": ["A", "A", "B"],
+                "query_credit": [1.0, 0.5, 0.25],
+            }
+        )
+
+        summary = llm_accuracy.make_jurisdiction_score_summary(query_credit_df)
+
+        rows = {
+            (row["dataset"], row["jurisdiction"]): row
+            for row in summary.to_dicts()
+        }
+        assert rows[("DPL", "A")]["query_count"] == 2
+        assert rows[("DPL", "A")]["query_weighted_score_pct"] == 75.0
+        assert rows[("DPL", "B")]["query_weighted_score_pct"] == 25.0
