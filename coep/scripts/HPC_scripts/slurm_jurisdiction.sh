@@ -51,6 +51,10 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE_HELPER="${SCRIPT_DIR}/slurm_vllm_profile.sh"
 
+if [[ ! -f "$PROFILE_HELPER" && -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    PROFILE_HELPER="${SLURM_SUBMIT_DIR}/coep/scripts/HPC_scripts/slurm_vllm_profile.sh"
+fi
+
 if [[ ! -f "$PROFILE_HELPER" ]]; then
     echo "ERROR: profile helper not found: $PROFILE_HELPER" >&2
     exit 1
