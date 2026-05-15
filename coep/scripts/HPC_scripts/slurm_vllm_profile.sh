@@ -65,3 +65,38 @@ vllm_profile_label() {
         awq) printf '%s\n' 'AWQ 4-bit' ;;
     esac
 }
+
+vllm_profile_context_divisor() {
+    local quantization
+    quantization="$(normalize_vllm_quantization "$1")" || return 1
+
+    case "$quantization" in
+        fp16) printf '%s\n' '1' ;;
+        awq) printf '%s\n' '4' ;;
+    esac
+}
+
+vllm_profile_model_source() {
+    local served_model="$1"
+    local quantization
+    quantization="$(normalize_vllm_quantization "$2")" || return 1
+
+    case "$quantization" in
+        fp16)
+            if [[ -n "${VLLM_FP16_MODEL_SOURCE:-}" ]]; then
+                printf '%s\n' "$VLLM_FP16_MODEL_SOURCE"
+            else
+                printf '%s\n' "$served_model"
+            fi
+            ;;
+        awq)
+            if [[ -n "${VLLM_AWQ_MODEL_SOURCE:-}" ]]; then
+                printf '%s\n' "$VLLM_AWQ_MODEL_SOURCE"
+            elif [[ "$served_model" == "Qwen/Qwen3.5-27B" ]]; then
+                printf '%s\n' "/gpfs/scratch/${USER}/models/Qwen3.5-27B-AWQ"
+            else
+                printf '%s\n' "$served_model"
+            fi
+            ;;
+    esac
+}

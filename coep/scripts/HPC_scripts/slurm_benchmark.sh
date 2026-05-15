@@ -29,6 +29,8 @@
 #
 # Optional env vars:
 #   VLLM_QUANTIZATION         - vLLM serving profile: fp16 (8 GPUs) or awq (4 GPUs)
+#   VLLM_AWQ_MODEL_SOURCE     - Override AWQ checkpoint path/repo for --model
+#   VLLM_FP16_MODEL_SOURCE    - Override FP16 checkpoint path/repo for --model
 #   SLURM_NOTIFY                - 1/true to enable notifications (default: 1)
 #   SLURM_NOTIFY_EVENTS         - Comma-separated events: start,end,fail (default: start,end,fail)
 #   SLURM_NOTIFY_EMAIL          - Email address to notify if local `mail` command exists
@@ -237,6 +239,8 @@ GPU_MEM_MONITOR_PID=""
 GPU_PROC_MONITOR_PID=""
 BENCHMARK_BACKUP_DIR=""
 BENCHMARK_BACKUP_ACTIVE=0
+PARAMS_BACKUP_PATH=""
+PARAMS_BACKUP_ACTIVE=0
 FAIL_NOTIFICATION_SENT=0
 END_NOTIFICATION_SENT=0
 
@@ -491,7 +495,10 @@ cleanup_and_notify() {
         restore_benchmark_artifacts "$BENCHMARK_OUTPUT_DIR" || true
     fi
 
+    restore_params_file params.yaml || true
+
     clear_benchmark_backup || true
+    clear_params_backup || true
 
     if [[ $exit_code -eq 0 && "$END_NOTIFICATION_SENT" -eq 0 ]]; then
         send_notification "end" "Stage=${CURRENT_STAGE}."
@@ -673,6 +680,31 @@ clear_benchmark_backup() {
     BENCHMARK_BACKUP_ACTIVE=0
 }
 
+backup_params_file() {
+    local params_path="$1"
+
+    PARAMS_BACKUP_PATH="$(mktemp "${TMPDIR:-/tmp}/params_backup_${SLURM_JOB_ID}_XXXXXX.yaml")"
+    cp "$params_path" "$PARAMS_BACKUP_PATH"
+    PARAMS_BACKUP_ACTIVE=1
+}
+
+restore_params_file() {
+    local params_path="$1"
+
+    if [[ "$PARAMS_BACKUP_ACTIVE" -eq 1 && -n "$PARAMS_BACKUP_PATH" && -f "$PARAMS_BACKUP_PATH" ]]; then
+        cp "$PARAMS_BACKUP_PATH" "$params_path"
+    fi
+}
+
+clear_params_backup() {
+    if [[ -n "$PARAMS_BACKUP_PATH" && -f "$PARAMS_BACKUP_PATH" ]]; then
+        rm -f "$PARAMS_BACKUP_PATH"
+    fi
+
+    PARAMS_BACKUP_PATH=""
+    PARAMS_BACKUP_ACTIVE=0
+}
+
 # Load .env (API keys, etc.)
 if [[ ! -r .env ]]; then
     echo "ERROR: Required .env file is missing or not readable in $(pwd). Create it or fix its permissions before running the benchmark job." >&2
@@ -709,6 +741,55 @@ print(f"{Config.get_llm_provider()}\t{Config.get_openai_served_model()}")
     printf '%s\n' "$resolved_model"
 }
 
+rewrite_params_for_profile() {
+    local params_path="$1"
+    local context_divisor="$2"
+    local quantization="$3"
+
+    python3 - "$params_path" "$context_divisor" "$quantization" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+params_path = Path(sys.argv[1])
+context_divisor = int(sys.argv[2])
+quantization = sys.argv[3]
+
+params = yaml.safe_load(params_path.read_text()) or {}
+segmentation = params.setdefault("segmentation", {})
+base_context_limit = int(segmentation.get("llm_context_limit", 32768))
+adjusted_context_limit = max(1, base_context_limit // context_divisor)
+segmentation["llm_context_limit"] = adjusted_context_limit
+
+params_path.write_text(yaml.safe_dump(params, sort_keys=False), encoding="utf-8")
+
+print(
+    f"Updated {params_path} for quantization={quantization}: "
+    f"llm_context_limit {base_context_limit} -> {adjusted_context_limit}"
+)
+PY
+}
+
+resolve_vllm_model_source() {
+    local served_model="$1"
+    local model_source
+
+    model_source="$(vllm_profile_model_source "$served_model" "$VLLM_QUANTIZATION")"
+
+    if [[ -z "$model_source" ]]; then
+        echo "ERROR: Failed to resolve model source for quantization=${VLLM_QUANTIZATION}" >&2
+        exit 1
+    fi
+
+    if [[ "$VLLM_QUANTIZATION" == "awq" && "$model_source" == /* && ! -e "$model_source" ]]; then
+        echo "ERROR: AWQ model source does not exist: $model_source" >&2
+        echo "Set VLLM_AWQ_MODEL_SOURCE or download the checkpoint first." >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$model_source"
+}
+
 resolve_llm_context_limit_from_params() {
     local resolved_context_limit
 
@@ -726,14 +807,20 @@ print(int(load_params().get("segmentation", {}).get("llm_context_limit", 32768))
 }
 
 # ── Start vLLM server ───────────────────────────────────────────
-MODEL_ID="$(resolve_vllm_model_from_params)"
+VLLM_CONTEXT_DIVISOR="$(vllm_profile_context_divisor "$VLLM_QUANTIZATION")"
+backup_params_file params.yaml
+rewrite_params_for_profile params.yaml "$VLLM_CONTEXT_DIVISOR" "$VLLM_QUANTIZATION"
+
+SERVED_MODEL_ID="$(resolve_vllm_model_from_params)"
+MODEL_ID="$(resolve_vllm_model_source "$SERVED_MODEL_ID")"
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
 VLLM_TP_SIZE="${VLLM_TP_SIZE:-$(vllm_profile_tp_size "$VLLM_QUANTIZATION")}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
-echo "Resolved model from params.yaml: ${MODEL_ID}"
+echo "Resolved served model from params.yaml: ${SERVED_MODEL_ID}"
+echo "Resolved model source: ${MODEL_ID}"
 echo "Using quantization profile ${VLLM_PROFILE_LABEL}"
 echo "Expected partition ${VLLM_EXPECTED_PARTITION} with ${VLLM_EXPECTED_GPU_COUNT} GPUs"
 echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
@@ -751,7 +838,7 @@ VLLM_SERVER_ARGS=(
     --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION"
     --max-model-len "$VLLM_MAX_MODEL_LEN"
     --api-key "$API_KEY"
-    --served-model-name "$MODEL_ID"
+    --served-model-name "$SERVED_MODEL_ID"
     --download-dir /gpfs/scratch/$USER/hf_cache
     --generation-config vllm
     --tensor-parallel-size "$VLLM_TP_SIZE"

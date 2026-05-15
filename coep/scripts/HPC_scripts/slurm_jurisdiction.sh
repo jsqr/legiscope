@@ -31,6 +31,8 @@
 #   CODE_SLUG  - Code slug (default: municipal-code)
 #   CODE_NAME  - Display name (default: "{Locality} Municipal Code")
 #   VLLM_QUANTIZATION      - vLLM serving profile: fp16 (8 GPUs) or awq (4 GPUs)
+#   VLLM_AWQ_MODEL_SOURCE  - Override AWQ checkpoint path/repo for --model
+#   VLLM_FP16_MODEL_SOURCE - Override FP16 checkpoint path/repo for --model
 #   SLURM_NOTIFY           - 1/true to enable notifications (default: 1)
 #   SLURM_NOTIFY_EVENTS    - Comma-separated events: start,end,fail (default: start,end,fail)
 #   SLURM_NOTIFY_EMAIL     - Email address to notify if local `mail` command exists
@@ -213,6 +215,7 @@ VLLM_QUANTIZATION="$(normalize_vllm_quantization "${VLLM_QUANTIZATION:-fp16}")"
 VLLM_PROFILE_LABEL="$(vllm_profile_label "$VLLM_QUANTIZATION")"
 VLLM_EXPECTED_PARTITION="$(vllm_profile_partition "$VLLM_QUANTIZATION")"
 VLLM_EXPECTED_GPU_COUNT="$(vllm_profile_gpu_count "$VLLM_QUANTIZATION")"
+VLLM_CONTEXT_DIVISOR="$(vllm_profile_context_divisor "$VLLM_QUANTIZATION")"
 SLURM_NOTIFY="${SLURM_NOTIFY:-1}"
 SLURM_NOTIFY_EVENTS="${SLURM_NOTIFY_EVENTS:-start,end,fail}"
 SLURM_NOTIFY_SUBJECT_PREFIX="${SLURM_NOTIFY_SUBJECT_PREFIX:-[legiscope]}"
@@ -915,6 +918,63 @@ print(f"{Config.get_llm_provider()}\t{Config.get_openai_served_model()}")
     printf '%s\n' "$resolved_model"
 }
 
+rewrite_params_for_profile() {
+    local params_path="$1"
+
+    python3 - "$params_path" "$STATE" "$LOCALITY" "$CODE_SLUG" "$CODE_NAME" "$VLLM_CONTEXT_DIVISOR" "$VLLM_QUANTIZATION" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+params_path = Path(sys.argv[1])
+state = sys.argv[2]
+locality = sys.argv[3]
+code_slug = sys.argv[4]
+code_name = sys.argv[5]
+context_divisor = int(sys.argv[6])
+quantization = sys.argv[7]
+
+params = yaml.safe_load(params_path.read_text()) or {}
+jurisdiction = params.setdefault("jurisdiction", {})
+jurisdiction["state"] = state
+jurisdiction["locality"] = locality
+jurisdiction["code_slug"] = code_slug
+jurisdiction["code_name"] = code_name
+
+segmentation = params.setdefault("segmentation", {})
+base_context_limit = int(segmentation.get("llm_context_limit", 32768))
+adjusted_context_limit = max(1, base_context_limit // context_divisor)
+segmentation["llm_context_limit"] = adjusted_context_limit
+
+params_path.write_text(yaml.safe_dump(params, sort_keys=False), encoding="utf-8")
+
+print(
+    f"Updated {params_path} for quantization={quantization}: "
+    f"llm_context_limit {base_context_limit} -> {adjusted_context_limit}"
+)
+PY
+}
+
+resolve_vllm_model_source() {
+    local served_model="$1"
+    local model_source
+
+    model_source="$(vllm_profile_model_source "$served_model" "$VLLM_QUANTIZATION")"
+
+    if [[ -z "$model_source" ]]; then
+        echo "ERROR: Failed to resolve model source for quantization=${VLLM_QUANTIZATION}" >&2
+        exit 1
+    fi
+
+    if [[ "$VLLM_QUANTIZATION" == "awq" && "$model_source" == /* && ! -e "$model_source" ]]; then
+        echo "ERROR: AWQ model source does not exist: $model_source" >&2
+        echo "Set VLLM_AWQ_MODEL_SOURCE or download the checkpoint first." >&2
+        exit 1
+    fi
+
+    printf '%s\n' "$model_source"
+}
+
 resolve_llm_context_limit_from_params() {
     local resolved_context_limit
 
@@ -933,13 +993,7 @@ print(int(load_params().get("segmentation", {}).get("llm_context_limit", 32768))
 
 # ── Step 2: Edit params.yaml with jurisdiction metadata ───────────
 echo "Setting params.yaml: ${STATE} / ${LOCALITY} / ${CODE_SLUG}..."
-
-sed -i \
-    -e "s/^  state: .*/  state: ${STATE}/" \
-    -e "s/^  locality: .*/  locality: ${LOCALITY}/" \
-    -e "s/^  code_slug: .*/  code_slug: ${CODE_SLUG}/" \
-    -e "s/^  code_name: .*/  code_name: ${CODE_NAME}/" \
-    params.yaml
+rewrite_params_for_profile params.yaml
 
 # ── Step 3: Run init.py to create directory structure ─────────────
 echo "Running init.py..."
@@ -958,14 +1012,16 @@ bash scripts/convert_docx.sh "$RAW_DIR"
 # ── Step 5: Start vLLM server on dynamic port ─────────────────────
 # Use Python to find a free port, avoiding conflicts with other jobs
 # that may share this compute node.
-MODEL_ID="$(resolve_vllm_model_from_params)"
+SERVED_MODEL_ID="$(resolve_vllm_model_from_params)"
+MODEL_ID="$(resolve_vllm_model_source "$SERVED_MODEL_ID")"
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
 VLLM_TP_SIZE="${VLLM_TP_SIZE:-$(vllm_profile_tp_size "$VLLM_QUANTIZATION")}"
 VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
 API_KEY="legiscope-key-${SLURM_JOB_ID}"
 
 echo "Starting vLLM on port ${VLLM_PORT}..."
-echo "Resolved model from params.yaml: ${MODEL_ID}"
+echo "Resolved served model from params.yaml: ${SERVED_MODEL_ID}"
+echo "Resolved model source: ${MODEL_ID}"
 echo "Using quantization profile ${VLLM_PROFILE_LABEL}"
 echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
 echo "Using tensor parallel size ${VLLM_TP_SIZE}"
@@ -980,7 +1036,7 @@ VLLM_SERVER_ARGS=(
     --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION"
     --max-model-len "$VLLM_MAX_MODEL_LEN"
     --api-key "$API_KEY"
-    --served-model-name "$MODEL_ID"
+    --served-model-name "$SERVED_MODEL_ID"
     --download-dir /gpfs/scratch/"$USER"/hf_cache
     --generation-config vllm
     --tensor-parallel-size "$VLLM_TP_SIZE"
