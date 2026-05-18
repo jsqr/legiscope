@@ -1067,7 +1067,7 @@ VLLM_HOST=127.0.0.1
 READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
 
 echo "Waiting for vLLM server on ${READY_URL} (PID $VLLM_PID)..."
-TIMEOUT=1200
+TIMEOUT=1500
 ELAPSED=0
 while ! curl -sf "$READY_URL" >/dev/null 2>&1; do
     if ! kill -0 "$VLLM_PID" 2>/dev/null; then

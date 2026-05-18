@@ -371,6 +371,45 @@ class RelevanceAssessment(BaseModel):
     )
 
 
+_DATE_METADATA_RELEVANCE_TERMS = (
+    "effective date",
+    "take effect",
+    "go into effect",
+    "enacted",
+    "passed",
+    "adopted",
+    "approved",
+    "current-through",
+    "current through",
+    "current as of",
+    "supplement",
+    "updated",
+    "amended",
+    "ordinance history",
+    "legal intro",
+)
+
+
+def _has_date_or_metadata_relevance_focus(
+    query: str,
+    retrieval_guidance: RetrievalGuidance | None,
+) -> bool:
+    """Return whether the relevance task is date- or metadata-oriented."""
+    prompt_parts = [query]
+    if retrieval_guidance and retrieval_guidance.has_content():
+        prompt_parts.extend(
+            [
+                retrieval_guidance.guidance_topic or "",
+                retrieval_guidance.shared_context or "",
+                retrieval_guidance.relevance_instructions or "",
+                " ".join(retrieval_guidance.anchor_terms),
+            ]
+        )
+
+    haystack = "\n".join(part for part in prompt_parts if part).casefold()
+    return any(term in haystack for term in _DATE_METADATA_RELEVANCE_TERMS)
+
+
 def hyde_rewriter(
     client: Instructor, query: str, model: str | None = None
 ) -> HydeRewrite:
@@ -467,6 +506,7 @@ def is_relevant(
     text: str,
     model: str | None = None,
     retrieval_guidance: RetrievalGuidance | None = None,
+    relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD,
 ) -> RelevanceAssessment:
     """Assess whether text is directly relevant to answering a query using LLM analysis.
 
@@ -513,8 +553,13 @@ def is_relevant(
         f"Using LLM for relevance assessment: query '{query[:30]}...', text '{text[:30]}...'"
     )
 
-    system_prompt = """You are an expert legal analyst. Determine whether the given text
+    system_prompt = f"""You are an expert legal analyst. Determine whether the given text
 is directly relevant to answering the query.
+
+The keep threshold for this run is {relevance_threshold:.2f}. Assign scores with this
+threshold in mind:
+- Score >= {relevance_threshold:.2f} when the text should be retained for answer synthesis.
+- Score < {relevance_threshold:.2f} only when the text should be filtered out.
 
 The text is considered relevant if it:
 1. Directly addresses the query topic
@@ -535,6 +580,18 @@ Provide:
     - 0.6-0.8: Relevant, directly addresses query aspects
     - 0.8-1.0: Highly relevant, comprehensive answer to query
 2. reasoning: Concise explanation of the score"""
+
+    if _has_date_or_metadata_relevance_focus(query, retrieval_guidance):
+        system_prompt = (
+            f"{system_prompt}\n\n"
+            "For date or ordinance-metadata questions, be generous about retaining text "
+            "that can anchor the answer even if it is metadata rather than substantive "
+            "prohibitory text. Chunks with enactment dates, effective-date clauses, "
+            "current-through notices, legal-intro/update metadata, supplement history, "
+            "ordinance numbers, amendment history, or headings that localize those dates "
+            f"should usually score at or above {relevance_threshold:.2f} unless they are "
+            "clearly about a different law or topic."
+        )
 
     if retrieval_guidance and retrieval_guidance.has_content():
         guidance_lines = []
@@ -562,6 +619,8 @@ Provide:
     user_prompt = f"""Assess whether the following text is directly relevant to answering the query:
 
 Query: "{query}"
+
+Retention threshold: {relevance_threshold:.2f}
 
 Text to assess:
 
@@ -1332,6 +1391,7 @@ def filter_sections(
             section_text,
             model,
             retrieval_guidance=retrieval_guidance,
+            relevance_threshold=relevance_threshold,
         )
         return index, (section, assessment)
 

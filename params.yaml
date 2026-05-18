@@ -31,7 +31,7 @@ llm:
 
   temperature: 0.0
   max_retries: 3
-  timeout: 800
+  timeout: 1000
 
 parse:
   scan:
@@ -39,7 +39,7 @@ parse:
     max_iterations: 5
     score_threshold: 0.7
     max_retries: 3
-    timeout: 600
+    timeout: 800
     max_tokens: 2400
 
 # Embedding configuration
@@ -88,7 +88,7 @@ retrieval:
   # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
     enabled: true
-    threshold: 0.7
+    threshold: 0.5
     max_concurrency: 4
     target_concurrent_prompt_tokens: 16000
     prompt_overhead_tokens: 600

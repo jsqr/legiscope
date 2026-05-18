@@ -327,6 +327,28 @@ class TestIsRelevant:
             )
             assert "effective, enacted" in call_args[1]["system"]
 
+    def test_is_relevant_includes_threshold_and_date_metadata_retention_guidance(self):
+        """Date and metadata queries should explain the keep threshold in the prompt."""
+        mock_result = RelevanceAssessment(
+            relevance_score=0.9,
+            reasoning="The text contains effective-date metadata.",
+        )
+
+        with patch("legiscope.retrieve.ask", return_value=mock_result) as mock_ask:
+            mock_client = Mock(spec=Instructor)
+
+            is_relevant(
+                mock_client,
+                "On which date did the ordinance go into effect?",
+                "This ordinance shall take effect 30 days after adoption.",
+                relevance_threshold=0.7,
+            )
+
+            call_args = mock_ask.call_args
+            assert "The keep threshold for this run is 0.70." in call_args[1]["system"]
+            assert "should usually score at or above 0.70" in call_args[1]["system"]
+            assert "Retention threshold: 0.70" in call_args[1]["prompt"]
+
     def test_is_relevant_empty_query(self):
         """Test that empty query raises ValueError."""
         mock_client = Mock(spec=Instructor)
