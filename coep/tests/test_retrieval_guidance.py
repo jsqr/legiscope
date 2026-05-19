@@ -576,6 +576,9 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.guidance_topic == "ssp_scope"
         assert "syringe exchange" in guidance.anchor_terms
+        assert "syringe exchange program" in guidance.anchor_terms
+        assert "needle exchange program" in guidance.anchor_terms
+        assert "sterile needle" in guidance.anchor_terms
         assert "hypodermic" not in guidance.anchor_terms
         assert guidance.no_context_fallback_short_answer == "No"
         assert guidance.enable_relevance_backfill is False
@@ -632,6 +635,8 @@ class TestCoepRetrievalGuidance:
         assert (
             "distance buffers from schools or parks" in guidance.retrieval_instructions
         )
+        assert "syringe exchange facility" in guidance.anchor_terms
+        assert "exchange only basis" in guidance.anchor_terms
         assert guidance.completion_instructions is not None
         assert (
             "Do not count outright bans as restrictions"
@@ -684,6 +689,7 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "immediately adjacent chunk" in guidance.completion_instructions
+        assert "harm reduction act" in guidance.anchor_terms
 
     def test_returns_none_for_unmapped_variable(self):
         request = RetrievalGuidanceRequest(

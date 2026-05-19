@@ -900,6 +900,7 @@ class TestSectionRetrievalConfigBasics:
             n_results=1,
             lexical_query_text="drug paraphernalia offer for sale",
             anchor_terms=["drug paraphernalia", "offer for sale"],
+            use_lexical_reranking=False,
         )
 
         with patch("legiscope.retrieve.get_embedding_client"):
@@ -959,6 +960,7 @@ class TestSectionRetrievalConfigBasics:
             n_results=2,
             lexical_query_text="section content",
             anchor_terms=["content"],
+            use_lexical_reranking=False,
         )
 
         with patch("legiscope.retrieve.get_embedding_client"):
@@ -1044,6 +1046,100 @@ class TestSectionRetrievalConfigBasics:
             n_results=1,
             lexical_query_text="drug paraphernalia offer for sale",
             anchor_terms=["drug paraphernalia", "offer for sale"],
+            use_lexical_reranking=True,
+        )
+
+        with patch("legiscope.retrieve.get_embedding_client"):
+            with patch("legiscope.retrieve.get_embeddings") as mock_embeddings:
+                mock_embeddings.return_value = [[0.1, 0.2, 0.3]]
+
+                results = retrieve_sections(
+                    mock_collection,
+                    str(tmp_path / "sections.parquet"),
+                    "semantic query text",
+                    settings,
+                )
+
+        assert len(results.sections) == 1
+        assert results.sections[0].section_id == "s1"
+        assert mock_collection.query.call_args.kwargs["n_results"] == 3
+
+    def test_retrieve_sections_lexically_reranks_ssp_synonyms_when_enabled(
+        self, tmp_path
+    ):
+        """SSP lexical anchors should lift ordinance-specific program synonyms over generic health text."""
+        from unittest.mock import Mock, patch
+
+        import polars as pl
+        from chromadb.api.models.Collection import Collection
+
+        from legiscope.retrieve import SectionRetrievalSettings, retrieve_sections
+
+        pl.DataFrame(
+            {
+                "section_ordinal": [0, 1, 2],
+                "section_id": ["s0", "s1", "s2"],
+                "heading_text": [
+                    "# Public health findings",
+                    "# Syringe exchange facility",
+                    "# General permits",
+                ],
+                "body_text": [
+                    "Harm reduction programs may improve public health outcomes and reduce disease transmission.",
+                    "A sterile needle and needle exchange program may operate only with a permit for the syringe exchange facility.",
+                    "Permit applications must include the applicant name and address.",
+                ],
+                "heading_level": [1, 1, 1],
+                "parent_id": [None, None, None],
+                "context_path": [
+                    "Title 9 > Health",
+                    "Title 9 > Syringe Exchange Facility Location",
+                    "Title 3 > Licensing",
+                ],
+            }
+        ).write_parquet(tmp_path / "sections.parquet")
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["0", "1", "2"]],
+            "documents": [["seg health", "seg ssp", "seg permit"]],
+            "metadatas": [
+                [
+                    {
+                        "section_ordinal": 0,
+                        "segment_position": 0,
+                        "section_heading": "# Public health findings",
+                        "section_level": 1,
+                    },
+                    {
+                        "section_ordinal": 1,
+                        "segment_position": 0,
+                        "section_heading": "# Syringe exchange facility",
+                        "section_level": 1,
+                    },
+                    {
+                        "section_ordinal": 2,
+                        "segment_position": 0,
+                        "section_heading": "# General permits",
+                        "section_level": 1,
+                    },
+                ]
+            ],
+            "distances": [[0.1, 0.14, 0.25]],
+        }
+
+        settings = SectionRetrievalSettings(
+            n_results=1,
+            lexical_query_text=(
+                "Does the jurisdiction have a law that authorizes, prohibits, or limits syringe service programs (SSPs)?"
+            ),
+            anchor_terms=[
+                "syringe service program",
+                "syringe exchange facility",
+                "syringe exchange program",
+                "needle exchange program",
+                "sterile needle",
+            ],
             use_lexical_reranking=True,
         )
 
