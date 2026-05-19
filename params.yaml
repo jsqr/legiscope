@@ -79,7 +79,7 @@ retrieval:
 
   lexical_overfetch_factor: 3
   lexical_reranking:
-    enabled: true
+    enabled: false
 
   # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:
