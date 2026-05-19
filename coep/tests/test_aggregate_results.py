@@ -36,6 +36,21 @@ class TestAggregateResults:
             == tmp_path / "all_jurisdictions" / "20260508_153000"
         )
 
+    def test_aggregate_run_output_dir_nests_batch_runs_under_batch_folder(
+        self, tmp_path
+    ):
+        output_dir = aggregate_results._aggregate_run_output_dir(
+            tmp_path, "20260508_153000", batch_id="fifty-state-run"
+        )
+
+        assert output_dir == (
+            tmp_path
+            / "all_jurisdictions"
+            / "batches"
+            / "fifty-state-run"
+            / "20260508_153000"
+        )
+
     def test_timestamped_aggregate_output_path_uses_run_timestamp(self, tmp_path):
         output_path = aggregate_results._timestamped_aggregate_output_path(
             tmp_path / "all_jurisdictions" / "20260508_153000",
@@ -68,6 +83,29 @@ class TestAggregateResults:
             aggregate_results._extract_results_timestamp(latest_file)
             == "20260502_020202"
         )
+
+    def test_select_results_file_prefers_requested_batch_copy(self, tmp_path):
+        jurisdiction_dir = tmp_path / "PA-Philadelphia"
+        jurisdiction_dir.mkdir()
+        latest_file = jurisdiction_dir / "benchmark_results_20260502_020202.csv"
+        latest_file.write_text("value\n3\n")
+        batch_file = jurisdiction_dir / "benchmark_results_batch_batch-50.csv"
+        batch_file.write_text("value\n9\n")
+
+        selected = aggregate_results._select_results_file(
+            jurisdiction_dir, batch_id="batch-50"
+        )
+
+        assert selected == batch_file
+
+    def test_iter_jurisdiction_output_dirs_detects_batch_only_artifacts(self, tmp_path):
+        jurisdiction_dir = tmp_path / "PA-Philadelphia"
+        jurisdiction_dir.mkdir()
+        (jurisdiction_dir / "benchmark_results_batch_batch-50.csv").write_text("value\n1\n")
+
+        discovered = aggregate_results._iter_jurisdiction_output_dirs(tmp_path)
+
+        assert discovered == [jurisdiction_dir]
 
     def test_collect_results_uses_latest_available_file_and_adds_source_metadata(
         self, tmp_path
@@ -151,3 +189,43 @@ class TestAggregateResults:
         assert row["aggregate_metrics_path"] == str(latest_metrics)
         assert row["aggregate_metrics_source_type"] == "timestamped"
         assert row["aggregate_metrics_source_timestamp"] == "20260502_020202"
+
+    def test_collect_results_filters_to_requested_batch_file(self, tmp_path):
+        output_dir = tmp_path / "output"
+        jurisdiction_dir = output_dir / "NM-Albuquerque"
+        jurisdiction_dir.mkdir(parents=True)
+        pl.DataFrame({"variable_name": ["old"], "eval_label": ["Incorrect"]}).write_csv(
+            jurisdiction_dir / "benchmark_results_20260502_020202.csv"
+        )
+        pl.DataFrame({"variable_name": ["batch"], "eval_label": ["Correct"]}).write_csv(
+            jurisdiction_dir / "benchmark_results_batch_batch-50.csv"
+        )
+
+        combined = aggregate_results.collect_results(output_dir, batch_id="batch-50")
+
+        assert combined.height == 1
+        row = combined.to_dicts()[0]
+        assert row["jurisdiction_id"] == "NM-Albuquerque"
+        assert row["variable_name"] == "batch"
+        assert row["_aggregate_source_file"] == "benchmark_results_batch_batch-50.csv"
+
+    def test_load_batch_manifest_jurisdictions_reads_dispatch_manifest(self, tmp_path):
+        manifest_dir = tmp_path / "all_jurisdictions" / "batches" / "batch-50"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "dispatch_manifest.json").write_text(
+            json.dumps(
+                {
+                    "batch_id": "batch-50",
+                    "jurisdictions": [
+                        {"jurisdiction_id": "CA-LosAngeles"},
+                        {"jurisdiction_id": "PA-Philadelphia"},
+                    ],
+                }
+            )
+        )
+
+        jurisdictions = aggregate_results._load_batch_manifest_jurisdictions(
+            tmp_path, "batch-50"
+        )
+
+        assert jurisdictions == ["CA-LosAngeles", "PA-Philadelphia"]

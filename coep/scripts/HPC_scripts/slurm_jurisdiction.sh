@@ -215,6 +215,14 @@ fi
 
 CODE_SLUG="${CODE_SLUG:-municipal-code}"
 CODE_NAME="${CODE_NAME:-${LOCALITY} Municipal Code}"
+JURISDICTION_ID="${STATE}-${LOCALITY}"
+LEGISCOPE_BATCH_ID="${LEGISCOPE_BATCH_ID:-}"
+LEGISCOPE_BATCH_SUBMITTED_AT="${LEGISCOPE_BATCH_SUBMITTED_AT:-}"
+LEGISCOPE_BATCH_MANIFEST="${LEGISCOPE_BATCH_MANIFEST:-}"
+if [[ -n "$LEGISCOPE_BATCH_ID" && ! "$LEGISCOPE_BATCH_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: LEGISCOPE_BATCH_ID contains unsupported characters: ${LEGISCOPE_BATCH_ID}" >&2
+    exit 1
+fi
 VLLM_QUANTIZATION="$(normalize_vllm_quantization "${VLLM_QUANTIZATION:-fp16}")"
 VLLM_PROFILE_LABEL="$(vllm_profile_label "$VLLM_QUANTIZATION")"
 VLLM_EXPECTED_PARTITION="$(vllm_profile_partition "$VLLM_QUANTIZATION")"
@@ -231,6 +239,9 @@ echo "=== Legiscope Pipeline: ${STATE}-${LOCALITY} ==="
 echo "Job ID  : ${SLURM_JOB_ID}"
 echo "Node    : $(hostname)"
 echo "Code    : ${CODE_SLUG} (${CODE_NAME})"
+if [[ -n "$LEGISCOPE_BATCH_ID" ]]; then
+    echo "Batch   : ${LEGISCOPE_BATCH_ID}"
+fi
 echo "Profile : ${VLLM_PROFILE_LABEL}"
 echo "Expect  : ${VLLM_EXPECTED_PARTITION}, ${VLLM_EXPECTED_GPU_COUNT} GPUs"
 echo "DOCX    : ${DOCX_PATH}"
@@ -729,7 +740,8 @@ remove_shared_benchmark_artifacts() {
 
     rm -f \
         "$SHARED_OUTPUT_DIR/benchmark_results.csv" \
-        "$SHARED_OUTPUT_DIR/benchmark_metrics.json"
+        "$SHARED_OUTPUT_DIR/benchmark_metrics.json" \
+        "$SHARED_OUTPUT_DIR/batch_metadata.json"
 }
 
 ensure_benchmark_results_jurisdiction_column() {
@@ -738,13 +750,14 @@ ensure_benchmark_results_jurisdiction_column() {
 
     [[ -d "$target_dir" ]] || return 0
 
-    python3 - "$target_dir" "$jurisdiction_value" <<'PY'
+    python3 - "$target_dir" "$jurisdiction_value" "$LEGISCOPE_BATCH_ID" <<'PY'
 import csv
 import sys
 from pathlib import Path
 
 target_dir = Path(sys.argv[1])
 jurisdiction = sys.argv[2]
+batch_id = sys.argv[3]
 
 limit = sys.maxsize
 while True:
@@ -764,17 +777,125 @@ for csv_path in sorted(target_dir.glob("benchmark_results*.csv")):
 
     reordered_fieldnames = [
         "jurisdiction",
+        *(["batch_id"] if batch_id else []),
         *[field for field in fieldnames if field != "jurisdiction"],
     ]
+    if batch_id:
+        reordered_fieldnames = [
+            field for index, field in enumerate(reordered_fieldnames)
+            if field not in reordered_fieldnames[:index]
+        ]
 
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=reordered_fieldnames)
         writer.writeheader()
         for row in rows:
-            updated_row = {key: value for key, value in row.items() if key != "jurisdiction"}
+            updated_row = {
+                key: value
+                for key, value in row.items()
+                if key not in {"jurisdiction", "batch_id"}
+            }
             updated_row["jurisdiction"] = jurisdiction
+            if batch_id:
+                updated_row["batch_id"] = batch_id
             writer.writerow(updated_row)
 PY
+}
+
+ensure_benchmark_metrics_batch_metadata() {
+    local target_dir="$1"
+
+    [[ -d "$target_dir" ]] || return 0
+
+    python3 - "$target_dir" "$JURISDICTION_ID" "$LEGISCOPE_BATCH_ID" "$SLURM_JOB_ID" "$LEGISCOPE_BATCH_SUBMITTED_AT" "$LEGISCOPE_BATCH_MANIFEST" "$CODE_SLUG" "$DOCX_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+target_dir = Path(sys.argv[1])
+jurisdiction_id = sys.argv[2]
+batch_id = sys.argv[3]
+slurm_job_id = sys.argv[4]
+batch_submitted_at = sys.argv[5]
+batch_manifest = sys.argv[6]
+code_slug = sys.argv[7]
+docx_path = sys.argv[8]
+
+for metrics_path in sorted(target_dir.glob("benchmark_metrics*.json")):
+    try:
+        payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        continue
+
+    payload["jurisdiction_id"] = jurisdiction_id
+    payload.setdefault("jurisdiction", jurisdiction_id)
+    payload["slurm_job_id"] = slurm_job_id
+    payload["code_slug"] = code_slug
+    payload["docx_path"] = docx_path
+    if batch_id:
+        payload["batch_id"] = batch_id
+    if batch_submitted_at:
+        payload["batch_submitted_at"] = batch_submitted_at
+    if batch_manifest:
+        payload["batch_manifest"] = batch_manifest
+
+    metrics_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+write_batch_metadata_file() {
+    local target_dir="$1"
+
+    [[ -d "$target_dir" ]] || return 0
+
+    python3 - "$target_dir" "$JURISDICTION_ID" "$LEGISCOPE_BATCH_ID" "$SLURM_JOB_ID" "$LEGISCOPE_BATCH_SUBMITTED_AT" "$LEGISCOPE_BATCH_MANIFEST" "$CODE_SLUG" "$DOCX_PATH" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+target_dir = Path(sys.argv[1])
+payload = {
+    "jurisdiction_id": sys.argv[2],
+    "batch_id": sys.argv[3] or None,
+    "slurm_job_id": sys.argv[4],
+    "batch_submitted_at": sys.argv[5] or None,
+    "batch_manifest": sys.argv[6] or None,
+    "code_slug": sys.argv[7],
+    "docx_path": sys.argv[8],
+}
+(target_dir / "batch_metadata.json").write_text(
+    json.dumps(payload, indent=2) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+write_batch_named_artifacts() {
+    local target_dir="$1"
+    local results_source=""
+    local metrics_source=""
+
+    [[ -n "$LEGISCOPE_BATCH_ID" ]] || return 0
+    [[ -d "$target_dir" ]] || return 0
+
+    if [[ -f "$target_dir/benchmark_results.csv" ]]; then
+        results_source="$target_dir/benchmark_results.csv"
+    else
+        results_source="$(find "$target_dir" -maxdepth 1 -type f -name 'benchmark_results_*.csv' | sort | tail -n 1)"
+    fi
+
+    if [[ -f "$target_dir/benchmark_metrics.json" ]]; then
+        metrics_source="$target_dir/benchmark_metrics.json"
+    else
+        metrics_source="$(find "$target_dir" -maxdepth 1 -type f -name 'benchmark_metrics_*.json' | sort | tail -n 1)"
+    fi
+
+    if [[ -n "$results_source" ]]; then
+        cp "$results_source" "$target_dir/benchmark_results_batch_${LEGISCOPE_BATCH_ID}.csv"
+    fi
+    if [[ -n "$metrics_source" ]]; then
+        cp "$metrics_source" "$target_dir/benchmark_metrics_batch_${LEGISCOPE_BATCH_ID}.json"
+    fi
 }
 
 sync_output_artifacts() {
@@ -790,8 +911,11 @@ sync_output_artifacts() {
     fi
 
     ensure_benchmark_results_jurisdiction_column "$source_dir"
+    ensure_benchmark_metrics_batch_metadata "$source_dir"
+    write_batch_metadata_file "$source_dir"
 
     rsync -a "${source_dir}/" "${SHARED_OUTPUT_DIR}/"
+    write_batch_named_artifacts "$SHARED_OUTPUT_DIR"
 }
 
 sync_checkpoint_artifacts() {

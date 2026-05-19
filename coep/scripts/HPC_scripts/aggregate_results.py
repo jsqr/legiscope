@@ -44,11 +44,15 @@ import polars as pl
 CANONICAL_RESULTS_NAME = "benchmark_results.csv"
 TIMESTAMPED_RESULTS_GLOB = "benchmark_results_*.csv"
 TIMESTAMPED_RESULTS_PATTERN = re.compile(r"^benchmark_results_(\d{8}_\d{6})\.csv$")
+BATCH_RESULTS_GLOB = "benchmark_results_batch_*.csv"
 CANONICAL_METRICS_NAME = "benchmark_metrics.json"
 TIMESTAMPED_METRICS_GLOB = "benchmark_metrics_*.json"
 TIMESTAMPED_METRICS_PATTERN = re.compile(r"^benchmark_metrics_(\d{8}_\d{6})\.json$")
+BATCH_METRICS_GLOB = "benchmark_metrics_batch_*.json"
 AGGREGATE_TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 ALL_JURISDICTIONS_DIR_NAME = "all_jurisdictions"
+BATCHES_DIR_NAME = "batches"
+BATCH_MANIFEST_NAME = "dispatch_manifest.json"
 
 
 def parse_args() -> argparse.Namespace:
@@ -71,6 +75,16 @@ def parse_args() -> argparse.Namespace:
         "--check-slurm",
         action="store_true",
         help="Query SLURM sacct for job status (only works on HPC)",
+    )
+    parser.add_argument(
+        "--batch-id",
+        type=str,
+        default=None,
+        help=(
+            "Aggregate only artifacts tagged for the given dispatch batch ID. "
+            "This expects benchmark_results_batch_<ID>.csv and "
+            "benchmark_metrics_batch_<ID>.json per jurisdiction."
+        ),
     )
     return parser.parse_args()
 
@@ -112,9 +126,11 @@ def _iter_jurisdiction_output_dirs(output_dir: Path) -> list[Path]:
             continue
         has_metrics = (child / CANONICAL_METRICS_NAME).exists() or any(
             child.glob(TIMESTAMPED_METRICS_GLOB)
-        )
+        ) or any(child.glob(BATCH_METRICS_GLOB))
         has_canonical_results = (child / CANONICAL_RESULTS_NAME).exists()
-        has_timestamped_results = any(child.glob(TIMESTAMPED_RESULTS_GLOB))
+        has_timestamped_results = any(child.glob(TIMESTAMPED_RESULTS_GLOB)) or any(
+            child.glob(BATCH_RESULTS_GLOB)
+        )
         if has_metrics or has_canonical_results or has_timestamped_results:
             jurisdiction_dirs.append(child)
     return jurisdiction_dirs
@@ -136,13 +152,20 @@ def _extract_metrics_timestamp(metrics_file: Path) -> str | None:
     return match.group(1)
 
 
-def _select_results_file(jurisdiction_dir: Path) -> Path | None:
+def _select_results_file(
+    jurisdiction_dir: Path, batch_id: str | None = None
+) -> Path | None:
     """Pick the newest available results file for a jurisdiction.
 
     Prefer timestamped copies because local workspaces may only have the
     historical artifacts synced back from HPC while the canonical DVC output is
     absent or stale.
     """
+    if batch_id:
+        batch_results = jurisdiction_dir / _batch_results_name(batch_id)
+        if batch_results.exists():
+            return batch_results
+
     timestamped_files = sorted(jurisdiction_dir.glob(TIMESTAMPED_RESULTS_GLOB))
     if timestamped_files:
         return timestamped_files[-1]
@@ -154,8 +177,15 @@ def _select_results_file(jurisdiction_dir: Path) -> Path | None:
     return None
 
 
-def _select_metrics_file(jurisdiction_dir: Path) -> Path | None:
+def _select_metrics_file(
+    jurisdiction_dir: Path, batch_id: str | None = None
+) -> Path | None:
     """Pick the newest available metrics file for a jurisdiction."""
+    if batch_id:
+        batch_metrics = jurisdiction_dir / _batch_metrics_name(batch_id)
+        if batch_metrics.exists():
+            return batch_metrics
+
     timestamped_files = sorted(jurisdiction_dir.glob(TIMESTAMPED_METRICS_GLOB))
     if timestamped_files:
         return timestamped_files[-1]
@@ -202,9 +232,66 @@ def _all_jurisdictions_output_dir(output_dir: Path) -> Path:
     return output_dir / ALL_JURISDICTIONS_DIR_NAME
 
 
-def _aggregate_run_output_dir(output_dir: Path, run_timestamp: str) -> Path:
+def _sanitize_batch_id(batch_id: str) -> str:
+    """Normalize a batch ID for use in filenames and directories."""
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "-", batch_id.strip())
+    normalized = normalized.strip("-._")
+    if not normalized:
+        raise ValueError("batch_id must contain at least one filename-safe character")
+    return normalized
+
+
+def _batch_output_dir(output_dir: Path, batch_id: str) -> Path:
+    """Return the root directory for a batch manifest and aggregate outputs."""
+    return _all_jurisdictions_output_dir(output_dir) / BATCHES_DIR_NAME / _sanitize_batch_id(
+        batch_id
+    )
+
+
+def _batch_manifest_path(output_dir: Path, batch_id: str) -> Path:
+    """Return the dispatch manifest path for a batch."""
+    return _batch_output_dir(output_dir, batch_id) / BATCH_MANIFEST_NAME
+
+
+def _batch_results_name(batch_id: str) -> str:
+    """Build the per-jurisdiction batch-tagged results filename."""
+    return f"benchmark_results_batch_{_sanitize_batch_id(batch_id)}.csv"
+
+
+def _batch_metrics_name(batch_id: str) -> str:
+    """Build the per-jurisdiction batch-tagged metrics filename."""
+    return f"benchmark_metrics_batch_{_sanitize_batch_id(batch_id)}.json"
+
+
+def _aggregate_run_output_dir(
+    output_dir: Path, run_timestamp: str, batch_id: str | None = None
+) -> Path:
     """Return the timestamped aggregate output directory for this run."""
+    if batch_id:
+        return _batch_output_dir(output_dir, batch_id) / run_timestamp
     return _all_jurisdictions_output_dir(output_dir) / run_timestamp
+
+
+def _load_batch_manifest_jurisdictions(output_dir: Path, batch_id: str) -> list[str]:
+    """Return jurisdiction IDs recorded in the dispatch manifest, if present."""
+    manifest_path = _batch_manifest_path(output_dir, batch_id)
+    if not manifest_path.exists():
+        return []
+
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+
+    jurisdictions = manifest.get("jurisdictions", [])
+    results: list[str] = []
+    for entry in jurisdictions:
+        if not isinstance(entry, dict):
+            continue
+        jurisdiction_id = entry.get("jurisdiction_id")
+        if isinstance(jurisdiction_id, str) and jurisdiction_id.strip():
+            results.append(jurisdiction_id.strip())
+    return results
 
 
 def _prepend_jurisdiction_column(df: pl.DataFrame) -> pl.DataFrame:
@@ -227,11 +314,11 @@ def _prepend_jurisdiction_column(df: pl.DataFrame) -> pl.DataFrame:
     return df.with_columns(jurisdiction_expr).select(ordered_columns)
 
 
-def collect_metrics(output_dir: Path) -> pl.DataFrame:
+def collect_metrics(output_dir: Path, batch_id: str | None = None) -> pl.DataFrame:
     """Collect all benchmark_metrics.json files into a single DataFrame."""
     rows = []
     for jur_dir in _iter_jurisdiction_output_dirs(output_dir):
-        metrics_file = _select_metrics_file(jur_dir)
+        metrics_file = _select_metrics_file(jur_dir, batch_id=batch_id)
         if metrics_file is None:
             continue
         try:
@@ -255,11 +342,11 @@ def collect_metrics(output_dir: Path) -> pl.DataFrame:
     return _prepend_jurisdiction_column(pl.DataFrame(rows))
 
 
-def collect_results(output_dir: Path) -> pl.DataFrame:
+def collect_results(output_dir: Path, batch_id: str | None = None) -> pl.DataFrame:
     """Concatenate all benchmark_results.csv files."""
     frames = []
     for jur_dir in _iter_jurisdiction_output_dirs(output_dir):
-        results_file = _select_results_file(jur_dir)
+        results_file = _select_results_file(jur_dir, batch_id=batch_id)
         if results_file is None:
             continue
 
@@ -337,12 +424,16 @@ def main() -> None:
     args = parse_args()
     output_dir = resolve_output_dir(args.output_dir)
     run_timestamp = datetime.now().strftime(AGGREGATE_TIMESTAMP_FORMAT)
-    aggregate_output_dir = _aggregate_run_output_dir(output_dir, run_timestamp)
+    aggregate_output_dir = _aggregate_run_output_dir(
+        output_dir, run_timestamp, batch_id=args.batch_id
+    )
 
     print("=" * 70)
     print("LEGISCOPE — Aggregate Benchmark Results")
     print("=" * 70)
     print(f"Jurisdiction output root: {output_dir}")
+    if args.batch_id:
+        print(f"Batch ID: {args.batch_id}")
     print(f"Aggregate output directory: {aggregate_output_dir}")
 
     if not output_dir.exists():
@@ -352,10 +443,26 @@ def main() -> None:
     aggregate_output_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Check expected vs completed jurisdictions ──────────────
-    completed_dirs = [d.name for d in _iter_jurisdiction_output_dirs(output_dir)]
+    completed_dirs = [
+        d.name
+        for d in _iter_jurisdiction_output_dirs(output_dir)
+        if _select_results_file(d, batch_id=args.batch_id) is not None
+        or _select_metrics_file(d, batch_id=args.batch_id) is not None
+    ]
+    manifest_expected = (
+        _load_batch_manifest_jurisdictions(output_dir, args.batch_id)
+        if args.batch_id
+        else []
+    )
 
     if args.docx_dir and args.docx_dir.exists():
         expected = get_expected_jurisdictions(args.docx_dir)
+    elif manifest_expected:
+        expected = manifest_expected
+    else:
+        expected = []
+
+    if expected:
         missing = [j for j in expected if j not in completed_dirs]
         unexpected = [j for j in completed_dirs if j not in expected]
 
@@ -375,6 +482,10 @@ def main() -> None:
         print(f"\nFound {len(completed_dirs)} jurisdiction result directories")
         if args.docx_dir:
             print(f"  (DOCX dir not found: {args.docx_dir})")
+        elif args.batch_id:
+            print(
+                f"  (No dispatch manifest found at {_batch_manifest_path(output_dir, args.batch_id)})"
+            )
 
     # ── 2. Check SLURM job status ────────────────────────────────
     if args.check_slurm:
@@ -397,7 +508,7 @@ def main() -> None:
 
     # ── 3. Collect and display metrics ────────────────────────────
     print("\n--- Per-Jurisdiction Metrics ---")
-    metrics_df = collect_metrics(output_dir)
+    metrics_df = collect_metrics(output_dir, batch_id=args.batch_id)
 
     if metrics_df.is_empty():
         print("  No benchmark_metrics.json files found.")
@@ -540,7 +651,7 @@ def main() -> None:
 
     # ── 4. Concatenate detailed results ───────────────────────────
     print("\n--- Detailed Results ---")
-    results_df = collect_results(output_dir)
+    results_df = collect_results(output_dir, batch_id=args.batch_id)
 
     if results_df.is_empty():
         print("  No benchmark_results.csv files found.")

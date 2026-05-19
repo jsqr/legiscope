@@ -240,3 +240,48 @@ class TestOutputRouting:
             / "all_jurisdictions"
             / "20260515_104348"
         )
+
+    def test_resolve_output_dir_uses_batch_aggregate_folder_when_present(self):
+        input_path = (
+            PROJECT_ROOT
+            / "data"
+            / "output"
+            / "all_jurisdictions"
+            / "batches"
+            / "batch-50"
+            / "20260515_104348"
+            / "all_jurisdictions_benchmark_20260515_104348.csv"
+        )
+
+        output_dir = llm_accuracy.resolve_output_dir(input_path, None)
+
+        assert output_dir == input_path.parent
+
+    def test_resolve_input_path_prefers_newest_batch_aggregate(self, tmp_path, monkeypatch):
+        project_root = tmp_path / "project"
+        batch_dir = (
+            project_root
+            / "data"
+            / "output"
+            / "all_jurisdictions"
+            / "batches"
+            / "batch-50"
+        )
+        older_dir = batch_dir / "20260515_104348"
+        newer_dir = batch_dir / "20260516_114500"
+        older_dir.mkdir(parents=True)
+        newer_dir.mkdir(parents=True)
+        older_file = older_dir / "all_jurisdictions_benchmark_20260515_104348.csv"
+        newer_file = newer_dir / "all_jurisdictions_benchmark_20260516_114500.csv"
+        older_file.write_text("value\n1\n")
+        newer_file.write_text("value\n2\n")
+
+        monkeypatch.setattr(
+            llm_accuracy,
+            "__file__",
+            str(project_root / "coep" / "analysis" / "LLM_accuracy.py"),
+        )
+
+        resolved = llm_accuracy.resolve_input_path(None, batch_id="batch-50")
+
+        assert resolved == newer_file

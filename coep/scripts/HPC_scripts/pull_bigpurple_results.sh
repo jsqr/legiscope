@@ -21,6 +21,7 @@ INCLUDE_CODE_ARTIFACTS=false
 SKIP_BENCHMARK=false
 CODE_SLUG="municipal-code"
 OPEN_AFTER=false
+BATCH_ID=""
 SSH_COMMON_ARGS=()
 OPEN_TARGETS=()
 
@@ -29,6 +30,8 @@ usage() {
 Usage: pull_bigpurple_results.sh --netid NETID --jurisdiction STATE-Locality [options]
 
    or: pull_bigpurple_results.sh --netid NETID --jurisdictions STATE-Locality,STATE-Locality [options]
+
+    or: pull_bigpurple_results.sh --netid NETID --batch-id BATCH_ID [options]
 
 Pull benchmark artifacts for one or more jurisdictions from BigPurple onto
 your local machine. Benchmark downloads use timestamped benchmark_results_*.csv
@@ -43,6 +46,7 @@ Required:
     --jurisdiction ID           Jurisdiction output dir, e.g. PA-Philadelphia
                                                             May be passed multiple times
     --jurisdictions IDS         Comma-separated jurisdiction list
+        --batch-id ID               Pull the jurisdictions listed in a dispatch batch manifest
 
 Options:
   --host HOST                 Remote host (default: bigpurple.nyumc.org)
@@ -67,6 +71,11 @@ Options:
 Examples:
   ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
     --netid tmh8501 \
+        --batch-id dpl_all_50_may19 \
+        --open
+
+    ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
+        --netid tmh8501 \
     --jurisdiction PA-Philadelphia \
     --open
 
@@ -115,6 +124,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --jurisdictions)
             append_jurisdiction_csv "$2"
+            shift 2
+            ;;
+        --batch-id)
+            BATCH_ID="$2"
             shift 2
             ;;
         --host)
@@ -255,6 +268,93 @@ latest_timestamped_benchmark_file() {
     find "$target_dir" -maxdepth 1 -type f -name 'benchmark_results_*.csv' | sort | tail -n 1
 }
 
+batch_remote_dir() {
+    printf '%s/data/output/all_jurisdictions/batches/%s' "$PROJECT_ROOT" "$BATCH_ID"
+}
+
+batch_manifest_remote_path() {
+    printf '%s/dispatch_manifest.json' "$(batch_remote_dir)"
+}
+
+batch_local_dir() {
+    printf '%s/all_jurisdictions/batches/%s' "${LOCAL_DIR%/}" "$BATCH_ID"
+}
+
+batch_manifest_local_path() {
+    printf '%s/dispatch_manifest.json' "$(batch_local_dir)"
+}
+
+validate_batch_id() {
+    if [[ -n "$BATCH_ID" && ! "$BATCH_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        die "--batch-id may only contain letters, numbers, dots, underscores, and hyphens"
+    fi
+}
+
+pull_batch_manifest() {
+    local remote_batch_dir
+    local local_batch_dir
+
+    [[ -n "$BATCH_ID" ]] || return 0
+
+    remote_batch_dir="$(batch_remote_dir)"
+    local_batch_dir="$(batch_local_dir)"
+
+    say ">>> Checking remote batch manifest exists"
+    if [[ "$DRY_RUN" == true ]]; then
+        say "ssh ${REMOTE} \"test -f '$(batch_manifest_remote_path)'\""
+    else
+        if ! ssh_run "$REMOTE" "test -f '$(batch_manifest_remote_path)'"; then
+            die "remote batch manifest not found at $(batch_manifest_remote_path)"
+        fi
+    fi
+
+    say ">>> Pulling batch manifest"
+    mkdir -p "$local_batch_dir"
+    rsync "${RSYNC_ARGS[@]}" \
+        --include='*/' \
+        --include='dispatch_manifest.json' \
+        --include='jurisdictions.txt' \
+        --include='*.csv' \
+        --include='*.json' \
+        --exclude='*' \
+        -e "$RSYNC_RSH" \
+        "${REMOTE}:${remote_batch_dir}/" \
+        "${local_batch_dir}/"
+}
+
+load_batch_jurisdictions() {
+    local manifest_json=""
+
+    [[ -n "$BATCH_ID" ]] || return 0
+
+    manifest_json="$(ssh_run "$REMOTE" "cat '$(batch_manifest_remote_path)'")"
+    mapfile -t JURISDICTIONS < <(
+        python3 - "$manifest_json" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+for row in payload.get("jurisdictions", []):
+    jurisdiction_id = row.get("jurisdiction_id")
+    if jurisdiction_id:
+        print(jurisdiction_id)
+PY
+    )
+
+    [[ ${#JURISDICTIONS[@]} -gt 0 ]] || die "batch manifest ${BATCH_ID} did not contain any jurisdictions"
+}
+
+preferred_local_benchmark_file() {
+    local target_dir="$1"
+
+    if [[ -n "$BATCH_ID" && -f "$target_dir/benchmark_results_batch_${BATCH_ID}.csv" ]]; then
+        printf '%s\n' "$target_dir/benchmark_results_batch_${BATCH_ID}.csv"
+        return 0
+    fi
+
+    latest_timestamped_benchmark_file "$target_dir"
+}
+
 report_local_artifact_status() {
     local file_path="$1"
     local label="$2"
@@ -299,7 +399,17 @@ pull_jurisdiction() {
 
     remote_benchmark_check_cmd=$(cat <<EOF
 test -d '${remote_output_dir}' && \
+$(
+if [[ -n "$BATCH_ID" ]]; then
+cat <<INNER
+test -f '${remote_output_dir}/benchmark_results_batch_${BATCH_ID}.csv'
+INNER
+else
+cat <<INNER
 find '${remote_output_dir}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' | grep -q .
+INNER
+fi
+)
 EOF
 )
 
@@ -388,12 +498,19 @@ EOF
     fi
 
     if [[ "$SKIP_BENCHMARK" == false ]]; then
-        latest_timestamped_csv="$(latest_timestamped_benchmark_file "${local_target_dir}")"
-        [[ -n "$latest_timestamped_csv" ]] || die "download completed but no benchmark_results_*.csv files were found locally"
+        latest_timestamped_csv="$(preferred_local_benchmark_file "${local_target_dir}")"
+        [[ -n "$latest_timestamped_csv" ]] || die "download completed but no benchmark results CSV files were found locally"
         if [[ -f "${local_target_dir}/benchmark_metrics.json" ]]; then
             say "benchmark_metrics.json: ok"
         else
             say "benchmark_metrics.json: missing"
+        fi
+        if [[ -n "$BATCH_ID" ]]; then
+            if [[ -f "${local_target_dir}/benchmark_metrics_batch_${BATCH_ID}.json" ]]; then
+                say "batch metrics json: ${local_target_dir}/benchmark_metrics_batch_${BATCH_ID}.json"
+            else
+                say "batch metrics json: not present"
+            fi
         fi
         latest_timestamped_metrics_json="$(find "${local_target_dir}" -maxdepth 1 -type f -name 'benchmark_metrics_*.json' | sort | tail -n 1)"
         if [[ -n "$latest_timestamped_metrics_json" ]]; then
@@ -435,7 +552,10 @@ EOF
 }
 
 [[ -n "$NETID" ]] || die "--netid is required"
-[[ ${#JURISDICTIONS[@]} -gt 0 ]] || die "at least one --jurisdiction or --jurisdictions entry is required"
+validate_batch_id
+if [[ ${#JURISDICTIONS[@]} -eq 0 && -z "$BATCH_ID" ]]; then
+    die "provide at least one jurisdiction or use --batch-id"
+fi
 
 for jurisdiction in "${JURISDICTIONS[@]}"; do
     [[ "$jurisdiction" == *-* ]] || die "jurisdiction must look like STATE-Locality: ${jurisdiction}"
@@ -461,12 +581,26 @@ fi
 RSYNC_FILTERS=(
     --include='*/'
     --include='benchmark_results_*.csv'
+    --include='benchmark_results_batch_*.csv'
     --include='benchmark_metrics.json'
     --include='benchmark_metrics_*.json'
+    --include='benchmark_metrics_batch_*.json'
+    --include='batch_metadata.json'
     --include='debug/***'
 )
 
 RSYNC_FILTERS+=(--exclude='*')
+
+if [[ -n "$BATCH_ID" ]]; then
+    pull_batch_manifest
+    if [[ ${#JURISDICTIONS[@]} -eq 0 ]]; then
+        load_batch_jurisdictions
+    fi
+    for jurisdiction in "${JURISDICTIONS[@]}"; do
+        [[ "$jurisdiction" == *-* ]] || die "jurisdiction from batch manifest must look like STATE-Locality: ${jurisdiction}"
+    done
+    say ">>> Batch ${BATCH_ID} includes ${#JURISDICTIONS[@]} jurisdiction(s)"
+fi
 
 for jurisdiction in "${JURISDICTIONS[@]}"; do
     pull_jurisdiction "$jurisdiction"
