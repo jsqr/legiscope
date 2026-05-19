@@ -1366,6 +1366,65 @@ class TestFilterSections:
                 }
                 assert keep_reasons == {"s1": "backfill", "s2": "backfill"}
 
+    def test_filter_sections_respects_guidance_that_disables_backfill(self):
+        """Family-specific guidance should be able to prevent borderline rescue."""
+        from unittest.mock import Mock, patch
+
+        from legiscope.retrieve import (
+            QueryInfo,
+            RelevanceAssessment,
+            SectionCollection,
+            SectionResult,
+            filter_sections,
+        )
+        from legiscope.retrieval_guidance import RetrievalGuidance
+
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="H1",
+                body_text="B1",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.1,
+                segment_count=1,
+            )
+        ]
+
+        input_results = SectionCollection(
+            sections=sections, query_info=QueryInfo(original_query="query")
+        )
+
+        mock_assessment = RelevanceAssessment(
+            relevance_score=0.65,
+            reasoning="Borderline only",
+        )
+
+        with patch("legiscope.retrieve.is_relevant", return_value=mock_assessment):
+            with (
+                patch("pathlib.Path.mkdir"),
+                patch("legiscope.retrieve.pl.DataFrame.write_csv"),
+            ):
+                mock_client = Mock(spec=Instructor)
+                result = filter_sections(
+                    mock_client,
+                    input_results,
+                    "query",
+                    relevance_threshold=0.7,
+                    retrieval_guidance=RetrievalGuidance(
+                        guidance_topic="ssp_scope",
+                        enable_relevance_backfill=False,
+                    ),
+                )
+
+                assert len(result.sections) == 0
+                assert result.filtering_metadata.filtered_count == 0
+                assert (
+                    result.filtering_metadata.assessments[0]["keep_reason"]
+                    == "below_threshold"
+                )
+
     def test_filter_sections_sorting(self):
         """Test that results are sorted by LLM relevance score."""
         from unittest.mock import Mock, patch
@@ -1544,6 +1603,7 @@ class TestFilterSections:
             text: str,
             model: str | None = None,
             retrieval_guidance: RetrievalGuidance | None = None,
+            relevance_threshold: float = 0.5,
         ) -> RelevanceAssessment:
             seen_client_ids.add(id(client))
             return RelevanceAssessment(

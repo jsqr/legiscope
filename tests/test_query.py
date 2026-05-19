@@ -18,6 +18,7 @@ from legiscope.query import (
     LegalQueryResponse,
     ResponseOptionEvidence,
     format_query_response,
+    _build_no_sections_response,
     _repair_supporting_passages,
     _validate_supporting_passages,
     _prepare_legal_context,
@@ -3576,6 +3577,65 @@ class TestBatchQueryConfigBasics:
         assert results_df[0, "query_stage_status"] == "no_sections_after_filtering"
         assert results_df[0, "all_retrieval_units_filtered_out"] is True
         assert results_df[0, "generated_abstention"] is True
+
+    def test_build_no_sections_response_uses_structured_ssp_fallback_when_no_anchor_text(self):
+        response = _build_no_sections_response(
+            "no_sections_after_filtering",
+            query_metadata={
+                "variable_name": "ssp_law",
+                "response_options": "Yes OR No",
+            },
+            retrieval_guidance=RetrievalGuidance(
+                guidance_topic="ssp_scope",
+                anchor_terms=["syringe exchange facility", "needle exchange"],
+                no_context_fallback_short_answer="No",
+            ),
+            original_sections=[
+                SectionResult(
+                    section_id="s1",
+                    heading_text="### Retail uses",
+                    body_text="Paraphernalia shop zoning text only.",
+                    heading_level=3,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+        )
+
+        assert response.short_answer == "No"
+        assert not response.short_answer.startswith("I cannot answer your question")
+
+    def test_build_no_sections_response_keeps_abstention_when_anchor_text_was_seen(self):
+        response = _build_no_sections_response(
+            "no_sections_after_filtering",
+            query_metadata={
+                "variable_name": "ssp_law",
+                "response_options": "Yes OR No",
+            },
+            retrieval_guidance=RetrievalGuidance(
+                guidance_topic="ssp_scope",
+                anchor_terms=["syringe exchange facility", "needle exchange"],
+                no_context_fallback_short_answer="No",
+            ),
+            original_sections=[
+                SectionResult(
+                    section_id="s1",
+                    heading_text="## ARTICLE 15: SYRINGE EXCHANGE FACILITY LOCATION",
+                    body_text="This article shall be known as the Syringe Exchange Facility Location Ordinance.",
+                    heading_level=2,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+        )
+
+        assert response.short_answer.startswith(
+            "I cannot answer your question as no relevant legal provisions were found after filtering."
+        )
 
 
 class TestHierarchicalQueryExecution:

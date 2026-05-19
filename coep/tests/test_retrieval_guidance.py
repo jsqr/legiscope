@@ -576,6 +576,9 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.guidance_topic == "ssp_scope"
         assert "syringe exchange" in guidance.anchor_terms
+        assert "hypodermic" not in guidance.anchor_terms
+        assert guidance.no_context_fallback_short_answer == "No"
+        assert guidance.enable_relevance_backfill is False
         assert guidance.retrieval_instructions is not None
         assert (
             "Distinguish true SSP programs from syringe buyback"
@@ -635,6 +638,24 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "No restrictions listed" in guidance.completion_instructions
+
+    def test_returns_guidance_that_disables_backfill_for_exemption_presence(self):
+        request = RetrievalGuidanceRequest(
+            query="Are there any exemptions?",
+            variable_name="dp_exemption",
+            metadata={
+                "prepend_text": (
+                    "This query concerns a local municipal ordinance regulating "
+                    "drug paraphernalia used with controlled substances."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "exemption_presence"
+        assert guidance.enable_relevance_backfill is False
 
     def test_returns_guidance_for_ssp_reference_citation_variable(self):
         request = RetrievalGuidanceRequest(

@@ -1569,8 +1569,37 @@ def _resolve_completion_sections(
     return sections
 
 
-def _build_no_sections_response(stage_status: str | None) -> LegalQueryResponse:
+def _build_no_sections_response(
+    stage_status: str | None,
+    *,
+    query_metadata: dict[str, Any] | None = None,
+    retrieval_guidance: RetrievalGuidance | None = None,
+    original_sections: list[SectionResult] | None = None,
+) -> LegalQueryResponse:
     """Build the existing abstention response for zero-context execution paths."""
+    if stage_status == "no_sections_after_filtering":
+        fallback_short_answer = _structured_no_context_fallback_short_answer(
+            retrieval_guidance,
+            query_metadata,
+            original_sections or [],
+        )
+        if fallback_short_answer:
+            return LegalQueryResponse(
+                short_answer=fallback_short_answer,
+                reasoning=(
+                    "The search returned retrieval units, but none contained sufficiently specific operative text "
+                    "for this existence-style question after relevance filtering, so the answer falls back to the "
+                    "absence of qualifying legal language in the retrieved code context."
+                ),
+                citations=[],
+                supporting_passages=[],
+                confidence=0.7,
+                limitations=(
+                    "This answer is an absence-based fallback after relevance filtering, not a citation-backed "
+                    "affirmative rule excerpt."
+                ),
+            )
+
     if stage_status == "no_sections_after_filtering":
         return LegalQueryResponse(
             short_answer="I cannot answer your question as no relevant legal provisions were found after filtering.",
@@ -1671,7 +1700,15 @@ def query_legal_documents(
         stage_status = None
         if debug_capture is not None:
             stage_status = debug_capture.setdefault("query", {}).get("stage_status")
-        return _build_no_sections_response(stage_status), []
+        return (
+            _build_no_sections_response(
+                stage_status,
+                query_metadata=query_metadata,
+                retrieval_guidance=settings.retrieval_guidance,
+                original_sections=retrieval_results.sections,
+            ),
+            [],
+        )
 
     sections, full_context, completion_budgeting = (
         _select_sections_for_completion_budget(
@@ -2830,13 +2867,58 @@ def _build_relevance_debug_prompt(query: str, settings: QuerySettings) -> str:
         if guidance.anchor_terms:
             lines.append("Anchor terms: " + ", ".join(guidance.anchor_terms))
 
-    lines.append(
+    threshold_summary = (
         "Thresholds: keep when relevance_score "
-        f"is at least {settings.relevance_threshold:.2f}; backfill preserves a small relevant "
-        "evidence set if the filter would otherwise collapse."
+        f"is at least {settings.relevance_threshold:.2f}; "
     )
+    if guidance and guidance.enable_relevance_backfill is False:
+        threshold_summary += "backfill is disabled for this query family."
+    else:
+        threshold_summary += (
+            "backfill preserves a small relevant evidence set if the filter would otherwise collapse."
+        )
+    lines.append(threshold_summary)
 
     return "\n".join(lines)
+
+
+def _sections_contain_anchor_terms(
+    sections: list[SectionResult],
+    anchor_terms: list[str],
+) -> bool:
+    """Return whether any retrieved section contains a concrete family anchor term."""
+    normalized_terms = [term.strip().lower() for term in anchor_terms if term.strip()]
+    if not normalized_terms:
+        return False
+
+    for section in sections:
+        section_text = f"{section.heading_text}\n{section.body_text}".lower()
+        if any(term in section_text for term in normalized_terms):
+            return True
+    return False
+
+
+def _structured_no_context_fallback_short_answer(
+    retrieval_guidance: RetrievalGuidance | None,
+    query_metadata: dict[str, Any] | None,
+    original_sections: list[SectionResult],
+) -> str | None:
+    """Return a deterministic fallback short answer when zero retained context is expected."""
+    if retrieval_guidance is None:
+        return None
+
+    fallback_short_answer = retrieval_guidance.no_context_fallback_short_answer
+    if not fallback_short_answer:
+        return None
+
+    if _sections_contain_anchor_terms(original_sections, retrieval_guidance.anchor_terms):
+        return None
+
+    return _normalize_structured_short_answer(
+        fallback_short_answer,
+        variable_name=(query_metadata or {}).get("variable_name"),
+        query_metadata=query_metadata,
+    )
 
 
 def _summarize_retrieved_sections(

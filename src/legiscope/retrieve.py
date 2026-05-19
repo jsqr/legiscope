@@ -806,6 +806,17 @@ def _assessment_is_borderline_for_backfill(
     )
 
 
+def _relevance_backfill_enabled(
+    retrieval_guidance: RetrievalGuidance | None,
+) -> bool:
+    """Return whether borderline sections may be rescued after filtering."""
+    if retrieval_guidance is None:
+        return True
+    if retrieval_guidance.enable_relevance_backfill is None:
+        return True
+    return retrieval_guidance.enable_relevance_backfill
+
+
 def _updated_section_with_assessment(
     section: SectionResult,
     assessment: RelevanceAssessment,
@@ -1476,6 +1487,9 @@ def filter_sections(
             )
 
     target_keep = min(DEFAULT_RELEVANCE_MIN_KEEP, len(assessed_sections))
+    if not _relevance_backfill_enabled(retrieval_guidance):
+        target_keep = len(filtered_sections)
+
     if len(filtered_sections) < target_keep:
         kept_ids = {section.section_id for section in filtered_sections}
         backfill_candidates = [

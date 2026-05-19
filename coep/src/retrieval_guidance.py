@@ -381,13 +381,16 @@ _GUIDANCE_BY_FAMILY = {
         anchor_terms=[
             "syringe service program",
             "syringe services",
+            "syringe exchange facility",
             "needle exchange",
+            "needle and syringe exchange",
             "syringe exchange",
+            "sterile syringe",
             "harm reduction",
-            "hypodermic",
             "needle dispensary",
-            "public health",
         ],
+        no_context_fallback_short_answer="No",
+        enable_relevance_backfill=False,
     ),
     "date_enactment": RetrievalGuidance(
         guidance_topic="date_enactment",
@@ -559,6 +562,7 @@ _GUIDANCE_BY_FAMILY = {
             "public health law",
             "administrative code",
         ],
+        enable_relevance_backfill=False,
     ),
     "ssp_prohibition": RetrievalGuidance(
         guidance_topic="ssp_prohibition",
@@ -728,6 +732,7 @@ _GUIDANCE_BY_FAMILY = {
             "test strip",
             "drug checking",
         ],
+        enable_relevance_backfill=False,
     ),
     "exemption_activity_scope": RetrievalGuidance(
         guidance_topic="exemption_activity_scope",
@@ -798,6 +803,8 @@ _VARIABLE_OVERRIDES = {
             "true carve-out language. Include Other only for a real paraphernalia exemption that does not fit any listed label. "
             "IGNORE tobacco-only exceptions, tobacco packaging carve-outs, zoning permissions, retail-business permissions, and "
             "other non-paraphernalia business carve-outs; they SHOULD NOT be coded as Other. When the ordinance incorporates a "
+            "state definition, do not infer a broad exemption from narrow sales-to-minors or prescription-device exceptions unless "
+            "the same text actually narrows the operative paraphernalia prohibition or definition. When the ordinance incorporates a "
             "state definition, favor does not apply, does not include, exception, or incorporated definitional carve-out language "
             "over business-context permissions. If syringe-service, syringe-exchange, harm-reduction, supervised-use, or syringe-"
             "exchange-facility text expressly authorizes syringes, needles, test strips, drug-checking equipment, or similar "
@@ -1190,6 +1197,16 @@ def _merge_guidance(
         completion_instructions=(
             " ".join(completion_parts) if completion_parts else None
         ),
+        no_context_fallback_short_answer=(
+            override.no_context_fallback_short_answer
+            if override and override.no_context_fallback_short_answer is not None
+            else base.no_context_fallback_short_answer
+        ),
+        enable_relevance_backfill=(
+            override.enable_relevance_backfill
+            if override and override.enable_relevance_backfill is not None
+            else base.enable_relevance_backfill
+        ),
     )
 
 
@@ -1369,6 +1386,8 @@ def get_drug_paraphernalia_retrieval_guidance(
             list(guidance.anchor_terms) + inherited_anchor_terms
         ),
         completion_instructions=guidance.completion_instructions,
+        no_context_fallback_short_answer=guidance.no_context_fallback_short_answer,
+        enable_relevance_backfill=guidance.enable_relevance_backfill,
     )
 
     return RetrievalGuidance(
@@ -1379,4 +1398,6 @@ def get_drug_paraphernalia_retrieval_guidance(
         relevance_instructions=guidance.relevance_instructions,
         anchor_terms=guidance.anchor_terms,
         completion_instructions=_build_completion_instructions(guidance),
+        no_context_fallback_short_answer=guidance.no_context_fallback_short_answer,
+        enable_relevance_backfill=guidance.enable_relevance_backfill,
     )
