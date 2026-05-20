@@ -1255,6 +1255,8 @@ def build_chunks_df(
                 if heading_match:
                     base_heading = first_line
                     body_text = region_text[len(first_line) :].lstrip()
+                    if not body_text:
+                        body_text = heading_match.group(2).strip()
                     heading_level = len(heading_match.group(1))
                 else:
                     base_heading = str(row["region_role"]).replace("_", " ").title()

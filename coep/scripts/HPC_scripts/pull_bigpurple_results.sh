@@ -112,6 +112,40 @@ append_jurisdiction_csv() {
         done
 }
 
+jurisdiction_count() {
+    set +u
+    local count=${#JURISDICTIONS[@]}
+    set -u
+    printf '%s\n' "$count"
+}
+
+for_each_jurisdiction() {
+    local callback="$1"
+    local jurisdiction=""
+
+    set +u
+    for jurisdiction in "${JURISDICTIONS[@]}"; do
+        "$callback" "$jurisdiction"
+    done
+    set -u
+}
+
+validate_jurisdiction_format() {
+    local jurisdiction="$1"
+    [[ "$jurisdiction" == *-* ]] || die "jurisdiction must look like STATE-Locality: ${jurisdiction}"
+}
+
+validate_batch_manifest_jurisdiction_format() {
+    local jurisdiction="$1"
+    [[ "$jurisdiction" == *-* ]] || die "jurisdiction from batch manifest must look like STATE-Locality: ${jurisdiction}"
+}
+
+pull_one_jurisdiction() {
+    local jurisdiction="$1"
+    pull_jurisdiction "$jurisdiction"
+    say ""
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --netid)
@@ -324,11 +358,16 @@ pull_batch_manifest() {
 
 load_batch_jurisdictions() {
     local manifest_json=""
+    local jurisdiction_id=""
 
     [[ -n "$BATCH_ID" ]] || return 0
 
     manifest_json="$(ssh_run "$REMOTE" "cat '$(batch_manifest_remote_path)'")"
-    mapfile -t JURISDICTIONS < <(
+    JURISDICTIONS=()
+    while IFS= read -r jurisdiction_id; do
+        [[ -n "$jurisdiction_id" ]] || continue
+        JURISDICTIONS+=("$jurisdiction_id")
+    done < <(
         python3 - "$manifest_json" <<'PY'
 import json
 import sys
@@ -341,7 +380,7 @@ for row in payload.get("jurisdictions", []):
 PY
     )
 
-    [[ ${#JURISDICTIONS[@]} -gt 0 ]] || die "batch manifest ${BATCH_ID} did not contain any jurisdictions"
+    [[ "$(jurisdiction_count)" -gt 0 ]] || die "batch manifest ${BATCH_ID} did not contain any jurisdictions"
 }
 
 preferred_local_benchmark_file() {
@@ -553,13 +592,11 @@ EOF
 
 [[ -n "$NETID" ]] || die "--netid is required"
 validate_batch_id
-if [[ ${#JURISDICTIONS[@]} -eq 0 && -z "$BATCH_ID" ]]; then
+if [[ "$(jurisdiction_count)" -eq 0 && -z "$BATCH_ID" ]]; then
     die "provide at least one jurisdiction or use --batch-id"
 fi
 
-for jurisdiction in "${JURISDICTIONS[@]}"; do
-    [[ "$jurisdiction" == *-* ]] || die "jurisdiction must look like STATE-Locality: ${jurisdiction}"
-done
+for_each_jurisdiction validate_jurisdiction_format
 
 if [[ "$SKIP_BENCHMARK" == true && "$INCLUDE_CODE_ARTIFACTS" == false ]]; then
     die "--skip-benchmark requires --include-code-artifacts"
@@ -593,26 +630,24 @@ RSYNC_FILTERS+=(--exclude='*')
 
 if [[ -n "$BATCH_ID" ]]; then
     pull_batch_manifest
-    if [[ ${#JURISDICTIONS[@]} -eq 0 ]]; then
+    if [[ "$(jurisdiction_count)" -eq 0 ]]; then
         load_batch_jurisdictions
     fi
-    for jurisdiction in "${JURISDICTIONS[@]}"; do
-        [[ "$jurisdiction" == *-* ]] || die "jurisdiction from batch manifest must look like STATE-Locality: ${jurisdiction}"
-    done
-    say ">>> Batch ${BATCH_ID} includes ${#JURISDICTIONS[@]} jurisdiction(s)"
+    for_each_jurisdiction validate_batch_manifest_jurisdiction_format
+    say ">>> Batch ${BATCH_ID} includes $(jurisdiction_count) jurisdiction(s)"
 fi
 
-for jurisdiction in "${JURISDICTIONS[@]}"; do
-    pull_jurisdiction "$jurisdiction"
-    say ""
-done
+for_each_jurisdiction pull_one_jurisdiction
 
 if [[ "$OPEN_AFTER" == true && "$DRY_RUN" == false && "$SKIP_BENCHMARK" == false ]]; then
-    [[ ${#OPEN_TARGETS[@]} -gt 0 ]] || die "cannot open benchmark results because no benchmark_results_*.csv files were downloaded"
+    set +u
+    open_target_count=${#OPEN_TARGETS[@]}
+    [[ $open_target_count -gt 0 ]] || die "cannot open benchmark results because no benchmark_results_*.csv files were downloaded"
     say ">>> Opening latest timestamped benchmark results"
     for latest_timestamped_csv in "${OPEN_TARGETS[@]}"; do
         open_file "$latest_timestamped_csv"
     done
+    set -u
 fi
 
 say ""

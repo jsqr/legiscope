@@ -89,6 +89,11 @@ _RESULT_QUERY_METADATA_EXCLUDE_KEYS = {
     "response_options",
 }
 
+_LOCAL_SECTION_CROSS_REFERENCE_RE = re.compile(
+    r"(?i)\bsee\s+(?:section|sec\.?|§{1,2})\s*([A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*(?:\([A-Za-z0-9]+\))*)"
+)
+_MAX_SAME_TEXT_CROSS_REFERENCE_IMPORTS = 3
+
 _PRIOR_ANSWER_ALLOWED_KEYS = {
     "short_answer",
     "raw_short_answer",
@@ -394,6 +399,8 @@ class QuerySettings:
         filter_llm: Separate LLM config for filtering (uses llm if None)
         retrieval_guidance: Optional per-query retrieval guidance injected by
             a caller-provided project hook
+        same_text_sections_parquet_path: Optional local sections parquet used to
+            resolve same-text cross-referenced sections into completion context
 
     Example:
         >>> from legiscope.utils import LLMConfig
@@ -419,6 +426,7 @@ class QuerySettings:
     relevance_threshold: float = DEFAULT_RELEVANCE_THRESHOLD
     filter_llm: LLMConfig | None = None
     retrieval_guidance: RetrievalGuidance | None = None
+    same_text_sections_parquet_path: str | Path | None = None
 
     # Validation
     validate_supporting_passages: bool = DEFAULT_VALIDATION_ENABLED
@@ -1710,6 +1718,16 @@ def query_legal_documents(
             [],
         )
 
+    sections = _augment_sections_with_same_text_cross_references(
+        sections,
+        sections_parquet_path=settings.same_text_sections_parquet_path,
+        guidance_topic=(
+            settings.retrieval_guidance.guidance_topic
+            if settings.retrieval_guidance is not None
+            else None
+        ),
+    )
+
     sections, full_context, completion_budgeting = (
         _select_sections_for_completion_budget(
             sections,
@@ -2453,6 +2471,211 @@ def _prepare_legal_context(sections: list[SectionResult]) -> str:
         _prepare_legal_context_unit(section, display_index=i + 1)
         for i, section in enumerate(sections)
     )
+
+
+def _extract_explicit_local_section_references(text: str) -> list[str]:
+    """Return explicit local `see Section` / `see §` references in encounter order."""
+    if not text:
+        return []
+
+    references: list[str] = []
+    seen: set[str] = set()
+    for match in _LOCAL_SECTION_CROSS_REFERENCE_RE.finditer(text):
+        section_label = str(match.group(1) or "").strip()
+        normalized_label = section_label.lower()
+        if not section_label or normalized_label in seen:
+            continue
+        seen.add(normalized_label)
+        references.append(section_label)
+    return references
+
+
+def _section_cross_reference_search_text(section: SectionResult) -> str:
+    """Join heading and body text for explicit local cross-reference parsing."""
+    return "\n".join(
+        part.strip()
+        for part in [section.heading_text, section.body_text]
+        if isinstance(part, str) and part.strip()
+    )
+
+
+def _local_section_reference_heading_pattern(section_label: str) -> re.Pattern[str]:
+    """Compile a heading/context matcher for a local section citation."""
+    return re.compile(
+        rf"(?i)(?:\bsec(?:tion)?\.?\s*|§{{1,2}}\s*)?{re.escape(section_label)}(?![A-Za-z0-9.])"
+    )
+
+
+def _load_same_text_section_rows(
+    sections_parquet_path: str | Path,
+) -> list[dict[str, Any]]:
+    """Load the minimal local section rows needed for same-text cross-reference lookup."""
+    sections_df = pl.read_parquet(sections_parquet_path)
+    keep_columns = [
+        column
+        for column in [
+            "section_id",
+            "section_ordinal",
+            "heading_text",
+            "body_text",
+            "heading_level",
+            "parent_id",
+            "context_path",
+        ]
+        if column in sections_df.columns
+    ]
+    return sections_df.select(keep_columns).to_dicts()
+
+
+def _section_result_from_same_text_row(
+    row: dict[str, Any],
+    *,
+    source_section: SectionResult,
+) -> SectionResult | None:
+    """Build a lightweight completion section from a same-text parquet row."""
+    section_identifier = row.get("section_id")
+    if section_identifier is None:
+        section_identifier = row.get("section_ordinal")
+    if section_identifier is None:
+        return None
+
+    heading_text = str(row.get("heading_text") or "").strip()
+    body_text = str(row.get("body_text") or "").strip()
+    if not heading_text and not body_text:
+        return None
+
+    heading_level = row.get("heading_level")
+    if heading_level is None:
+        heading_level = source_section.heading_level
+
+    return SectionResult(
+        section_id=str(section_identifier),
+        heading_text=heading_text,
+        body_text=body_text,
+        heading_level=int(heading_level),
+        parent_id=(
+            str(row.get("parent_id")) if row.get("parent_id") is not None else None
+        ),
+        matching_segments=[],
+        relevance_score=source_section.relevance_score,
+        segment_count=0,
+        context_path=(
+            str(row.get("context_path"))
+            if row.get("context_path") is not None
+            else None
+        ),
+        retrieved_for_query_ids=list(source_section.retrieved_for_query_ids),
+    )
+
+
+def _resolve_same_text_cross_reference_row(
+    section_rows: list[dict[str, Any]],
+    section_label: str,
+    *,
+    excluded_section_ids: set[str],
+) -> dict[str, Any] | None:
+    """Find the local section row for an explicit same-text section reference."""
+    pattern = _local_section_reference_heading_pattern(section_label)
+
+    for field_name in ("heading_text", "context_path"):
+        for row in section_rows:
+            section_identifier = row.get("section_id")
+            if section_identifier is None:
+                section_identifier = row.get("section_ordinal")
+            if section_identifier is None:
+                continue
+            normalized_section_id = str(section_identifier)
+            if normalized_section_id in excluded_section_ids:
+                continue
+
+            candidate_text = str(row.get(field_name) or "")
+            if candidate_text and pattern.search(candidate_text):
+                return row
+
+    return None
+
+
+def _augment_sections_with_same_text_cross_references(
+    sections: list[SectionResult],
+    *,
+    sections_parquet_path: str | Path | None,
+    guidance_topic: str | None,
+) -> list[SectionResult]:
+    """Append directly cited same-text local sections for penalty completion context."""
+    if guidance_topic != "penalty" or not sections or not sections_parquet_path:
+        return sections
+
+    discovered_references: list[tuple[SectionResult, str]] = []
+    for section in sections:
+        for section_label in _extract_explicit_local_section_references(
+            _section_cross_reference_search_text(section)
+        ):
+            discovered_references.append((section, section_label))
+            if len(discovered_references) >= _MAX_SAME_TEXT_CROSS_REFERENCE_IMPORTS:
+                break
+        if len(discovered_references) >= _MAX_SAME_TEXT_CROSS_REFERENCE_IMPORTS:
+            break
+
+    if not discovered_references:
+        return sections
+
+    try:
+        section_rows = _load_same_text_section_rows(sections_parquet_path)
+    except Exception as exc:
+        logger.warning(
+            "Failed to load same-text cross-reference sections from {}: {}",
+            sections_parquet_path,
+            exc,
+        )
+        return sections
+
+    existing_section_ids = {str(section.section_id) for section in sections}
+    imported_after_source: dict[str, list[SectionResult]] = {}
+
+    for source_section, section_label in discovered_references:
+        if sum(len(items) for items in imported_after_source.values()) >= (
+            _MAX_SAME_TEXT_CROSS_REFERENCE_IMPORTS
+        ):
+            break
+
+        target_row = _resolve_same_text_cross_reference_row(
+            section_rows,
+            section_label,
+            excluded_section_ids=existing_section_ids,
+        )
+        if target_row is None:
+            continue
+
+        target_section = _section_result_from_same_text_row(
+            target_row,
+            source_section=source_section,
+        )
+        if target_section is None:
+            continue
+
+        target_section_id = str(target_section.section_id)
+        if target_section_id in existing_section_ids:
+            continue
+
+        existing_section_ids.add(target_section_id)
+        imported_after_source.setdefault(str(source_section.section_id), []).append(
+            target_section
+        )
+
+    if not imported_after_source:
+        return sections
+
+    augmented_sections: list[SectionResult] = []
+    for section in sections:
+        augmented_sections.append(section)
+        augmented_sections.extend(imported_after_source.get(str(section.section_id), []))
+
+    logger.info(
+        "Imported {} same-text cross-reference sections for guidance topic {}",
+        len(augmented_sections) - len(sections),
+        guidance_topic,
+    )
+    return augmented_sections
 
 
 def _section_result_id(section: SectionResult) -> str:
@@ -3861,12 +4084,17 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bsyringe\b",
                 r"\bdiabet(?:es|ic)\b",
                 r"\bprescription\b",
+                r"\bprescribed\b",
+                r"\blicensed physician\b",
+                r"\bdentist authorized to prescribe\b",
             ),
             _normalize_option_text("Other paraphernalia for approved medical use"): (
                 r"\bmedical use\b",
                 r"\bprescription\b",
+                r"\bprescribed\b",
                 r"\bphysician\b",
                 r"\bdentist\b",
+                r"\bauthorized to prescribe\b",
             ),
             _normalize_option_text(
                 "Paraphernalia for consumption of cannabis, generally or medical use"
@@ -3927,6 +4155,9 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bexception\b",
                 r"\bexemption\b",
                 r"\bdefense to prosecution\b",
+                r"\breligious ritual\b",
+                r"\breligious ceremony\b",
+                r"\bbona fide religious\b",
             ),
         }
 
@@ -4862,6 +5093,7 @@ def _process_single_query_with_error_handling(
             filter_relevance=settings.filter_relevance,
             relevance_threshold=settings.relevance_threshold,
             retrieval_guidance=retrieval_guidance,
+            same_text_sections_parquet_path=sections_parquet_path,
             validate_supporting_passages=settings.validate_supporting_passages,
             enable_answer_review=settings.enable_answer_review,
             answer_review_topics=settings.answer_review_topics,

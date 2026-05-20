@@ -32,13 +32,18 @@ _REFERENCE_SCOPE_QUESTIONS_BY_FAMILY = {
 _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
     "existence_scope": (
         "Retrieve operative ordinance text that establishes whether the jurisdiction bans or regulates "
-        "drug paraphernalia used with controlled substances beyond narrow business-only rules."
+        "drug paraphernalia used with controlled substances beyond narrow business-only rules. Do not "
+        "treat sales-to-minors rules, head-shop zoning, retail-display restrictions, business-license "
+        "conditions, or SSP-only program text as a general drug-paraphernalia ordinance unless the same "
+        "text also creates an ordinance-wide paraphernalia prohibition or regulation."
     ),
     "ssp_scope": (
         "Retrieve operative municipal ordinance text establishing whether the jurisdiction authorizes, "
         "prohibits, or limits syringe service programs, syringe exchanges, needle exchanges, harm-reduction "
-        "syringe distribution, or closely synonymous SSP operations. Distinguish true SSP programs from "
-        "syringe buyback or disposal-only programs."
+        "syringe distribution, or closely synonymous SSP operations. Treat emergency-conditioned authorization "
+        "of clean needle or needle-and-syringe exchange projects as in-scope SSP text when the ordinance empowers "
+        "a local official to declare an outbreak or public health emergency that activates the program. Distinguish "
+        "true SSP programs from syringe buyback or disposal-only programs."
     ),
     "date_enactment": (
         "Retrieve ordinance metadata and amendment history that identify enactment, adoption, approval, "
@@ -89,7 +94,8 @@ _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
     "ssp_authorization": (
         "Retrieve operative ordinance text stating whether SSPs are authorized, permitted, approved, allowed, "
         "or established, including any condition limiting authorization to a declared public health emergency "
-        "or disease outbreak."
+        "or disease outbreak. Treat provisions authorizing clean needle or needle-and-syringe exchange projects "
+        "during a declared emergency as affirmative SSP authorization."
     ),
     "ssp_restriction": (
         "Retrieve operative SSP restriction text covering caps on program sites, distance buffers from schools "
@@ -116,7 +122,8 @@ _RETRIEVAL_INSTRUCTIONS_BY_FAMILY = {
         "Retrieve exception, exclusion, does-not-apply, authorized-use, and incorporated state-definition "
         "language that could create paraphernalia exemptions. Also retrieve syringe-service, syringe-exchange, harm-"
         "reduction, supervised-use, and drug-checking/test-strip provisions when they can function as direct "
-        "paraphernalia carve-outs."
+        "paraphernalia carve-outs. Do not treat unrelated marijuana-business, commercial-cannabis, zoning, or "
+        "employment provisions as exemption evidence merely because they mention cannabis or syringes."
     ),
     "exemption_activity_scope": (
         "Retrieve exemption text and nearby operative activity language showing which acts remain allowed "
@@ -375,8 +382,10 @@ _GUIDANCE_BY_FAMILY = {
         relevance_instructions=(
             "Prefer operative local ordinance text that actually authorizes, prohibits, or limits syringe service "
             "programs. High-value text expressly uses SSP, syringe exchange, needle exchange, harm reduction, or "
-            "similar program language. Reject syringe buyback, disposal-only, or generic public-health background "
-            "text unless it directly creates the local SSP rule being coded."
+            "similar program language, including emergency-conditioned authorization of clean needle or needle-and-"
+            "syringe exchange projects. Reject syringe buyback, disposal-only, or generic public-health background "
+            "text unless it directly creates the local SSP rule being coded. A public-health-emergency or HIV/AIDS "
+            "finding section counts only when it empowers local officials to authorize or operate exchange projects."
         ),
         anchor_terms=[
             "syringe service program",
@@ -386,11 +395,18 @@ _GUIDANCE_BY_FAMILY = {
             "needle exchange",
             "needle exchange program",
             "needle and syringe exchange",
+            "needle and syringe exchange project",
+            "clean needle",
+            "clean needle and syringe exchange",
+            "clean needle and syringe exchange project",
             "syringe exchange",
             "sterile needle",
             "sterile syringe",
             "harm reduction",
             "needle dispensary",
+            "local public health emergency",
+            "public health emergency",
+            "disease outbreak",
         ],
         no_context_fallback_short_answer="No",
         enable_relevance_backfill=False,
@@ -528,17 +544,21 @@ _GUIDANCE_BY_FAMILY = {
             "Prefer text showing whether a cited state or federal law must actually be consulted to "
             "answer the survey question. A mere citation is not enough. High-value text either says "
             "the local ordinance adopts or incorporates an external definition, or makes clear that the "
-            "local text is self-contained. Count this as necessary only when the outside law must be "
+            "local text is self-contained. Count this as necessary when the outside law must be "
             "reviewed to determine the local ordinance's meaning, scope, or elements. If the local text "
             "can be answered from the ordinance itself, the correct answer is no even if state or federal "
             "law is cited, mirrored, used as background authority, or referenced in a penalty or "
-            "enforcement cross-reference. "
+            "enforcement cross-reference. Exemptions or carve-outs that apply only when conduct is "
+            "authorized, lawful, or in accordance with a cited outside statute do count as true outside-law "
+            "dependency because the external law must be reviewed to know the exemption's scope. "
         ),
         anchor_terms=[
             "incorporate",
             "adopt",
             "defined in",
             "pursuant to",
+            "in accordance with",
+            "in compliance with",
             "as provided in",
             "as defined in",
             "state law",
@@ -592,8 +612,9 @@ _GUIDANCE_BY_FAMILY = {
         relevance_instructions=(
             "Prefer operative text that expressly authorizes, permits, or establishes SSPs. High-value passages say SSPs "
             "may operate, are authorized, are permitted, or are allowed, including conditions tied to a declared public "
-            "health emergency or disease outbreak. Reject restrictions or the mere absence of a ban unless the text itself "
-            "creates affirmative authorization."
+            "health emergency or disease outbreak. Treat authorization of clean needle or needle-and-syringe exchange "
+            "projects during a declared emergency as affirmative SSP authorization. Reject restrictions or the mere absence "
+            "of a ban unless the text itself creates affirmative authorization."
         ),
         anchor_terms=[
             "authorized",
@@ -601,8 +622,13 @@ _GUIDANCE_BY_FAMILY = {
             "may operate",
             "allowed",
             "public health emergency",
+            "local public health emergency",
             "disease outbreak",
+            "clean needle",
+            "clean needle and syringe exchange",
+            "clean needle and syringe exchange project",
             "needle exchange",
+            "needle and syringe exchange project",
             "syringe exchange facility",
             "syringe exchange program",
             "syringe service",
@@ -808,7 +834,9 @@ _VARIABLE_OVERRIDES = {
             "Focus on true paraphernalia carve-outs. Reject tobacco-only exceptions, zoning permissions, retail-business "
             "permissions, and other non-paraphernalia exceptions unless they clearly function as coded exemptions under the "
             "survey rules. If syringe-service, syringe-exchange, harm-reduction, supervised-use, or test-strip/drug-checking "
-            "text is retrieved, treat it as high-value only when it directly creates an operative exemption."
+            "text is retrieved, treat it as high-value only when it directly creates an operative exemption. Reject unrelated "
+            "commercial-cannabis, marijuana-business, employment, or administrative provisions that mention cannabis or syringes "
+            "without narrowing the paraphernalia prohibition or definition."
         ),
         completion_instructions=(
             "For dp_exemption, only code labels found directly in operative exemption text, incorporated definition text, or other "
@@ -820,7 +848,10 @@ _VARIABLE_OVERRIDES = {
             "state definition, favor does not apply, does not include, exception, or incorporated definitional carve-out language "
             "over business-context permissions. If syringe-service, syringe-exchange, harm-reduction, supervised-use, or syringe-"
             "exchange-facility text expressly authorizes syringes, needles, test strips, drug-checking equipment, or similar "
-            "paraphernalia, code the corresponding SSP and DCE labels instead of defaulting to None or cannabis-only."
+            "paraphernalia, code the corresponding SSP and DCE labels instead of defaulting to None or cannabis-only. Do NOT "
+            "treat unrelated commercial-cannabis or marijuana-business provisions as cannabis exemptions. Map prescription or "
+            "licensed-physician-or-dentist carve-outs to the approved-medical-use labels, public-official or governmental-duty "
+            "carve-outs to the public-official label, and bona fide religious ritual or ceremony carve-outs to Other."
         ),
         anchor_terms=[
             "exception",
@@ -837,14 +868,20 @@ _VARIABLE_OVERRIDES = {
         relevance_instructions=(
             "For dp_state_fed_reference, answer Yes only when the local text expressly incorporates, adopts, or depends on an "
             "outside statute or definition for meaning, scope, or elements. Mere citations, authority statements, mirrored text, "
-            "penalty references, or background references are not enough."
+            "penalty references, or background references are not enough. A citation used only to identify controlled substances, "
+            "drug schedules, or other background legal categories is not enough unless the outside law must actually be reviewed to "
+            "resolve a benchmarked paraphernalia question. Treat an exemption or carve-out that turns on conduct "
+            "being authorized by, lawful under, or in accordance with an outside statute as a real dependency."
         ),
         completion_instructions=(
             "For dp_state_fed_reference, answer Yes only when the local ordinance expressly makes outside law necessary to interpret "
             "the benchmarked paraphernalia rule. DO NOT answer Yes for bare citations, general authority references, parallel wording, "
-            "or penalty/enforcement cross-references."
+            "or penalty/enforcement cross-references. DO NOT answer Yes just because the ordinance cites a state drug schedule, a "
+            "controlled-substances definition, or similar background law unless that outside definition must actually be consulted to "
+            "answer the benchmark questions. Answer Yes when the ordinance makes an exemption or carve-out depend on whether conduct "
+            "complies with a cited outside statute, because reviewing that outside law is necessary to know the exemption's scope."
         ),
-        anchor_terms=["incorporated by reference", "as defined in", "pursuant to"],
+        anchor_terms=["incorporated by reference", "as defined in", "pursuant to", "in accordance with"],
     ),
     "dp_state_fed_citation": RetrievalGuidance(
         completion_instructions=(
@@ -1049,12 +1086,17 @@ _VARIABLE_OVERRIDES = {
 _COMPLETION_RULES_BY_FAMILY = {
     "existence_scope": (
         "Interpret the question as asking whether the ordinance prohibits or regulates drug paraphernalia "
-        "used with controlled substances, not tobacco-only or other non-controlled-substance paraphernalia."
+        "used with controlled substances, not tobacco-only or other non-controlled-substance paraphernalia. "
+        "Answer No when the retrieved text is limited to sales-to-minors rules, head-shop zoning, retail-display "
+        "or business-license limits, location-only restrictions, or SSP administration that does not itself create "
+        "a generally applicable drug-paraphernalia prohibition or regulation."
     ),
     "ssp_scope": (
         "Interpret the question as asking whether a local ordinance expressly authorizes, prohibits, or limits syringe service "
         "programs, syringe exchange programs, needle exchange programs, or closely synonymous harm-reduction syringe programs. "
-        "Do not count syringe buyback or disposal-only programs as SSP authorization."
+        "Do not count syringe buyback or disposal-only programs as SSP authorization. Emergency-conditioned provisions count "
+        "when they empower a local official to authorize clean needle or needle-and-syringe exchange projects during a declared "
+        "public health emergency or disease outbreak."
     ),
     "ssp_date_enactment": (
         "Return only the enacted, passed, adopted, or approved date for the SSP ordinance. Do not substitute effective dates or "
@@ -1098,7 +1140,8 @@ _COMPLETION_RULES_BY_FAMILY = {
         "carve-outs that the coding rules exclude from paraphernalia exemptions. If retrieved text includes syringe services, "
         "harm reduction, supervised use, needle exchange, or syringe exchange facility provisions, evaluate whether they "
         "expressly allow syringes, needles, test strips, drug-checking equipment, or other paraphernalia before answering "
-        "None or cannabis-only."
+        "None or cannabis-only. Do not treat unrelated marijuana-business, commercial-cannabis, employment, or other non-"
+        "paraphernalia cannabis provisions as a cannabis exemption."
     ),
     "exemption_activity_scope": (
         "Explain which activities remain allowed under the exemption, using the exemption text together with the operative activity language when necessary."
@@ -1109,7 +1152,11 @@ _COMPLETION_RULES_BY_FAMILY = {
         "required to determine the local ordinance's meaning, scope, or elements. Answer No when the "
         "local ordinance is self-contained, or when outside law is only cited as background authority, "
         "parallel wording, a penalty cross-reference, an enforcement reference, or some other incidental "
-        "mention. Do not treat a bare citation as making outside-law review necessary. If the answer is "
+        "mention. Do not treat a bare citation as making outside-law review necessary. A citation that merely defines controlled "
+        "substances, drug schedules, or background statutory authority is still No unless the local ordinance makes that outside "
+        "definition dispositive for a benchmarked paraphernalia question. However, answer Yes when a local exemption or "
+        "carve-out applies only if conduct is authorized by, lawful under, or in accordance with the cited outside law, because the "
+        "external law must then be reviewed to know the exemption's scope. If the answer is "
         "Yes, identify only the smallest specific state or federal citation that must be reviewed. If the answer is No, "
         "say that no outside-law review is necessary and do not elevate incidental citations as the "
         "relevant law. Treat the benchmark-question list in the query context as exhaustive. Do not dump every citation found in the retrieved chapter set."
@@ -1128,8 +1175,9 @@ _COMPLETION_RULES_BY_FAMILY = {
     ),
     "ssp_authorization": (
         "Answer Yes only when the ordinance expressly authorizes or permits SSP operation. Restrictions or the mere absence of a ban "
-        "are not enough. Use the emergency-conditional label only when authorization is expressly limited to a declared local public "
-        "health emergency or disease outbreak."
+        "are not enough. Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization when the "
+        "ordinance expressly empowers a local official to activate them during a declared emergency. Use the emergency-conditional label "
+        "only when authorization is expressly limited to a declared local public health emergency or disease outbreak."
     ),
     "ssp_restriction": (
         "Select only restrictions explicitly supported by the operative legal text. Do not count outright bans as restrictions. Use No "

@@ -278,6 +278,9 @@ class TestCoepRetrievalGuidance:
         assert "drug paraphernalia" in guidance.anchor_terms
         assert guidance.retrieval_query is not None
         assert "Question: Does a law exist?" in guidance.retrieval_query
+        assert guidance.completion_instructions is not None
+        assert "sales-to-minors rules" in guidance.completion_instructions
+        assert "SSP administration" in guidance.completion_instructions
 
     def test_retrieval_query_prefers_query_text_over_full_composed_prompt(self):
         request = RetrievalGuidanceRequest(
@@ -452,8 +455,32 @@ class TestCoepRetrievalGuidance:
         assert (
             "DO NOT answer Yes for bare citations" in guidance.completion_instructions
         )
+        assert "controlled-substances definition" in guidance.completion_instructions
+        assert "exemption or carve-out depend on whether conduct complies" in guidance.completion_instructions
         assert (
             "Treat the benchmark-question list in the query context as exhaustive"
+            in guidance.completion_instructions
+        )
+        assert "in accordance with" in guidance.anchor_terms
+
+    def test_exemption_guidance_rejects_unrelated_cannabis_business_noise(self):
+        request = RetrievalGuidanceRequest(
+            query="Are there any exemptions, such as for syringes, drug test strips, or other paraphernalia?",
+            variable_name="dp_exemption",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.retrieval_instructions is not None
+        assert "commercial-cannabis" in guidance.retrieval_instructions
+        assert guidance.completion_instructions is not None
+        assert (
+            "Do NOT treat unrelated commercial-cannabis or marijuana-business provisions as cannabis exemptions"
+            in guidance.completion_instructions
+        )
+        assert (
+            "bona fide religious ritual or ceremony carve-outs to Other"
             in guidance.completion_instructions
         )
 
@@ -578,6 +605,8 @@ class TestCoepRetrievalGuidance:
         assert "syringe exchange" in guidance.anchor_terms
         assert "syringe exchange program" in guidance.anchor_terms
         assert "needle exchange program" in guidance.anchor_terms
+        assert "clean needle" in guidance.anchor_terms
+        assert "local public health emergency" in guidance.anchor_terms
         assert "sterile needle" in guidance.anchor_terms
         assert "hypodermic" not in guidance.anchor_terms
         assert guidance.no_context_fallback_short_answer == "No"
@@ -587,8 +616,45 @@ class TestCoepRetrievalGuidance:
             "Distinguish true SSP programs from syringe buyback"
             in guidance.retrieval_instructions
         )
+        assert (
+            "authorization of clean needle or needle-and-syringe exchange projects"
+            in guidance.retrieval_instructions
+        )
         assert guidance.completion_instructions is not None
         assert "Do not count syringe buyback" in guidance.completion_instructions
+        assert (
+            "authorize clean needle or needle-and-syringe exchange projects"
+            in guidance.completion_instructions
+        )
+
+    def test_returns_guidance_for_ssp_authorization_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="Does the ordinance explicitly authorize SSPs?",
+            variable_name="ssp_permit",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance governing syringe "
+                    "service programs (SSPs)."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_authorization"
+        assert "local public health emergency" in guidance.anchor_terms
+        assert "clean needle and syringe exchange project" in guidance.anchor_terms
+        assert guidance.relevance_instructions is not None
+        assert (
+            "Treat authorization of clean needle or needle-and-syringe exchange projects"
+            in guidance.relevance_instructions
+        )
+        assert guidance.completion_instructions is not None
+        assert (
+            "Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization"
+            in guidance.completion_instructions
+        )
 
     def test_returns_guidance_for_ssp_current_imp_variable(self):
         request = RetrievalGuidanceRequest(

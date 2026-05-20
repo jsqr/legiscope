@@ -110,6 +110,20 @@ class TestStructuredShortAnswerNormalization:
         assert normalized == "Yes, 35 P.S. § 780-102"
 
 
+class TestOptionPatternMap:
+    def test_exemption_patterns_cover_dallas_medical_and_religious_aliases(self):
+        patterns = query_module._option_pattern_map("exemption_presence")
+
+        medical_key = _normalize_option_text(
+            "Other paraphernalia for approved medical use"
+        )
+        other_key = _normalize_option_text("Other")
+
+        assert r"\bauthorized to prescribe\b" in patterns[medical_key]
+        assert r"\breligious ritual\b" in patterns[other_key]
+        assert r"\bbona fide religious\b" in patterns[other_key]
+
+
 class TestAuthoritativeOptionEvidenceGate:
     def test_promotes_supported_penalties_over_unlawful_only(self):
         response = LegalQueryResponse(
@@ -1792,6 +1806,135 @@ class TestQueryConfigBasics:
         assert debug_capture["query"]["review_rerun_guidance_topic"] == "penalty"
         assert "Review request:" in prompts[1]
         assert 'Original short_answer: "Unlawful" only' in prompts[1]
+
+    def test_augment_sections_with_same_text_cross_references_imports_local_section_once(
+        self, tmp_path
+    ):
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_id": ["s0", "s_penalty"],
+                "section_ordinal": [0, 1],
+                "heading_text": [
+                    "# Drug Paraphernalia",
+                    "### SEC. 10.99. GENERAL PENALTY.",
+                ],
+                "body_text": [
+                    "Penalty, see Section 10.99.",
+                    "A violation is punishable by a fine not to exceed $500.",
+                ],
+                "heading_level": [1, 3],
+                "parent_id": [None, None],
+                "context_path": [None, "Chapter 10 > Section 10.99"],
+            }
+        ).write_parquet(sections_path)
+
+        source_section = SectionResult(
+            section_id="s0",
+            heading_text="# Drug Paraphernalia",
+            body_text="Penalty, see Section 10.99.",
+            heading_level=1,
+            parent_id=None,
+            matching_segments=[],
+            relevance_score=0.1,
+            segment_count=1,
+        )
+
+        augmented = query_module._augment_sections_with_same_text_cross_references(
+            [source_section],
+            sections_parquet_path=str(sections_path),
+            guidance_topic="penalty",
+        )
+        deduped = query_module._augment_sections_with_same_text_cross_references(
+            augmented,
+            sections_parquet_path=str(sections_path),
+            guidance_topic="penalty",
+        )
+
+        assert [section.section_id for section in augmented] == ["s0", "s_penalty"]
+        assert [section.section_id for section in deduped] == ["s0", "s_penalty"]
+
+    def test_query_legal_documents_imports_same_text_penalty_cross_reference_into_completion_context(
+        self, tmp_path
+    ):
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_id": ["s0", "s_penalty"],
+                "section_ordinal": [0, 1],
+                "heading_text": [
+                    "# Drug Paraphernalia",
+                    "### SEC. 10.99. GENERAL PENALTY.",
+                ],
+                "body_text": [
+                    "Penalty, see Section 10.99.",
+                    "A violation is punishable by a fine not to exceed $500 or imprisonment for up to 60 days.",
+                ],
+                "heading_level": [1, 3],
+                "parent_id": [None, None],
+                "context_path": [None, "Chapter 10 > Section 10.99"],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Drug Paraphernalia",
+                    body_text="Penalty, see Section 10.99.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="penalty",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        mock_response = LegalQueryResponse(
+            short_answer="Unspecified Fine AND/OR Incarceration",
+            reasoning="The imported penalty section provides both a fine and imprisonment.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "A violation is punishable by a fine not to exceed $500 or imprisonment for up to 60 days."
+            ],
+            confidence=0.87,
+            limitations="None",
+        )
+        prompt_texts: list[str] = []
+        execution_capture: dict[str, object] = {}
+
+        def fake_ask(*args, **kwargs):
+            prompt_texts.append(kwargs["prompt"])
+            return mock_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=Mock(spec=Instructor), model="test-model"),
+                filter_relevance=False,
+                retrieval_guidance=RetrievalGuidance(guidance_topic="penalty"),
+                same_text_sections_parquet_path=str(sections_path),
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What penalties apply?",
+                settings,
+                execution_capture=execution_capture,
+            )
+
+        assert response.short_answer == "Unspecified Fine AND/OR Incarceration"
+        assert [
+            section.section_id
+            for section in execution_capture["completion_sections"]
+        ] == ["s0", "s_penalty"]
+        assert "SEC. 10.99. GENERAL PENALTY." in prompt_texts[0]
+        assert "punishable by a fine not to exceed $500" in prompt_texts[0]
 
     def test_query_legal_documents_skips_review_when_supported_activity_answer_is_consistent(
         self,
