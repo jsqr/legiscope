@@ -339,6 +339,66 @@ class TestTimeoutExecution:
             == 1
         )
 
+    def test_query_legal_documents_retries_on_timeout_by_dropping_last_chunk(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id=f"s{i}",
+                    heading_text=f"# Section {i}",
+                    body_text="Short supporting text.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+                for i in range(3)
+            ],
+            query_info=QueryInfo(
+                original_query="timeout retry",
+                total_segments_found=3,
+                unique_sections=3,
+            ),
+        )
+        debug_capture = {"query": {}}
+        execution_capture: dict[str, object] = {}
+        recovered_response = LegalQueryResponse(
+            short_answer="Recovered answer",
+            reasoning="Recovered after shrinking context.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+        
+        with patch.object(
+            query_module,
+            "_run_with_timeout",
+            side_effect=[query_module.FutureTimeoutError(), recovered_response],
+        ):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+            
+            response, similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What does the ordinance say?",
+                settings,
+                debug_capture=debug_capture,
+                execution_capture=execution_capture,
+            )
+        
+        assert response.short_answer == "Recovered answer"
+        assert similarity_scores == []
+        assert len(execution_capture["completion_sections"]) == 2
+        assert execution_capture["completion_budgeting"]["overflow_retry_count"] == 1
+        assert json.loads(
+            debug_capture["query"]["overflow_retry_dropped_chunk_ids"]
+        ) == ["s2"]
+
     def test_query_legal_documents_does_not_add_extra_initial_attempt_on_review_timeout(
         self,
     ):

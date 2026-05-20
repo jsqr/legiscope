@@ -153,6 +153,8 @@ class TestCoepRetrievalGuidance:
             "Completion-relevant legal anchors and terms"
             in guidance.completion_instructions
         )
+        assert "same operative sentence/subsection" in guidance.completion_instructions
+        assert "cannabis use or commerce" in guidance.completion_instructions
 
     def test_exemption_activity_guidance_uses_parent_contexts(self):
         hierarchy = QueryHierarchy(
@@ -542,6 +544,7 @@ class TestCoepRetrievalGuidance:
             "Treat the benchmark-question list in the query context as exhaustive"
             in guidance.completion_instructions
         )
+        assert "state registration mentions" in guidance.completion_instructions
 
     def test_returns_guidance_for_split_current_through_variable(self):
         request = RetrievalGuidanceRequest(
@@ -655,6 +658,7 @@ class TestCoepRetrievalGuidance:
             "Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization"
             in guidance.completion_instructions
         )
+        assert "site approval, state registration" in guidance.completion_instructions
 
     def test_returns_guidance_for_ssp_current_imp_variable(self):
         request = RetrievalGuidanceRequest(
@@ -706,6 +710,10 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert (
             "Do not count outright bans as restrictions"
+            in guidance.completion_instructions
+        )
+        assert (
+            "notice, registration, or approval of a site or mobile unit"
             in guidance.completion_instructions
         )
         assert "No restrictions listed" in guidance.completion_instructions

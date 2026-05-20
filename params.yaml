@@ -31,7 +31,7 @@ llm:
 
   temperature: 0.0
   max_retries: 3
-  timeout: 1000
+  timeout: 1200
 
 parse:
   scan:
@@ -39,7 +39,7 @@ parse:
     max_iterations: 5
     score_threshold: 0.7
     max_retries: 3
-    timeout: 800
+    timeout: 1200
     max_tokens: 2400
 
 # Embedding configuration

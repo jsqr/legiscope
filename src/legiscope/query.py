@@ -1775,13 +1775,13 @@ def query_legal_documents(
         response = None
         review_decision = AnswerReviewDecision()
         review_prompt: str | None = None
-        overflow_attempt = 0
+        completion_retry_attempt = 0
         while True:
             try:
                 response = _run_with_timeout(_invoke_llm, timeout_seconds)
                 break
             except Exception as error:
-                if not _is_context_overflow_error(error):
+                if not _is_completion_retryable_error(error):
                     _append_failed_query_attempt(
                         query_attempts,
                         attempt_type="initial",
@@ -1789,35 +1789,33 @@ def query_legal_documents(
                     )
                     raise
                 if (
-                    overflow_attempt >= DEFAULT_CONTEXT_OVERFLOW_RETRIES
+                    completion_retry_attempt >= DEFAULT_CONTEXT_OVERFLOW_RETRIES
                     or len(sections) <= 1
                 ):
+                    if isinstance(error, FutureTimeoutError):
+                        _append_failed_query_attempt(
+                            query_attempts,
+                            attempt_type="initial",
+                            error=error,
+                        )
                     raise
 
-                dropped_section = sections.pop()
-                _record_overflow_retry_drop(completion_budgeting, dropped_section)
-                full_context = _prepare_legal_context(sections)
-                system_prompt, user_prompt = _build_legal_prompts(
-                    query,
-                    full_context,
-                    query_metadata=query_metadata,
-                )
-                _update_completion_debug_capture(
-                    debug_capture,
+                system_prompt, user_prompt = _shrink_completion_context_for_retry(
                     sections=sections,
-                    full_context=full_context,
-                    system_prompt=system_prompt,
-                    user_prompt=user_prompt,
-                    metadata=completion_budgeting,
+                    query=query,
+                    query_metadata=query_metadata,
+                    debug_capture=debug_capture,
+                    execution_capture=execution_capture,
+                    completion_budgeting=completion_budgeting,
                 )
-                if execution_capture is not None:
-                    execution_capture["completion_sections"] = list(sections)
-                    execution_capture["completion_budgeting"] = dict(
-                        completion_budgeting
-                    )
-                overflow_attempt += 1
+                completion_retry_attempt += 1
                 logger.warning(
-                    "Context overflow during completion; retrying with {} retrieval units",
+                    "Completion {} during query processing; retrying with {} retrieval units",
+                    (
+                        "timeout"
+                        if isinstance(error, FutureTimeoutError)
+                        else "context overflow"
+                    ),
                     len(sections),
                 )
 
@@ -2506,6 +2504,13 @@ def _local_section_reference_heading_pattern(section_label: str) -> re.Pattern[s
     )
 
 
+def _canonical_local_section_heading_pattern(section_label: str) -> re.Pattern[str]:
+    """Compile a strict heading-start matcher for canonical local section headings."""
+    return re.compile(
+        rf"(?i)^\s*#+\s*(?:sec(?:tion)?\.?\s*|§{{1,2}}\s*)?{re.escape(section_label)}(?:\b|[^A-Za-z0-9])"
+    )
+
+
 def _load_same_text_section_rows(
     sections_parquet_path: str | Path,
 ) -> list[dict[str, Any]]:
@@ -2576,18 +2581,27 @@ def _resolve_same_text_cross_reference_row(
 ) -> dict[str, Any] | None:
     """Find the local section row for an explicit same-text section reference."""
     pattern = _local_section_reference_heading_pattern(section_label)
+    canonical_heading_pattern = _canonical_local_section_heading_pattern(section_label)
+    candidate_rows: list[dict[str, Any]] = []
 
-    for field_name in ("heading_text", "context_path"):
-        for row in section_rows:
-            section_identifier = row.get("section_id")
-            if section_identifier is None:
-                section_identifier = row.get("section_ordinal")
-            if section_identifier is None:
-                continue
-            normalized_section_id = str(section_identifier)
-            if normalized_section_id in excluded_section_ids:
-                continue
+    for row in section_rows:
+        section_identifier = row.get("section_id")
+        if section_identifier is None:
+            section_identifier = row.get("section_ordinal")
+        if section_identifier is None:
+            continue
+        normalized_section_id = str(section_identifier)
+        if normalized_section_id in excluded_section_ids:
+            continue
+        candidate_rows.append(row)
 
+    for row in candidate_rows:
+        heading_text = str(row.get("heading_text") or "")
+        if heading_text and canonical_heading_pattern.search(heading_text):
+            return row
+
+    for field_name in ("context_path", "heading_text"):
+        for row in candidate_rows:
             candidate_text = str(row.get(field_name) or "")
             if candidate_text and pattern.search(candidate_text):
                 return row
@@ -2780,6 +2794,11 @@ def _is_max_token_limit_error(error: Exception) -> bool:
     return any(pattern in message for pattern in _MAX_TOKEN_LIMIT_PATTERNS)
 
 
+def _is_completion_retryable_error(error: Exception) -> bool:
+    """Return whether shrinking completion context may recover from the error."""
+    return isinstance(error, FutureTimeoutError) or _is_context_overflow_error(error)
+
+
 def _append_failed_query_attempt(
     query_attempts: list[dict[str, Any]],
     *,
@@ -2815,6 +2834,38 @@ def _record_overflow_retry_drop(
     metadata.setdefault("total_dropped_chunk_ids", []).append(section_id)
     metadata.setdefault("total_dropped_chunk_headings", []).append(heading_text)
     metadata["total_dropped_count"] = int(metadata.get("total_dropped_count", 0)) + 1
+
+
+def _shrink_completion_context_for_retry(
+    *,
+    sections: list[SectionResult],
+    query: str,
+    query_metadata: dict[str, Any] | None,
+    debug_capture: dict[str, dict[str, Any]] | None,
+    execution_capture: dict[str, Any] | None,
+    completion_budgeting: dict[str, Any],
+) -> tuple[str, str]:
+    """Drop the current lowest-priority section and rebuild completion prompts."""
+    dropped_section = sections.pop()
+    _record_overflow_retry_drop(completion_budgeting, dropped_section)
+    full_context = _prepare_legal_context(sections)
+    system_prompt, user_prompt = _build_legal_prompts(
+        query,
+        full_context,
+        query_metadata=query_metadata,
+    )
+    _update_completion_debug_capture(
+        debug_capture,
+        sections=sections,
+        full_context=full_context,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        metadata=completion_budgeting,
+    )
+    if execution_capture is not None:
+        execution_capture["completion_sections"] = list(sections)
+        execution_capture["completion_budgeting"] = dict(completion_budgeting)
+    return system_prompt, user_prompt
 
 
 def _update_completion_debug_capture(
@@ -3995,6 +4046,98 @@ def _first_matching_snippet(text: str, patterns: tuple[str, ...]) -> str | None:
     return None
 
 
+_EXEMPTION_COMPOSITE_SUPPORT_GROUPS = {
+    _normalize_option_text(
+        "Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites"
+    ): (
+        (
+            r"\bdrug checking\b",
+            r"\bdrug testing\b",
+            r"\btest strip\b",
+            r"\btesting equipment\b",
+        ),
+        (
+            r"\bsyringe exchange\b",
+            r"\bsyringe services\b",
+            r"\bharm reduction\b",
+            r"\bsupervised use\b",
+        ),
+    ),
+    _normalize_option_text(
+        "Fentanyl checking/testing equipment specifically, in the context of syringe services, harm reduction programs, or supervised use sites"
+    ): (
+        (
+            r"\bfentanyl\b",
+            r"\bfentanyl analogue\b",
+            r"\btest strip\b",
+            r"\btesting equipment\b",
+        ),
+        (
+            r"\bsyringe exchange\b",
+            r"\bsyringe services\b",
+            r"\bharm reduction\b",
+            r"\bsupervised use\b",
+        ),
+    ),
+    _normalize_option_text(
+        "Xylazine checking/testing equipment specifically, in the context syringe services, harm reduction programs, or supervised use sites"
+    ): (
+        (
+            r"\bxylazine\b",
+            r"\btest strip\b",
+            r"\btesting equipment\b",
+        ),
+        (
+            r"\bsyringe exchange\b",
+            r"\bsyringe services\b",
+            r"\bharm reduction\b",
+            r"\bsupervised use\b",
+        ),
+    ),
+}
+
+def _strong_option_support_signal(
+    *,
+    guidance_topic: str,
+    option: str,
+    evidence_text: str,
+    option_patterns: dict[str, tuple[str, ...]],
+) -> tuple[bool, str | None]:
+    """Return whether the option has strong deterministic text support and a snippet."""
+    normalized = _normalize_option_text(option)
+
+    if guidance_topic == "exemption_presence":
+        grouped_patterns = _EXEMPTION_COMPOSITE_SUPPORT_GROUPS.get(normalized)
+        if grouped_patterns is not None:
+            snippets: list[str] = []
+            for pattern_group in grouped_patterns:
+                snippet = _first_matching_snippet(evidence_text, pattern_group)
+                if snippet is None:
+                    return False, None
+                snippets.append(snippet)
+            return True, snippets[0] if snippets else None
+
+    patterns = option_patterns.get(normalized, ())
+    snippet = _first_matching_snippet(evidence_text, patterns) if patterns else None
+    if (
+        guidance_topic == "prohibited_activity"
+        and normalized
+        == _normalize_option_text(
+            "Sales, possession with intent to sell, offer for sale"
+        )
+        and snippet is not None
+        and re.search(
+            r"\b(advertis(?:e|ement|ing)|display|promote)\b",
+            snippet,
+            re.IGNORECASE,
+        )
+        and not re.search(r"\boffer for sale\b", snippet, re.IGNORECASE)
+    ):
+        return False, None
+
+    return snippet is not None, snippet
+
+
 def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
     """Return strong evidence patterns keyed by normalized benchmark option label."""
     if guidance_topic == "prohibited_activity":
@@ -4076,25 +4219,20 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
 
     if guidance_topic == "exemption_presence":
         return {
-            _normalize_option_text("None"): (),
             _normalize_option_text(
                 "Syringes for approved medical use (i.e. diabetes)"
             ): (
-                r"\bhypodermic\b",
-                r"\bsyringe\b",
                 r"\bdiabet(?:es|ic)\b",
-                r"\bprescription\b",
-                r"\bprescribed\b",
-                r"\blicensed physician\b",
-                r"\bdentist authorized to prescribe\b",
+                r"\binsulin\b",
+                r"\bhypodermic\b[^.\n]{0,40}\bmedical\b",
             ),
-            _normalize_option_text("Other paraphernalia for approved medical use"): (
-                r"\bmedical use\b",
-                r"\bprescription\b",
-                r"\bprescribed\b",
-                r"\bphysician\b",
-                r"\bdentist\b",
+            _normalize_option_text(
+                "Other paraphernalia for approved medical use"
+            ): (
                 r"\bauthorized to prescribe\b",
+                r"\blegitimate medical\b",
+                r"\bmedical use\b",
+                r"\bpractitioner\b[^.\n]{0,40}\bprescribe\b",
             ),
             _normalize_option_text(
                 "Paraphernalia for consumption of cannabis, generally or medical use"
@@ -4222,26 +4360,24 @@ def _build_answer_review_decision(
             if normalized == _normalize_option_text('"Unlawful" only'):
                 continue
             patterns = option_patterns.get(normalized, ())
-            if patterns and _first_matching_snippet(evidence_text, patterns):
+            strong_support, _snippet = _strong_option_support_signal(
+                guidance_topic=guidance_topic,
+                option=option,
+                evidence_text=evidence_text,
+                option_patterns=option_patterns,
+            )
+            if patterns and strong_support:
                 penalty_options_found += 1
 
     for option in options:
         normalized = _normalize_option_text(option)
         patterns = option_patterns.get(normalized, ())
-        snippet = _first_matching_snippet(evidence_text, patterns) if patterns else None
-        if (
-            guidance_topic == "prohibited_activity"
-            and normalized
-            == _normalize_option_text(
-                "Sales, possession with intent to sell, offer for sale"
-            )
-            and snippet is not None
-            and re.search(
-                r"\b(advertis(?:e|ement|ing)|display|promote)\b", snippet, re.IGNORECASE
-            )
-            and not re.search(r"\boffer for sale\b", snippet, re.IGNORECASE)
-        ):
-            snippet = None
+        strong_support, snippet = _strong_option_support_signal(
+            guidance_topic=guidance_topic,
+            option=option,
+            evidence_text=evidence_text,
+            option_patterns=option_patterns,
+        )
         is_selected = normalized in selected_lookup
 
         if guidance_topic == "penalty" and normalized == _normalize_option_text(
@@ -4256,7 +4392,7 @@ def _build_answer_review_decision(
                 )
             continue
 
-        if is_selected and patterns and snippet is None:
+        if is_selected and patterns and not strong_support:
             reasons.append(
                 AnswerReviewSignal(
                     option=option,
@@ -4265,7 +4401,7 @@ def _build_answer_review_decision(
             )
             continue
 
-        if not is_selected and snippet is not None:
+        if not is_selected and strong_support:
             reasons.append(
                 AnswerReviewSignal(
                     option=option,
