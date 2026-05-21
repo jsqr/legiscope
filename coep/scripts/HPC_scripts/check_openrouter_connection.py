@@ -141,10 +141,20 @@ def _probe_tcp_and_tls(hostname: str, timeout: float) -> None:
         print(f"tls_handshake_error={type(exc).__name__}: {exc}")
 
 
+def _models_path_for_host(hostname: str) -> str:
+    """Return the most likely models endpoint path for a host."""
+    normalized = hostname.strip().casefold()
+    if normalized == "api.openai.com":
+        return "/v1/models"
+    return "/api/v1/models"
+
+
 def _probe_http_models(hostname: str, timeout: float) -> None:
-    url = f"https://{hostname}/api/v1/models"
+    path = _models_path_for_host(hostname)
+    url = f"https://{hostname}{path}"
     try:
         response = httpx.get(url, timeout=timeout)
+        print(f"models_get_url={url}")
         print(f"models_get_status={response.status_code}")
     except Exception as exc:
         print(f"models_get_error={type(exc).__name__}: {exc}")

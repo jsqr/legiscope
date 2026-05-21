@@ -156,6 +156,41 @@ class TestCoepRetrievalGuidance:
         assert "same operative sentence/subsection" in guidance.completion_instructions
         assert "cannabis use or commerce" in guidance.completion_instructions
 
+    def test_ssp_law_guidance_treats_emergency_exchange_authorization_as_yes(self):
+        request = RetrievalGuidanceRequest(
+            query="Does the jurisdiction have a law that authorizes, prohibits, or limits syringe service programs (SSPs)?",
+            variable_name="ssp_law",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_scope"
+        assert guidance.shared_context is not None
+        assert (
+            "Only rely on sections that directly authorize, prohibit, or limit syringe service programs"
+            in guidance.shared_context
+        )
+        assert guidance.completion_instructions is not None
+        assert "ssp_law should be coded as Yes" in guidance.completion_instructions
+        assert "Reserve the conditional answer wording for ssp_permit" in guidance.completion_instructions
+        assert "Do not require an explicit authorization clause" in guidance.completion_instructions
+
+    def test_dp_guidance_adds_direct_topic_scope_guardrail(self):
+        request = RetrievalGuidanceRequest(
+            query="Does the jurisdiction prohibit drug paraphernalia?",
+            variable_name="dp_law",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.shared_context is not None
+        assert (
+            "Only rely on sections that directly address drug paraphernalia used with controlled substances"
+            in guidance.shared_context
+        )
+
     def test_exemption_activity_guidance_uses_parent_contexts(self):
         hierarchy = QueryHierarchy(
             query_id="Q2.1",
@@ -659,6 +694,7 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "site approval, state registration" in guidance.completion_instructions
+        assert "existence of an SSP law" in guidance.completion_instructions
 
     def test_returns_guidance_for_ssp_current_imp_variable(self):
         request = RetrievalGuidanceRequest(
@@ -717,6 +753,27 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "No restrictions listed" in guidance.completion_instructions
+        assert "bare authorization" in guidance.completion_instructions
+
+    def test_returns_guidance_for_ssp_prohibition_variable(self):
+        request = RetrievalGuidanceRequest(
+            query="Does the ordinance specifically prohibit all SSPs?",
+            variable_name="ssp_prohibit",
+            metadata={
+                "prepend_text": (
+                    "This query refers to legal municipal ordinance governing syringe "
+                    "service programs (SSPs)."
+                )
+            },
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "ssp_prohibition"
+        assert guidance.completion_instructions is not None
+        assert "true SSP ban" in guidance.completion_instructions
+        assert "merely restricts SSPs" in guidance.completion_instructions
 
     def test_returns_guidance_that_disables_backfill_for_exemption_presence(self):
         request = RetrievalGuidanceRequest(

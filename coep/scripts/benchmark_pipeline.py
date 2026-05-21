@@ -148,9 +148,31 @@ def _ensure_generation_outcome_columns(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _refine_eval_error_types(df: pl.DataFrame) -> pl.DataFrame:
-    """Refine coarse judge error types using deterministic generation outcomes."""
+    """Refine benchmark error types for reporting while preserving the coarse judge output."""
     if "eval_error_type" not in df.columns or df.is_empty():
         return df
+
+    date_variables = {
+        "dp_enacted",
+        "dp_effective",
+        "dp_collected",
+        "ssp_enacted",
+        "ssp_effective",
+        "ssp_collected",
+        "ssp_current_imp",
+    }
+    citation_variables = {
+        "dp_state_fed_citation",
+        "ssp_state_fed_citation",
+    }
+    scope_variables = {
+        "dp_law",
+        "ssp_law",
+        "ssp_ban",
+        "ssp_permit",
+        "dp_state_fed_reference",
+        "ssp_state_fed_reference",
+    }
 
     def _string_expr(column_name: str) -> pl.Expr:
         if column_name not in df.columns:
@@ -171,6 +193,7 @@ def _refine_eval_error_types(df: pl.DataFrame) -> pl.DataFrame:
     eval_error_type = _string_expr("eval_error_type")
     query_status = _string_expr("query_status")
     query_stage_status = _string_expr("query_stage_status")
+    variable_name = _string_expr("variable_name")
     generated_error_response = _bool_expr("generated_error_response")
     no_retrieval_units_found = _bool_expr("no_retrieval_units_found")
     all_retrieval_units_filtered_out = _bool_expr("all_retrieval_units_filtered_out")
@@ -190,23 +213,70 @@ def _refine_eval_error_types(df: pl.DataFrame) -> pl.DataFrame:
     is_true_retrieval_failure = is_incorrect & (
         no_retrieval_units_found | all_retrieval_units_filtered_out
     )
-    is_retrieval_noise = (
+    coarse_is_retrieval_noise = (
         is_incorrect
         & eval_error_type.eq("retrieval_failure")
         & ~is_llm_failure
         & ~is_true_retrieval_failure
         & has_retrieval_context
     )
-
-    return df.with_columns(
+    coarse_eval_error_type = (
         pl.when(is_llm_failure)
         .then(pl.lit("llm_failure"))
         .when(is_true_retrieval_failure)
         .then(pl.lit("retrieval_failure"))
-        .when(is_retrieval_noise)
+        .when(coarse_is_retrieval_noise)
         .then(pl.lit("retrieval_noise"))
         .otherwise(pl.col("eval_error_type"))
-        .alias("eval_error_type")
+    )
+    is_dependency_error = is_incorrect & (
+        query_status.eq("skipped")
+        | coarse_eval_error_type.is_in(
+            ["blocked_by_incorrect_parent", "dependency_skipped"]
+        )
+    )
+    is_option_error = is_incorrect & coarse_eval_error_type.eq(
+        "option_presence_mismatch"
+    )
+    is_date_error = is_incorrect & (
+        variable_name.is_in(date_variables)
+        | variable_name.str.contains("date", literal=True)
+        | variable_name.str.contains("current", literal=True)
+    )
+    is_citation_error = is_incorrect & (
+        variable_name.is_in(citation_variables)
+        | variable_name.str.contains("citation", literal=True)
+    )
+    is_scope_error = is_incorrect & (
+        variable_name.is_in(scope_variables) | variable_name.str.ends_with("_law")
+    )
+    refined_eval_error_type = (
+        pl.when(eval_label.eq("Correct"))
+        .then(pl.lit("none"))
+        .when(is_llm_failure)
+        .then(pl.lit("llm_failure"))
+        .when(is_true_retrieval_failure)
+        .then(pl.lit("no_relevant_text"))
+        .when(is_dependency_error)
+        .then(pl.lit("dependency_propagation"))
+        .when(coarse_eval_error_type.eq("retrieval_noise"))
+        .then(pl.lit("off_topic_context"))
+        .when(is_option_error)
+        .then(pl.lit("option_selection_error"))
+        .when(is_citation_error)
+        .then(pl.lit("citation_selection_error"))
+        .when(is_date_error)
+        .then(pl.lit("date_extraction_error"))
+        .when(is_scope_error)
+        .then(pl.lit("scope_error"))
+        .otherwise(pl.lit("unsupported_inference"))
+    )
+
+    return df.with_columns(
+        [
+            coarse_eval_error_type.alias("eval_error_type"),
+            refined_eval_error_type.alias("eval_error_type_refined"),
+        ]
     )
 
 
@@ -1127,14 +1197,18 @@ def _build_ground_truth_df_from_reports(
     return combined_ground_truth
 
 
-def _summarize_eval_error_types(df: pl.DataFrame) -> dict[str, int]:
-    """Return compact counts for evaluation error types."""
-    if "eval_error_type" not in df.columns or df.is_empty():
+def _summarize_eval_error_types(
+    df: pl.DataFrame,
+    *,
+    column_name: str = "eval_error_type",
+) -> dict[str, int]:
+    """Return compact counts for an evaluation error-type column."""
+    if column_name not in df.columns or df.is_empty():
         return {}
 
     counts: dict[str, int] = {}
-    for row in df.group_by("eval_error_type").len().iter_rows(named=True):
-        error_type = str(row["eval_error_type"] or "")
+    for row in df.group_by(column_name).len().iter_rows(named=True):
+        error_type = str(row[column_name] or "")
         counts[error_type] = int(row["len"])
     return counts
 
@@ -1331,7 +1405,7 @@ def _materialize_benchmark_outputs(
         shutil.copy2(output_path, timestamped_path)
         logger.info(f"Timestamped copy saved to {timestamped_path}")
 
-    metrics_path.write_text(json.dumps(metrics, indent=2))
+        metrics_path.write_text(json.dumps(metrics, indent=2))
     logger.info(f"Metrics saved to {metrics_path}")
 
     if timestamped_metrics_path != metrics_path:
@@ -1621,6 +1695,7 @@ def main():
             "eval_reason",
             "eval_label",
             "eval_error_type",
+            "eval_error_type_refined",
         ]
     )
 
@@ -1654,6 +1729,10 @@ def main():
     ).height
     accuracy_rate = (correct_count / scored_count) * 100 if scored_count > 0 else 0
     eval_error_type_counts = _summarize_eval_error_types(eval_scored_df)
+    eval_error_type_refined_counts = _summarize_eval_error_types(
+        eval_scored_df,
+        column_name="eval_error_type_refined",
+    )
     scoring_method_counts = _summarize_scoring_methods(eval_scored_df)
     collapsed_query_metrics = _summarize_collapsed_query_accuracy(
         eval_scored_df,
@@ -1760,6 +1839,7 @@ def main():
             "and_or_questions_scored_option_level"
         ],
         "eval_error_type_counts": eval_error_type_counts,
+        "eval_error_type_refined_counts": eval_error_type_refined_counts,
         "total": scored_count,
     }
     _materialize_benchmark_outputs(

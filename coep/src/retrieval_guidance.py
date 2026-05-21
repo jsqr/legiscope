@@ -959,6 +959,47 @@ _VARIABLE_OVERRIDES = {
             "defined by reference",
         ],
     ),
+    "ssp_law": RetrievalGuidance(
+        relevance_instructions=(
+            "For ssp_law, answer Yes whenever the ordinance expressly authorizes, prohibits, or limits SSPs. Do not require an explicit "
+            "authorization clause. A total ban, a conditional authorization, or an operative restriction all count as evidence that an SSP law exists. "
+            "Answer No only when the ordinance is silent on SSP authorization, prohibition, and operational limits."
+        ),
+        completion_instructions=(
+            "For ssp_law, answer Yes whenever any operative local ordinance text authorizes, prohibits, or limits SSPs. Do not require an explicit authorization clause. "
+            "If the ordinance empowers a mayor or other local official to authorize clean needle, needle exchange, or "
+            "needle-and-syringe exchange projects during a declared local public health emergency or disease outbreak, that "
+            "counts as local SSP authorization and ssp_law should be coded as Yes. Reserve the conditional answer wording "
+            "for ssp_permit or other authorization-detail questions, not for the broader ssp_law existence question."
+        ),
+    ),
+    "ssp_permit": RetrievalGuidance(
+        relevance_instructions=(
+            "For ssp_permit, focus on text that expressly permits, authorizes, allows, or establishes SSP operation. Do not treat a mere "
+            "restriction, reporting rule, site-approval prerequisite, or the existence of an SSP law as authorization unless the text itself says the program may operate."
+        ),
+        completion_instructions=(
+            "For ssp_permit, distinguish explicit authorization from broader SSP-law existence. A jurisdiction can have an SSP law because it bans or restricts programs, "
+            "yet ssp_permit is still No unless the ordinance expressly authorizes operation. Emergency-conditioned clean needle or needle-and-syringe exchange authority counts here only when the ordinance says the program may operate once the emergency condition is met."
+            " Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization only when the ordinance itself authorizes operation, and do not infer authorization from site approval, state registration, or the mere existence of an SSP law."
+        ),
+    ),
+    "ssp_prohibit": RetrievalGuidance(
+        relevance_instructions=(
+            "For ssp_prohibit, focus on text that bans all SSP operation. Reject operational restrictions, permit requirements, conditional authorizations, or narrower site rules unless the same text makes all SSP operation unlawful."
+        ),
+        completion_instructions=(
+            "For ssp_prohibit, answer Yes only for a true SSP ban. Do not code Yes when the ordinance merely restricts SSPs, limits locations, requires approval, or authorizes SSPs only in emergencies."
+        ),
+    ),
+    "ssp_restrict": RetrievalGuidance(
+        relevance_instructions=(
+            "For ssp_restrict, focus on operational limits after SSPs are otherwise recognized by the ordinance. Do not treat a total ban or a bare authorization clause as a restriction. Count only listed operating conditions such as permits, caps, buffers, mobile-site limits, visit limits, or syringe-quantity limits."
+        ),
+        completion_instructions=(
+            "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed."
+        ),
+    ),
     "dp_exempt_sygen_activity": RetrievalGuidance(
         relevance_instructions=(
             "Focus on exemption language involving syringes or injection equipment generally. High-value "
@@ -1218,6 +1259,50 @@ _COMPLETION_RULES_BY_FAMILY = {
 }
 
 
+def _direct_topic_scope_sentence(family: str | None) -> str | None:
+    """Return a generic prompt guardrail that narrows attention to the right legal surface."""
+    paraphernalia_families = {
+        "existence_scope",
+        "date_enactment",
+        "date_effective",
+        "date_current_through",
+        "reference_necessity",
+        "definition_type",
+        "prohibited_activity",
+        "penalty",
+        "exemption_presence",
+        "exemption_activity_scope",
+    }
+    ssp_families = {
+        "ssp_scope",
+        "ssp_date_enactment",
+        "ssp_date_effective",
+        "ssp_date_current_through",
+        "ssp_current_through_status",
+        "ssp_reference_necessity",
+        "ssp_prohibition",
+        "ssp_authorization",
+        "ssp_restriction",
+    }
+
+    if family in paraphernalia_families:
+        return (
+            "Only rely on sections that directly address drug paraphernalia used with controlled substances "
+            "or official source metadata for that ordinance. Ignore unrelated cannabis-business, tobacco, zoning, "
+            "licensing, SSP, or generic public-health text unless it directly creates the operative rule being coded."
+        )
+
+    if family in ssp_families:
+        return (
+            "Only rely on sections that directly authorize, prohibit, or limit syringe service programs, syringe exchange "
+            "programs, needle exchange programs, or official source metadata for that SSP ordinance. Ignore unrelated public-"
+            "health background, generic syringe or HIV/AIDS references, disposal-only programs, school or park provisions, "
+            "or generic permitting text unless it directly creates the operative SSP rule being coded."
+        )
+
+    return None
+
+
 _EXEMPTION_OPTION_ANCHOR_TERMS_BY_LABEL = {
     _normalize_label_text(label): list(
         (
@@ -1311,6 +1396,10 @@ def _build_query_context(request: RetrievalGuidanceRequest) -> str:
         context_parts.append(prepend_text.rstrip(". ") + ".")
     else:
         context_parts.append(_DEFAULT_QUERY_CONTEXT)
+
+    direct_topic_scope = _direct_topic_scope_sentence(family)
+    if direct_topic_scope:
+        context_parts.append(direct_topic_scope)
 
     reference_scope = _format_reference_scope_questions(family)
     if reference_scope:

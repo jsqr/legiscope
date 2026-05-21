@@ -111,6 +111,27 @@ class TestDeriveQuestionType:
 
 
 class TestAggregateQueryScoping:
+    def test_make_scored_rows_preserves_refined_error_type(self):
+        scored = llm_accuracy.make_scored_rows(
+            pl.DataFrame(
+                {
+                    "jurisdiction_id": ["A"],
+                    "dataset": ["DPL"],
+                    "variable_name": ["dp_law"],
+                    "query_text": ["Does the jurisdiction have a law?"],
+                    "response_options": ["Responses: Yes OR No"],
+                    "evaluation_mode": ["whole_answer"],
+                    "eval_label": ["Incorrect"],
+                    "eval_score": [0],
+                    "eval_error_type": ["retrieval_noise"],
+                    "eval_error_type_refined": ["off_topic_context"],
+                }
+            )
+        )
+
+        assert scored[0, "eval_error_type"] == "retrieval_noise"
+        assert scored[0, "eval_error_type_refined"] == "off_topic_context"
+
     def test_summarize_metrics_scopes_queries_by_jurisdiction(self):
         scored_df = pl.DataFrame(
             {
@@ -161,6 +182,27 @@ class TestAggregateQueryScoping:
         assert rows == {
             "retrieval_failure": 1,
             "hallucination": 1,
+        }
+
+    def test_error_summary_prefers_refined_error_types_when_present(self):
+        scored_df = pl.DataFrame(
+            {
+                "eval_label": ["Incorrect", "Incorrect", "Correct"],
+                "eval_error_type": ["retrieval_failure", "hallucination", "none"],
+                "eval_error_type_refined": [
+                    "off_topic_context",
+                    "scope_error",
+                    "none",
+                ],
+            }
+        )
+
+        summary = llm_accuracy.make_error_type_summary(scored_df, top_n=10)
+
+        rows = {row["eval_error_type"]: row["count"] for row in summary.to_dicts()}
+        assert rows == {
+            "off_topic_context": 1,
+            "scope_error": 1,
         }
 
     def test_jurisdiction_score_summary_uses_query_weighted_score(self):

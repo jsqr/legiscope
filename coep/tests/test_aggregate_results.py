@@ -151,6 +151,25 @@ class TestAggregateResults:
         assert rows["CA-LosAngeles"]["jurisdiction"] == "CA-LosAngeles"
         assert rows["CA-LosAngeles"]["_aggregate_source_type"] == "canonical"
 
+    def test_collect_results_preserves_eval_error_type_refined(self, tmp_path):
+        output_dir = tmp_path / "output"
+        jurisdiction_dir = output_dir / "NM-Albuquerque"
+        jurisdiction_dir.mkdir(parents=True)
+
+        pl.DataFrame(
+            {
+                "variable_name": ["ssp_law"],
+                "eval_label": ["Incorrect"],
+                "eval_error_type": ["retrieval_noise"],
+                "eval_error_type_refined": ["off_topic_context"],
+            }
+        ).write_csv(jurisdiction_dir / "benchmark_results.csv")
+
+        combined = aggregate_results.collect_results(output_dir)
+
+        assert combined[0, "eval_error_type"] == "retrieval_noise"
+        assert combined[0, "eval_error_type_refined"] == "off_topic_context"
+
     def test_collect_metrics_backfills_jurisdiction_id_and_source_path(self, tmp_path):
         output_dir = tmp_path / "output"
         jurisdiction_dir = output_dir / "PA-Philadelphia"
@@ -189,6 +208,32 @@ class TestAggregateResults:
         assert row["aggregate_metrics_path"] == str(latest_metrics)
         assert row["aggregate_metrics_source_type"] == "timestamped"
         assert row["aggregate_metrics_source_timestamp"] == "20260502_020202"
+
+    def test_collect_metrics_preserves_refined_error_counts(self, tmp_path):
+        output_dir = tmp_path / "output"
+        jurisdiction_dir = output_dir / "TX-Dallas"
+        jurisdiction_dir.mkdir(parents=True)
+        metrics_path = jurisdiction_dir / "benchmark_metrics.json"
+        metrics_path.write_text(
+            json.dumps(
+                {
+                    "avg_score": 7.5,
+                    "total": 10,
+                    "eval_error_type_refined_counts": {
+                        "off_topic_context": 2,
+                        "scope_error": 1,
+                    },
+                }
+            )
+        )
+
+        metrics_df = aggregate_results.collect_metrics(output_dir)
+
+        row = metrics_df.to_dicts()[0]
+        assert row["eval_error_type_refined_counts"] == {
+            "off_topic_context": 2,
+            "scope_error": 1,
+        }
 
     def test_collect_results_filters_to_requested_batch_file(self, tmp_path):
         output_dir = tmp_path / "output"

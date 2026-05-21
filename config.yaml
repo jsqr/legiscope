@@ -25,6 +25,14 @@ database:
     default_collection: "legal_code"
     model_suffix: true  # Append model name to collection (e.g., legal_code_mistral)
 
+llm:
+  litellm:
+    # Set these when routing through a LiteLLM proxy or gateway.
+    # Leave unset when LiteLLM should talk directly to OpenAI/Anthropic/Gemini
+    # using the provider-specific environment variables.
+    api_base:
+    api_key_env:
+
 logging:
   level: "DEBUG"  # Use INFO by default; override to DEBUG for development
   batch_log_interval: 1000

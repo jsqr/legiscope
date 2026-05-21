@@ -304,6 +304,20 @@ _CITATION_PATTERNS = [
         re.IGNORECASE,
     ),
 ]
+_CITATION_CANDIDATE_PATTERNS = [
+    re.compile(
+        r"\b(?P<citation>Sections?\s+\d+(?:-\d+)+(?:\s+et\s+seq\.?)?(?:\s+NMSA\s+\d{4})?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<citation>\d+\s+(?:P\.S\.|U\.S\.C\.)\s*§+\s*[\w().-]+)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?P<citation>(?:§{1,2}\s*|\bSec(?:tion)?\.?\s+)[\w.-]+(?:\([^)]+\))*)",
+        re.IGNORECASE,
+    ),
+]
 _UNKNOWN_TOKENS = {
     "unknown",
     "unkown",
@@ -1826,6 +1840,7 @@ def query_legal_documents(
             sections,
             query_metadata,
         )
+        response = _normalize_response_citations(response, query_metadata)
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
@@ -1913,6 +1928,10 @@ def query_legal_documents(
             reviewed_response = _apply_authoritative_option_evidence_gate(
                 reviewed_response,
                 sections,
+                query_metadata,
+            )
+            reviewed_response = _normalize_response_citations(
+                reviewed_response,
                 query_metadata,
             )
             reviewed_similarity_scores: list[float] = []
@@ -2967,6 +2986,9 @@ def _build_structured_answer_contract(
         lines.append(
             "For selected options, provide at least one citation and one supporting passage whenever the retrieved text allows it."
         )
+        lines.append(
+            "If an option lacks direct citation-backed or passage-backed support, mark it as selected=false rather than inferring it from nearby or loosely related text."
+        )
         normalized_options = {
             _normalize_option_text(option): option for option in options
         }
@@ -3428,16 +3450,121 @@ def _normalize_binary_answer(answer: str) -> str:
     return stripped
 
 
-def _extract_citation(answer: str) -> str | None:
-    """Extract a citation payload from a Yes/citation coded answer."""
+def _clean_citation_candidate(value: str) -> str:
+    """Strip wrapper text and trailing punctuation from a citation candidate."""
+    cleaned = str(value or "").strip()
+    cleaned = re.sub(
+        r"^(?:relevant\s+)?(?:citation|law)\s*(?:is|:)\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned.strip(" ,.;:")
+
+
+def _canonicalize_citation_output(citation: str) -> str:
+    """Render a chosen citation in a compact, single-unit form when possible."""
+    cleaned = str(citation or "").strip()
+    sections_match = re.match(
+        r"^Sections?\s+(?P<section>\d+(?:-\d+)+)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if sections_match is not None:
+        return f"§ {sections_match.group('section')}"
+
+    section_match = re.match(
+        r"^(?:§{1,2}\s*|Sec(?:tion)?\.?\s+)(?P<section>[\w.-]+(?:\([^)]+\))*)$",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if section_match is not None:
+        return f"§ {section_match.group('section')}"
+
+    return cleaned
+
+
+def _extract_citation_candidates(answer: str) -> list[str]:
+    """Extract citation-like substrings from free-text citation answers."""
+    candidates: list[str] = []
+
     for pattern in _CITATION_PATTERNS:
         match = pattern.search(answer)
         if match is None:
             continue
-        citation = match.group("citation").strip(" ,.;")
+        citation = _clean_citation_candidate(match.group("citation"))
         if citation:
-            return citation
+            candidates.append(citation)
+
+    for pattern in _CITATION_CANDIDATE_PATTERNS:
+        for match in pattern.finditer(answer):
+            citation = _clean_citation_candidate(match.group("citation"))
+            if citation:
+                candidates.append(citation)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _citation_specificity_key(citation: str) -> tuple[int, int, int, int]:
+    """Sort narrower citation units ahead of broader or noisier ones."""
+    normalized = citation.lower()
+    et_seq_penalty = 1 if "et seq" in normalized else 0
+    has_section_marker_bonus = 0 if re.search(r"(?:§|\bsec(?:tion)?\.?)", normalized) else 1
+    numeric_depth_bonus = -len(re.findall(r"\d+", citation))
+    length_penalty = len(citation)
+    return (
+        et_seq_penalty,
+        has_section_marker_bonus,
+        numeric_depth_bonus,
+        length_penalty,
+    )
+
+
+def _select_best_citation_candidate(texts: list[str]) -> str | None:
+    """Return the best citation candidate from ordered source texts."""
+    for text in texts:
+        candidates = _extract_citation_candidates(text)
+        if not candidates:
+            continue
+        return min(candidates, key=_citation_specificity_key)
     return None
+
+
+def _is_citation_placeholder_response_options(response_options: str) -> bool:
+    """Return whether the first response option is a scalar citation placeholder."""
+    options, _separator = _split_response_options(response_options)
+    if not options:
+        return False
+    first_option = options[0].strip().lower()
+    return first_option.startswith("<") and "citation" in first_option
+
+
+def _normalize_scalar_citation_answer(answer: str) -> str:
+    """Canonicalize scalar citation answers to a single citation or Unknown."""
+    stripped = answer.strip()
+    if _looks_like_unknown(stripped):
+        return "Unknown"
+
+    citation = _select_best_citation_candidate([stripped])
+    if citation:
+        return _canonicalize_citation_output(citation)
+    return stripped
+
+
+def _extract_citation(answer: str) -> str | None:
+    """Extract a citation payload from a Yes/citation coded answer."""
+    citation = _select_best_citation_candidate([answer])
+    if citation is None:
+        return None
+    return _canonicalize_citation_output(citation)
 
 
 def _normalize_yes_no_citation_answer(answer: str) -> str:
@@ -3612,6 +3739,9 @@ def _normalize_structured_short_answer(
             return canonical_date
         return stripped
 
+    if _is_citation_placeholder_response_options(response_options):
+        return _normalize_scalar_citation_answer(stripped)
+
     if response_options == "Yes OR No":
         return _normalize_binary_answer(stripped)
 
@@ -3720,6 +3850,69 @@ def _selected_response_options_from_option_evidence(
 ) -> tuple[str, ...]:
     """Return the canonical selected response options implied by option_evidence."""
     return tuple(item.option for item in option_evidence if item.selected)
+
+
+_GENERIC_FALLBACK_RESPONSE_OPTIONS = {
+    _normalize_option_text("None"),
+    _normalize_option_text("Not specified"),
+    _normalize_option_text("No restrictions listed"),
+    _normalize_option_text('"Unlawful" only'),
+    _normalize_option_text("No"),
+    _normalize_option_text("Unknown"),
+}
+
+
+def _is_generic_fallback_response_option(option: str) -> bool:
+    """Return whether an option is an explicit absence/fallback label."""
+    return _normalize_option_text(option) in _GENERIC_FALLBACK_RESPONSE_OPTIONS
+
+
+def _authoritative_response_options_from_option_evidence(
+    response: LegalQueryResponse,
+    query_metadata: dict[str, Any] | None,
+) -> tuple[str, ...] | None:
+    """Use direct option-specific evidence to conservatively finalize coded answers."""
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options or not response.option_evidence:
+        return None
+    if _is_scalar_placeholder_response_options(response_options):
+        return None
+
+    options, separator = _split_response_options(response_options)
+    if separator not in {" AND/OR ", " OR "}:
+        return None
+    if any("<" in option and ">" in option for option in options):
+        return None
+
+    evidence_by_option = {item.option: item for item in response.option_evidence}
+    supported_selected = [
+        option
+        for option in options
+        if (item := evidence_by_option.get(option)) is not None
+        and item.selected
+        and not _is_generic_fallback_response_option(option)
+        and bool(item.citations or item.supporting_passages)
+    ]
+
+    if separator == " AND/OR ":
+        if supported_selected:
+            return tuple(supported_selected)
+        for option in options:
+            if _is_generic_fallback_response_option(option):
+                return (option,)
+        return None
+
+    if supported_selected:
+        return (supported_selected[0],)
+    for option in options:
+        item = evidence_by_option.get(option)
+        if item is not None and item.selected and _is_generic_fallback_response_option(option):
+            return (option,)
+    for option in options:
+        if _is_generic_fallback_response_option(option):
+            return (option,)
+    return None
 
 
 _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
@@ -3833,6 +4026,11 @@ def _apply_authoritative_option_evidence_gate(
         query_metadata,
     )
     if final_options is None:
+        final_options = _authoritative_response_options_from_option_evidence(
+            response,
+            query_metadata,
+        )
+    if final_options is None:
         return response
 
     metadata = query_metadata or {}
@@ -3840,13 +4038,17 @@ def _apply_authoritative_option_evidence_gate(
     if not response_options:
         return response
     _options, separator = _split_response_options(response_options)
-    if separator != " AND/OR ":
+    if separator not in {" AND/OR ", " OR "}:
         return response
 
     current_options = _selected_response_options_from_option_evidence(
         response.option_evidence
     )
-    gated_short_answer = separator.join(final_options)
+    gated_short_answer = (
+        separator.join(final_options)
+        if separator == " AND/OR "
+        else final_options[0]
+    )
     if current_options == final_options and response.short_answer == gated_short_answer:
         return response
 
@@ -3863,6 +4065,67 @@ def _apply_authoritative_option_evidence_gate(
             "option_evidence": gated_option_evidence,
         }
     )
+
+
+def _normalize_response_citations(
+    response: LegalQueryResponse,
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Collapse citation-coded answers to the smallest single operative citation when possible."""
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return response
+
+    selected_option_evidence = [item for item in response.option_evidence if item.selected]
+    citation_texts: list[str] = [response.short_answer]
+    citation_texts.extend(
+        passage
+        for item in selected_option_evidence
+        for passage in item.supporting_passages
+        if str(passage).strip()
+    )
+    citation_texts.extend(
+        passage for passage in response.supporting_passages if str(passage).strip()
+    )
+    citation_texts.extend(
+        citation
+        for item in selected_option_evidence
+        for citation in item.citations
+        if str(citation).strip()
+    )
+    citation_texts.extend(
+        citation for citation in response.citations if str(citation).strip()
+    )
+    best_citation = _select_best_citation_candidate(citation_texts)
+
+    if _is_citation_placeholder_response_options(response_options):
+        if _looks_like_unknown(response.short_answer):
+            return response.model_copy(update={"short_answer": "Unknown", "citations": []})
+        if best_citation:
+            return response.model_copy(
+                update={
+                    "short_answer": _canonicalize_citation_output(best_citation),
+                    "citations": [_canonicalize_citation_output(best_citation)],
+                }
+            )
+        return response
+
+    if response_options == "Yes, <citation> OR No":
+        normalized_answer = _normalize_yes_no_citation_answer(response.short_answer)
+        if normalized_answer == "No":
+            return response.model_copy(update={"short_answer": "No", "citations": []})
+        if best_citation:
+            normalized_citation = _canonicalize_citation_output(best_citation)
+            return response.model_copy(
+                update={
+                    "short_answer": f"Yes, {normalized_citation}",
+                    "citations": [normalized_citation],
+                }
+            )
+        return response.model_copy(update={"short_answer": normalized_answer})
+
+    return response
 
 
 def _option_evidence_review_signals(

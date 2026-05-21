@@ -21,6 +21,7 @@ dependencies = [
     "mistralai",
     "marimo",
     "instructor",
+    "litellm<2.0.0,>=1.35.31",
     "tiktoken",
     "loguru",
     "PyYAML",

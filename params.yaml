@@ -10,15 +10,19 @@ jurisdiction:
 
 # LLM configuration
 llm:
-  default_provider: openai
+  default_provider: litellm
   # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
   # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
-  source: self_hosted
+  source: external
 
   providers:
     openai:
       fast: Qwen/Qwen3.5-27B
       powerful: Qwen/Qwen3.5-27B
+
+    litellm:
+      fast: gpt-5.5-2026-04-23
+      powerful: gpt-5.5-2026-04-23
       
     mistral:
       fast: mistral-small-2506

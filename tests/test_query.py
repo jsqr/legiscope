@@ -109,6 +109,17 @@ class TestStructuredShortAnswerNormalization:
 
         assert normalized == "Yes, 35 P.S. § 780-102"
 
+    def test_normalizes_scalar_citation_answer_to_single_best_unit(self):
+        normalized = _normalize_structured_short_answer(
+            "Relevant citation: Sections 30-31-1 et seq. NMSA 1978; § 30-31-2 NMSA 1978.",
+            "citation_field",
+            {
+                "response_options": "Responses: <citation> OR Unknown",
+            },
+        )
+
+        assert normalized == "§ 30-31-2"
+
 
 class TestOptionPatternMap:
     def test_exemption_patterns_cover_dallas_medical_and_religious_aliases(self):
@@ -262,6 +273,71 @@ class TestAuthoritativeOptionEvidenceGate:
         )
         assert [item.option for item in gated.option_evidence if item.selected] == [
             "Paraphernalia for consumption of cannabis, generally or medical use"
+        ]
+
+    def test_defaults_binary_scope_question_to_no_when_yes_lacks_direct_support(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="Initial answer inferred an SSP law from nearby public-health text.",
+            citations=[],
+            supporting_passages=["A local public health emergency may be declared for communicable disease control."],
+            confidence=0.35,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="Yes", selected=True),
+                ResponseOptionEvidence(option="No", selected=False),
+            ],
+        )
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            [],
+            {
+                "guidance_topic": "ssp_scope",
+                "response_options": "Yes OR No",
+            },
+        )
+
+        assert gated.short_answer == "No"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "No"
+        ]
+
+    def test_defaults_ssp_restriction_multi_select_to_no_restrictions_without_option_support(self):
+        response = LegalQueryResponse(
+            short_answer="Permit or license required for operation AND/OR Restrictions on mobile sites",
+            reasoning="Initial answer inferred multiple restrictions from general administrative text.",
+            citations=[],
+            supporting_passages=["The program is recognized during a declared emergency."],
+            confidence=0.3,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Permit or license required for operation",
+                    selected=True,
+                ),
+                ResponseOptionEvidence(
+                    option="Restrictions on mobile sites",
+                    selected=True,
+                ),
+                ResponseOptionEvidence(option="No restrictions listed", selected=False),
+            ],
+        )
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            [],
+            {
+                "guidance_topic": "ssp_restriction",
+                "response_options": (
+                    "Permit or license required for operation AND/OR Restrictions on mobile sites AND/OR No restrictions listed"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "No restrictions listed"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "No restrictions listed"
         ]
 
 
@@ -620,6 +696,10 @@ class TestPromptContracts:
         assert "Select `None` only if no specific option is supported" in system_prompt
         assert (
             "Select `Other` only when the legal text clearly supports an answer not captured"
+            in system_prompt
+        )
+        assert (
+            "mark it as selected=false rather than inferring it from nearby or loosely related text"
             in system_prompt
         )
 
@@ -2260,6 +2340,8 @@ class TestQueryConfigBasics:
         assert (
             "short_answer_conflicts_with_option_evidence"
             in debug_capture["query"]["review_rerun_reasons"]
+            or "incomplete_option_evidence"
+            in debug_capture["query"]["review_rerun_reasons"]
         )
         assert '"attempt_type": "review"' in debug_capture["query"]["query_attempts"]
 
@@ -2489,7 +2571,7 @@ class TestQueryConfigBasics:
             )
 
         assert mock_ask.call_count == 1
-        assert response.short_answer == "Sections 30-31-1 et seq. NMSA 1978"
+        assert response.short_answer == "§ 30-31-1"
         assert debug_capture["query"].get("review_rerun_triggered") in (None, False)
 
     def test_query_with_relevance_filtering(self):

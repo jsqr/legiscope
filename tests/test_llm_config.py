@@ -2,8 +2,11 @@
 Tests for the llm_config module — params.yaml-driven configuration.
 """
 
-from unittest.mock import patch
+import sys
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
+import instructor
 import pytest
 
 from legiscope.llm_config import Config
@@ -18,6 +21,10 @@ _BASE_PARAMS = {
         "default_provider": "mistral",
         "providers": {
             "openai": {"fast": "gpt-4.1-mini", "powerful": "gpt-4.1"},
+            "litellm": {
+                "fast": "openai/gpt-5",
+                "powerful": "openai/gpt-5",
+            },
             "mistral": {"fast": "mistral-small-2506", "powerful": "mistral-large-2512"},
             "ollama": {"fast": "qwen3:8b", "powerful": "qwen3:30b", "num_ctx": None},
         },
@@ -123,6 +130,50 @@ class TestProviderSwitch:
                 == _BASE_PARAMS["llm"]["providers"]["ollama"]["powerful"]
             )
 
+    def test_litellm_provider_models(self):
+        p = _params_with(**{"llm.default_provider": "litellm"})
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            assert Config.get_llm_provider() == "litellm"
+            assert (
+                Config.get_fast_model()
+                == _BASE_PARAMS["llm"]["providers"]["litellm"]["fast"]
+            )
+            assert (
+                Config.get_powerful_model()
+                == _BASE_PARAMS["llm"]["providers"]["litellm"]["powerful"]
+            )
+
+
+class TestLiteLLMClient:
+    def test_litellm_client_uses_partial_completion_defaults(self):
+        p = _params_with(**{"llm.default_provider": "litellm"})
+        fake_completion = Mock()
+
+        with (
+            patch("legiscope.llm_config.load_params", return_value=p),
+            patch(
+                "legiscope.llm_config.get_config",
+                side_effect=lambda key, default=None: {
+                    "llm.litellm.api_base": "http://localhost:4000",
+                    "llm.litellm.api_key_env": "LITELLM_GATEWAY_KEY",
+                }.get(key, default),
+            ),
+            patch.dict(
+                sys.modules,
+                {"litellm": SimpleNamespace(completion=fake_completion)},
+            ),
+            patch.dict("os.environ", {"LITELLM_GATEWAY_KEY": "secret"}),
+            patch("legiscope.llm_config.instructor.from_litellm") as mock_from_litellm,
+        ):
+            Config.get_fast_client()
+
+        completion_partial = mock_from_litellm.call_args.args[0]
+        assert completion_partial.func is fake_completion
+        assert completion_partial.keywords["model"] == "openai/gpt-5"
+        assert completion_partial.keywords["api_base"] == "http://localhost:4000"
+        assert completion_partial.keywords["api_key"] == "secret"
+        assert mock_from_litellm.call_args.kwargs["mode"] == instructor.Mode.TOOLS
+
 
 class TestOpenAIServedModel:
     def test_openai_served_model_uses_matching_params_value(self):
@@ -205,3 +256,11 @@ class TestGetLLMParams:
         with patch("legiscope.llm_config.load_params", return_value=p):
             params = Config.get_llm_params()
             assert "extra_body" not in params
+
+    def test_litellm_uses_num_retries(self):
+        p = _params_with(**{"llm.default_provider": "litellm"})
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            params = Config.get_llm_params()
+            assert params["temperature"] == 0.0
+            assert params["num_retries"] == 3
+            assert "max_retries" not in params

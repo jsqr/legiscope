@@ -6,10 +6,15 @@ All hyperparameters (provider, model names, temperature, etc.) are read
 from ``params.yaml``; no environment-variable overrides for those values.
 """
 
+import os
+from functools import partial
+from typing import Any
+
 import instructor
 from instructor import Instructor
 from loguru import logger
 
+from legiscope.config import get as get_config
 from legiscope.params import load_params
 
 
@@ -36,6 +41,7 @@ def _provider_config() -> dict:
         "openai": instructor.Mode.JSON,
         "mistral": instructor.Mode.MISTRAL_TOOLS,
         "ollama": None,  # auto-configures
+        "litellm": instructor.Mode.TOOLS,
     }
 
     config: dict = {}
@@ -53,6 +59,50 @@ def _provider_config() -> dict:
 def _get_provider_config() -> dict:
     """Return provider config, rebuilding from params.yaml on each call."""
     return _provider_config()
+
+
+def _get_litellm_runtime_kwargs() -> dict[str, Any]:
+    """Return environment-specific LiteLLM kwargs from config.yaml."""
+    runtime_kwargs: dict[str, Any] = {}
+
+    api_base = get_config("llm.litellm.api_base")
+    if api_base:
+        runtime_kwargs["api_base"] = api_base
+
+    api_key_env = get_config("llm.litellm.api_key_env")
+    if api_key_env:
+        api_key = os.getenv(str(api_key_env))
+        if api_key:
+            runtime_kwargs["api_key"] = api_key
+
+    return runtime_kwargs
+
+
+def _build_client(provider: str, model: str, mode: instructor.Mode | None) -> Instructor:
+    """Construct an instructor client for the configured provider/model pair."""
+    if provider == "litellm":
+        try:
+            from litellm import completion
+        except ImportError as exc:
+            raise ImportError(
+                "LiteLLM support requires the 'litellm' package. "
+                "Install dependencies with `uv sync` or `uv pip install -e \".[dev]\"`."
+            ) from exc
+
+        completion_with_defaults = partial(
+            completion,
+            model=model,
+            **_get_litellm_runtime_kwargs(),
+        )
+        return instructor.from_litellm(
+            completion_with_defaults,
+            mode=mode or instructor.Mode.TOOLS,
+        )
+
+    provider_string = f"{provider}/{model}"
+    if mode is not None:
+        return instructor.from_provider(provider_string, mode=mode)
+    return instructor.from_provider(provider_string)
 
 
 class Config:
@@ -89,12 +139,7 @@ class Config:
 
         prov = config[provider]
         fast_model = prov["fast_model"]
-        provider_string = f"{provider}/{fast_model}"
-
-        if prov["mode"] is not None:
-            return instructor.from_provider(provider_string, mode=prov["mode"])
-        else:
-            return instructor.from_provider(provider_string)
+        return _build_client(provider, fast_model, prov.get("mode"))
 
     @classmethod
     def get_powerful_client(cls) -> Instructor:
@@ -110,12 +155,7 @@ class Config:
 
         prov = config[provider]
         powerful_model = prov["powerful_model"]
-        provider_string = f"{provider}/{powerful_model}"
-
-        if prov["mode"] is not None:
-            return instructor.from_provider(provider_string, mode=prov["mode"])
-        else:
-            return instructor.from_provider(provider_string)
+        return _build_client(provider, powerful_model, prov.get("mode"))
 
     @classmethod
     def get_fast_model(cls) -> str:
@@ -183,6 +223,9 @@ class Config:
             "temperature": llm.get("temperature", 0.0),
             "max_retries": llm.get("max_retries", 3),
         }
+
+        if cls.get_llm_provider() == "litellm":
+            params["num_retries"] = params.pop("max_retries")
 
         # Ollama-specific context limit from params.yaml
         if cls.get_llm_provider() == "ollama":

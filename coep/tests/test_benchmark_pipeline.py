@@ -99,6 +99,7 @@ class TestBenchmarkPipelineHelpers:
         refined = benchmark_pipeline._refine_eval_error_types(df)
 
         assert refined[0, "eval_error_type"] == "llm_failure"
+        assert refined[0, "eval_error_type_refined"] == "llm_failure"
 
     def test_refine_eval_error_types_maps_completed_retrieval_failure_to_noise(self):
         df = pl.DataFrame(
@@ -117,6 +118,7 @@ class TestBenchmarkPipelineHelpers:
         refined = benchmark_pipeline._refine_eval_error_types(df)
 
         assert refined[0, "eval_error_type"] == "retrieval_noise"
+        assert refined[0, "eval_error_type_refined"] == "off_topic_context"
 
     def test_refine_eval_error_types_preserves_true_no_context_retrieval_failure(self):
         df = pl.DataFrame(
@@ -135,6 +137,46 @@ class TestBenchmarkPipelineHelpers:
         refined = benchmark_pipeline._refine_eval_error_types(df)
 
         assert refined[0, "eval_error_type"] == "retrieval_failure"
+        assert refined[0, "eval_error_type_refined"] == "no_relevant_text"
+
+    def test_refine_eval_error_types_adds_scope_and_date_categories(self):
+        df = pl.DataFrame(
+            {
+                "eval_label": ["Incorrect", "Incorrect"],
+                "eval_error_type": ["hallucination", "hallucination"],
+                "query_status": ["completed", "completed"],
+                "query_stage_status": ["completed", "completed"],
+                "generated_error_response": [False, False],
+                "no_retrieval_units_found": [False, False],
+                "all_retrieval_units_filtered_out": [False, False],
+                "retrieval_units_found": [3, 2],
+                "variable_name": ["ssp_law", "dp_enacted"],
+            }
+        )
+
+        refined = benchmark_pipeline._refine_eval_error_types(df)
+
+        assert refined[0, "eval_error_type_refined"] == "scope_error"
+        assert refined[1, "eval_error_type_refined"] == "date_extraction_error"
+
+    def test_refine_eval_error_types_maps_option_rows_to_option_selection_error(self):
+        df = pl.DataFrame(
+            {
+                "eval_label": ["Incorrect"],
+                "eval_error_type": ["option_presence_mismatch"],
+                "query_status": ["completed"],
+                "query_stage_status": ["completed"],
+                "generated_error_response": [False],
+                "no_retrieval_units_found": [False],
+                "all_retrieval_units_filtered_out": [False],
+                "retrieval_units_found": [2],
+                "variable_name": ["dp_activity"],
+            }
+        )
+
+        refined = benchmark_pipeline._refine_eval_error_types(df)
+
+        assert refined[0, "eval_error_type_refined"] == "option_selection_error"
 
     def test_ensure_supporting_passage_validation_columns_flags_drift_and_not_found(
         self,

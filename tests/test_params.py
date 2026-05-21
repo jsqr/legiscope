@@ -37,6 +37,7 @@ class TestLoadParams:
         p = params.load_params()
         providers = p["llm"]["providers"]
         assert "openai" in providers
+        assert "litellm" in providers
         assert "mistral" in providers
         assert "ollama" in providers
         for provider_models in providers.values():
