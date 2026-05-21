@@ -22,8 +22,8 @@ _BASE_PARAMS = {
         "providers": {
             "openai": {"fast": "gpt-4.1-mini", "powerful": "gpt-4.1"},
             "litellm": {
-                "fast": "openai/gpt-5",
-                "powerful": "openai/gpt-5",
+                "fast": "gemini/gemini-3.5-flash",
+                "powerful": "gemini/gemini-3.5-flash",
             },
             "mistral": {"fast": "mistral-small-2506", "powerful": "mistral-large-2512"},
             "ollama": {"fast": "qwen3:8b", "powerful": "qwen3:30b", "num_ctx": None},
@@ -145,6 +145,32 @@ class TestProviderSwitch:
 
 
 class TestLiteLLMClient:
+    def test_litellm_gemini_client_uses_direct_provider_env(self):
+        p = _params_with(**{"llm.default_provider": "litellm"})
+        fake_completion = Mock()
+
+        with (
+            patch("legiscope.llm_config.load_params", return_value=p),
+            patch(
+                "legiscope.llm_config.get_config",
+                side_effect=lambda key, default=None: {
+                    "llm.litellm.api_base": None,
+                    "llm.litellm.api_key_env": None,
+                }.get(key, default),
+            ),
+            patch.dict(
+                sys.modules,
+                {"litellm": SimpleNamespace(completion=fake_completion)},
+            ),
+            patch("legiscope.llm_config.instructor.from_litellm") as mock_from_litellm,
+        ):
+            Config.get_fast_client()
+
+        completion_partial = mock_from_litellm.call_args.args[0]
+        assert completion_partial.func is fake_completion
+        assert completion_partial.keywords == {"model": "gemini/gemini-3.5-flash"}
+        assert mock_from_litellm.call_args.kwargs["mode"] == instructor.Mode.TOOLS
+
     def test_litellm_client_uses_partial_completion_defaults(self):
         p = _params_with(**{"llm.default_provider": "litellm"})
         fake_completion = Mock()
@@ -169,7 +195,7 @@ class TestLiteLLMClient:
 
         completion_partial = mock_from_litellm.call_args.args[0]
         assert completion_partial.func is fake_completion
-        assert completion_partial.keywords["model"] == "openai/gpt-5"
+        assert completion_partial.keywords["model"] == "gemini/gemini-3.5-flash"
         assert completion_partial.keywords["api_base"] == "http://localhost:4000"
         assert completion_partial.keywords["api_key"] == "secret"
         assert mock_from_litellm.call_args.kwargs["mode"] == instructor.Mode.TOOLS

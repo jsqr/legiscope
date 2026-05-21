@@ -146,6 +146,7 @@ class TestAuthoritativeOptionEvidenceGate:
             limitations="",
             option_evidence=[
                 ResponseOptionEvidence(option='"Unlawful" only', selected=True),
+                ResponseOptionEvidence(option="Criminal Fine", selected=False),
                 ResponseOptionEvidence(option="Unspecified Fine", selected=False),
                 ResponseOptionEvidence(option="Incarceration", selected=False),
             ],
@@ -170,13 +171,13 @@ class TestAuthoritativeOptionEvidenceGate:
             sections,
             {
                 "guidance_topic": "penalty",
-                "response_options": '"Unlawful" only AND/OR Unspecified Fine AND/OR Incarceration',
+                "response_options": '"Unlawful" only AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration',
             },
         )
 
-        assert gated.short_answer == "Unspecified Fine AND/OR Incarceration"
+        assert gated.short_answer == "Criminal Fine AND/OR Incarceration"
         assert [item.option for item in gated.option_evidence if item.selected] == [
-            "Unspecified Fine",
+            "Criminal Fine",
             "Incarceration",
         ]
 
@@ -273,6 +274,119 @@ class TestAuthoritativeOptionEvidenceGate:
         )
         assert [item.option for item in gated.option_evidence if item.selected] == [
             "Paraphernalia for consumption of cannabis, generally or medical use"
+        ]
+
+    def test_drops_other_restrictions_when_permit_requirement_fully_covers_it(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Permit or license required for operation AND/OR Other restrictions"
+            ),
+            reasoning="Initial answer treated permit administration details as residual restrictions.",
+            citations=["§ 6-4-2"],
+            supporting_passages=[
+                "An SSP operator shall obtain a permit from the mayor, renew it annually, and file the required application materials."
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Permit or license required for operation",
+                    selected=True,
+                    citations=["§ 6-4-2"],
+                    supporting_passages=[
+                        "An SSP operator shall obtain a permit from the mayor, renew it annually, and file the required application materials."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Other restrictions",
+                    selected=True,
+                    citations=["§ 6-4-2"],
+                    supporting_passages=[
+                        "An SSP operator shall obtain a permit from the mayor, renew it annually, and file the required application materials."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s4",
+                heading_text="# SSP permit",
+                body_text=(
+                    "An SSP operator shall obtain a permit from the mayor, renew it annually, and file the required application materials."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "ssp_restriction",
+                "response_options": (
+                    "Permit or license required for operation AND/OR Other restrictions"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Permit or license required for operation"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Permit or license required for operation"
+        ]
+
+    def test_crosswalks_unspecified_fine_to_criminal_fine_when_jail_is_present(self):
+        response = LegalQueryResponse(
+            short_answer="Unspecified Fine AND/OR Incarceration",
+            reasoning="Initial answer used the generic fine label.",
+            citations=["§ 10.99"],
+            supporting_passages=[
+                "Any person convicted under this section is guilty of a misdemeanor and shall be punished by a fine of up to $500 or imprisonment for up to 60 days."
+            ],
+            confidence=0.7,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=False),
+                ResponseOptionEvidence(option="Civil Fine", selected=False),
+                ResponseOptionEvidence(option="Criminal Fine", selected=False),
+                ResponseOptionEvidence(option="Unspecified Fine", selected=True),
+                ResponseOptionEvidence(option="Incarceration", selected=True),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s5",
+                heading_text="# Penalty",
+                body_text=(
+                    "Any person convicted under this section is guilty of a misdemeanor and shall be punished by a fine of up to $500 or imprisonment for up to 60 days."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "penalty",
+                "response_options": (
+                    '"Unlawful" only AND/OR Civil Fine AND/OR Criminal Fine AND/OR '
+                    "Unspecified Fine AND/OR Incarceration"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Criminal Fine AND/OR Incarceration"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Criminal Fine",
+            "Incarceration",
         ]
 
     def test_defaults_binary_scope_question_to_no_when_yes_lacks_direct_support(self):
@@ -702,6 +816,89 @@ class TestPromptContracts:
             "mark it as selected=false rather than inferring it from nearby or loosely related text"
             in system_prompt
         )
+
+    def test_build_legal_prompts_allows_parent_context_for_reasoning_only(self):
+        system_prompt, _user_prompt = _build_legal_prompts(
+            "What is the current-through date?",
+            "Retrieval Unit 1: Ordinance history\nContent: Current through Ordinance 2024-10 adopted March 19, 2024.",
+            query_metadata={
+                "response_options": (
+                    "Responses: Known, <current through date published in ordinance> "
+                    "OR Partially known, <partial current through date published in ordinance "
+                    "(month or day imputed)> OR Unknown, <date of data collection>"
+                ),
+                "parent_contexts": [
+                    {
+                        "query_id": "Q1",
+                        "question": "Does the code specify a current-through date?",
+                        "short_answer": "Yes",
+                    }
+                ],
+            },
+        )
+
+        assert "Dependency context from upstream questions:" in system_prompt
+        assert "You may use upstream dependency context to inform your reasoning" in system_prompt
+        assert "do not copy parent-question text or parent-answer text into `supporting_passages`" in system_prompt
+        assert "Every item in `supporting_passages` must be a verbatim quote from the retrieved Legal Context" in system_prompt
+
+    def test_build_legal_prompts_tells_citation_children_to_stay_with_parent_family(self):
+        system_prompt, _user_prompt = _build_legal_prompts(
+            "If yes, what is the citation of the relevant law?",
+            "Retrieval Unit 1: Section 12-4-10 incorporates the State Controlled Substances Act.",
+            query_metadata={
+                "response_options": "Responses: <citation> OR Unknown",
+                "parent_contexts": [
+                    {
+                        "query_id": "Q1",
+                        "question": "Does local law require outside-law review?",
+                        "short_answer": "Yes",
+                        "option_evidence": [
+                            {
+                                "option": "Yes",
+                                "selected": True,
+                                "citations": ["Sections 30-31-1 et seq. NMSA 1978"],
+                                "supporting_passages": [
+                                    "This section incorporates the State Controlled Substances Act, Sections 30-31-1 et seq. NMSA 1978."
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+
+        assert "keep the chosen citation in that same family" in system_prompt
+
+
+class TestCurrentThroughHelpers:
+    def test_prefers_metadata_sections_for_current_through_completion(self):
+        sections = [
+            SectionResult(
+                section_id="s0",
+                heading_text="# Weeds and litter",
+                body_text="No person shall deposit litter in the right-of-way.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.5,
+                segment_count=1,
+            ),
+            SectionResult(
+                section_id="s1",
+                heading_text="# Publisher's note",
+                body_text="Current through Ordinance 2024-10 adopted March 19, 2024.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.9,
+                segment_count=1,
+            ),
+        ]
+
+        preferred = query_module._prefer_current_through_metadata_sections(sections)
+
+        assert [section.section_id for section in preferred] == ["s1"]
 
 
 class TestLoadQueries:
@@ -2447,7 +2644,7 @@ class TestQueryConfigBasics:
             "missing_option_evidence" in debug_capture["query"]["review_rerun_reasons"]
         )
 
-    def test_query_legal_documents_skips_review_for_scalar_date_placeholder(self):
+    def test_query_legal_documents_reruns_review_for_year_only_imputed_date(self):
         mock_client = Mock(spec=Instructor)
         retrieval_results = SectionCollection(
             sections=[
@@ -2468,7 +2665,7 @@ class TestQueryConfigBasics:
                 unique_sections=1,
             ),
         )
-        response_payload = LegalQueryResponse(
+        first_response = LegalQueryResponse(
             short_answer="07/15/2022",
             reasoning="The latest amendment date in range is 2022.",
             citations=["Ord. 2022-009"],
@@ -2479,9 +2676,17 @@ class TestQueryConfigBasics:
             limitations="None",
             option_evidence=[],
         )
+        second_response = first_response.model_copy()
         debug_capture = {"query": {}}
+        prompts: list[str] = []
 
-        with patch("legiscope.query.ask", return_value=response_payload) as mock_ask:
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
             settings = QuerySettings(
                 llm=LLMConfig(client=mock_client, model="test-model"),
                 filter_relevance=False,
@@ -2498,9 +2703,13 @@ class TestQueryConfigBasics:
                 debug_capture=debug_capture,
             )
 
-        assert mock_ask.call_count == 1
+        assert len(prompts) == 2
         assert response.short_answer == "07/15/2022"
-        assert debug_capture["query"].get("review_rerun_triggered") in (None, False)
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert (
+            "date_answer_uses_year_only_imputation"
+            in debug_capture["query"]["review_rerun_reasons"]
+        )
 
     def test_query_legal_documents_skips_review_for_scalar_citation_placeholder(self):
         mock_client = Mock(spec=Instructor)
@@ -2573,6 +2782,177 @@ class TestQueryConfigBasics:
         assert mock_ask.call_count == 1
         assert response.short_answer == "§ 30-31-1"
         assert debug_capture["query"].get("review_rerun_triggered") in (None, False)
+
+    def test_query_legal_documents_reruns_when_multi_select_still_includes_other(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Restrictions",
+                    body_text="The operator shall obtain a permit before operating the SSP.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="restrictions",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            short_answer="Permit or license required for operation AND/OR Other restrictions",
+            reasoning="The permit requirement appears explicit.",
+            citations=["§ 6-4-2"],
+            supporting_passages=[
+                "The operator shall obtain a permit before operating the SSP."
+            ],
+            confidence=0.7,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Permit or license required for operation",
+                    selected=True,
+                    citations=["§ 6-4-2"],
+                    supporting_passages=[
+                        "The operator shall obtain a permit before operating the SSP."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Other restrictions",
+                    selected=True,
+                    citations=["§ 6-4-2"],
+                    supporting_passages=[
+                        "The operator shall obtain a permit before operating the SSP."
+                    ],
+                ),
+            ],
+        )
+        second_response = first_response.model_copy(
+            update={"short_answer": "Permit or license required for operation"}
+        )
+        debug_capture = {"query": {}}
+        prompts: list[str] = []
+
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What restrictions apply to SSPs?",
+                settings,
+                query_metadata={
+                    "response_options": (
+                        "Responses: Permit or license required for operation AND/OR Other restrictions"
+                    ),
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert len(prompts) == 2
+        assert response.short_answer == "Permit or license required for operation"
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert "multi_select_includes_other" in debug_capture["query"]["review_rerun_reasons"]
+
+    def test_query_legal_documents_reruns_when_scalar_citation_conflicts_with_parent_family(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# State law reference",
+                    body_text="This section also mentions Section 26-2C-1 of the Harm Reduction Act.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="citation",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            short_answer="§ 26-2C-1",
+            reasoning="The local text mentions the Harm Reduction Act.",
+            citations=["§ 12-4-10"],
+            supporting_passages=[
+                "This section also mentions Section 26-2C-1 of the Harm Reduction Act."
+            ],
+            confidence=0.8,
+            limitations="None",
+            option_evidence=[],
+        )
+        second_response = first_response.model_copy(
+            update={"short_answer": "§ 30-31-1"}
+        )
+        debug_capture = {"query": {}}
+        prompts: list[str] = []
+
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "If yes, what is the citation of the relevant law?",
+                settings,
+                query_metadata={
+                    "response_options": "Responses: <citation> OR Unknown",
+                    "parent_contexts": [
+                        {
+                            "query_id": "Q1",
+                            "question": "Does local law require outside-law review?",
+                            "short_answer": "Yes",
+                            "option_evidence": [
+                                {
+                                    "option": "Yes",
+                                    "selected": True,
+                                    "citations": ["Sections 30-31-1 et seq. NMSA 1978"],
+                                    "supporting_passages": [
+                                        "This section incorporates the State Controlled Substances Act, Sections 30-31-1 et seq. NMSA 1978."
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert len(prompts) == 2
+        assert response.short_answer == "§ 30-31-1"
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert (
+            "citation_family_conflicts_with_parent_dependency_rationale"
+            in debug_capture["query"]["review_rerun_reasons"]
+        )
 
     def test_query_with_relevance_filtering(self):
         """Test query with relevance filtering enabled."""

@@ -25,6 +25,9 @@
 # Notifications are suppressed for dispatcher-created jobs by default to avoid
 # one email/webhook per jurisdiction. Manual submissions can set SLURM_NOTIFY=1.
 #
+# When params.yaml uses an external provider such as LiteLLM, these jobs should
+# run on CPU partitions because model inference is handled remotely.
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,25 +46,87 @@ source "$PROFILE_HELPER"
 DRY_RUN=false
 QUANTIZATION="fp16"
 BATCH_ID=""
+COMPUTE_MODE="external"
+
+normalize_compute_mode() {
+    local raw_value="${1:-external}"
+    local normalized
+
+    normalized="$(printf '%s' "$raw_value" | tr '[:upper:]' '[:lower:]')"
+
+    case "$normalized" in
+        external|litellm|cpu)
+            printf '%s\n' 'external'
+            ;;
+        self_hosted|self-hosted|vllm|gpu)
+            printf '%s\n' 'self_hosted'
+            ;;
+        *)
+            echo "Error: unsupported compute mode '${raw_value}'. Expected external or self_hosted." >&2
+            return 1
+            ;;
+    esac
+}
+
+resolve_sbatch_partition() {
+    local compute_mode="$1"
+
+    case "$compute_mode" in
+        external)
+            printf '%s\n' "${SLURM_CPU_PARTITION:-cpu_short}"
+            ;;
+        self_hosted)
+            vllm_profile_partition "$QUANTIZATION"
+            ;;
+    esac
+}
+
+resolve_sbatch_gres() {
+    local compute_mode="$1"
+
+    case "$compute_mode" in
+        external)
+            printf '%s\n' ""
+            ;;
+        self_hosted)
+            vllm_profile_gres "$QUANTIZATION"
+            ;;
+    esac
+}
+
+resolve_profile_label() {
+    local compute_mode="$1"
+
+    case "$compute_mode" in
+        external)
+            printf '%s\n' 'External LiteLLM / CPU'
+            ;;
+        self_hosted)
+            vllm_profile_label "$QUANTIZATION"
+            ;;
+    esac
+}
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--dry-run] [--quantization fp16|awq] [--batch-id ID] DOCX_DIR
+Usage: $(basename "$0") [--dry-run] [--compute-mode external|self_hosted] [--quantization fp16|awq] [--batch-id ID] DOCX_DIR
 
 Scan DOCX_DIR for *.docx files named STATE_Locality[_code-slug].docx and
 submit a SLURM job for each one.
 
 Options:
   --dry-run                 Show what would be submitted without actually submitting
+    --compute-mode MODE       external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
   --quantization MODE       Submission profile for vLLM serving: fp16 or awq
     --batch-id ID             Stable identifier used to tie all submitted jobs together
   -h, --help                Show this help
 
 Examples:
-  $(basename "$0") /gpfs/data/cerdalab/LegalAI/docx_sources
-  $(basename "$0") --quantization awq /gpfs/data/cerdalab/LegalAI/docx_sources
-  $(basename "$0") --batch-id dpl_all_50_may19 /gpfs/data/cerdalab/LegalAI/docx_sources
-  $(basename "$0") --dry-run --quantization fp16 /gpfs/data/cerdalab/LegalAI/docx_sources
+    $(basename "$0") /gpfs/data/cerdalab/LegalAI/docx_sources
+    $(basename "$0") --compute-mode external /gpfs/data/cerdalab/LegalAI/docx_sources
+    $(basename "$0") --compute-mode self_hosted --quantization awq /gpfs/data/cerdalab/LegalAI/docx_sources
+    $(basename "$0") --batch-id dpl_all_50_may19 /gpfs/data/cerdalab/LegalAI/docx_sources
+    $(basename "$0") --dry-run --compute-mode external /gpfs/data/cerdalab/LegalAI/docx_sources
 EOF
     exit "${1:-0}"
 }
@@ -74,7 +139,7 @@ write_batch_manifest() {
 
     mkdir -p "$batch_dir"
 
-    python3 - "$records_path" "$batch_manifest_path" "$batch_jurisdictions_path" "$BATCH_ID" "$BATCH_SUBMITTED_AT" "$DOCX_DIR" "$QUANTIZATION" "$PROFILE_LABEL" "$SBATCH_PARTITION" "$SBATCH_GRES" <<'PY'
+    python3 - "$records_path" "$batch_manifest_path" "$batch_jurisdictions_path" "$BATCH_ID" "$BATCH_SUBMITTED_AT" "$DOCX_DIR" "$QUANTIZATION" "$COMPUTE_MODE" "$PROFILE_LABEL" "$SBATCH_PARTITION" "$SBATCH_GRES" <<'PY'
 import csv
 import json
 import sys
@@ -87,9 +152,10 @@ batch_id = sys.argv[4]
 submitted_at = sys.argv[5]
 docx_dir = sys.argv[6]
 quantization = sys.argv[7]
-profile_label = sys.argv[8]
-partition = sys.argv[9]
-gres = sys.argv[10]
+compute_mode = sys.argv[8]
+profile_label = sys.argv[9]
+partition = sys.argv[10]
+gres = sys.argv[11]
 
 jurisdictions = []
 if records_path.exists():
@@ -101,6 +167,7 @@ manifest = {
     "batch_id": batch_id,
     "submitted_at": submitted_at,
     "docx_dir": docx_dir,
+    "compute_mode": compute_mode,
     "quantization": quantization,
     "profile_label": profile_label,
     "partition": partition,
@@ -126,6 +193,11 @@ while [[ $# -gt 0 ]]; do
             QUANTIZATION="$2"
             shift 2
             ;;
+        --compute-mode)
+            [[ $# -ge 2 ]] || { echo "Error: --compute-mode requires a value" >&2; usage 1; }
+            COMPUTE_MODE="$2"
+            shift 2
+            ;;
         --batch-id)
             [[ $# -ge 2 ]] || { echo "Error: --batch-id requires a value" >&2; usage 1; }
             BATCH_ID="$2"
@@ -137,10 +209,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+COMPUTE_MODE="$(normalize_compute_mode "$COMPUTE_MODE")"
 QUANTIZATION="$(normalize_vllm_quantization "$QUANTIZATION")"
-SBATCH_PARTITION="$(vllm_profile_partition "$QUANTIZATION")"
-SBATCH_GRES="$(vllm_profile_gres "$QUANTIZATION")"
-PROFILE_LABEL="$(vllm_profile_label "$QUANTIZATION")"
+SBATCH_PARTITION="$(resolve_sbatch_partition "$COMPUTE_MODE")"
+SBATCH_GRES="$(resolve_sbatch_gres "$COMPUTE_MODE")"
+PROFILE_LABEL="$(resolve_profile_label "$COMPUTE_MODE")"
 
 if [[ -z "$DOCX_DIR" ]]; then
     echo "Error: DOCX_DIR is required." >&2
@@ -184,6 +257,7 @@ SKIPPED=0
 echo "=== Legiscope Batch Dispatcher ==="
 echo "DOCX directory: $DOCX_DIR"
 echo "Batch ID     : ${BATCH_ID}"
+echo "Compute mode : ${COMPUTE_MODE}"
 echo "Quantization : ${PROFILE_LABEL}"
 echo "Partition    : ${SBATCH_PARTITION}"
 echo "GRES         : ${SBATCH_GRES}"
@@ -219,11 +293,14 @@ for docx in "$DOCX_DIR"/*.docx; do
         echo "  [dry-run] ${JURISDICTION_ID} (${CODE_SLUG}) ← ${DOCX_ABS} [${PROFILE_LABEL}]"
     else
         echo "  Submitting: ${JURISDICTION_ID} (${CODE_SLUG}) [${PROFILE_LABEL}]"
-        SBATCH_OUTPUT="$(sbatch \
-            --partition="${SBATCH_PARTITION}" \
-            --gres="${SBATCH_GRES}" \
-            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH}" \
-            "$SLURM_SCRIPT")"
+        SBATCH_ARGS=(
+            --partition="${SBATCH_PARTITION}"
+            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,LEGISCOPE_COMPUTE_MODE=${COMPUTE_MODE},VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH}"
+        )
+        if [[ -n "$SBATCH_GRES" ]]; then
+            SBATCH_ARGS+=(--gres="${SBATCH_GRES}")
+        fi
+        SBATCH_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" "$SLURM_SCRIPT")"
         echo "    ${SBATCH_OUTPUT}"
         JOB_ID="$(printf '%s\n' "$SBATCH_OUTPUT" | awk '/Submitted batch job/ {print $4}')"
     fi

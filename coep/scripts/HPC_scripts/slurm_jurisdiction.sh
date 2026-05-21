@@ -1,12 +1,11 @@
 #!/bin/bash
 #SBATCH --job-name=legiscope-jurisdiction
-#SBATCH --partition=gpu8_short          # 27B serving requires tensor parallelism across 8x V100-16GB
+#SBATCH --partition=cpu_short
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --time=12:00:00
-#SBATCH --gres=gpu:8                    # For 27B vLLM tensor parallelism
 #SBATCH --output=/gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_%j.out
 #SBATCH --error=/gpfs/data/cerdalab/LegalAI/legiscope/logs/jurisdiction_%j.err
 #
@@ -17,7 +16,7 @@
 #   2. Edit params.yaml with jurisdiction metadata
 #   3. Run init.py to create directory structure + registries
 #   4. Copy DOCX file into raw/ and convert to TXT
-#   5. Start vLLM server on a dynamic port
+#   5. Optionally start a local vLLM server when using self-hosted OpenAI mode
 #   6. Run the full DVC pipeline via dvc_repro.sh
 #   7. Push the DVC experiment and cache to the configured remote
 #   8. Sync shared project artifacts on success, and also on failure
@@ -30,6 +29,7 @@
 # Optional env vars:
 #   CODE_SLUG  - Code slug (default: municipal-code)
 #   CODE_NAME  - Display name (default: "{Locality} Municipal Code")
+#   LEGISCOPE_COMPUTE_MODE   - external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
 #   VLLM_QUANTIZATION      - vLLM serving profile: fp16 (8 GPUs) or awq (4 GPUs)
 #   VLLM_AWQ_MODEL_SOURCE  - Override AWQ checkpoint path/repo for --model
 #   VLLM_FP16_MODEL_SOURCE - Override FP16 checkpoint path/repo for --model
@@ -40,12 +40,12 @@
 #
 # Usage:
 #   # Via dispatcher (recommended):
-#   bash coep/scripts/HPC_scripts/slurm_dispatch.sh --quantization awq /path/to/docx/folder
+#   bash coep/scripts/HPC_scripts/slurm_dispatch.sh --compute-mode external /path/to/docx/folder
 #
 #   # Manual single submission with submission-time profile selection:
 #   bash coep/scripts/HPC_scripts/slurm_jurisdiction.sh \
 #       --state CA --locality LosAngeles --docx-path /gpfs/.../CA_LosAngeles.docx \
-#       --quantization awq --notify-email you@nyulangone.org
+#       --compute-mode external --notify-email you@nyulangone.org
 #
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,12 +63,33 @@ fi
 # shellcheck source=coep/scripts/HPC_scripts/slurm_vllm_profile.sh
 source "$PROFILE_HELPER"
 
+normalize_compute_mode() {
+    local raw_value="${1:-external}"
+    local normalized
+
+    normalized="$(printf '%s' "$raw_value" | tr '[:upper:]' '[:lower:]')"
+
+    case "$normalized" in
+        external|litellm|cpu)
+            printf '%s\n' 'external'
+            ;;
+        self_hosted|self-hosted|vllm|gpu)
+            printf '%s\n' 'self_hosted'
+            ;;
+        *)
+            echo "ERROR: Unsupported compute mode '${raw_value}'. Expected external or self_hosted." >&2
+            return 1
+            ;;
+    esac
+}
+
 submit_self() {
     local state=""
     local locality=""
     local docx_path=""
     local code_slug="municipal-code"
     local code_name=""
+    local compute_mode="external"
     local quantization="fp16"
     local notify="1"
     local notify_events="start,end,fail"
@@ -87,6 +108,7 @@ Options:
   --docx-path PATH             Absolute path to source DOCX file
   --code-slug SLUG             Code slug (default: municipal-code)
   --code-name NAME             Display name override
+    --compute-mode MODE          external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
   --quantization MODE          Submission profile: fp16 or awq
   --notify 0|1                 Enable notifications (default: 1)
   --notify-events CSV          Notification events (default: start,end,fail)
@@ -95,8 +117,9 @@ Options:
   -h, --help                   Show this help
 
 Examples:
-  $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx
-  $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx --quantization awq
+    $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx
+    $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx --compute-mode external
+    $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx --compute-mode self_hosted --quantization awq
 EOF
         exit "${1:-0}"
     }
@@ -126,6 +149,11 @@ EOF
             --code-name)
                 [[ $# -ge 2 ]] || { echo "Error: --code-name requires a value" >&2; usage_submit 1; }
                 code_name="$2"
+                shift 2
+                ;;
+            --compute-mode)
+                [[ $# -ge 2 ]] || { echo "Error: --compute-mode requires a value" >&2; usage_submit 1; }
+                compute_mode="$2"
                 shift 2
                 ;;
             --quantization)
@@ -177,20 +205,28 @@ EOF
         exit 1
     fi
 
+    compute_mode="$(normalize_compute_mode "$compute_mode")"
     quantization="$(normalize_vllm_quantization "$quantization")"
 
     local partition
-    local gres
-    partition="$(vllm_profile_partition "$quantization")"
-    gres="$(vllm_profile_gres "$quantization")"
+    local gres=""
+    if [[ "$compute_mode" == "external" ]]; then
+        partition="${SLURM_CPU_PARTITION:-cpu_short}"
+    else
+        partition="$(vllm_profile_partition "$quantization")"
+        gres="$(vllm_profile_gres "$quantization")"
+    fi
     docx_path="$(realpath "$docx_path")"
 
-    echo "Submitting $(basename "$0") with quantization=${quantization}, partition=${partition}, gres=${gres}" >&2
-    sbatch \
-        --partition="$partition" \
-        --gres="$gres" \
-        --export="ALL,STATE=${state},LOCALITY=${locality},DOCX_PATH=${docx_path},CODE_SLUG=${code_slug},CODE_NAME=${code_name},SLURM_NOTIFY=${notify},SLURM_NOTIFY_EVENTS=${notify_events},SLURM_NOTIFY_EMAIL=${notify_email},SLURM_NOTIFY_SUBJECT_PREFIX=${subject_prefix},VLLM_QUANTIZATION=${quantization}" \
-        "$0"
+    echo "Submitting $(basename "$0") with compute_mode=${compute_mode}, quantization=${quantization}, partition=${partition}, gres=${gres:-none}" >&2
+    local sbatch_args=(
+        --partition="$partition"
+        --export="ALL,STATE=${state},LOCALITY=${locality},DOCX_PATH=${docx_path},CODE_SLUG=${code_slug},CODE_NAME=${code_name},LEGISCOPE_COMPUTE_MODE=${compute_mode},SLURM_NOTIFY=${notify},SLURM_NOTIFY_EVENTS=${notify_events},SLURM_NOTIFY_EMAIL=${notify_email},SLURM_NOTIFY_SUBJECT_PREFIX=${subject_prefix},VLLM_QUANTIZATION=${quantization}"
+    )
+    if [[ -n "$gres" ]]; then
+        sbatch_args+=(--gres="$gres")
+    fi
+    sbatch "${sbatch_args[@]}" "$0"
 }
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
@@ -219,6 +255,7 @@ JURISDICTION_ID="${STATE}-${LOCALITY}"
 LEGISCOPE_BATCH_ID="${LEGISCOPE_BATCH_ID:-}"
 LEGISCOPE_BATCH_SUBMITTED_AT="${LEGISCOPE_BATCH_SUBMITTED_AT:-}"
 LEGISCOPE_BATCH_MANIFEST="${LEGISCOPE_BATCH_MANIFEST:-}"
+LEGISCOPE_COMPUTE_MODE="$(normalize_compute_mode "${LEGISCOPE_COMPUTE_MODE:-external}")"
 if [[ -n "$LEGISCOPE_BATCH_ID" && ! "$LEGISCOPE_BATCH_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "ERROR: LEGISCOPE_BATCH_ID contains unsupported characters: ${LEGISCOPE_BATCH_ID}" >&2
     exit 1
@@ -242,8 +279,13 @@ echo "Code    : ${CODE_SLUG} (${CODE_NAME})"
 if [[ -n "$LEGISCOPE_BATCH_ID" ]]; then
     echo "Batch   : ${LEGISCOPE_BATCH_ID}"
 fi
-echo "Profile : ${VLLM_PROFILE_LABEL}"
-echo "Expect  : ${VLLM_EXPECTED_PARTITION}, ${VLLM_EXPECTED_GPU_COUNT} GPUs"
+echo "Mode    : ${LEGISCOPE_COMPUTE_MODE}"
+if [[ "$LEGISCOPE_COMPUTE_MODE" == "self_hosted" ]]; then
+    echo "Profile : ${VLLM_PROFILE_LABEL}"
+    echo "Expect  : ${VLLM_EXPECTED_PARTITION}, ${VLLM_EXPECTED_GPU_COUNT} GPUs"
+else
+    echo "Profile : External LiteLLM / CPU"
+fi
 echo "DOCX    : ${DOCX_PATH}"
 echo "Started : $(date)"
 echo "==========================================="
@@ -1046,6 +1088,35 @@ print(f"{Config.get_llm_provider()}\t{Config.get_openai_served_model()}")
     printf '%s\n' "$resolved_model"
 }
 
+resolve_llm_runtime_mode() {
+    local resolved_provider resolved_source
+
+    IFS=$'\t' read -r resolved_provider resolved_source < <(
+        bash scripts/dvc_python.sh -c '
+from legiscope.llm_config import Config
+print(f"{Config.get_llm_provider()}\t{Config.get_llm_source()}")
+'
+    )
+
+    if [[ -z "$resolved_provider" || -z "$resolved_source" ]]; then
+        echo "ERROR: Failed to resolve llm runtime mode from params.yaml" >&2
+        exit 1
+    fi
+
+    case "$resolved_source" in
+        self_hosted)
+            printf '%s\t%s\n' "$resolved_provider" 'self_hosted'
+            ;;
+        external)
+            printf '%s\t%s\n' "$resolved_provider" 'external'
+            ;;
+        *)
+            echo "ERROR: Unsupported llm.source '${resolved_source}' in params.yaml" >&2
+            exit 1
+            ;;
+    esac
+}
+
 rewrite_params_for_profile() {
     local params_path="$1"
 
@@ -1137,83 +1208,96 @@ cp "$DOCX_PATH" "$RAW_DIR/"
 echo "Converting DOCX to TXT..."
 bash scripts/convert_docx.sh "$RAW_DIR"
 
-# ── Step 5: Start vLLM server on dynamic port ─────────────────────
-# Use Python to find a free port, avoiding conflicts with other jobs
-# that may share this compute node.
-SERVED_MODEL_ID="$(resolve_vllm_model_from_params)"
-MODEL_ID="$(resolve_vllm_model_source "$SERVED_MODEL_ID")"
-VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
-VLLM_TP_SIZE="${VLLM_TP_SIZE:-$(vllm_profile_tp_size "$VLLM_QUANTIZATION")}"
-VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
-API_KEY="legiscope-key-${SLURM_JOB_ID}"
+IFS=$'\t' read -r RESOLVED_LLM_PROVIDER RESOLVED_LLM_SOURCE < <(resolve_llm_runtime_mode)
 
-echo "Starting vLLM on port ${VLLM_PORT}..."
-echo "Resolved served model from params.yaml: ${SERVED_MODEL_ID}"
-echo "Resolved model source: ${MODEL_ID}"
-echo "Using quantization profile ${VLLM_PROFILE_LABEL}"
-echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
-echo "Using tensor parallel size ${VLLM_TP_SIZE}"
-echo "Using gpu memory utilization ${VLLM_GPU_MEMORY_UTILIZATION}"
-
-start_gpu_metrics_capture
-
-VLLM_SERVER_ARGS=(
-    --model "$MODEL_ID"
-    --host 0.0.0.0
-    --port "$VLLM_PORT"
-    --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION"
-    --max-model-len "$VLLM_MAX_MODEL_LEN"
-    --api-key "$API_KEY"
-    --served-model-name "$SERVED_MODEL_ID"
-    --download-dir /gpfs/scratch/"$USER"/hf_cache
-    --generation-config vllm
-    --tensor-parallel-size "$VLLM_TP_SIZE"
-    --disable-custom-all-reduce
-    --reasoning-parser qwen3
-    --default-chat-template-kwargs '{"enable_thinking": false}'
-    --language-model-only
-    --dtype float16
-    --enforce-eager
-)
-
-if [[ "$VLLM_QUANTIZATION" == "awq" ]]; then
-    VLLM_SERVER_ARGS+=(--quantization awq)
+if [[ "$LEGISCOPE_COMPUTE_MODE" == "external" && "$RESOLVED_LLM_SOURCE" == "self_hosted" ]]; then
+    echo "ERROR: compute mode external requires llm.source=external in params.yaml" >&2
+    exit 1
 fi
 
-python -m vllm.entrypoints.openai.api_server \
-    "${VLLM_SERVER_ARGS[@]}" \
-    > >(tee -a "$VLLM_LOG_FILE") \
-    2> >(tee -a "$VLLM_LOG_FILE" >&2) &
+if [[ "$LEGISCOPE_COMPUTE_MODE" == "self_hosted" && "$RESOLVED_LLM_SOURCE" != "self_hosted" ]]; then
+    echo "ERROR: compute mode self_hosted requires llm.source=self_hosted in params.yaml" >&2
+    exit 1
+fi
 
-VLLM_PID=$!
+# ── Step 5: Prepare LLM runtime ───────────────────────────────────
+if [[ "$LEGISCOPE_COMPUTE_MODE" == "self_hosted" ]]; then
+    # Use Python to find a free port, avoiding conflicts with other jobs
+    # that may share this compute node.
+    SERVED_MODEL_ID="$(resolve_vllm_model_from_params)"
+    MODEL_ID="$(resolve_vllm_model_source "$SERVED_MODEL_ID")"
+    VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-$(resolve_llm_context_limit_from_params)}"
+    VLLM_TP_SIZE="${VLLM_TP_SIZE:-$(vllm_profile_tp_size "$VLLM_QUANTIZATION")}"
+    VLLM_PORT=$(python3 -c "import socket; s=socket.socket(); s.bind(('',0)); print(s.getsockname()[1]); s.close()")
+    API_KEY="legiscope-key-${SLURM_JOB_ID}"
 
-VLLM_HOST=127.0.0.1
-READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
+    echo "Starting vLLM on port ${VLLM_PORT}..."
+    echo "Resolved served model from params.yaml: ${SERVED_MODEL_ID}"
+    echo "Resolved model source: ${MODEL_ID}"
+    echo "Using quantization profile ${VLLM_PROFILE_LABEL}"
+    echo "Using max model len ${VLLM_MAX_MODEL_LEN}"
+    echo "Using tensor parallel size ${VLLM_TP_SIZE}"
+    echo "Using gpu memory utilization ${VLLM_GPU_MEMORY_UTILIZATION}"
 
-echo "Waiting for vLLM server on ${READY_URL} (PID $VLLM_PID)..."
-TIMEOUT=1500
-ELAPSED=0
-while ! curl -sf "$READY_URL" >/dev/null 2>&1; do
-    if ! kill -0 "$VLLM_PID" 2>/dev/null; then
-        echo "ERROR: vLLM server process died" >&2
-        exit 1
+    start_gpu_metrics_capture
+
+    VLLM_SERVER_ARGS=(
+        --model "$MODEL_ID"
+        --host 0.0.0.0
+        --port "$VLLM_PORT"
+        --gpu-memory-utilization "$VLLM_GPU_MEMORY_UTILIZATION"
+        --max-model-len "$VLLM_MAX_MODEL_LEN"
+        --api-key "$API_KEY"
+        --served-model-name "$SERVED_MODEL_ID"
+        --download-dir /gpfs/scratch/"$USER"/hf_cache
+        --generation-config vllm
+        --tensor-parallel-size "$VLLM_TP_SIZE"
+        --disable-custom-all-reduce
+        --reasoning-parser qwen3
+        --default-chat-template-kwargs '{"enable_thinking": false}'
+        --language-model-only
+        --dtype float16
+        --enforce-eager
+    )
+
+    if [[ "$VLLM_QUANTIZATION" == "awq" ]]; then
+        VLLM_SERVER_ARGS+=(--quantization awq)
     fi
-    if [[ $ELAPSED -ge $TIMEOUT ]]; then
-        echo "ERROR: vLLM did not start within ${TIMEOUT}s" >&2
-        exit 1
-    fi
-    sleep 15
-    ELAPSED=$((ELAPSED + 15))
-    echo "  ... waiting (${ELAPSED}s / ${TIMEOUT}s)"
-done
-echo "vLLM server ready after ${ELAPSED}s"
 
-# Point the openai client at the local vLLM server
-export OPENAI_BASE_URL="http://${VLLM_HOST}:${VLLM_PORT}/v1"
-export OPENAI_API_KEY="$API_KEY"
+    python -m vllm.entrypoints.openai.api_server \
+        "${VLLM_SERVER_ARGS[@]}" \
+        > >(tee -a "$VLLM_LOG_FILE") \
+        2> >(tee -a "$VLLM_LOG_FILE" >&2) &
 
-MODELS_JSON=$(curl -sf -H "Authorization: Bearer ${OPENAI_API_KEY}" "${OPENAI_BASE_URL}/models")
-if ! MODELS_JSON="$MODELS_JSON" EXPECTED_MODEL_ID="$MODEL_ID" python3 - <<'PY'
+    VLLM_PID=$!
+
+    VLLM_HOST=127.0.0.1
+    READY_URL="http://${VLLM_HOST}:${VLLM_PORT}/health"
+
+    echo "Waiting for vLLM server on ${READY_URL} (PID $VLLM_PID)..."
+    TIMEOUT=1500
+    ELAPSED=0
+    while ! curl -sf "$READY_URL" >/dev/null 2>&1; do
+        if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+            echo "ERROR: vLLM server process died" >&2
+            exit 1
+        fi
+        if [[ $ELAPSED -ge $TIMEOUT ]]; then
+            echo "ERROR: vLLM did not start within ${TIMEOUT}s" >&2
+            exit 1
+        fi
+        sleep 15
+        ELAPSED=$((ELAPSED + 15))
+        echo "  ... waiting (${ELAPSED}s / ${TIMEOUT}s)"
+    done
+    echo "vLLM server ready after ${ELAPSED}s"
+
+    # Point the openai client at the local vLLM server
+    export OPENAI_BASE_URL="http://${VLLM_HOST}:${VLLM_PORT}/v1"
+    export OPENAI_API_KEY="$API_KEY"
+
+    MODELS_JSON=$(curl -sf -H "Authorization: Bearer ${OPENAI_API_KEY}" "${OPENAI_BASE_URL}/models")
+    if ! MODELS_JSON="$MODELS_JSON" EXPECTED_MODEL_ID="$MODEL_ID" python3 - <<'PY'
 import json
 import os
 import sys
@@ -1229,8 +1313,12 @@ if expected not in model_ids:
     raise SystemExit(1)
 print(f"Verified vLLM model exposure: {expected}")
 PY
-then
-    exit 1
+    then
+        exit 1
+    fi
+else
+    echo "Using external LLM provider '${RESOLVED_LLM_PROVIDER}' from params.yaml; skipping local vLLM startup."
+    echo "Current LiteLLM api_base: ${LITELLM_API_BASE:-${OPENAI_BASE_URL:-<provider default>}}"
 fi
 
 # ── Step 6: Run checkpointed pipeline stages ──────────────────────

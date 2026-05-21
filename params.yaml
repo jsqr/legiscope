@@ -21,8 +21,8 @@ llm:
       powerful: Qwen/Qwen3.5-27B
 
     litellm:
-      fast: gpt-5.5-2026-04-23
-      powerful: gpt-5.5-2026-04-23
+      fast: gemini/gemini-3.5-flash
+      powerful: gemini/gemini-3.5-flash
       
     mistral:
       fast: mistral-small-2506

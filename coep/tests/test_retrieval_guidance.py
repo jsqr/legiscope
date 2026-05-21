@@ -544,6 +544,7 @@ class TestCoepRetrievalGuidance:
             "same sentence, subsection, or immediately adjacent chunk"
             in guidance.completion_instructions
         )
+        assert "same outside-law family that justified the parent dependency answer" in guidance.completion_instructions
 
     def test_returns_guidance_for_ssp_reference_variable_with_ssp_question_scope(self):
         request = RetrievalGuidanceRequest(
@@ -580,6 +581,8 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "state registration mentions" in guidance.completion_instructions
+        assert "State Harm Reduction Act" in guidance.completion_instructions
+        assert "subject to state or federal law" in guidance.completion_instructions
 
     def test_returns_guidance_for_split_current_through_variable(self):
         request = RetrievalGuidanceRequest(

@@ -1565,6 +1565,18 @@ def _resolve_completion_sections(
                     }
                 )
 
+    if _is_current_through_guidance_topic(
+        settings.retrieval_guidance.guidance_topic
+        if settings.retrieval_guidance is not None
+        else None
+    ):
+        preferred_sections = _prefer_current_through_metadata_sections(sections)
+        if debug_capture is not None:
+            debug_capture.setdefault("query", {})[
+                "metadata_preferred_completion_sections"
+            ] = len(preferred_sections)
+        sections = preferred_sections
+
     elif debug_capture is not None:
         debug_capture["relevance"].update(
             {
@@ -1835,8 +1847,9 @@ def query_legal_documents(
 
         assert response is not None
         response = _normalize_response_option_evidence(response, query_metadata)
+        review_candidate = response
         response = _apply_authoritative_option_evidence_gate(
-            response,
+            review_candidate,
             sections,
             query_metadata,
         )
@@ -1882,7 +1895,7 @@ def query_legal_documents(
         )
 
         review_decision = _build_answer_review_decision(
-            response=response,
+            response=review_candidate,
             sections=sections,
             query_metadata=query_metadata,
             settings=settings,
@@ -1894,7 +1907,7 @@ def query_legal_documents(
             )
             review_prompt = _build_answer_review_prompt(
                 base_user_prompt=user_prompt,
-                response=response,
+                response=review_candidate,
                 decision=review_decision,
             )
 
@@ -3033,6 +3046,10 @@ def _build_structured_answer_contract(
 
     if parent_contexts:
         lines.append("Dependency context from upstream questions:")
+        lines.append(
+            "You may use upstream dependency context to inform your reasoning, but do not copy parent-question text or parent-answer text into `supporting_passages`. "
+            "Every item in `supporting_passages` must be a verbatim quote from the retrieved Legal Context for this query."
+        )
         for context in parent_contexts:
             lines.append(f"- Parent question ({context.query_id}): {context.question}")
             lines.append(f"  Parent short answer: {context.short_answer}")
@@ -3045,6 +3062,10 @@ def _build_structured_answer_contract(
                         "  Parent selected options: "
                         + " AND/OR ".join(selected_parent_options)
                     )
+        if _is_citation_placeholder_response_options(response_options):
+            lines.append(
+                "If dependency context identifies the outside-law family that made the parent answer applicable, keep the chosen citation in that same family unless the retrieved legal context for this query clearly contradicts it."
+            )
     elif prior_answers:
         lines.append("Prior structured answers for dependency context:")
         for variable_name, payload in prior_answers.items():
@@ -3484,6 +3505,18 @@ def _canonicalize_citation_output(citation: str) -> str:
     return cleaned
 
 
+def _citation_family_key(citation: str) -> str | None:
+    """Collapse a citation to a family key for parent-context consistency checks."""
+    normalized = _canonicalize_citation_output(citation).lower()
+    match = re.search(r"(\d+[a-z]?(?:-\d+[a-z]?){1,3})", normalized)
+    if match is None:
+        return None
+    parts = [part for part in match.group(1).split("-") if part]
+    if len(parts) < 2:
+        return match.group(1)
+    return "-".join(parts[:2])
+
+
 def _extract_citation_candidates(answer: str) -> list[str]:
     """Extract citation-like substrings from free-text citation answers."""
     candidates: list[str] = []
@@ -3861,10 +3894,296 @@ _GENERIC_FALLBACK_RESPONSE_OPTIONS = {
     _normalize_option_text("Unknown"),
 }
 
+_OTHER_LIKE_RESPONSE_OPTIONS = {
+    _normalize_option_text("Other"),
+    _normalize_option_text("Other restrictions"),
+}
+
+_CURRENT_THROUGH_GUIDANCE_TOPICS = {
+    "date_current_through",
+    "ssp_date_current_through",
+    "ssp_current_through_status",
+}
+
+_CURRENT_THROUGH_METADATA_PATTERNS = (
+    r"\bcurrent\s+(?:through|to|as of)\b",
+    r"\bupdated\b",
+    r"\bsupplement\b",
+    r"\bedition\b",
+    r"\bordinances?\s+passed\s+through\b",
+    r"\bpublisher(?:'s)?\s+note\b",
+    r"\bsection\s+histories\b",
+    r"\bord\.?\s*\d{4}-\d+\b",
+)
+
+_SSP_PERMIT_ADMIN_ONLY_PATTERNS = (
+    r"\bpermit\b",
+    r"\blicense\b",
+    r"\bapplication\b",
+    r"\brenewal\b",
+    r"\bnontransferable\b",
+    r"\bcomplaint procedures?\b",
+    r"\bcommunity response representative\b",
+    r"\bannual(?:ly)?\b",
+    r"\bmayor\b",
+    r"\bzoning enforcement officer\b",
+)
+
+_SSP_DISTINCT_RESTRICTION_PATTERNS = (
+    r"\bdistance\b",
+    r"\bschools?\b",
+    r"\bchildcare\b",
+    r"\bparks?\b",
+    r"\bmobile\b",
+    r"\bquantity of syringes\b",
+    r"\bfrequency of visits\b",
+    r"\bcap on\b",
+)
+
+_PENALTY_OTHER_DISTINCT_PATTERNS = (
+    r"\brestitution\b",
+    r"\bprobation\b",
+    r"\bcommunity service\b",
+    r"\binjunctive relief\b",
+)
+
+_PENALTY_OTHER_EXCLUDED_PATTERNS = (
+    r"\blicense revocation\b",
+    r"\blicense suspension\b",
+    r"\blicense denial\b",
+    r"\bpermit revocation\b",
+    r"\bpermit suspension\b",
+    r"\bpermit denial\b",
+)
+
+_GENERIC_ACTIVITY_SCOPE_UMBRELLA_PATTERNS = (
+    r"\bactivities associated with\b",
+    r"\bcannabis use or commerce\b",
+    r"\bmarijuana use or commerce\b",
+)
+
 
 def _is_generic_fallback_response_option(option: str) -> bool:
     """Return whether an option is an explicit absence/fallback label."""
     return _normalize_option_text(option) in _GENERIC_FALLBACK_RESPONSE_OPTIONS
+
+
+def _is_other_like_response_option(option: str) -> bool:
+    """Return whether an option is a residual catch-all label."""
+    return _normalize_option_text(option) in _OTHER_LIKE_RESPONSE_OPTIONS
+
+
+def _is_current_through_guidance_topic(guidance_topic: str | None) -> bool:
+    """Return whether a guidance topic should use metadata-first current-through handling."""
+    return str(guidance_topic or "").strip() in _CURRENT_THROUGH_GUIDANCE_TOPICS
+
+
+def _normalized_evidence_text(value: str) -> str:
+    """Normalize citations and supporting passages for overlap checks."""
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _response_option_evidence_texts(item: ResponseOptionEvidence | None) -> list[str]:
+    """Collect normalized evidence text attached to an option-evidence item."""
+    if item is None:
+        return []
+    texts = [*item.citations, *item.supporting_passages]
+    return [_normalized_evidence_text(text) for text in texts if str(text).strip()]
+
+
+def _response_option_evidence_text_is_covered(
+    item: ResponseOptionEvidence | None,
+    covering_items: list[ResponseOptionEvidence],
+) -> bool:
+    """Return whether the residual option's evidence is already covered by named options."""
+    item_texts = _response_option_evidence_texts(item)
+    if not item_texts:
+        return False
+
+    covered_texts = {
+        text
+        for covering_item in covering_items
+        for text in _response_option_evidence_texts(covering_item)
+    }
+    if not covered_texts:
+        return False
+
+    return all(
+        any(item_text == covered or item_text in covered or covered in item_text for covered in covered_texts)
+        for item_text in item_texts
+    )
+
+
+def _penalty_has_criminal_fine_cues(
+    evidence_text: str,
+    selected_lookup: set[str],
+) -> bool:
+    """Return whether the selected penalty evidence points to criminal, not generic, fines."""
+    normalized = evidence_text.lower()
+    if re.search(r"\bcivil (?:fine|penalt)y\b", normalized):
+        return False
+    if _normalize_option_text("Incarceration") in selected_lookup and re.search(
+        r"\bfine\b",
+        normalized,
+    ):
+        return True
+    return bool(
+        re.search(r"\bcriminal fine\b", normalized)
+        or re.search(r"\bfine\b[^.\n]{0,60}\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b", normalized)
+        or re.search(r"\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b[^.\n]{0,60}\bfine\b", normalized)
+    )
+
+
+def _other_option_is_fully_covered(
+    *,
+    guidance_topic: str,
+    option: str,
+    item: ResponseOptionEvidence | None,
+    selected_named_items: list[ResponseOptionEvidence],
+) -> bool:
+    """Return whether a residual option should be suppressed because named options fully cover it."""
+    if not _is_other_like_response_option(option) or item is None:
+        return False
+    if not selected_named_items:
+        return False
+
+    if _response_option_evidence_text_is_covered(item, selected_named_items):
+        return True
+
+    item_text = "\n".join([*item.citations, *item.supporting_passages]).lower()
+    normalized_option = _normalize_option_text(option)
+    selected_lookup = {_normalize_option_text(selected.option) for selected in selected_named_items}
+
+    if guidance_topic == "penalty" and normalized_option == _normalize_option_text("Other"):
+        if re.search("|".join(_PENALTY_OTHER_EXCLUDED_PATTERNS), item_text):
+            return True
+        if not re.search("|".join(_PENALTY_OTHER_DISTINCT_PATTERNS), item_text):
+            return True
+
+    if guidance_topic == "ssp_restriction" and normalized_option == _normalize_option_text("Other restrictions"):
+        if _normalize_option_text("Permit or license required for operation") in selected_lookup:
+            if re.search("|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text) and not re.search(
+                "|".join(_SSP_DISTINCT_RESTRICTION_PATTERNS),
+                item_text,
+            ):
+                return True
+
+    if guidance_topic == "exemption_activity_scope" and normalized_option == _normalize_option_text("Other"):
+        if re.search("|".join(_GENERIC_ACTIVITY_SCOPE_UMBRELLA_PATTERNS), item_text):
+            return True
+        if not re.search(
+            r"\b(distribut(?:e|ion)|deliver(?:y)?|sale|sell|manufactur(?:e|ing)|give away|gift|free distribution|exchange)\b",
+            item_text,
+        ):
+            return True
+
+    return False
+
+
+def _suppress_fully_covered_other_options(
+    final_options: tuple[str, ...],
+    response: LegalQueryResponse,
+    query_metadata: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    """Drop residual Other labels when their evidence is already covered by named options."""
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if not final_options or not response.option_evidence:
+        return final_options
+
+    evidence_by_option = {item.option: item for item in response.option_evidence}
+    kept_options: list[str] = []
+    for option in final_options:
+        item = evidence_by_option.get(option)
+        selected_named_items = [
+            evidence_by_option[other_option]
+            for other_option in final_options
+            if other_option != option
+            and other_option in evidence_by_option
+            and not _is_other_like_response_option(other_option)
+            and not _is_generic_fallback_response_option(other_option)
+        ]
+        if _other_option_is_fully_covered(
+            guidance_topic=guidance_topic,
+            option=option,
+            item=item,
+            selected_named_items=selected_named_items,
+        ):
+            continue
+        kept_options.append(option)
+    return tuple(kept_options) or final_options
+
+
+def _apply_penalty_label_crosswalk(
+    final_options: tuple[str, ...],
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    """Promote generic fine labels to criminal-fine labels when the evidence makes that distinction clear."""
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if guidance_topic != "penalty":
+        return final_options
+
+    selected_lookup = {_normalize_option_text(option) for option in final_options}
+    if _normalize_option_text("Unspecified Fine") not in selected_lookup:
+        return final_options
+    if _normalize_option_text("Criminal Fine") in selected_lookup:
+        return tuple(
+            option
+            for option in final_options
+            if _normalize_option_text(option)
+            != _normalize_option_text("Unspecified Fine")
+        )
+
+    evidence_text = _collect_review_text(sections)
+    if not _penalty_has_criminal_fine_cues(evidence_text, selected_lookup):
+        return final_options
+
+    updated_options = [
+        "Criminal Fine"
+        if _normalize_option_text(option) == _normalize_option_text("Unspecified Fine")
+        else option
+        for option in final_options
+    ]
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for option in updated_options:
+        key = _normalize_option_text(option)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(option)
+    return tuple(deduped)
+
+
+def _build_current_through_metadata_retrieval_query(retrieval_query: str) -> str:
+    """Force a metadata-only retrieval pass for current-through questions."""
+    return (
+        f"{retrieval_query}\n\n"
+        "Metadata-only retrieval pass: retrieve only official code metadata, current-through notices, supplement or edition headers, ordinances-passed-through statements, publisher notes, section-history metadata, or explicit ordinance-history lines that can serve as the fallback current-through source. Ignore substantive ordinance provisions unless they contain that metadata."
+    )
+
+
+def _section_matches_current_through_metadata(section: SectionResult) -> bool:
+    """Return whether a section looks like current-through metadata rather than ordinance substance."""
+    text = "\n".join(
+        part
+        for part in [str(section.heading_text or "").strip(), str(section.body_text or "").strip()]
+        if part
+    )
+    if not text:
+        return False
+    return any(re.search(pattern, text, re.IGNORECASE) for pattern in _CURRENT_THROUGH_METADATA_PATTERNS)
+
+
+def _prefer_current_through_metadata_sections(
+    sections: list[SectionResult],
+) -> list[SectionResult]:
+    """Keep current-through metadata sections when present, otherwise fall back to the original slice."""
+    metadata_sections = [section for section in sections if _section_matches_current_through_metadata(section)]
+    return metadata_sections or sections
 
 
 def _authoritative_response_options_from_option_evidence(
@@ -4033,6 +4352,18 @@ def _apply_authoritative_option_evidence_gate(
     if final_options is None:
         return response
 
+    final_options = _suppress_fully_covered_other_options(
+        final_options,
+        response,
+        query_metadata,
+    )
+    final_options = _apply_penalty_label_crosswalk(
+        final_options,
+        response,
+        sections,
+        query_metadata,
+    )
+
     metadata = query_metadata or {}
     response_options = _clean_response_options(metadata.get("response_options"))
     if not response_options:
@@ -4137,11 +4468,27 @@ def _option_evidence_review_signals(
     response_options = _clean_response_options(metadata.get("response_options"))
     if not response_options:
         return ()
-    if _is_scalar_placeholder_response_options(response_options):
-        return ()
 
     declared_options, _separator = _split_response_options(response_options)
     reasons: list[AnswerReviewSignal] = []
+    short_answer_selected = _selected_response_options_from_short_answer(
+        response.short_answer,
+        metadata,
+    )
+    if short_answer_selected and len(short_answer_selected) > 1 and any(
+        _is_other_like_response_option(option) for option in short_answer_selected
+    ):
+        reasons.append(
+            AnswerReviewSignal(
+                option="short_answer",
+                issue="multi_select_includes_other",
+                evidence_snippet="review any multi-select answer that still relies on a residual Other label",
+            )
+        )
+
+    if _is_scalar_placeholder_response_options(response_options):
+        return tuple(reasons)
+
     if not response.option_evidence:
         reasons.append(
             AnswerReviewSignal(
@@ -4162,11 +4509,6 @@ def _option_evidence_review_signals(
                 ),
             )
         )
-
-    short_answer_selected = _selected_response_options_from_short_answer(
-        response.short_answer,
-        metadata,
-    )
     evidence_selected = _selected_response_options_from_option_evidence(
         response.option_evidence
     )
@@ -4577,23 +4919,99 @@ def _build_answer_review_decision(
         return AnswerReviewDecision()
 
     metadata = query_metadata or {}
-    generic_reasons = _option_evidence_review_signals(response, metadata)
+    generic_reasons = list(_option_evidence_review_signals(response, metadata))
     guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    response_options = _clean_response_options(metadata.get("response_options"))
+
+    if response_options:
+        parent_contexts = _deserialize_parent_contexts(metadata.get("parent_contexts"))
+        if _is_citation_placeholder_response_options(response_options) and parent_contexts:
+            selected_citation = _canonicalize_citation_output(response.short_answer)
+            parent_family_keys = {
+                family_key
+                for context in parent_contexts
+                for item in context.option_evidence
+                if item.selected
+                for citation in [*item.citations, *item.supporting_passages]
+                for family_key in [_citation_family_key(citation)]
+                if family_key
+            }
+            selected_family_key = _citation_family_key(selected_citation)
+            if (
+                selected_citation
+                and not _looks_like_unknown(selected_citation)
+                and parent_family_keys
+                and selected_family_key
+                and selected_family_key not in parent_family_keys
+            ):
+                generic_reasons.append(
+                    AnswerReviewSignal(
+                        option="short_answer",
+                        issue="citation_family_conflicts_with_parent_dependency_rationale",
+                        evidence_snippet=f"parent citation families: {sorted(parent_family_keys)}",
+                    )
+                )
+
+        if _is_scalar_date_response_options(response_options) or _is_status_date_response_options(
+            response_options
+        ):
+            review_text = _collect_review_text(sections)
+            if re.fullmatch(r"07/15/\d{4}", str(response.short_answer).strip()) and not re.search(
+                r"\b\d{1,2}/\d{1,2}/\d{4}\b",
+                review_text,
+            ):
+                generic_reasons.append(
+                    AnswerReviewSignal(
+                        option="short_answer",
+                        issue="date_answer_uses_year_only_imputation",
+                    )
+                )
+
+            if _is_current_through_guidance_topic(guidance_topic):
+                metadata_sections = [
+                    section
+                    for section in sections
+                    if _section_matches_current_through_metadata(section)
+                ]
+                unique_headings = {
+                    str(section.heading_text or "").strip()
+                    for section in sections
+                    if str(section.heading_text or "").strip()
+                }
+                if sections and (len(metadata_sections) < len(sections) or len(unique_headings) > 1):
+                    generic_reasons.append(
+                        AnswerReviewSignal(
+                            option="short_answer",
+                            issue="current_through_answer_draws_from_mixed_headings",
+                            evidence_snippet=(
+                                f"metadata-like sections: {len(metadata_sections)} / {len(sections)}"
+                            ),
+                        )
+                    )
+
     if not guidance_topic or guidance_topic not in settings.answer_review_topics:
         if generic_reasons:
             return AnswerReviewDecision(
                 should_rerun=True,
                 guidance_topic=guidance_topic or "response_option_consistency",
-                reasons=generic_reasons,
+                reasons=tuple(generic_reasons),
             )
         return AnswerReviewDecision()
 
-    response_options = _clean_response_options(metadata.get("response_options"))
     if not response_options:
         return AnswerReviewDecision(
             should_rerun=bool(generic_reasons),
             guidance_topic=guidance_topic,
-            reasons=generic_reasons,
+            reasons=tuple(generic_reasons),
+        )
+
+    if _is_scalar_placeholder_response_options(response_options) or _is_status_date_response_options(
+        response_options
+    ):
+        return AnswerReviewDecision(
+            should_rerun=bool(generic_reasons),
+            guidance_topic=guidance_topic,
+            reasons=tuple(generic_reasons),
         )
 
     selected_options = _extract_selected_response_options(
@@ -5373,6 +5791,12 @@ def _process_single_query_with_error_handling(
         if retrieval_guidance and retrieval_guidance.retrieval_query:
             retrieval_query = retrieval_guidance.retrieval_query
 
+        guidance_topic = (
+            retrieval_guidance.guidance_topic if retrieval_guidance else None
+        )
+        if _is_current_through_guidance_topic(guidance_topic):
+            retrieval_inherited_states = []
+
         inherited_prompt_sources = [
             state.retrieval_query
             for state in retrieval_inherited_states
@@ -5397,9 +5821,6 @@ def _process_single_query_with_error_handling(
                 f"{retrieval_guidance.completion_instructions.strip()}"
             )
 
-        guidance_topic = (
-            retrieval_guidance.guidance_topic if retrieval_guidance else None
-        )
         shared_context = (
             retrieval_guidance.shared_context if retrieval_guidance else None
         )
@@ -5452,20 +5873,64 @@ def _process_single_query_with_error_handling(
             anchor_terms=anchor_terms,
         )
 
-        retrieval_results = retrieve_sections(
-            collection=collection,
-            sections_parquet_path=sections_parquet_path,
-            query_text=retrieval_query,
-            settings=retrieval_settings,
-        )
-        retrieval_results = SectionCollection(
-            sections=_annotate_sections_for_query(
-                retrieval_results.sections,
-                query_id=query_id,
-            ),
-            query_info=retrieval_results.query_info,
-            filtering_metadata=retrieval_results.filtering_metadata,
-        )
+        metadata_first_fallback = False
+        if _is_current_through_guidance_topic(guidance_topic):
+            metadata_first_query = _build_current_through_metadata_retrieval_query(
+                retrieval_query
+            )
+            metadata_results = retrieve_sections(
+                collection=collection,
+                sections_parquet_path=sections_parquet_path,
+                query_text=metadata_first_query,
+                settings=retrieval_settings,
+            )
+            preferred_metadata_sections = _prefer_current_through_metadata_sections(
+                metadata_results.sections
+            )
+            if preferred_metadata_sections and any(
+                _section_matches_current_through_metadata(section)
+                for section in preferred_metadata_sections
+            ):
+                retrieval_results = SectionCollection(
+                    sections=_annotate_sections_for_query(
+                        preferred_metadata_sections,
+                        query_id=query_id,
+                    ),
+                    query_info=metadata_results.query_info,
+                    filtering_metadata=metadata_results.filtering_metadata,
+                )
+                retrieval_query = metadata_first_query
+            else:
+                metadata_first_fallback = True
+                fallback_results = retrieve_sections(
+                    collection=collection,
+                    sections_parquet_path=sections_parquet_path,
+                    query_text=retrieval_query,
+                    settings=retrieval_settings,
+                )
+                retrieval_results = SectionCollection(
+                    sections=_annotate_sections_for_query(
+                        fallback_results.sections,
+                        query_id=query_id,
+                    ),
+                    query_info=fallback_results.query_info,
+                    filtering_metadata=fallback_results.filtering_metadata,
+                )
+        else:
+            base_results = retrieve_sections(
+                collection=collection,
+                sections_parquet_path=sections_parquet_path,
+                query_text=retrieval_query,
+                settings=retrieval_settings,
+            )
+            retrieval_results = SectionCollection(
+                sections=_annotate_sections_for_query(
+                    base_results.sections,
+                    query_id=query_id,
+                ),
+                query_info=base_results.query_info,
+                filtering_metadata=base_results.filtering_metadata,
+            )
 
         query_info = retrieval_results.query_info
         sections_found = len(retrieval_results.sections)
@@ -5476,6 +5941,7 @@ def _process_single_query_with_error_handling(
         retrieval_debug_row.update(
             {
                 "stage_status": "completed",
+                "retrieval_query": retrieval_query,
                 "rewritten_query": query_info.rewritten_query,
                 "sections_found": sections_found,
                 "retrieval_units_found": sections_found,
@@ -5483,6 +5949,7 @@ def _process_single_query_with_error_handling(
                 "retrieved_sections": retrieved_sections,
                 "retrieved_retrieval_units": retrieved_sections,
                 "retrieved_segments": retrieved_segments,
+                "metadata_first_retrieval_fallback": metadata_first_fallback,
             }
         )
 

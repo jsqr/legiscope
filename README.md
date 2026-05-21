@@ -29,6 +29,10 @@ every command picks up the values.
 - For Ollama: server running (`ollama serve`) and models pulled
 - `scripts/dvc_repro.sh` uses the project `.venv` automatically when it exists
 
+For direct Gemini calls through LiteLLM, keep `config.yaml -> llm.litellm.api_base`
+and `api_key_env` unset and provide either `GOOGLE_API_KEY` or `GEMINI_API_KEY`
+in the environment.
+
 _See [Configuration Files](#configuration-files) for details._
 
 ### Preprocess a New Jurisdiction
@@ -199,7 +203,7 @@ uv run marimo edit
 
 - **`params.yaml`** — All pipeline parameters: jurisdiction, LLM provider/models, embedding settings, retrieval/query tuning. Tracked by DVC.
 - **`config.yaml`** — Infrastructure: data directory path, ChromaDB location.
-- **`.env`** — API keys (`OPENAI_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`). Not tracked. Copy from `.env.example`.
+- **`.env`** — API keys (`OPENAI_API_KEY`, `MISTRAL_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY` or `GEMINI_API_KEY` for Gemini via LiteLLM). Not tracked. Copy from `.env.example`.
 
 ## Development
 

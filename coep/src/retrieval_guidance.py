@@ -896,7 +896,9 @@ _VARIABLE_OVERRIDES = {
             "depends on. Cite only provisions appearing in the same sentence, subsection, or immediately adjacent chunk as the "
             "dependency-triggering language. DO NOT dump every citation appearing anywhere in the retrieved chapter set. If the "
             "ordinance stays self-contained on the benchmark question, do not elevate incidental cannabis, public-health, or "
-            "controlled-substances citations as the relevant outside law."
+            "controlled-substances citations as the relevant outside law. Keep the returned citation aligned with the same outside-law "
+            "family that justified the parent dependency answer unless the local text for this query clearly points to a different "
+            "controlling family."
         ),
         anchor_terms=["incorporated by reference", "as defined in", "et seq."],
     ),
@@ -904,12 +906,15 @@ _VARIABLE_OVERRIDES = {
         relevance_instructions=(
             "For ssp_state_fed_reference, answer Yes only when the local SSP ordinance expressly makes outside law necessary to "
             "decide whether SSPs are authorized, prohibited, or restricted. Mere citations, state-registration references, local "
-            "site-approval language, or implementation background are not enough."
+            "site-approval language, or implementation background are not enough. References to the State Harm Reduction Act only as "
+            "background authorization or definitional context are not enough by themselves."
         ),
         completion_instructions=(
             "For ssp_state_fed_reference, answer Yes only when the ordinance expressly depends on outside law to determine the local "
             "SSP rule. DO NOT answer Yes for bare citations, public-health background references, state registration mentions, or "
-            "local approval prerequisites when the operative local rule is otherwise self-contained."
+            "local approval prerequisites when the operative local rule is otherwise self-contained. Treat statements that an SSP is "
+            "authorized by the State Harm Reduction Act, or generic clauses making the program subject to state or federal law, as "
+            "insufficient unless the outside law is actually dispositive of the local benchmarked rule."
         ),
         anchor_terms=["as defined in", "state health department", "harm reduction act"],
     ),
