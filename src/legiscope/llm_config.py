@@ -78,6 +78,14 @@ def _get_litellm_runtime_kwargs() -> dict[str, Any]:
     return runtime_kwargs
 
 
+def _litellm_uses_fixed_temperature(model: str) -> bool:
+    """Return whether the LiteLLM model rejects explicit temperature overrides."""
+    normalized = model.strip().casefold()
+    if "/" in normalized:
+        _, normalized = normalized.split("/", 1)
+    return normalized.startswith("gpt-5")
+
+
 def _build_client(provider: str, model: str, mode: instructor.Mode | None) -> Instructor:
     """Construct an instructor client for the configured provider/model pair."""
     if provider == "litellm":
@@ -225,6 +233,11 @@ class Config:
         }
 
         if cls.get_llm_provider() == "litellm":
+            model = kwargs.get("model") or cls.get_powerful_model()
+            if _litellm_uses_fixed_temperature(str(model)) and params.get(
+                "temperature"
+            ) == 0.0:
+                params.pop("temperature", None)
             params["num_retries"] = params.pop("max_retries")
 
         # Ollama-specific context limit from params.yaml

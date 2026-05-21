@@ -261,6 +261,13 @@ class TestGetLLMParams:
         p = _params_with(**{"llm.default_provider": "litellm"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             params = Config.get_llm_params()
-            assert params["temperature"] == 0.0
             assert params["num_retries"] == 3
             assert "max_retries" not in params
+            assert "temperature" not in params
+
+    def test_litellm_keeps_nondefault_temperature(self):
+        p = _params_with(**{"llm.default_provider": "litellm", "llm.temperature": 0.7})
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            params = Config.get_llm_params()
+            assert params["temperature"] == 0.7
+            assert params["num_retries"] == 3
