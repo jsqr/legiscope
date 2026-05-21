@@ -53,6 +53,7 @@ class RetrievalGuidance:
     anchor_terms: list[str] = field(default_factory=list)
     completion_instructions: str | None = None
     no_context_fallback_short_answer: str | None = None
+    enable_relevance_filter: bool | None = None
     enable_relevance_backfill: bool | None = None
 
     def has_content(self) -> bool:
@@ -66,6 +67,7 @@ class RetrievalGuidance:
             or self.anchor_terms
             or self.completion_instructions
             or self.no_context_fallback_short_answer
+            or self.enable_relevance_filter is not None
             or self.enable_relevance_backfill is not None
         )
 

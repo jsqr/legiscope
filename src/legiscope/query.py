@@ -462,6 +462,20 @@ class QuerySettings:
             self.filter_llm = self.llm
 
 
+def _resolve_query_filter_relevance(
+    batch_filter_relevance: bool,
+    retrieval_guidance: RetrievalGuidance | None,
+) -> bool:
+    """Resolve whether relevance filtering should run for a specific query."""
+    if not batch_filter_relevance:
+        return False
+    if retrieval_guidance is None:
+        return True
+    if retrieval_guidance.enable_relevance_filter is None:
+        return True
+    return retrieval_guidance.enable_relevance_filter
+
+
 @dataclass
 class BatchQuerySettings:
     """Settings for batch query processing.
@@ -6219,7 +6233,10 @@ def _process_single_query_with_error_handling(
         # Build QuerySettings for this query
         query_settings = QuerySettings(
             llm=llm,
-            filter_relevance=settings.filter_relevance,
+            filter_relevance=_resolve_query_filter_relevance(
+                settings.filter_relevance,
+                retrieval_guidance,
+            ),
             relevance_threshold=settings.relevance_threshold,
             retrieval_guidance=retrieval_guidance,
             same_text_sections_parquet_path=sections_parquet_path,

@@ -91,7 +91,7 @@ retrieval:
 
   # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
-    enabled: false
+    enabled: true
     threshold: 0.5
     max_concurrency: 4
     target_concurrent_prompt_tokens: 16000

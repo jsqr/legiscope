@@ -213,6 +213,27 @@ _LEGACY_EXEMPTION_DEPENDENCY_LABELS_BY_VARIABLE = {
 }
 
 
+_RELEVANCE_FILTER_ENABLED_VARIABLES = {
+    "dp_law",
+    "ssp_law",
+    "dp_activity",
+    "dp_penalties",
+    "dp_exemption",
+    "dp_state_fed_reference",
+    "ssp_state_fed_reference",
+    "ssp_restrict",
+}
+
+
+def _coep_relevance_filter_enabled(variable_name: str | None) -> bool:
+    """Return whether COEP guidance should allow relevance filtering for this variable."""
+    if not variable_name:
+        return False
+    if variable_name in _RELEVANCE_FILTER_ENABLED_VARIABLES:
+        return True
+    return variable_name.startswith("dp_exempt_")
+
+
 def _dedupe_preserving_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     deduped: list[str] = []
@@ -398,7 +419,7 @@ _GUIDANCE_BY_FAMILY = {
             "rule being coded. A public-health-emergency or HIV/AIDS "
             "finding section counts only when it empowers local officials to authorize or operate exchange projects. Treat text like "
             "`Declaration of Local Public Health Emergency` or `The Mayor is hereby empowered` to authorize clean needle and syringe "
-            "exchange projects as especially high value."
+            "exchange projects as especially high value only when that text itself creates operative authorization or another operative SSP rule."
         ),
         anchor_terms=[
             "syringe service program",
@@ -878,7 +899,8 @@ _VARIABLE_OVERRIDES = {
             "licensed-physician-or-dentist carve-outs to the approved-medical-use labels, public-official or governmental-duty "
             "carve-outs to the public-official label, and bona fide religious ritual or ceremony carve-outs to Other. Evaluate each "
             "exemption label independently. Do not add an SSP, DCE, cannabis, medical-use, or professional label just because nearby "
-            "retrieved context mentions it; add a label only when the exemption text itself supports that specific label."
+            "retrieved context mentions it; add a label only when the exemption text itself supports that specific label. If no specific "
+            "listed label is directly supported, do not guess and do not use Other as a fallback."
         ),
         anchor_terms=[
             "exception",
@@ -993,7 +1015,7 @@ _VARIABLE_OVERRIDES = {
             "authorization clause. A total ban, a conditional authorization, or an operative restriction all count as evidence that an SSP law exists. "
             "Answer No only when the ordinance is silent on SSP authorization, prohibition, and operational limits. Treat emergency "
             "authorization language for clean needle or needle-and-syringe exchange projects as especially high value even if the text "
-            "does not use the modern `SSP` label."
+            "does not use the modern `SSP` label, but only when the ordinance itself grants or triggers that authorization."
         ),
         completion_instructions=(
             "For ssp_law, answer Yes whenever any operative local ordinance text authorizes, prohibits, or limits SSPs. Do not require an explicit authorization clause. "
@@ -1003,7 +1025,8 @@ _VARIABLE_OVERRIDES = {
             "for ssp_permit or other authorization-detail questions, not for the broader ssp_law existence question. Treat text such as "
             "`Declaration of Local Public Health Emergency` and `The Mayor is hereby empowered to declare the existence of a Local "
             "Public Health Emergency when the authorization of clean needle and syringe exchange projects would abate the spread of HIV "
-            "and AIDS` as a Yes answer for ssp_law."
+            "and AIDS` as qualifying evidence only when that same text or an immediately linked operative provision actually creates local SSP authorization. Do not "
+            "generalize from public-health background or emergency text that does not itself create the operative SSP rule."
         ),
     ),
     "ssp_permit": RetrievalGuidance(
@@ -1031,7 +1054,7 @@ _VARIABLE_OVERRIDES = {
             "For ssp_restrict, focus on operational limits after SSPs are otherwise recognized by the ordinance. Do not treat a total ban or a bare authorization clause as a restriction. Count only listed operating conditions such as permits, caps, buffers, mobile-site limits, visit limits, or syringe-quantity limits."
         ),
         completion_instructions=(
-            "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed."
+            "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed. Do not infer `Other restrictions` from general operating requirements, exchange-only language, or coordination duties unless the ordinance states a concrete residual restriction that fits no named label. Do not infer `Restrictions on quantity of syringes that may be provided or exchanged` unless the ordinance expressly limits number, amount, or quantity."
         ),
     ),
     "dp_exempt_sygen_activity": RetrievalGuidance(
@@ -1206,7 +1229,7 @@ _COMPLETION_RULES_BY_FAMILY = {
         "public health emergency or disease outbreak. Do not count generic syringe, hypodermic, HIV/AIDS, or facility-location text "
         "unless it directly creates an SSP authorization, prohibition, or operational limit. If the ordinance says the mayor or another "
         "local official may declare a public health emergency and thereby authorize clean needle and syringe exchange projects, that is "
-        "an SSP law and should be coded Yes."
+        "an SSP law only when that same text or an immediately linked operative provision actually creates local authorization."
     ),
     "ssp_date_enactment": (
         "Return only the enacted, passed, adopted, or approved date for the SSP ordinance. Do not substitute effective dates or "
@@ -1233,6 +1256,7 @@ _COMPLETION_RULES_BY_FAMILY = {
         "with controlled substances. Code an activity only when the legal text directly bars that activity or a clearly "
         "synonymous act. Do not infer sale from advertising or display language, and do not convert zoning, land-use, "
         "business-license, retail-display, or minors-only access restrictions into general prohibited activities."
+        " Business-only sale or display restrictions do not create the general Sales label unless the ordinance expressly prohibits sale beyond the business-only context."
     ),
     "penalty": (
         "Assign penalty labels from the exact terms found in the legal text or directly cited penalty section. Do not "
@@ -1251,7 +1275,7 @@ _COMPLETION_RULES_BY_FAMILY = {
         "harm reduction, supervised use, needle exchange, or syringe exchange facility provisions, evaluate whether they "
         "expressly allow syringes, needles, test strips, drug-checking equipment, or other paraphernalia before answering "
         "None or cannabis-only. Do not treat unrelated marijuana-business, commercial-cannabis, employment, or other non-"
-        "paraphernalia cannabis provisions as a cannabis exemption."
+        "paraphernalia cannabis provisions as a cannabis exemption. If no listed exemption label is directly supported, leave it out rather than guessing or defaulting to Other."
     ),
     "exemption_activity_scope": (
         "Explain which activities remain allowed under the exemption, using the exemption text together with the operative activity language when necessary."
@@ -1418,6 +1442,11 @@ def _merge_guidance(
             override.no_context_fallback_short_answer
             if override and override.no_context_fallback_short_answer is not None
             else base.no_context_fallback_short_answer
+        ),
+        enable_relevance_filter=(
+            override.enable_relevance_filter
+            if override and override.enable_relevance_filter is not None
+            else base.enable_relevance_filter
         ),
         enable_relevance_backfill=(
             override.enable_relevance_backfill
@@ -1608,6 +1637,7 @@ def get_drug_paraphernalia_retrieval_guidance(
         ),
         completion_instructions=guidance.completion_instructions,
         no_context_fallback_short_answer=guidance.no_context_fallback_short_answer,
+        enable_relevance_filter=_coep_relevance_filter_enabled(request.variable_name),
         enable_relevance_backfill=guidance.enable_relevance_backfill,
     )
 
@@ -1620,5 +1650,6 @@ def get_drug_paraphernalia_retrieval_guidance(
         anchor_terms=guidance.anchor_terms,
         completion_instructions=_build_completion_instructions(guidance),
         no_context_fallback_short_answer=guidance.no_context_fallback_short_answer,
+        enable_relevance_filter=guidance.enable_relevance_filter,
         enable_relevance_backfill=guidance.enable_relevance_backfill,
     )

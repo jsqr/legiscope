@@ -1,6 +1,7 @@
 """Tests for COEP-specific retrieval guidance hooks."""
 
 from coep.src.retrieval_guidance import get_drug_paraphernalia_retrieval_guidance
+from legiscope.query import _resolve_query_filter_relevance
 from legiscope.query_hierarchy import (
     LabelBlockerRule,
     QueryHierarchy,
@@ -47,6 +48,7 @@ class TestCoepRetrievalGuidance:
         assert "Legal context:" in guidance.retrieval_query
         assert "Question: When was this enacted?" in guidance.retrieval_query
         assert "High-value legal terms:" in guidance.retrieval_query
+        assert guidance.enable_relevance_filter is False
         assert guidance.completion_instructions is not None
         assert "Query context:" in guidance.completion_instructions
         assert "Variable family: date enactment." in guidance.completion_instructions
@@ -69,6 +71,7 @@ class TestCoepRetrievalGuidance:
         assert "Exact legal labels matter" in guidance.relevance_instructions
         assert guidance.retrieval_query is not None
         assert "misdemeanor" in guidance.retrieval_query
+        assert guidance.enable_relevance_filter is True
         assert guidance.completion_instructions is not None
         assert "assign the exact labels" in guidance.completion_instructions
         assert "DO NOT answer Unlawful only" in guidance.completion_instructions
@@ -150,6 +153,7 @@ class TestCoepRetrievalGuidance:
         assert "which activities remain allowed" in guidance.relevance_instructions
         assert guidance.retrieval_query is not None
         assert "Retrieval target: exemption activity scope" in guidance.retrieval_query
+        assert guidance.enable_relevance_filter is True
         assert guidance.completion_instructions is not None
         assert (
             "Completion-relevant legal anchors and terms"
@@ -175,6 +179,7 @@ class TestCoepRetrievalGuidance:
             in guidance.shared_context
         )
         assert guidance.completion_instructions is not None
+        assert guidance.enable_relevance_filter is True
         assert "ssp_law should be coded as Yes" in guidance.completion_instructions
         assert "Reserve the conditional answer wording for ssp_permit" in guidance.completion_instructions
         assert "Do not require an explicit authorization clause" in guidance.completion_instructions
@@ -196,8 +201,23 @@ class TestCoepRetrievalGuidance:
             in guidance.shared_context
         )
         assert guidance.completion_instructions is not None
+        assert guidance.enable_relevance_filter is True
         assert "Business-only restrictions do not count" in guidance.completion_instructions
         assert "small business-only mentions" in guidance.completion_instructions
+
+    def test_relevance_filter_resolution_honors_global_switch_and_guidance_override(self):
+        enabled_guidance = get_drug_paraphernalia_retrieval_guidance(
+            RetrievalGuidanceRequest(query="Q", variable_name="dp_penalties")
+        )
+        disabled_guidance = get_drug_paraphernalia_retrieval_guidance(
+            RetrievalGuidanceRequest(query="Q", variable_name="dp_enacted")
+        )
+
+        assert enabled_guidance is not None
+        assert disabled_guidance is not None
+        assert _resolve_query_filter_relevance(True, enabled_guidance) is True
+        assert _resolve_query_filter_relevance(True, disabled_guidance) is False
+        assert _resolve_query_filter_relevance(False, enabled_guidance) is False
 
     def test_exemption_activity_guidance_uses_parent_contexts(self):
         hierarchy = QueryHierarchy(
