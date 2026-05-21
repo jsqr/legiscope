@@ -385,6 +385,27 @@ module load pandoc 2>/dev/null || true  # optional: env should also provide pand
 # Uses the validated build: vLLM 0.19.0 + torch 2.10.0+cu128.
 conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
 
+GIT_BIN="$(command -v git 2>/dev/null || true)"
+if [[ -z "$GIT_BIN" ]]; then
+    for candidate in /usr/bin/git /bin/git /usr/local/bin/git /opt/homebrew/bin/git; do
+        if [[ -x "$candidate" ]]; then
+            GIT_BIN="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$GIT_BIN" ]]; then
+    echo "ERROR: git is not available on this compute node after environment setup." >&2
+    echo "This workflow uses git-backed DVC experiments and cannot continue without git." >&2
+    echo "Make git available in the job environment or install it into the shared conda env, for example:" >&2
+    echo "  conda install -p /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3 -c conda-forge git -y" >&2
+    exit 1
+fi
+
+export PATH="$(dirname "$GIT_BIN"):${PATH}"
+echo "Git detected: ${GIT_BIN}"
+
 if ! command -v pandoc >/dev/null 2>&1; then
     module load pandoc 2>/dev/null || true
 fi
@@ -667,17 +688,17 @@ configure_git_identity() {
     local git_email="${GIT_USER_EMAIL:-${GIT_AUTHOR_EMAIL:-}}"
 
     if [[ -z "$git_name" ]]; then
-        git_name="$(git -C "$PROJECT_DIR" config --get user.name 2>/dev/null || true)"
+        git_name="$("$GIT_BIN" -C "$PROJECT_DIR" config --get user.name 2>/dev/null || true)"
     fi
     if [[ -z "$git_email" ]]; then
-        git_email="$(git -C "$PROJECT_DIR" config --get user.email 2>/dev/null || true)"
+        git_email="$("$GIT_BIN" -C "$PROJECT_DIR" config --get user.email 2>/dev/null || true)"
     fi
 
     git_name="${git_name:-${USER:-legiscope-hpc}}"
     git_email="${git_email:-${USER:-legiscope-hpc}@bigpurple.local}"
 
-    git -C "$repo_dir" config user.name "$git_name"
-    git -C "$repo_dir" config user.email "$git_email"
+    "$GIT_BIN" -C "$repo_dir" config user.name "$git_name"
+    "$GIT_BIN" -C "$repo_dir" config user.email "$git_email"
     echo "Configured git identity for DVC: ${git_name} <${git_email}>"
 }
 
@@ -685,12 +706,12 @@ sync_origin_to_ssh() {
     local repo_dir="$1"
     local origin_url=""
 
-    origin_url="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
+    origin_url="$("$GIT_BIN" -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
     [[ -n "$origin_url" ]] || return 0
 
     if [[ "$origin_url" != "$GITHUB_SSH_REMOTE" ]]; then
         echo "Updating origin remote for HPC pushes: ${origin_url} -> ${GITHUB_SSH_REMOTE}"
-        git -C "$repo_dir" remote set-url origin "$GITHUB_SSH_REMOTE"
+        "$GIT_BIN" -C "$repo_dir" remote set-url origin "$GITHUB_SSH_REMOTE"
     fi
 }
 
@@ -708,7 +729,7 @@ should_attempt_dvc_push() {
             ;;
     esac
 
-    origin_url="$(git -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
+    origin_url="$("$GIT_BIN" -C "$repo_dir" remote get-url origin 2>/dev/null || true)"
     [[ -n "$origin_url" ]] || return 1
 
     if [[ "$origin_url" == https://* ]]; then
@@ -718,7 +739,7 @@ should_attempt_dvc_push() {
 
     if [[ "$origin_url" == git@* || "$origin_url" == ssh://* ]]; then
         GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=10" \
-            git -C "$repo_dir" ls-remote --exit-code origin HEAD >/dev/null 2>&1
+            "$GIT_BIN" -C "$repo_dir" ls-remote --exit-code origin HEAD >/dev/null 2>&1
         return $?
     fi
 
