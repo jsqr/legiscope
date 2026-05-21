@@ -113,6 +113,31 @@ class HeadingStructure(BaseModel):
 
 # ── Heading pattern helpers ────────────────────────────────────────────
 
+_INLINE_GLOBAL_FLAG_RE = re.compile(r"\(\?([imsx]+)\)")
+
+
+def _normalize_heading_regex_pattern(pattern: str) -> tuple[str, int]:
+    """Strip bare inline global flags and return equivalent compile flags."""
+
+    extra_flags = 0
+
+    def _replace(match: re.Match[str]) -> str:
+        nonlocal extra_flags
+
+        for flag in match.group(1):
+            if flag == "i":
+                extra_flags |= re.IGNORECASE
+            elif flag == "m":
+                extra_flags |= re.MULTILINE
+            elif flag == "s":
+                extra_flags |= re.DOTALL
+            elif flag == "x":
+                extra_flags |= re.VERBOSE
+        return ""
+
+    normalized = _INLINE_GLOBAL_FLAG_RE.sub(_replace, pattern)
+    return normalized, extra_flags
+
 
 def _compile_heading_patterns(
     structure: HeadingStructure,
@@ -131,9 +156,13 @@ def _compile_heading_patterns(
             continue
         level = heading_level.level
         try:
+            normalized_pattern, extra_flags = _normalize_heading_regex_pattern(pattern)
             # Use IGNORECASE to handle consistent casing (ARTICLE vs Article)
             # Use MULTILINE so ^ matchers work expectedly even if stripped line behavior changes
-            compiled = re.compile(pattern, re.IGNORECASE | re.MULTILINE)
+            compiled = re.compile(
+                normalized_pattern,
+                re.IGNORECASE | re.MULTILINE | extra_flags,
+            )
             compiled_patterns.append((level, compiled))
         except re.error as e:
             raise ValueError(

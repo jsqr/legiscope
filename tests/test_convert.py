@@ -24,7 +24,12 @@ from pydantic import BaseModel
 
 from legiscope.parse.convert import text2md
 from legiscope.parse.find_code_start import ScanResult
-from legiscope.parse.headings import BooleanResult, HeadingLevel, HeadingStructure
+from legiscope.parse.headings import (
+    BooleanResult,
+    HeadingLevel,
+    HeadingStructure,
+    _compile_heading_patterns,
+)
 from legiscope.parse.regions import REGIONS_SCHEMA
 from legiscope.parse.scan import (
     DEFAULT_TEMPERATURE,
@@ -225,6 +230,26 @@ class TestResponseModels:
         assert structure.file_sample_size == 0
         assert structure.levels[0].markdown_prefix == "#"
         assert not hasattr(structure.levels[0], "outline_line_numbers")
+
+    def test_compile_heading_patterns_tolerates_misplaced_inline_flags(self):
+        """LLM-emitted global flags after anchors should not crash compilation."""
+        structure = HeadingStructure.model_validate(
+            {
+                "heading_levels": [
+                    {
+                        "level": 1,
+                        "regex_pattern": r"^(?i)TITLE\s+[IVXLCDM]+:\s+.*$",
+                        "example_heading": "TITLE IV: GENERAL PROVISIONS",
+                        "type_label": "title",
+                    }
+                ]
+            }
+        )
+
+        compiled_patterns = _compile_heading_patterns(structure)
+
+        assert len(compiled_patterns) == 1
+        assert compiled_patterns[0][1].match("title IV: General Provisions")
 
 
 def _make_mock_client(heading_structure_response):
@@ -930,7 +955,9 @@ Some body text here."""
             assert "These are 200 representative elements" in first_prompt
             assert "These are 150 representative elements" in second_prompt
             assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT
-            assert second_call.kwargs["max_retries"] == 3
+            assert second_call.kwargs.get(
+                "max_retries", second_call.kwargs.get("num_retries")
+            ) == 3
             assert "PREVIOUS ATTEMPT HAD THESE ISSUES" not in second_prompt
             assert "RETRY_FEEDBACK:" not in second_prompt
 
@@ -998,11 +1025,87 @@ Some body text here."""
             second_prompt = second_call.kwargs["messages"][1]["content"]
 
             assert "These are 200 representative elements" in first_prompt
-            assert "These are 140 representative elements" in second_prompt
+            assert "These are 100 representative elements" in second_prompt
             assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT
-            assert second_call.kwargs["max_retries"] == 3
+            assert second_call.kwargs.get(
+                "max_retries", second_call.kwargs.get("num_retries")
+            ) == 3
             assert "PREVIOUS ATTEMPT HAD THESE ISSUES" not in second_prompt
             assert "RETRY_FEEDBACK:" not in second_prompt
+
+        finally:
+            os.unlink(test_file)
+
+    def test_scan_legal_text_repeated_length_limits_keep_shrinking_sample(self):
+        """Repeated output truncation should keep shrinking below the old 60-element floor."""
+        sample_blocks = []
+        for index in range(1, 261):
+            sample_blocks.append(
+                f"CHAPTER {index}\n"
+                "This chapter contains enough substantive text to remain a distinct "
+                "element during repeated output-length retry validation."
+            )
+        sample_text = "\n\n".join(sample_blocks)
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".txt", delete=False, encoding="utf-8"
+        ) as f:
+            f.write(sample_text)
+            test_file = f.name
+
+        try:
+            mock_response = HeadingStructure(
+                levels=[
+                    HeadingLevel(
+                        level=1,
+                        regex_pattern=r"^CHAPTER\s+[A-Z0-9IVXLCDM.-]+(?:\s+.*)?$",
+                        example_heading="CHAPTER 1",
+                        type_label="chapter",
+                    )
+                ],
+            )
+
+            completion = Mock()
+            completion.choices = [Mock(finish_reason="length")]
+
+            def _length_retry_error() -> InstructorRetryException:
+                return InstructorRetryException(
+                    "The output is incomplete due to a max_tokens length limit. "
+                    "Previous attempt mentioned context length in provider metadata.",
+                    n_attempts=1,
+                    total_usage=0,
+                    failed_attempts=[
+                        FailedAttempt(
+                            attempt_number=1,
+                            exception=ValueError(
+                                "structured output truncated after provider reported context length"
+                            ),
+                            completion=completion,
+                        )
+                    ],
+                )
+
+            mock_client = Mock()
+            mock_client.chat.completions.create.side_effect = [
+                ScanResult(found=True, element_id=0, reasoning="Start of document"),
+                _length_retry_error(),
+                _length_retry_error(),
+                _length_retry_error(),
+                mock_response,
+            ]
+
+            with patch("legiscope.parse.scan.score_structure", return_value=(0.95, [])):
+                scan_legal_text(mock_client, test_file)
+
+            prompts = [
+                call.kwargs["messages"][1]["content"]
+                for call in mock_client.chat.completions.create.call_args_list[1:5]
+            ]
+
+            assert "These are 200 representative elements" in prompts[0]
+            assert "These are 100 representative elements" in prompts[1]
+            assert "These are 50 representative elements" in prompts[2]
+            assert "These are 25 representative elements" in prompts[3]
 
         finally:
             os.unlink(test_file)
@@ -1277,7 +1380,9 @@ Some body text here."""
             prompt = scan_call.kwargs["messages"][1]["content"]
 
             assert "These are 120 representative elements" in prompt
-            assert scan_call.kwargs["max_retries"] == 7
+            assert scan_call.kwargs.get(
+                "max_retries", scan_call.kwargs.get("num_retries")
+            ) == 7
             assert scan_call.kwargs["timeout"] == 480
             assert scan_call.kwargs["max_tokens"] == 1400
 

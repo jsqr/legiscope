@@ -383,11 +383,20 @@ export PYTHONWARNINGS="${PYTHONWARNINGS:+${PYTHONWARNINGS},}${KNOWN_VLLM_WARNING
 # Conda is available via ~/.bashrc after 'conda init'.
 module load pandoc 2>/dev/null || true  # optional: env should also provide pandoc
 # Uses the validated build: vLLM 0.19.0 + torch 2.10.0+cu128.
-conda activate /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3
+LEGISCOPE_ENV_PREFIX="/gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3"
+conda activate "$LEGISCOPE_ENV_PREFIX"
+export PATH="${LEGISCOPE_ENV_PREFIX}/bin:${PATH}"
 
 GIT_BIN="$(command -v git 2>/dev/null || true)"
 if [[ -z "$GIT_BIN" ]]; then
-    for candidate in /usr/bin/git /bin/git /usr/local/bin/git /opt/homebrew/bin/git; do
+    for candidate in \
+        "${LEGISCOPE_ENV_PREFIX}/bin/git" \
+        "${CONDA_PREFIX:-}/bin/git" \
+        /usr/bin/git \
+        /bin/git \
+        /usr/local/bin/git \
+        /opt/homebrew/bin/git
+    do
         if [[ -x "$candidate" ]]; then
             GIT_BIN="$candidate"
             break
@@ -399,7 +408,7 @@ if [[ -z "$GIT_BIN" ]]; then
     echo "ERROR: git is not available on this compute node after environment setup." >&2
     echo "This workflow uses git-backed DVC experiments and cannot continue without git." >&2
     echo "Make git available in the job environment or install it into the shared conda env, for example:" >&2
-    echo "  conda install -p /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3 -c conda-forge git -y" >&2
+    echo "  conda install -p ${LEGISCOPE_ENV_PREFIX} -c conda-forge git -y" >&2
     exit 1
 fi
 
@@ -413,7 +422,7 @@ fi
 if ! command -v pandoc >/dev/null 2>&1; then
     echo "ERROR: pandoc is not available after environment setup." >&2
     echo "Fix the shared env once with:" >&2
-    echo "  conda install -p /gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3 -c conda-forge pandoc -y" >&2
+    echo "  conda install -p ${LEGISCOPE_ENV_PREFIX} -c conda-forge pandoc -y" >&2
     exit 1
 fi
 

@@ -443,11 +443,13 @@ def _reduce_sample_count_after_generation_failure(
     exc: Exception,
 ) -> int:
     """Shrink the sample after generation failures so retries are materially different."""
+    if _is_output_length_error(exc):
+        if sample_count <= 40:
+            return max(20, sample_count - 8)
+        return max(20, int(sample_count * 0.5))
+
     if _is_context_length_error(exc):
         return max(60, int(sample_count * 0.6))
-
-    if _is_output_length_error(exc):
-        return max(80, int(sample_count * 0.7))
 
     lowered = str(exc).lower()
     if "timed out" in lowered or "timeout" in lowered:
@@ -465,6 +467,9 @@ def _reduce_sample_count_after_scoring_retry(sample_count: int) -> int:
 
 def _is_context_length_error(exc: Exception) -> bool:
     """Return True if *exc* looks like a model context-length failure."""
+    if _is_output_length_error(exc):
+        return False
+
     err = str(exc).lower()
     return (
         "maximum context length" in err
@@ -638,6 +643,7 @@ def _exception_debug_snapshot(exc: Exception) -> dict[str, object]:
         "type": type(exc).__name__,
         "message": " ".join(str(exc).split())[:500],
         "is_timeout": _is_timeout_error(exc),
+        "is_output_length": _is_output_length_error(exc),
         "is_context_length": _is_context_length_error(exc),
     }
 
@@ -673,6 +679,9 @@ def _exception_debug_snapshot(exc: Exception) -> dict[str, object]:
                 "exception_type": type(failed_attempt.exception).__name__,
                 "message": " ".join(str(failed_attempt.exception).split())[:500],
                 "is_timeout": _is_timeout_error(failed_attempt.exception),
+                "is_output_length": _is_output_length_error(
+                    failed_attempt.exception
+                ),
                 "is_context_length": _is_context_length_error(failed_attempt.exception),
             }
             completion_snapshot = _serialize_completion_debug(
@@ -1075,10 +1084,10 @@ def _structural_precision_score(
 
 def _classify_generation_failure(exc: Exception) -> str:
     """Classify generation failures into a small set of retry-relevant buckets."""
-    if _is_context_length_error(exc):
-        return "context_length"
     if _is_output_length_error(exc):
         return "output_length"
+    if _is_context_length_error(exc):
+        return "context_length"
     if _is_timeout_error(exc):
         return "timeout"
 
