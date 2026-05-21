@@ -389,6 +389,49 @@ class TestAuthoritativeOptionEvidenceGate:
             "Incarceration",
         ]
 
+    def test_limits_cannabis_exemption_activity_scope_to_explicitly_supported_labels(self):
+        response = LegalQueryResponse(
+            short_answer="Possession AND/OR Use AND/OR Distribution AND/OR Sales",
+            reasoning="Initial answer expanded cannabis use or commerce into every activity label.",
+            citations=["§ 12-4-10(C)(3)"],
+            supporting_passages=[
+                "Nothing in this section shall be construed to establish a criminal penalty for possession of paraphernalia for the exclusive purpose of cannabis use, or for any activities associated with cannabis use or commerce."
+            ],
+            confidence=0.7,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="Possession", selected=True),
+                ResponseOptionEvidence(option="Use", selected=True),
+                ResponseOptionEvidence(option="Distribution", selected=True),
+                ResponseOptionEvidence(option="Sales", selected=True),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s6",
+                heading_text="# Cannabis exemption",
+                body_text=(
+                    "Nothing in this section shall be construed to establish a criminal penalty for possession of paraphernalia for the exclusive purpose of cannabis use, or for any activities associated with cannabis use or commerce."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "exemption_activity_scope",
+                "response_options": "Possession AND/OR Use AND/OR Distribution AND/OR Sales",
+            },
+        )
+
+        assert gated.short_answer == "Possession AND/OR Use"
+
     def test_defaults_binary_scope_question_to_no_when_yes_lacks_direct_support(self):
         response = LegalQueryResponse(
             short_answer="Yes",
@@ -899,6 +942,101 @@ class TestCurrentThroughHelpers:
         preferred = query_module._prefer_current_through_metadata_sections(sections)
 
         assert [section.section_id for section in preferred] == ["s1"]
+
+    def test_does_not_treat_bare_ordinance_history_as_current_through_metadata(self):
+        sections = [
+            SectionResult(
+                section_id="s0",
+                heading_text="# Offenses",
+                body_text="(Ord. 2025-009)",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.5,
+                segment_count=1,
+            )
+        ]
+
+        preferred = query_module._prefer_current_through_metadata_sections(sections)
+
+        assert [section.section_id for section in preferred] == ["s0"]
+        assert query_module._section_matches_current_through_metadata(sections[0]) is False
+
+    def test_date_surface_validator_uses_explicit_current_through_date(self):
+        response = LegalQueryResponse(
+            short_answer="Unknown",
+            reasoning="No date found.",
+            citations=["Legal Intro"],
+            supporting_passages=[
+                "Contains 2025 S-95, current through Ordinance 2025-026, passed 9-3-2025"
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="Legal Intro",
+                body_text="Contains 2025 S-95, current through Ordinance 2025-026, passed 9-3-2025",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_date_surface_validators(
+            response,
+            sections,
+            {
+                "query_id": "ssp_collected",
+                "response_options": "Responses: <current-through date>",
+            },
+        )
+
+        assert validated.short_answer == "09/03/2025"
+
+    def test_ssp_permit_validator_promotes_no_to_yes_for_explicit_permit_regime(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="Initial answer missed the permit regime.",
+            citations=["§ 9-15-4"],
+            supporting_passages=[
+                "No person shall operate a syringe exchange facility at any location in the City without having a valid permit for such syringe exchange facility in accordance with this ordinance."
+            ],
+            confidence=0.7,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s2",
+                heading_text="# Permit",
+                body_text=(
+                    "No person shall operate a syringe exchange facility at any location in the City without having a valid permit for such syringe exchange facility in accordance with this ordinance."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_ssp_permit_validator(
+            response,
+            sections,
+            {
+                "query_id": "ssp_permit",
+                "response_options": (
+                    "Responses: No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared"
+                ),
+            },
+        )
+
+        assert validated.short_answer == "Yes"
 
 
 class TestLoadQueries:
@@ -2708,6 +2846,73 @@ class TestQueryConfigBasics:
         assert debug_capture["query"]["review_rerun_triggered"] is True
         assert (
             "date_answer_uses_year_only_imputation"
+            in debug_capture["query"]["review_rerun_reasons"]
+        )
+
+    def test_query_legal_documents_reruns_when_current_through_answer_lacks_explicit_date_support(self):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Weeds and litter",
+                    body_text="(Ord. 2025-009)",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="current through",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            short_answer="02/21/2025",
+            reasoning="Fallback date.",
+            citations=["§ 11-1-1-1"],
+            supporting_passages=["(Ord. 2025-009)"],
+            confidence=0.8,
+            limitations="None",
+            option_evidence=[],
+        )
+        second_response = first_response.model_copy()
+        debug_capture = {"query": {}}
+        prompts: list[str] = []
+
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What is the current-through date of the ordinance?",
+                settings,
+                query_metadata={
+                    "query_id": "dp_collected",
+                    "guidance_topic": "date_current_through",
+                    "response_options": "Responses: <current-through date>",
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert len(prompts) == 2
+        assert response.short_answer == "02/21/2025"
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert (
+            "current_through_answer_lacks_explicit_date_support"
             in debug_capture["query"]["review_rerun_reasons"]
         )
 

@@ -545,6 +545,7 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "same outside-law family that justified the parent dependency answer" in guidance.completion_instructions
+        assert "broader operative paraphernalia or controlled-substances citation" in guidance.completion_instructions
 
     def test_returns_guidance_for_ssp_reference_variable_with_ssp_question_scope(self):
         request = RetrievalGuidanceRequest(
@@ -691,6 +692,7 @@ class TestCoepRetrievalGuidance:
             "Treat authorization of clean needle or needle-and-syringe exchange projects"
             in guidance.relevance_instructions
         )
+        assert "valid local permit counts as an authorization regime" in guidance.relevance_instructions
         assert guidance.completion_instructions is not None
         assert (
             "Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization"
@@ -698,6 +700,7 @@ class TestCoepRetrievalGuidance:
         )
         assert "site approval, state registration" in guidance.completion_instructions
         assert "existence of an SSP law" in guidance.completion_instructions
+        assert "permit-required operating regime" in guidance.completion_instructions
 
     def test_returns_guidance_for_ssp_current_imp_variable(self):
         request = RetrievalGuidanceRequest(

@@ -898,7 +898,9 @@ _VARIABLE_OVERRIDES = {
             "ordinance stays self-contained on the benchmark question, do not elevate incidental cannabis, public-health, or "
             "controlled-substances citations as the relevant outside law. Keep the returned citation aligned with the same outside-law "
             "family that justified the parent dependency answer unless the local text for this query clearly points to a different "
-            "controlling family."
+            "controlling family. When the local ordinance contains both a narrow exemption carve-out citation and a broader operative "
+            "paraphernalia or controlled-substances citation, prefer the citation that governs the benchmarked paraphernalia rule over "
+            "the narrower carve-out citation."
         ),
         anchor_terms=["incorporated by reference", "as defined in", "et seq."],
     ),
@@ -981,12 +983,13 @@ _VARIABLE_OVERRIDES = {
     "ssp_permit": RetrievalGuidance(
         relevance_instructions=(
             "For ssp_permit, focus on text that expressly permits, authorizes, allows, or establishes SSP operation. Do not treat a mere "
-            "restriction, reporting rule, site-approval prerequisite, or the existence of an SSP law as authorization unless the text itself says the program may operate."
+            "restriction, reporting rule, site-approval prerequisite, or the existence of an SSP law as authorization unless the text itself says the program may operate. "
+            "A rule that no person may operate a syringe exchange facility without a valid local permit counts as an authorization regime, not just a restriction."
         ),
         completion_instructions=(
             "For ssp_permit, distinguish explicit authorization from broader SSP-law existence. A jurisdiction can have an SSP law because it bans or restricts programs, "
             "yet ssp_permit is still No unless the ordinance expressly authorizes operation. Emergency-conditioned clean needle or needle-and-syringe exchange authority counts here only when the ordinance says the program may operate once the emergency condition is met."
-            " Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization only when the ordinance itself authorizes operation, and do not infer authorization from site approval, state registration, or the mere existence of an SSP law."
+            " Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization only when the ordinance itself authorizes operation, and do not infer authorization from site approval, state registration, or the mere existence of an SSP law. A permit-required operating regime for a syringe exchange facility is an explicit authorization regime and should be coded Yes rather than No."
         ),
     ),
     "ssp_prohibit": RetrievalGuidance(

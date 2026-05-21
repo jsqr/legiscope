@@ -1854,6 +1854,8 @@ def query_legal_documents(
             query_metadata,
         )
         response = _normalize_response_citations(response, query_metadata)
+        response = _apply_date_surface_validators(response, sections, query_metadata)
+        response = _apply_ssp_permit_validator(response, sections, query_metadata)
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
@@ -3030,7 +3032,7 @@ def _build_structured_answer_contract(
         lines.append(
             "For this field, use the declared status label exactly and format any date as `MM/DD/YYYY`."
         )
-    elif _is_scalar_date_response_options(response_options):
+    elif _is_date_placeholder_response_options(response_options):
         lines.append(
             "For this field, `short_answer` must be either `MM/DD/YYYY` or `Unknown`."
         )
@@ -3328,6 +3330,17 @@ def _is_scalar_date_response_options(response_options: str) -> bool:
     )
 
 
+def _is_date_placeholder_response_options(response_options: str) -> bool:
+    """Detect any scalar response surface whose first option is a date placeholder."""
+    options, separator = _split_response_options(response_options)
+    return bool(
+        options
+        and options[0].startswith("<")
+        and _has_date_placeholder(options[0])
+        and separator in {None, " OR "}
+    )
+
+
 def _is_scalar_placeholder_response_options(response_options: str) -> bool:
     """Detect scalar-coded options like `<citation>` or `<date> OR Unknown`."""
     options, separator = _split_response_options(response_options)
@@ -3382,6 +3395,16 @@ def _normalize_option_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
+def _query_variable_name(query_metadata: dict[str, Any] | None) -> str:
+    """Return the effective variable name for a structured query."""
+    metadata = query_metadata or {}
+    return str(
+        metadata.get("variable_name")
+        or metadata.get("query_id")
+        or ""
+    ).strip()
+
+
 def _looks_like_unknown(answer: str) -> bool:
     """Return whether an answer is effectively a null/unknown marker."""
     normalized = _normalize_option_text(answer)
@@ -3389,6 +3412,67 @@ def _looks_like_unknown(answer: str) -> bool:
         return True
 
     return bool(re.fullmatch(r"unknown(?:\s+date)?", normalized))
+
+
+def _collect_evidence_texts(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+) -> list[str]:
+    """Collect raw evidence texts from the answer and completion sections."""
+    texts: list[str] = []
+    texts.extend(str(passage).strip() for passage in response.supporting_passages if str(passage).strip())
+    texts.extend(str(citation).strip() for citation in response.citations if str(citation).strip())
+    for item in response.option_evidence:
+        texts.extend(str(passage).strip() for passage in item.supporting_passages if str(passage).strip())
+        texts.extend(str(citation).strip() for citation in item.citations if str(citation).strip())
+    for section in sections:
+        heading = str(section.heading_text or "").strip()
+        body = str(section.body_text or "").strip()
+        if heading:
+            texts.append(heading)
+        if body:
+            texts.append(body)
+    return texts
+
+
+def _extract_explicit_date_from_texts(
+    texts: list[str],
+    required_patterns: tuple[str, ...],
+) -> str | None:
+    """Extract the first explicit full date from texts matching the required context patterns."""
+    for text in texts:
+        normalized = str(text or "").strip()
+        if not normalized:
+            continue
+        if required_patterns and not any(
+            re.search(pattern, normalized, re.IGNORECASE)
+            for pattern in required_patterns
+        ):
+            continue
+        explicit_date = _extract_canonical_date(
+            normalized,
+            "",
+            allow_partial_imputation=False,
+        )
+        if explicit_date is not None:
+            return explicit_date
+    return None
+
+
+def _date_answer_has_explicit_support(answer: str, texts: list[str]) -> bool:
+    """Return whether the answer date appears verbatim in any evidence text."""
+    stripped = str(answer or "").strip()
+    if not stripped or _looks_like_unknown(stripped):
+        return False
+    for text in texts:
+        candidate = _extract_canonical_date(
+            str(text or ""),
+            "",
+            allow_partial_imputation=False,
+        )
+        if candidate == stripped:
+            return True
+    return any(stripped in str(text or "") for text in texts)
 
 
 def _parse_month_name(month_name: str) -> int:
@@ -3764,7 +3848,7 @@ def _normalize_structured_short_answer(
             coding_instructions,
         )
 
-    if _is_scalar_date_response_options(response_options):
+    if _is_date_placeholder_response_options(response_options):
         if _looks_like_unknown(stripped):
             return "Unknown"
         canonical_date = _extract_canonical_date(stripped, coding_instructions)
@@ -3912,8 +3996,51 @@ _CURRENT_THROUGH_METADATA_PATTERNS = (
     r"\bedition\b",
     r"\bordinances?\s+passed\s+through\b",
     r"\bpublisher(?:'s)?\s+note\b",
-    r"\bsection\s+histories\b",
-    r"\bord\.?\s*\d{4}-\d+\b",
+    r"\blegal intro\b",
+)
+
+_CURRENT_THROUGH_DATE_PATTERNS = (
+    r"\bcurrent\s+through\b",
+    r"\bpassed\b",
+    r"\bsupplement\b",
+    r"\bedition\b",
+    r"\blegal intro\b",
+)
+
+_EXPLICIT_ENACTED_DATE_PATTERNS = (
+    r"\benact(?:ed|ment)?\b",
+    r"\badopt(?:ed|ion)?\b",
+    r"\bpassed\b",
+    r"\bordinance\b",
+)
+
+_EXPLICIT_EFFECTIVE_DATE_PATTERNS = (
+    r"\beffective\b",
+    r"\beff\.?\b",
+)
+
+_CURRENT_THROUGH_VARIABLE_NAMES = {
+    "dp_collected",
+    "ssp_collected",
+}
+
+_ENACTED_VARIABLE_NAMES = {
+    "dp_enacted",
+    "ssp_enacted",
+}
+
+_EFFECTIVE_DATE_VARIABLE_NAMES = {
+    "dp_effective_dt",
+    "ssp_effective_dt",
+}
+
+_SSP_PERMIT_VARIABLE_NAMES = {"ssp_permit"}
+
+_SSP_PERMIT_AUTHORIZATION_PATTERNS = (
+    r"\bno person shall operate\b[^.\n]{0,120}\bwithout having a valid permit\b",
+    r"\bvalid permit\b[^.\n]{0,80}\bsyringe exchange facilit(?:y|ies)\b",
+    r"\bauthoriz(?:ed|es|ation)\b[^.\n]{0,80}\bclean needle\b",
+    r"\bauthoriz(?:ed|es|ation)\b[^.\n]{0,80}\bneedle(?:-and-)?syringe exchange\b",
 )
 
 _SSP_PERMIT_ADMIN_ONLY_PATTERNS = (
@@ -4158,6 +4285,82 @@ def _apply_penalty_label_crosswalk(
     return tuple(deduped)
 
 
+def _apply_date_surface_validators(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Repair date-like answers when explicit evidence provides a better concrete date."""
+    metadata = query_metadata or {}
+    variable_name = _query_variable_name(metadata)
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return response
+
+    is_scalar_date = _is_date_placeholder_response_options(response_options)
+    is_status_date = _is_status_date_response_options(response_options)
+    if not is_scalar_date and not is_status_date:
+        return response
+
+    texts = _collect_evidence_texts(response, sections)
+    explicit_date: str | None = None
+    if variable_name in _CURRENT_THROUGH_VARIABLE_NAMES:
+        explicit_date = _extract_explicit_date_from_texts(
+            texts,
+            _CURRENT_THROUGH_DATE_PATTERNS,
+        )
+    elif variable_name in _ENACTED_VARIABLE_NAMES:
+        explicit_date = _extract_explicit_date_from_texts(
+            texts,
+            _EXPLICIT_ENACTED_DATE_PATTERNS,
+        )
+    elif variable_name in _EFFECTIVE_DATE_VARIABLE_NAMES:
+        explicit_date = _extract_explicit_date_from_texts(
+            texts,
+            _EXPLICIT_EFFECTIVE_DATE_PATTERNS,
+        )
+
+    if explicit_date is None:
+        return response
+
+    if is_status_date:
+        label = _extract_status_date_label(response.short_answer, response_options) or "Known"
+        updated_short_answer = f"{label}, {explicit_date}"
+    else:
+        updated_short_answer = explicit_date
+
+    if updated_short_answer == response.short_answer:
+        return response
+
+    return response.model_copy(update={"short_answer": updated_short_answer})
+
+
+def _apply_ssp_permit_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Treat an express permit-required SSP operating regime as affirmative authorization."""
+    metadata = query_metadata or {}
+    if _query_variable_name(metadata) not in _SSP_PERMIT_VARIABLE_NAMES:
+        return response
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if response_options != "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared":
+        return response
+    if str(response.short_answer or "").strip() != "No":
+        return response
+
+    evidence_text = _collect_review_text(sections)
+    if not any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
+    ):
+        return response
+
+    return response.model_copy(update={"short_answer": "Yes"})
+
+
 def _build_current_through_metadata_retrieval_query(retrieval_query: str) -> str:
     """Force a metadata-only retrieval pass for current-through questions."""
     return (
@@ -4238,6 +4441,7 @@ _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
     "prohibited_activity",
     "penalty",
     "exemption_presence",
+    "exemption_activity_scope",
 }
 
 _FALLBACK_OPTION_BY_GUIDANCE_TOPIC = {
@@ -4285,7 +4489,7 @@ def _authoritative_option_supports_selection(
     ):
         snippet = None
 
-    if guidance_topic in {"prohibited_activity", "penalty"}:
+    if guidance_topic in {"prohibited_activity", "penalty", "exemption_activity_scope"}:
         return bool(snippet) or (not patterns and has_option_specific_support)
 
     return bool(snippet) or has_option_specific_support
@@ -4904,6 +5108,37 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             ),
         }
 
+    if guidance_topic == "exemption_activity_scope":
+        return {
+            _normalize_option_text("Possession"): (
+                r"\bpossession\b",
+                r"\bpossess(?:ion|ed)?\b",
+            ),
+            _normalize_option_text("Use"): (
+                r"\bexclusive purpose of[^.\n]{0,40}\buse\b",
+                r"\bcannabis use\b",
+                r"\bmarijuana use\b",
+            ),
+            _normalize_option_text("Distribution"): (
+                r"\bdistribution\b",
+                r"\bdistribut(?:e|ion)\b",
+                r"\bdeliver(?:y)?\b",
+                r"\bexchange\b",
+                r"\bgive away\b",
+            ),
+            _normalize_option_text("Sales"): (
+                r"\bsell\b",
+                r"\bsale\b",
+                r"\boffer for sale\b",
+                r"\bcommerce\b[^.\n]{0,25}\bsale\b",
+            ),
+            _normalize_option_text("Manufacturing"): (
+                r"\bmanufactur(?:e|ing)\b",
+                r"\bprepare\b",
+                r"\bcompound\b",
+            ),
+        }
+
     return {}
 
 
@@ -4952,10 +5187,12 @@ def _build_answer_review_decision(
                     )
                 )
 
-        if _is_scalar_date_response_options(response_options) or _is_status_date_response_options(
+        if _is_date_placeholder_response_options(response_options) or _is_status_date_response_options(
             response_options
         ):
             review_text = _collect_review_text(sections)
+            evidence_texts = _collect_evidence_texts(response, sections)
+            variable_name = _query_variable_name(metadata)
             if re.fullmatch(r"07/15/\d{4}", str(response.short_answer).strip()) and not re.search(
                 r"\b\d{1,2}/\d{1,2}/\d{4}\b",
                 review_text,
@@ -4964,6 +5201,17 @@ def _build_answer_review_decision(
                     AnswerReviewSignal(
                         option="short_answer",
                         issue="date_answer_uses_year_only_imputation",
+                    )
+                )
+
+            if variable_name in _CURRENT_THROUGH_VARIABLE_NAMES and not _date_answer_has_explicit_support(
+                response.short_answer,
+                evidence_texts,
+            ):
+                generic_reasons.append(
+                    AnswerReviewSignal(
+                        option="short_answer",
+                        issue="current_through_answer_lacks_explicit_date_support",
                     )
                 )
 
@@ -4988,6 +5236,21 @@ def _build_answer_review_decision(
                             ),
                         )
                     )
+
+        if (
+            _query_variable_name(metadata) in _SSP_PERMIT_VARIABLE_NAMES
+            and response.short_answer == "No"
+            and any(
+                re.search(pattern, _collect_review_text(sections), re.IGNORECASE)
+                for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
+            )
+        ):
+            generic_reasons.append(
+                AnswerReviewSignal(
+                    option="short_answer",
+                    issue="ssp_permit_no_conflicts_with_explicit_permit_authorization",
+                )
+            )
 
     if not guidance_topic or guidance_topic not in settings.answer_review_topics:
         if generic_reasons:
