@@ -191,7 +191,8 @@ def ask(
     # Set sensible defaults using config
     from legiscope.llm_config import Config
 
-    params = Config.get_llm_params(**kwargs)
+    clean_kwargs = {key: value for key, value in kwargs.items() if value is not None}
+    params = Config.get_llm_params(**clean_kwargs)
 
     # Build messages
     messages = []

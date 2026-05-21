@@ -54,7 +54,7 @@ embeddings:
   providers:
     mistral:
       model: codestral-embed-2505
-      batch_size: 100
+      batch_size: 50
 
     ollama:
       model: embeddinggemma

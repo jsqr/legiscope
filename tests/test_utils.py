@@ -155,6 +155,25 @@ class TestAskFunction:
             max_retries=DEFAULT_MAX_RETRIES,
         )
 
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_none_kwargs_are_not_forwarded(self, mock_get_llm_params):
+        mock_get_llm_params.return_value = {
+            "max_retries": DEFAULT_MAX_RETRIES,
+        }
+        mock_client = Mock()
+        mock_response = MockResponseModel(name="test", value=42)
+        mock_client.chat.completions.create.return_value = mock_response
+
+        ask(
+            client=mock_client,
+            prompt="test prompt",
+            response_model=MockResponseModel,
+            model="gpt-5.5-2026-04-23",
+            temperature=None,
+        )
+
+        mock_get_llm_params.assert_called_once_with(model="gpt-5.5-2026-04-23")
+
 
 class TestStr2Bool:
     """Test str2bool function."""

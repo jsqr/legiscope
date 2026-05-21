@@ -86,6 +86,18 @@ def _litellm_uses_fixed_temperature(model: str) -> bool:
     return normalized.startswith("gpt-5")
 
 
+def _apply_provider_specific_llm_params(provider: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Normalize provider-specific request params after all overrides are merged."""
+    if provider == "litellm":
+        model = str(params.get("model") or "")
+        if _litellm_uses_fixed_temperature(model) and params.get("temperature") == 0.0:
+            params.pop("temperature", None)
+        if "max_retries" in params:
+            params["num_retries"] = params.pop("max_retries")
+
+    return params
+
+
 def _build_client(provider: str, model: str, mode: instructor.Mode | None) -> Instructor:
     """Construct an instructor client for the configured provider/model pair."""
     if provider == "litellm":
@@ -232,14 +244,6 @@ class Config:
             "max_retries": llm.get("max_retries", 3),
         }
 
-        if cls.get_llm_provider() == "litellm":
-            model = kwargs.get("model") or cls.get_powerful_model()
-            if _litellm_uses_fixed_temperature(str(model)) and params.get(
-                "temperature"
-            ) == 0.0:
-                params.pop("temperature", None)
-            params["num_retries"] = params.pop("max_retries")
-
         # Ollama-specific context limit from params.yaml
         if cls.get_llm_provider() == "ollama":
             config = _get_provider_config()
@@ -249,4 +253,4 @@ class Config:
                 logger.debug(f"Ollama num_ctx set to {num_ctx}")
 
         params.update(kwargs)
-        return params
+        return _apply_provider_specific_llm_params(cls.get_llm_provider(), params)
