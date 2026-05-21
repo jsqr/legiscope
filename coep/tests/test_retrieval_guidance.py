@@ -69,6 +69,7 @@ class TestCoepRetrievalGuidance:
         assert "Retrieve penalty sections" in guidance.retrieval_instructions
         assert "Penalty, see §" in guidance.retrieval_instructions
         assert "Exact legal labels matter" in guidance.relevance_instructions
+        assert "generic default-penalty" in guidance.relevance_instructions
         assert guidance.retrieval_query is not None
         assert "misdemeanor" in guidance.retrieval_query
         assert guidance.enable_relevance_filter is True
@@ -76,6 +77,7 @@ class TestCoepRetrievalGuidance:
         assert "assign the exact labels" in guidance.completion_instructions
         assert "DO NOT answer Unlawful only" in guidance.completion_instructions
         assert "Do NOT translate a misdemeanor degree" in guidance.completion_instructions
+        assert "Generic default penalties" in guidance.completion_instructions
         assert "license revocation" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
 
@@ -116,12 +118,14 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.guidance_topic == "exemption_presence"
         assert guidance.completion_instructions is not None
+        assert "medical-marijuana zoning" in guidance.relevance_instructions
         assert (
             "only code labels found directly in operative exemption text"
             in guidance.completion_instructions
         )
         assert "Evaluate each exemption label independently" in guidance.completion_instructions
         assert "tobacco-only exceptions" in guidance.completion_instructions
+        assert "cannabis decriminalization" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
         assert (
             "syringe-exchange-facility text expressly authorizes"
@@ -204,6 +208,22 @@ class TestCoepRetrievalGuidance:
         assert guidance.enable_relevance_filter is True
         assert "Business-only restrictions do not count" in guidance.completion_instructions
         assert "small business-only mentions" in guidance.completion_instructions
+
+    def test_returns_guidance_for_state_reference_variable_with_harder_negative_rules(self):
+        request = RetrievalGuidanceRequest(
+            query="Does local law require state-law review?",
+            variable_name="dp_state_fed_reference",
+        )
+
+        guidance = get_drug_paraphernalia_retrieval_guidance(request)
+
+        assert guidance is not None
+        assert guidance.guidance_topic == "reference_necessity"
+        assert guidance.relevance_instructions is not None
+        assert "controlled-substance schedules" in guidance.relevance_instructions
+        assert guidance.completion_instructions is not None
+        assert "controlled-substance schedules" in guidance.completion_instructions
+        assert "do not count by themselves" in guidance.completion_instructions
 
     def test_relevance_filter_resolution_honors_global_switch_and_guidance_override(self):
         enabled_guidance = get_drug_paraphernalia_retrieval_guidance(
@@ -541,7 +561,7 @@ class TestCoepRetrievalGuidance:
         assert "commercial-cannabis" in guidance.retrieval_instructions
         assert guidance.completion_instructions is not None
         assert (
-            "Do NOT treat unrelated commercial-cannabis or marijuana-business provisions as cannabis exemptions"
+            "cannabis decriminalization, medical-marijuana zoning, marijuana-business permissions, general business-use permissions"
             in guidance.completion_instructions
         )
         assert (
