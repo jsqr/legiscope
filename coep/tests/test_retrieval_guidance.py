@@ -72,6 +72,7 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert "assign the exact labels" in guidance.completion_instructions
         assert "DO NOT answer Unlawful only" in guidance.completion_instructions
+        assert "Do NOT translate a misdemeanor degree" in guidance.completion_instructions
         assert "license revocation" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
 
@@ -116,6 +117,7 @@ class TestCoepRetrievalGuidance:
             "only code labels found directly in operative exemption text"
             in guidance.completion_instructions
         )
+        assert "Evaluate each exemption label independently" in guidance.completion_instructions
         assert "tobacco-only exceptions" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
         assert (
@@ -155,6 +157,7 @@ class TestCoepRetrievalGuidance:
         )
         assert "same operative sentence/subsection" in guidance.completion_instructions
         assert "cannabis use or commerce" in guidance.completion_instructions
+        assert "Be conservative and label-by-label" in guidance.completion_instructions
 
     def test_ssp_law_guidance_treats_emergency_exchange_authorization_as_yes(self):
         request = RetrievalGuidanceRequest(
@@ -175,6 +178,8 @@ class TestCoepRetrievalGuidance:
         assert "ssp_law should be coded as Yes" in guidance.completion_instructions
         assert "Reserve the conditional answer wording for ssp_permit" in guidance.completion_instructions
         assert "Do not require an explicit authorization clause" in guidance.completion_instructions
+        assert "Declaration of Local Public Health Emergency" in guidance.completion_instructions
+        assert "clean needle and syringe exchange projects" in guidance.completion_instructions
 
     def test_dp_guidance_adds_direct_topic_scope_guardrail(self):
         request = RetrievalGuidanceRequest(
@@ -190,6 +195,9 @@ class TestCoepRetrievalGuidance:
             "Only rely on sections that directly address drug paraphernalia used with controlled substances"
             in guidance.shared_context
         )
+        assert guidance.completion_instructions is not None
+        assert "Business-only restrictions do not count" in guidance.completion_instructions
+        assert "small business-only mentions" in guidance.completion_instructions
 
     def test_exemption_activity_guidance_uses_parent_contexts(self):
         hierarchy = QueryHierarchy(

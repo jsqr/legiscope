@@ -22,6 +22,7 @@ SKIP_BENCHMARK=false
 CODE_SLUG="municipal-code"
 OPEN_AFTER=false
 BATCH_ID=""
+LATEST_ONLY=false
 SSH_COMMON_ARGS=()
 OPEN_TARGETS=()
 
@@ -60,6 +61,8 @@ Options:
                                                             (default: <repo>/data/laws)
     --skip-benchmark            Skip benchmark artifact download and only pull
                                                             requested code artifacts
+        --latest-only               Pull only the newest timestamped benchmark and
+                                                                                                                        matching debug artifacts per jurisdiction
   --ssh-jump TARGET           Optional SSH jump host, e.g. user@gw.hpc.nyu.edu
     --include-timestamped       Backward-compatible no-op; timestamped results
                                                             are pulled by default
@@ -94,6 +97,7 @@ Examples:
     ./coep/scripts/HPC_scripts/pull_bigpurple_results.sh \
         --netid tmh8501 \
         --jurisdiction PA-Philadelphia \
+        --latest-only \
         --include-code-artifacts \
         --skip-benchmark
 EOF
@@ -190,6 +194,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-benchmark)
             SKIP_BENCHMARK=true
+            shift
+            ;;
+        --latest-only)
+            LATEST_ONLY=true
             shift
             ;;
         --ssh-jump)
@@ -300,6 +308,12 @@ latest_timestamped_benchmark_file() {
     local target_dir="$1"
 
     find "$target_dir" -maxdepth 1 -type f -name 'benchmark_results_*.csv' | sort | tail -n 1
+}
+
+latest_remote_benchmark_timestamp() {
+    local remote_output_dir="$1"
+
+    ssh_run "$REMOTE" "find '${remote_output_dir}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' -exec basename {} \\; | sed -nE 's/^benchmark_results_([0-9]{8}_[0-9]{6})\\.csv$/\\1/p' | sort | tail -n 1"
 }
 
 batch_remote_dir() {
@@ -420,8 +434,10 @@ pull_jurisdiction() {
     local remote_code_check_cmd=""
     local latest_timestamped_csv=""
     local latest_timestamped_metrics_json=""
+    local latest_remote_timestamp=""
     local debug_file_count="0"
     local raw_file_count="0"
+    local benchmark_rsync_filters=()
 
     say "=== Pull BigPurple Artifacts ==="
     say "Remote        : ${REMOTE}"
@@ -495,10 +511,47 @@ EOF
         mkdir -p "$local_code_dir"
     fi
 
+    if [[ "$SKIP_BENCHMARK" == false && "$LATEST_ONLY" == true ]]; then
+        say ">>> Resolving newest remote benchmark timestamp"
+        if [[ "$DRY_RUN" == true ]]; then
+            say "ssh ${REMOTE} \"find '${remote_output_dir}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' ...\""
+        else
+            latest_remote_timestamp="$(latest_remote_benchmark_timestamp "$remote_output_dir")"
+        fi
+        if [[ -n "$latest_remote_timestamp" ]]; then
+            say "Latest benchmark timestamp: ${latest_remote_timestamp}"
+        else
+            say "Latest benchmark timestamp: not found; falling back to canonical benchmark files only"
+        fi
+    fi
+
+    benchmark_rsync_filters=(--include='*/')
+    if [[ "$LATEST_ONLY" == true ]]; then
+        benchmark_rsync_filters+=(--include='benchmark_results.csv')
+        benchmark_rsync_filters+=(--include='benchmark_metrics.json')
+        benchmark_rsync_filters+=(--include='batch_metadata.json')
+        if [[ -n "$latest_remote_timestamp" ]]; then
+            benchmark_rsync_filters+=(--include="benchmark_results_${latest_remote_timestamp}.csv")
+            benchmark_rsync_filters+=(--include="benchmark_metrics_${latest_remote_timestamp}.json")
+            benchmark_rsync_filters+=(--include="debug/*_${latest_remote_timestamp}.csv")
+        fi
+    else
+        benchmark_rsync_filters+=(
+            --include='benchmark_results_*.csv'
+            --include='benchmark_results_batch_*.csv'
+            --include='benchmark_metrics.json'
+            --include='benchmark_metrics_*.json'
+            --include='benchmark_metrics_batch_*.json'
+            --include='batch_metadata.json'
+            --include='debug/***'
+        )
+    fi
+    benchmark_rsync_filters+=(--exclude='*')
+
     if [[ "$SKIP_BENCHMARK" == false ]]; then
         say ">>> Pulling benchmark artifacts"
         rsync "${RSYNC_ARGS[@]}" \
-            "${RSYNC_FILTERS[@]}" \
+            "${benchmark_rsync_filters[@]}" \
             -e "$RSYNC_RSH" \
             "${REMOTE}:${remote_output_dir}/" \
             "${local_target_dir}/"
@@ -602,6 +655,10 @@ if [[ "$SKIP_BENCHMARK" == true && "$INCLUDE_CODE_ARTIFACTS" == false ]]; then
     die "--skip-benchmark requires --include-code-artifacts"
 fi
 
+if [[ "$LATEST_ONLY" == true && -n "$BATCH_ID" ]]; then
+    die "--latest-only cannot be combined with --batch-id; pass explicit jurisdictions instead"
+fi
+
 REMOTE="${NETID}@${HOST}"
 
 build_rsync_rsh
@@ -614,19 +671,6 @@ RSYNC_ARGS=(-avzc --progress)
 if [[ "$DRY_RUN" == true ]]; then
     RSYNC_ARGS+=(-n)
 fi
-
-RSYNC_FILTERS=(
-    --include='*/'
-    --include='benchmark_results_*.csv'
-    --include='benchmark_results_batch_*.csv'
-    --include='benchmark_metrics.json'
-    --include='benchmark_metrics_*.json'
-    --include='benchmark_metrics_batch_*.json'
-    --include='batch_metadata.json'
-    --include='debug/***'
-)
-
-RSYNC_FILTERS+=(--exclude='*')
 
 if [[ -n "$BATCH_ID" ]]; then
     pull_batch_manifest
