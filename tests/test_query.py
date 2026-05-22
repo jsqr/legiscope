@@ -498,6 +498,128 @@ class TestAuthoritativeOptionEvidenceGate:
         ]
 
 
+class TestSecondStageStructuredValidators:
+    def test_reference_necessity_forces_no_for_definition_only_support(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="Initial answer treated a controlled-substance definition as operative outside-law support.",
+            citations=["Health and Safety Code § 11054"],
+            supporting_passages=[
+                "Controlled substance means a drug listed in Schedule I through V of the Health and Safety Code."
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Yes",
+                    selected=True,
+                    citations=["Health and Safety Code § 11054"],
+                    supporting_passages=[
+                        "Controlled substance means a drug listed in Schedule I through V of the Health and Safety Code."
+                    ],
+                ),
+                ResponseOptionEvidence(option="No", selected=False),
+            ],
+        )
+
+        validated = query_module._apply_reference_necessity_validator(
+            response,
+            [],
+            {
+                "variable_name": "dp_state_fed_reference",
+                "guidance_topic": "reference_necessity",
+                "response_options": "Yes OR No",
+            },
+        )
+
+        assert validated.short_answer == "No"
+        assert [item.option for item in validated.option_evidence if item.selected] == [
+            "No"
+        ]
+
+    def test_penalty_validator_suppresses_inferred_labels_from_default_penalty_text(self):
+        response = LegalQueryResponse(
+            short_answer="Criminal Fine AND/OR Incarceration",
+            reasoning="Initial answer inferred benchmark sanctions from a generic default-penalty cross-reference.",
+            citations=["§ 1-8-1"],
+            supporting_passages=[
+                "A violation is a class A offense and punishable as provided in the general penalty section."
+            ],
+            confidence=0.55,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=False),
+                ResponseOptionEvidence(option="Criminal Fine", selected=True),
+                ResponseOptionEvidence(option="Incarceration", selected=True),
+            ],
+        )
+
+        validated = query_module._apply_penalty_specificity_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Criminal Fine AND/OR Incarceration',
+            },
+        )
+
+        assert validated.short_answer == '"Unlawful" only'
+        assert [item.option for item in validated.option_evidence if item.selected] == [
+            '"Unlawful" only'
+        ]
+
+    def test_exemption_gate_drops_cannabis_business_zoning_noise_without_carveout(self):
+        response = LegalQueryResponse(
+            short_answer="Paraphernalia for consumption of cannabis, generally or medical use",
+            reasoning="Initial answer treated cannabis-business zoning text as an exemption.",
+            citations=["§ 12-4-10"],
+            supporting_passages=[
+                "Cannabis retail businesses are a permitted use in this zoning district."
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="None", selected=False),
+                ResponseOptionEvidence(
+                    option="Paraphernalia for consumption of cannabis, generally or medical use",
+                    selected=True,
+                    citations=["§ 12-4-10"],
+                    supporting_passages=[
+                        "Cannabis retail businesses are a permitted use in this zoning district."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-noise",
+                heading_text="# Zoning",
+                body_text="Cannabis retail businesses are a permitted use in this zoning district.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "exemption_presence",
+                "response_options": (
+                    "None AND/OR Paraphernalia for consumption of cannabis, generally or medical use"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "None"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "None"
+        ]
+
+
 class TestTimeoutExecution:
     """Test timeout behavior for wrapped LLM calls."""
 

@@ -1,0 +1,30 @@
+Newest CSV: data/output/all_jurisdictions/batches/trial7_dpl_ssp_20260521_1815/20260521_191139/all_jurisdictions_benchmark_20260521_191139.csv
+Previous CSV: data/output/all_jurisdictions/batches/trial7_dpl_ssp_20260521_1800/20260521_175510/all_jurisdictions_benchmark_20260521_175510.csv
+Rows: new=446 old=446 shared=231
+Row-level: improved=0 regressed=0
+Improved rows:
+Regressed rows:
+Collapsed query-level changes:
+Newest incorrect rows: total=209
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_enacted", "ground_truth": "", "generated_answer": "04/04/2017", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_effective_dt", "ground_truth": "", "generated_answer": "06/16/1980", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_collected", "ground_truth": "", "generated_answer": "09/30/2025", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_valid_imp", "ground_truth": "", "generated_answer": "Known, current through date published in ordinance", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_state_fed_reference", "ground_truth": "", "generated_answer": "Yes", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_state_fed_citation", "ground_truth": "", "generated_answer": "Unknown", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_type", "ground_truth": "", "generated_answer": "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR Other", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_penalties", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exemption", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_sygen_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_sy_ssp_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_can_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_DCEgen_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_fentDCE_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_xyDCE_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_DCE_ssp_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_fentDCE_ssp_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_xyDCE_ssp_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+{"jurisdiction": "CA-LosAngeles", "variable_name": "dp_exempt_SEgen_activity", "ground_truth": "", "generated_answer": "I cannot answer your question as no relevant legal provisions were found after filtering.", "eval_label": "", "eval_error": "false", "category": "source-text issue", "artifact_paths": []}
+Los Angeles rows:
+Los Angeles debug/code hits:

@@ -1867,6 +1867,9 @@ def query_legal_documents(
             sections,
             query_metadata,
         )
+        response = _apply_reference_necessity_validator(response, sections, query_metadata)
+        response = _apply_penalty_specificity_validator(response, sections, query_metadata)
+        response = _apply_exemption_noise_validator(response, sections, query_metadata)
         response = _normalize_response_citations(response, query_metadata)
         response = _apply_date_surface_validators(response, sections, query_metadata)
         response = _apply_ssp_permit_validator(response, sections, query_metadata)
@@ -4464,6 +4467,140 @@ _FALLBACK_OPTION_BY_GUIDANCE_TOPIC = {
     "exemption_presence": "None",
 }
 
+_REFERENCE_DEFINITION_ONLY_PATTERNS = (
+    r"\bcontrolled substances?\b",
+    r"\bcontrolled substance[s']* act\b",
+    r"\buniform controlled substances act\b",
+    r"\bschedule\s+[ivx]+\b",
+    r"\bhealth and safety code\b",
+    r"\b21\s*u\.?s\.?c\.?\b",
+)
+
+_REFERENCE_EXPLICIT_INCORPORATION_PATTERNS = (
+    r"\bincorporat(?:e|ed|es|ing) by reference\b",
+    r"\badopt(?:s|ed|ing)?\b[^.\n]{0,40}\bby reference\b",
+    r"\bauthorized by\b",
+    r"\bauthorized pursuant to\b",
+    r"\bas permitted by\b",
+    r"\blawful under\b",
+    r"\bin accordance with\b",
+    r"\bin compliance with\b",
+    r"\bpursuant to\b",
+    r"\bsubject to\b[^.\n]{0,40}\b(?:federal|state) law\b",
+)
+
+_DEFAULT_PENALTY_REFERENCE_PATTERNS = (
+    r"\bgeneral penalty\b",
+    r"\bdefault penalty\b",
+    r"\bpunish(?:ed|able)?\b[^.\n]{0,40}\bprovided in\b",
+    r"\bsubject to\b[^.\n]{0,40}\bpenalt(?:y|ies)\b",
+    r"\bpenalt(?:y|ies)\b[^.\n]{0,40}\bsection\b",
+    r"\bclass\s+[a-z0-9-]+\s+(?:offense|violation)\b",
+)
+
+_EXEMPTION_CARVEOUT_PATTERNS = (
+    r"\bdoes not apply\b",
+    r"\bshall not apply\b",
+    r"\bdoes not include\b",
+    r"\bshall not include\b",
+    r"\bnothing in this (?:section|chapter|article) shall apply\b",
+    r"\bexcept(?:ion)?\b",
+    r"\bexempt(?:ion|ed)?\b",
+    r"\bdefense to prosecution\b",
+)
+
+_EXEMPTION_NOISE_ONLY_PATTERNS = (
+    r"\bcannabis\b[^.\n]{0,60}\b(?:business|retail|dispensary|establishment|commerce|commercial)\b",
+    r"\b(?:business|retail|dispensary|establishment|commerce|commercial)\b[^.\n]{0,60}\bcannabis\b",
+    r"\bmedical marijuana\b[^.\n]{0,60}\b(?:business|dispensary|zoning|land use)\b",
+    r"\bzoning\b",
+    r"\bland use\b",
+    r"\bdecriminali[sz](?:e|ed|ation)\b",
+    r"\btobacco\b",
+)
+
+
+def _rewrite_structured_response_options(
+    response: LegalQueryResponse,
+    final_options: tuple[str, ...],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Rewrite a structured answer so its short answer and option evidence reflect final options."""
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return response
+    _options, separator = _split_response_options(response_options)
+    if separator not in {" AND/OR ", " OR "}:
+        return response
+
+    current_options = _selected_response_options_from_option_evidence(
+        response.option_evidence
+    )
+    gated_short_answer = (
+        separator.join(final_options)
+        if separator == " AND/OR "
+        else final_options[0]
+    )
+    if current_options == final_options and response.short_answer == gated_short_answer:
+        return response
+
+    selected_lookup = {_normalize_option_text(option) for option in final_options}
+    gated_option_evidence = [
+        item.model_copy(
+            update={"selected": _normalize_option_text(item.option) in selected_lookup}
+        )
+        for item in response.option_evidence
+    ]
+    return response.model_copy(
+        update={
+            "short_answer": gated_short_answer,
+            "option_evidence": gated_option_evidence,
+        }
+    )
+
+
+def _resolve_declared_response_option(
+    options: list[str],
+    target_option: str,
+) -> str | None:
+    """Return the declared option label whose normalized text matches the target option."""
+    target_normalized = _normalize_option_text(target_option)
+    for option in options:
+        if _normalize_option_text(option) == target_normalized:
+            return option
+    return None
+
+
+def _reference_support_is_definition_only(evidence_text: str) -> bool:
+    """Return whether outside-law support is limited to controlled-substance definitions or schedules."""
+    if not evidence_text.strip():
+        return False
+    if any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _REFERENCE_EXPLICIT_INCORPORATION_PATTERNS
+    ):
+        return False
+    return any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _REFERENCE_DEFINITION_ONLY_PATTERNS
+    )
+
+
+def _exemption_support_is_noise_only(evidence_text: str) -> bool:
+    """Return whether exemption evidence is only business/zoning/decriminalization/tobacco noise."""
+    if not evidence_text.strip():
+        return False
+    if any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _EXEMPTION_CARVEOUT_PATTERNS
+    ):
+        return False
+    return any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _EXEMPTION_NOISE_ONLY_PATTERNS
+    )
+
 
 def _authoritative_option_supports_selection(
     *,
@@ -4477,6 +4614,12 @@ def _authoritative_option_supports_selection(
     normalized = _normalize_option_text(option)
     fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC.get(guidance_topic)
     if fallback_option and normalized == _normalize_option_text(fallback_option):
+        return False
+
+    if (
+        guidance_topic == "exemption_presence"
+        and _exemption_support_is_noise_only(evidence_text)
+    ):
         return False
 
     has_option_specific_support = bool(
@@ -4546,7 +4689,12 @@ def _authoritative_response_options_from_evidence(
         return tuple(supported_options)
 
     fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC.get(guidance_topic)
-    if fallback_option and fallback_option in options:
+    declared_fallback_option = (
+        _resolve_declared_response_option(options, fallback_option)
+        if fallback_option
+        else None
+    )
+    if declared_fallback_option is not None:
         return (fallback_option,)
     return None
 
@@ -4582,37 +4730,124 @@ def _apply_authoritative_option_evidence_gate(
         query_metadata,
     )
 
+    return _rewrite_structured_response_options(response, final_options, query_metadata)
+
+
+def _apply_reference_necessity_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Force No when state/federal-reference support is only schedule or definition text."""
     metadata = query_metadata or {}
+    if _query_variable_name(metadata) != "dp_state_fed_reference":
+        return response
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if response_options != "Yes OR No":
+        return response
+    if str(response.short_answer or "").strip() != "Yes":
+        return response
+
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    if not _reference_support_is_definition_only(evidence_text):
+        return response
+
+    return _rewrite_structured_response_options(response, ("No",), query_metadata)
+
+
+def _apply_penalty_specificity_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Suppress inferred penalty labels when the evidence only gives default/offense-class cues."""
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if guidance_topic != "penalty":
+        return response
+
     response_options = _clean_response_options(metadata.get("response_options"))
     if not response_options:
         return response
-    _options, separator = _split_response_options(response_options)
-    if separator not in {" AND/OR ", " OR "}:
+
+    selected_options = _selected_response_options_from_option_evidence(response.option_evidence)
+    fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC["penalty"]
+    selected_specific_options = tuple(
+        option
+        for option in selected_options
+        if _normalize_option_text(option) != _normalize_option_text(fallback_option)
+    )
+    if not selected_specific_options:
         return response
 
-    current_options = _selected_response_options_from_option_evidence(
-        response.option_evidence
-    )
-    gated_short_answer = (
-        separator.join(final_options)
-        if separator == " AND/OR "
-        else final_options[0]
-    )
-    if current_options == final_options and response.short_answer == gated_short_answer:
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    if not any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _DEFAULT_PENALTY_REFERENCE_PATTERNS
+    ):
         return response
 
-    selected_lookup = {_normalize_option_text(option) for option in final_options}
-    gated_option_evidence = [
-        item.model_copy(
-            update={"selected": _normalize_option_text(item.option) in selected_lookup}
-        )
-        for item in response.option_evidence
-    ]
-    return response.model_copy(
-        update={
-            "short_answer": gated_short_answer,
-            "option_evidence": gated_option_evidence,
-        }
+    option_patterns = _option_pattern_map("penalty")
+    if any(
+        _strong_option_support_signal(
+            guidance_topic="penalty",
+            option=option,
+            evidence_text=evidence_text,
+            option_patterns=option_patterns,
+        )[0]
+        for option in selected_specific_options
+    ):
+        return response
+
+    options, _separator = _split_response_options(response_options)
+    declared_fallback_option = _resolve_declared_response_option(options, fallback_option)
+    if declared_fallback_option is None:
+        return response
+    return _rewrite_structured_response_options(
+        response,
+        (fallback_option,),
+        query_metadata,
+    )
+
+
+def _apply_exemption_noise_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Force the exemption family to its fallback when only noisy non-carveout text remains."""
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if guidance_topic != "exemption_presence":
+        return response
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return response
+
+    selected_options = _selected_response_options_from_option_evidence(response.option_evidence)
+    fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC["exemption_presence"]
+    selected_specific_options = tuple(
+        option
+        for option in selected_options
+        if _normalize_option_text(option) != _normalize_option_text(fallback_option)
+    )
+    if not selected_specific_options:
+        return response
+
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    if not _exemption_support_is_noise_only(evidence_text):
+        return response
+
+    options, _separator = _split_response_options(response_options)
+    declared_fallback_option = _resolve_declared_response_option(options, fallback_option)
+    if declared_fallback_option is None:
+        return response
+    return _rewrite_structured_response_options(
+        response,
+        (fallback_option,),
+        query_metadata,
     )
 
 
