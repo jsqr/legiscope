@@ -78,6 +78,9 @@ class TestCoepRetrievalGuidance:
         assert "DO NOT answer Unlawful only" in guidance.completion_instructions
         assert "Do NOT translate a misdemeanor degree" in guidance.completion_instructions
         assert "Generic default penalties" in guidance.completion_instructions
+        assert "suppress Unlawful only" in guidance.completion_instructions
+        assert "penalty class" in guidance.completion_instructions
+        assert "Keep Civil Fine separate from Forfeiture/Seizure" in guidance.completion_instructions
         assert "license revocation" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
         assert "nuisance, licensing, zoning, or business-remedy text" in guidance.relevance_instructions
@@ -129,6 +132,8 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "Evaluate each exemption label independently" in guidance.completion_instructions
+        assert "lawful use of hypodermic syringes" in guidance.completion_instructions
+        assert "If any explicit exemption label is supported, do not return None" in guidance.completion_instructions
         assert "tobacco-only exceptions" in guidance.completion_instructions
         assert "cannabis decriminalization" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
@@ -170,6 +175,8 @@ class TestCoepRetrievalGuidance:
         )
         assert "same operative sentence/subsection" in guidance.completion_instructions
         assert "cannabis use or commerce" in guidance.completion_instructions
+        assert "Only map Distribution/Sales/Use when those verbs" in guidance.completion_instructions
+        assert "Require at least one direct quote per selected activity label" in guidance.completion_instructions
         assert "Be conservative and label-by-label" in guidance.completion_instructions
 
     def test_ssp_law_guidance_treats_emergency_exchange_authorization_as_yes(self):
@@ -819,6 +826,8 @@ class TestCoepRetrievalGuidance:
         assert "bare authorization" in guidance.completion_instructions
         assert "formal local operating permit or license" in guidance.completion_instructions
         assert "non-fixed-location operation" in guidance.completion_instructions
+        assert "quantity caps/max/per participant/per visit" in guidance.relevance_instructions
+        assert "one-vs-many guard" in guidance.completion_instructions
         assert guidance.enable_relevance_backfill is None
 
     def test_returns_guidance_for_ssp_prohibition_variable(self):

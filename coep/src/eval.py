@@ -199,6 +199,9 @@ class Evaluator:
         - The ground truth may contain binary results, where 0 = "No" and 1 = "Yes". 
           The generated answer may use different phrasing (e.g., "No", "False", "0", "Negative" for 0). 
           Focus on the meaning rather than exact wording.
+                - When the generated payload includes both a short answer and supporting reasoning, treat the short answer as authoritative for correctness.
+                - If the short answer and reasoning conflict, prioritize the short answer's semantic match to the ground truth for `accuracy_label` and `error_type`.
+                    Do not mark an answer incorrect solely because the reasoning text is inconsistent when the short answer itself is correct.
 
                 OUTPUT REQUIREMENTS:
                 - Return exactly one JSON object representing an EvaluationResult instance.

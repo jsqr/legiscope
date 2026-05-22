@@ -888,6 +888,9 @@ _VARIABLE_OVERRIDES = {
             "Criminal Fine, Incarceration, Forfeiture/Seizure, or Other unless the text itself states those exact sanctions or an "
             "explicitly cross-referenced section states them. Generic default penalties, offense classes, and boilerplate criminal classifications do not count by themselves unless the text states the benchmark concept directly. "
             "If penalties are provided in another section, retrieve and code that section before choosing Unlawful only. "
+            "If any concrete sanction appears (fine amount/class, incarceration term, forfeiture, seizure), suppress Unlawful only and code the concrete labels instead. "
+            "Use Criminal Fine when fine language is tied to misdemeanor/felony class or explicit penalty class references. "
+            "Keep Civil Fine separate from Forfeiture/Seizure; do not infer one from the other. "
             "Include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If "
             "the text supports only Unlawful and Civil Fine, do not add Other as a hedge. IGNORE business-side licensing or "
             "permitting consequences such as license revocation, suspension, or denial unless the coding rules explicitly require "
@@ -932,7 +935,10 @@ _VARIABLE_OVERRIDES = {
             "carve-outs to the public-official label, and bona fide religious ritual or ceremony carve-outs to Other. Evaluate each "
             "exemption label independently. Do not add an SSP, DCE, cannabis, medical-use, or professional label just because nearby "
             "retrieved context mentions it; add a label only when the exemption text itself supports that specific label. If no specific "
-            "listed label is directly supported, do not guess and do not use Other as a fallback."
+            "listed label is directly supported, do not guess and do not use Other as a fallback. "
+            "Map lawful use of hypodermic syringes to approved medical-use labels only when medical scope is explicit (e.g., diabetes, insulin, practitioner/prescription context). "
+            "For drug-checking equipment labels, use SSP/harm-reduction context-specific DCE only when SSP/harm-reduction context is explicit; otherwise keep the general DCE label. "
+            "If any explicit exemption label is supported, do not return None."
         ),
         anchor_terms=[
             "exception",
@@ -1091,10 +1097,11 @@ _VARIABLE_OVERRIDES = {
     ),
     "ssp_restrict": RetrievalGuidance(
         relevance_instructions=(
-            "For ssp_restrict, focus on operational limits after SSPs are otherwise recognized by the ordinance. Do not treat a total ban or a bare authorization clause as a restriction. Count only listed operating conditions such as permits, caps, buffers, mobile-site limits, visit limits, or syringe-quantity limits."
+            "For ssp_restrict, focus on operational limits after SSPs are otherwise recognized by the ordinance. Do not treat a total ban or a bare authorization clause as a restriction. Count only listed operating conditions such as permits, caps, buffers, mobile-site limits, visit limits, or syringe-quantity limits. Require explicit lexical triggers for each label (e.g., quantity caps/max/per participant/per visit; mobile/vehicle/van/roving terms; permit/license/registration required for operation)."
         ),
         completion_instructions=(
             "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed. Do not infer `Other restrictions` from general operating requirements, exchange-only language, or coordination duties unless the ordinance states a concrete residual restriction that fits no named label. Do not infer `Restrictions on quantity of syringes that may be provided or exchanged` unless the ordinance expressly limits number, amount, or quantity. Treat site approval, notice, or registration as `Permit or license required for operation` only when the ordinance requires a formal local operating permit or license. Treat mobile-site restrictions only when the ordinance expressly limits mobile or non-fixed-location operation."
+            " Apply a one-vs-many guard: if the evidence contains only one explicit restriction sentence, do not spread that sentence across multiple labels unless each selected label has its own direct lexical trigger in that sentence."
             " If your selected labels conflict with your own reasoning, align the final labels to the cited operative clauses before returning the answer."
         ),
     ),
@@ -1132,7 +1139,9 @@ _VARIABLE_OVERRIDES = {
             "carve-out, fall back to the prohibited activities selected in dp_activity. Do not expand broad phrases such as cannabis use "
             "or commerce into every response option unless the exemption truly operates at the definition-wide level. When a phrase like "
             "`possession ... or activities associated with cannabis use or commerce` appears, do not automatically code Use, Distribution, "
-            "Sales, and Other all together unless the legal text clearly makes those activities exempt. Treat umbrella language as non-specific unless concrete activity verbs are explicitly listed. Be conservative and label-by-label."
+            "Sales, and Other all together unless the legal text clearly makes those activities exempt. Treat umbrella language as non-specific unless concrete activity verbs are explicitly listed. "
+            "Only map Distribution/Sales/Use when those verbs (or direct equivalents) are explicitly present in the exemption text. Do not infer them from broad possession/authorization clauses. "
+            "Require at least one direct quote per selected activity label in option evidence. Be conservative and label-by-label."
         ),
         anchor_terms=[
             "cannabis",

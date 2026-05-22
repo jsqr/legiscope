@@ -3539,24 +3539,75 @@ def _collect_evidence_texts(
 def _extract_explicit_date_from_texts(
     texts: list[str],
     required_patterns: tuple[str, ...],
+    rejected_patterns: tuple[str, ...] = (),
 ) -> str | None:
-    """Extract the first explicit full date from texts matching the required context patterns."""
-    for text in texts:
+    """Extract an explicit date nearest to a scoped anchor phrase.
+
+    Candidates are ranked deterministically by sentence distance to the nearest
+    anchor phrase, then source-text order, then sentence order.
+    """
+    candidates: list[tuple[int, int, int, str]] = []
+    sentence_splitter = re.compile(r"(?<=[.!?])\s+|\n+")
+
+    for text_index, text in enumerate(texts):
         normalized = str(text or "").strip()
         if not normalized:
             continue
-        if required_patterns and not any(
-            re.search(pattern, normalized, re.IGNORECASE)
-            for pattern in required_patterns
-        ):
+
+        sentences = [
+            sentence.strip()
+            for sentence in sentence_splitter.split(normalized)
+            if sentence.strip()
+        ]
+        if not sentences:
             continue
-        explicit_date = _extract_canonical_date(
-            normalized,
-            "",
-            allow_partial_imputation=False,
-        )
-        if explicit_date is not None:
-            return explicit_date
+
+        anchor_sentence_indexes = [
+            sentence_index
+            for sentence_index, sentence in enumerate(sentences)
+            if required_patterns
+            and any(
+                re.search(pattern, sentence, re.IGNORECASE)
+                for pattern in required_patterns
+            )
+        ]
+        if required_patterns and not anchor_sentence_indexes:
+            continue
+
+        for sentence_index, sentence in enumerate(sentences):
+            explicit_date = _extract_canonical_date(
+                sentence,
+                "",
+                allow_partial_imputation=False,
+            )
+            if explicit_date is None:
+                continue
+
+            if rejected_patterns and any(
+                re.search(pattern, sentence, re.IGNORECASE)
+                for pattern in rejected_patterns
+            ) and not any(
+                re.search(pattern, sentence, re.IGNORECASE)
+                for pattern in required_patterns
+            ):
+                continue
+
+            if anchor_sentence_indexes:
+                anchor_distance = min(
+                    abs(sentence_index - anchor_index)
+                    for anchor_index in anchor_sentence_indexes
+                )
+            else:
+                anchor_distance = 0
+
+            candidates.append(
+                (anchor_distance, text_index, sentence_index, explicit_date)
+            )
+
+    if candidates:
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return candidates[0][3]
+
     return None
 
 
@@ -4151,22 +4202,34 @@ _CURRENT_THROUGH_METADATA_PATTERNS = (
 
 _CURRENT_THROUGH_DATE_PATTERNS = (
     r"\bcurrent\s+through\b",
-    r"\bpassed\b",
+    r"\bas\s+of\b",
+    r"\bupdated\s+(?:through|as\s+of)\b",
+    r"\bdata\s+collection\b",
+    r"\bsnapshot\b",
     r"\bsupplement\b",
     r"\bedition\b",
     r"\blegal intro\b",
 )
 
+_CURRENT_THROUGH_HISTORICAL_DATE_PATTERNS = (
+    r"\bamend(?:ed|ment|ments)?\b",
+    r"\brepeal(?:ed|s)?\b",
+    r"\bhistory\b",
+    r"\bformer(?:ly)?\b",
+    r"\brenumber(?:ed|ing)?\b",
+)
+
 _EXPLICIT_ENACTED_DATE_PATTERNS = (
     r"\benact(?:ed|ment)?\b",
     r"\badopt(?:ed|ion)?\b",
-    r"\bpassed\b",
-    r"\bordinance\b",
+    r"\bpassed\b[^.\n]{0,60}\bordinance\b",
+    r"\bordinance\b[^.\n]{0,60}\b(?:enacted|adopted|passed)\b",
 )
 
 _EXPLICIT_EFFECTIVE_DATE_PATTERNS = (
     r"\beffective\b",
     r"\beff\.?\b",
+    r"\btakes?\s+effect\b",
 )
 
 _CURRENT_THROUGH_VARIABLE_NAMES = {
@@ -4227,9 +4290,42 @@ _SSP_DISTINCT_RESTRICTION_PATTERNS = (
     r"\bdaycare\b",
     r"\bparks?\b",
     r"\bmobile\b",
+    r"\bvehicle\b",
+    r"\bvan\b",
+    r"\broving\b",
     r"\bquantity of syringes\b",
+    r"\bmaximum\b",
+    r"\bper participant\b",
+    r"\bper visit\b",
     r"\bfrequency of visits\b",
     r"\bcap on\b",
+)
+
+_SSP_QUANTITY_LIMIT_PATTERNS = (
+    r"\bquantity of syringes\b",
+    r"\b(?:max(?:imum)?|no more than|not more than|limit(?:ed|s)?)\b[^.\n]{0,40}\bsyringes?\b",
+    r"\bper participant\b[^.\n]{0,30}\bsyringes?\b",
+    r"\bper visit\b[^.\n]{0,30}\bsyringes?\b",
+)
+
+_SSP_MOBILE_RESTRICTION_PATTERNS = (
+    r"\bmobile\b",
+    r"\bvehicle\b",
+    r"\bvan\b",
+    r"\broving\b",
+    r"\bnon-fixed-location\b",
+)
+
+_SSP_OPERATIONAL_PERMIT_PATTERNS = (
+    r"\b(?:permit|license|registration)\b[^.\n]{0,40}\b(?:required|operate|operation)\b",
+    r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license|registration)\b",
+    r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b",
+)
+
+_SSP_OTHER_RESIDUAL_PATTERNS = (
+    r"\bmust\b[^.\n]{0,80}\b(?:hours|staffing|reporting|record(?:s|keeping)|onsite|security|disposal|storage)\b",
+    r"\bshall\b[^.\n]{0,80}\b(?:hours|staffing|reporting|record(?:s|keeping)|onsite|security|disposal|storage)\b",
+    r"\bonly\b[^.\n]{0,80}\b(?:hours|staffing|reporting|record(?:s|keeping)|onsite|security|disposal|storage)\b",
 )
 
 _SSP_REFERENCE_PATTERNS = (
@@ -4343,6 +4439,8 @@ def _penalty_has_criminal_fine_cues(
         re.search(r"\bcriminal fine\b", normalized)
         or re.search(r"\bfine\b[^.\n]{0,60}\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b", normalized)
         or re.search(r"\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b[^.\n]{0,60}\bfine\b", normalized)
+        or re.search(r"\bclass\s+[a-z0-9-]+\s+(?:misdemeanor|felony|offense|violation)\b[^.\n]{0,80}\bfine\b", normalized)
+        or re.search(r"\bpenalty\s+class\b[^.\n]{0,80}\bfine\b", normalized)
     )
 
 
@@ -4362,6 +4460,34 @@ def _penalty_unlawful_only_has_explicit_support(
         if re.search(r"\bunlawful\b", item_text, re.IGNORECASE):
             return True
     return False
+
+
+def _penalty_concrete_supported_options(
+    *,
+    options: list[str],
+    evidence_text: str,
+    option_patterns: dict[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    """Return concrete penalty labels supported directly by evidence text."""
+    concrete_labels = {
+        _normalize_option_text("Civil Fine"),
+        _normalize_option_text("Criminal Fine"),
+        _normalize_option_text("Unspecified Fine"),
+        _normalize_option_text("Incarceration"),
+        _normalize_option_text("Forfeiture/Seizure"),
+        _normalize_option_text("Infraction"),
+        _normalize_option_text("Misdemeanor"),
+        _normalize_option_text("Felony"),
+    }
+    supported: list[str] = []
+    for option in options:
+        normalized = _normalize_option_text(option)
+        if normalized not in concrete_labels:
+            continue
+        patterns = option_patterns.get(normalized, ())
+        if patterns and _first_matching_snippet(evidence_text, patterns) is not None:
+            supported.append(option)
+    return tuple(supported)
 
 
 def _other_option_is_fully_covered(
@@ -4505,12 +4631,14 @@ def _apply_date_surface_validators(
     if not is_scalar_date and not is_status_date:
         return response
 
+    original_short_answer = str(response.short_answer or "").strip()
     texts = _collect_evidence_texts(response, sections)
     explicit_date: str | None = None
     if variable_name in _CURRENT_THROUGH_VARIABLE_NAMES:
         explicit_date = _extract_explicit_date_from_texts(
             texts,
             _CURRENT_THROUGH_DATE_PATTERNS,
+            _CURRENT_THROUGH_HISTORICAL_DATE_PATTERNS,
         )
     elif variable_name in _ENACTED_VARIABLE_NAMES:
         explicit_date = _extract_explicit_date_from_texts(
@@ -4524,7 +4652,17 @@ def _apply_date_surface_validators(
         )
 
     if explicit_date is None:
-        return response
+        answer_date = _extract_canonical_date(
+            original_short_answer,
+            "",
+            allow_partial_imputation=False,
+        )
+        if answer_date is None:
+            return response
+        if _date_answer_has_explicit_support(answer_date, texts):
+            return response
+
+        return response.model_copy(update={"short_answer": "Unknown"})
 
     if is_status_date:
         label = _extract_status_date_label(response.short_answer, response_options) or "Known"
@@ -4851,6 +4989,62 @@ def _exemption_support_is_noise_only(evidence_text: str) -> bool:
     )
 
 
+def _ssp_sentence_slices(text: str) -> list[str]:
+    """Split SSP evidence into sentence-sized slices for local trigger checks."""
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", str(text or "").strip())
+        if sentence.strip()
+    ]
+
+
+def _ssp_named_restriction_pattern_map(
+    option_patterns: dict[str, tuple[str, ...]],
+) -> dict[str, tuple[str, ...]]:
+    """Return non-residual SSP label patterns used to suppress false Other restrictions."""
+    excluded = {
+        _normalize_option_text("Other restrictions"),
+        _normalize_option_text("No restrictions listed"),
+    }
+    return {
+        key: patterns
+        for key, patterns in option_patterns.items()
+        if key not in excluded and patterns
+    }
+
+
+def _ssp_has_residual_other_restriction(
+    item_text: str,
+    option_patterns: dict[str, tuple[str, ...]],
+) -> bool:
+    """Return whether SSP evidence supports a true residual restriction not covered by named labels."""
+    if not any(re.search(pattern, item_text, re.IGNORECASE) for pattern in _SSP_OTHER_RESIDUAL_PATTERNS):
+        return False
+
+    named_patterns = _ssp_named_restriction_pattern_map(option_patterns)
+    for patterns in named_patterns.values():
+        if any(re.search(pattern, item_text, re.IGNORECASE) for pattern in patterns):
+            return False
+    return True
+
+
+def _ssp_option_support_sentences(
+    option: str,
+    item_text: str,
+    option_patterns: dict[str, tuple[str, ...]],
+) -> set[str]:
+    """Return item-text sentences that explicitly trigger the given SSP restriction label."""
+    patterns = option_patterns.get(_normalize_option_text(option), ())
+    if not patterns:
+        return set()
+
+    matches: set[str] = set()
+    for sentence in _ssp_sentence_slices(item_text):
+        if any(re.search(pattern, sentence, re.IGNORECASE) for pattern in patterns):
+            matches.add(sentence)
+    return matches
+
+
 def _authoritative_option_supports_selection(
     *,
     guidance_topic: str,
@@ -4891,6 +5085,30 @@ def _authoritative_option_supports_selection(
             snippet = _first_matching_snippet(item_text, patterns)
         else:
             snippet = item_text if item_text else None
+
+        if normalized == _normalize_option_text("Other restrictions"):
+            if not _ssp_has_residual_other_restriction(item_text, option_patterns):
+                return False
+
+        if normalized == _normalize_option_text(
+            "Restrictions on quantity of syringes that may be provided or exchanged"
+        ) and not any(
+            re.search(pattern, item_text, re.IGNORECASE)
+            for pattern in _SSP_QUANTITY_LIMIT_PATTERNS
+        ):
+            snippet = None
+
+        if normalized == _normalize_option_text("Restrictions on mobile sites") and not (
+            any(re.search(pattern, item_text, re.IGNORECASE) for pattern in _SSP_MOBILE_RESTRICTION_PATTERNS)
+            and re.search(r"\b(?:restrict|limit|prohibit|not\s+operate|allowed\s+only|operate\s+only)\b", item_text, re.IGNORECASE)
+        ):
+            snippet = None
+
+        if normalized == _normalize_option_text("Permit or license required for operation") and not any(
+            re.search(pattern, item_text, re.IGNORECASE)
+            for pattern in _SSP_OPERATIONAL_PERMIT_PATTERNS
+        ):
+            snippet = None
 
     if (
         guidance_topic == "penalty"
@@ -4994,6 +5212,45 @@ def _authoritative_option_supports_selection(
         )
     ):
         snippet = None
+
+    if guidance_topic == "exemption_activity_scope":
+        # Require per-option direct quote evidence for every selected activity label.
+        if not has_option_specific_support:
+            return False
+        if patterns:
+            snippet = _first_matching_snippet(item_text, patterns)
+        else:
+            snippet = item_text if item_text else None
+
+        if normalized == _normalize_option_text("Use") and not re.search(
+            r"\buse\b",
+            item_text,
+            re.IGNORECASE,
+        ):
+            snippet = None
+        if normalized == _normalize_option_text("Distribution") and not re.search(
+            r"\b(distribut(?:e|ion)|deliver(?:y)?|exchange|give away)\b",
+            item_text,
+            re.IGNORECASE,
+        ):
+            snippet = None
+        if normalized == _normalize_option_text("Sales") and not re.search(
+            r"\b(sell|sale|offer for sale)\b",
+            item_text,
+            re.IGNORECASE,
+        ):
+            snippet = None
+
+        if re.search(
+            r"\bactivities associated with\b|\bcannabis use or commerce\b|\bmarijuana use or commerce\b",
+            item_text,
+            re.IGNORECASE,
+        ) and not re.search(
+            r"\b(use|distribut(?:e|ion)|deliver(?:y)?|exchange|give away|sell|sale|offer for sale|manufactur(?:e|ing))\b",
+            item_text,
+            re.IGNORECASE,
+        ):
+            snippet = None
 
     if guidance_topic in {
         "prohibited_activity",
@@ -5119,21 +5376,39 @@ def _apply_exemption_label_crosswalk(
     options, _separator = _split_response_options(response_options)
 
     option_lookup = {_normalize_option_text(option): option for option in final_options}
+    selected_item_by_option = {
+        _normalize_option_text(item.option): item
+        for item in response.option_evidence
+        if item.selected
+    }
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
 
     lawful_hypodermic = _normalize_option_text("Lawful use of hypodermic syringes")
     approved_medical = _normalize_option_text(
         "Syringes for approved medical use (i.e. diabetes)"
     )
     if lawful_hypodermic in option_lookup and approved_medical not in option_lookup:
-        resolved = _resolve_declared_response_option(
-            options,
-            "Syringes for approved medical use (i.e. diabetes)",
+        lawful_item = selected_item_by_option.get(lawful_hypodermic)
+        lawful_item_text = "\n".join(
+            [*(lawful_item.citations if lawful_item else []), *(lawful_item.supporting_passages if lawful_item else [])]
         )
-        if resolved is not None:
-            option_lookup[approved_medical] = resolved
-        option_lookup.pop(lawful_hypodermic, None)
+        medical_scope_text = lawful_item_text or evidence_text
+        medically_scoped = bool(
+            re.search(
+                r"\b(diabet(?:es|ic)|insulin|medical|physician|pharmacist|practitioner(?:s)?|prescri(?:be|ption))\b",
+                medical_scope_text,
+                re.IGNORECASE,
+            )
+        )
+        if medically_scoped:
+            resolved = _resolve_declared_response_option(
+                options,
+                "Syringes for approved medical use (i.e. diabetes)",
+            )
+            if resolved is not None:
+                option_lookup[approved_medical] = resolved
+            option_lookup.pop(lawful_hypodermic, None)
 
-    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
     has_ssp_context = bool(
         re.search(
             r"\bsyringe exchange\b|\bsyringe services\b|\bharm reduction\b|\bsupervised use\b",
@@ -5152,6 +5427,11 @@ def _apply_exemption_label_crosswalk(
         )
     )
 
+    generic_dce = _normalize_option_text("Drug checking/testing equipment, generally")
+    contextual_dce = _normalize_option_text(
+        "Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites"
+    )
+
     if has_ssp_context and has_syringe_text:
         resolved = _resolve_declared_response_option(
             options,
@@ -5166,6 +5446,24 @@ def _apply_exemption_label_crosswalk(
         )
         if resolved is not None:
             option_lookup[_normalize_option_text(resolved)] = resolved
+
+    if has_ssp_context and generic_dce in option_lookup:
+        resolved = _resolve_declared_response_option(
+            options,
+            "Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites",
+        )
+        if resolved is not None:
+            option_lookup[_normalize_option_text(resolved)] = resolved
+            option_lookup.pop(generic_dce, None)
+
+    if not has_ssp_context and contextual_dce in option_lookup:
+        resolved = _resolve_declared_response_option(
+            options,
+            "Drug checking/testing equipment, generally",
+        )
+        if resolved is not None:
+            option_lookup[_normalize_option_text(resolved)] = resolved
+            option_lookup.pop(contextual_dce, None)
 
     specific_selected = [
         option
@@ -5206,6 +5504,7 @@ def _apply_ssp_restriction_consistency_validator(
     evidence_by_option = {item.option: item for item in response.option_evidence}
 
     filtered_selected: list[str] = []
+    explicit_support_by_option: dict[str, set[str]] = {}
     for option in selected:
         if _normalize_option_text(option) == _normalize_option_text("No restrictions listed"):
             continue
@@ -5218,6 +5517,11 @@ def _apply_ssp_restriction_consistency_validator(
         patterns = option_patterns.get(_normalize_option_text(option), ())
         if patterns and not any(re.search(pattern, item_text, re.IGNORECASE) for pattern in patterns):
             continue
+
+        support_sentences = _ssp_option_support_sentences(option, item_text, option_patterns)
+        if patterns and not support_sentences:
+            continue
+        explicit_support_by_option[option] = support_sentences
 
         if (
             _normalize_option_text(option)
@@ -5232,6 +5536,23 @@ def _apply_ssp_restriction_consistency_validator(
 
         filtered_selected.append(option)
     selected = filtered_selected
+
+    if len(selected) > 1:
+        explicit_sentence_union = {
+            sentence
+            for option in selected
+            for sentence in explicit_support_by_option.get(option, set())
+        }
+        # One-vs-many guard: when evidence boils down to one explicit restriction sentence,
+        # retain only labels with direct trigger support in that sentence.
+        if len(explicit_sentence_union) == 1:
+            only_sentence = next(iter(explicit_sentence_union))
+            selected = [
+                option
+                for option in selected
+                if only_sentence in explicit_support_by_option.get(option, set())
+            ]
+
     permit_option = _resolve_declared_response_option(
         options,
         "Permit or license required for operation",
@@ -5239,8 +5560,10 @@ def _apply_ssp_restriction_consistency_validator(
     no_restrictions_option = _resolve_declared_response_option(options, "No restrictions listed")
 
     has_permit_signal = bool(
-        re.search(r"\b(?:permit|license)\b[^.\n]{0,60}\b(?:required|operate|operation|facility)\b", evidence_text, re.IGNORECASE)
-        or re.search(r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b", evidence_text, re.IGNORECASE)
+        any(
+            re.search(pattern, evidence_text, re.IGNORECASE)
+            for pattern in _SSP_OPERATIONAL_PERMIT_PATTERNS
+        )
     )
 
     normalized_selected = {_normalize_option_text(option) for option in selected}
@@ -5445,6 +5768,18 @@ def _apply_penalty_specificity_validator(
             return _rewrite_structured_response_options(
                 response,
                 tuple(stronger_supported),
+                query_metadata,
+            )
+
+        concrete_supported = _penalty_concrete_supported_options(
+            options=options,
+            evidence_text=evidence_text,
+            option_patterns=option_patterns,
+        )
+        if concrete_supported:
+            return _rewrite_structured_response_options(
+                response,
+                concrete_supported,
                 query_metadata,
             )
 
@@ -5941,6 +6276,8 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bfine\b[^.\n]{0,40}\bmisdemeanor\b",
                 r"\bmisdemeanor\b[^.\n]{0,40}\bfine\b",
                 r"\bconviction\b[^.\n]{0,40}\bfine\b",
+                r"\bclass\s+[a-z0-9-]+\s+(?:misdemeanor|felony|offense|violation)\b[^.\n]{0,80}\bfine\b",
+                r"\bpenalty\s+class\b[^.\n]{0,80}\bfine\b",
             ),
             _normalize_option_text("Unspecified Fine"): (
                 r"\bfine\b",
@@ -6099,13 +6436,11 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             _normalize_option_text(
                 "Restrictions on quantity of syringes that may be provided or exchanged"
             ): (
-                r"\bquantity of syringes\b",
-                r"\b(?:limit|limited|maximum|no more than)\b[^.\n]{0,40}\bsyringes?\b",
-                r"\bone-for-one\b",
+                *_SSP_QUANTITY_LIMIT_PATTERNS,
             ),
             _normalize_option_text("Restrictions on mobile sites"): (
-                r"\bmobile\b[^.\n]{0,50}\b(?:site|sites|unit|units|program|programs)\b[^.\n]{0,40}\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b",
-                r"\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b[^.\n]{0,40}\bmobile\b",
+                r"\b(?:mobile|vehicle|van|roving|non-fixed-location)\b[^.\n]{0,50}\b(?:site|sites|unit|units|program|programs)\b[^.\n]{0,40}\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b",
+                r"\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b[^.\n]{0,40}\b(?:mobile|vehicle|van|roving|non-fixed-location)\b",
                 r"\bnon-fixed-location\b",
             ),
             _normalize_option_text("Permit or license required for operation"): (
@@ -6113,6 +6448,7 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b",
                 r"\boperate\b[^.\n]{0,40}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b",
                 r"\b(?:permit|license)\b[^.\n]{0,40}\brequired\b[^.\n]{0,20}\boperate\b",
+                r"\bregistration\b[^.\n]{0,40}\brequired\b[^.\n]{0,20}\b(?:operate|operation)\b",
             ),
             _normalize_option_text("Other restrictions"): (),
             _normalize_option_text("No restrictions listed"): (),

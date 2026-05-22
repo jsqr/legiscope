@@ -592,7 +592,14 @@ class TestAuthoritativeOptionEvidenceGate:
             confidence=0.7,
             limitations="",
             option_evidence=[
-                ResponseOptionEvidence(option="Possession", selected=True),
+                ResponseOptionEvidence(
+                    option="Possession",
+                    selected=True,
+                    citations=["§ 12-4-10(C)(3)"],
+                    supporting_passages=[
+                        "Nothing in this section shall be construed to establish a criminal penalty for possession of paraphernalia for the exclusive purpose of cannabis use, or for any activities associated with cannabis use or commerce."
+                    ],
+                ),
                 ResponseOptionEvidence(option="Use", selected=True),
                 ResponseOptionEvidence(option="Distribution", selected=True),
                 ResponseOptionEvidence(option="Sales", selected=True),
@@ -619,6 +626,40 @@ class TestAuthoritativeOptionEvidenceGate:
             {
                 "guidance_topic": "exemption_activity_scope",
                 "response_options": "Possession AND/OR Use AND/OR Distribution AND/OR Sales",
+            },
+        )
+
+        assert gated.short_answer == "Possession"
+
+    def test_exemption_activity_scope_requires_direct_quote_per_selected_label(self):
+        response = LegalQueryResponse(
+            short_answer="Possession AND/OR Use",
+            reasoning="Initial answer selected Use without direct option evidence.",
+            citations=["§ 12-4-10(C)(3)"],
+            supporting_passages=[
+                "Nothing in this section shall be construed to establish a criminal penalty for possession of paraphernalia for the exclusive purpose of cannabis use."
+            ],
+            confidence=0.65,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Possession",
+                    selected=True,
+                    citations=["§ 12-4-10(C)(3)"],
+                    supporting_passages=[
+                        "Nothing in this section shall be construed to establish a criminal penalty for possession of paraphernalia for the exclusive purpose of cannabis use."
+                    ],
+                ),
+                ResponseOptionEvidence(option="Use", selected=True),
+            ],
+        )
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            [],
+            {
+                "guidance_topic": "exemption_activity_scope",
+                "response_options": "Possession AND/OR Use",
             },
         )
 
@@ -951,6 +992,33 @@ class TestSecondStageStructuredValidators:
         assert '"Unlawful" only' not in selected
         assert "Incarceration" in selected
 
+    def test_penalty_validator_suppresses_unlawful_only_when_forfeiture_is_explicit(self):
+        response = LegalQueryResponse(
+            short_answer='"Unlawful" only',
+            reasoning="Initial answer stopped at fallback despite explicit forfeiture.",
+            citations=["§ 8-12"],
+            supporting_passages=[
+                "Any drug paraphernalia involved in the violation is subject to forfeiture and seizure.",
+            ],
+            confidence=0.58,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=True),
+                ResponseOptionEvidence(option="Forfeiture/Seizure", selected=False),
+            ],
+        )
+
+        validated = query_module._apply_penalty_specificity_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Forfeiture/Seizure',
+            },
+        )
+
+        assert validated.short_answer == "Forfeiture/Seizure"
+
     def test_ssp_restriction_validator_drops_labels_without_direct_option_support(self):
         response = LegalQueryResponse(
             short_answer=(
@@ -1178,6 +1246,35 @@ class TestSecondStageStructuredValidators:
 
         assert validated.short_answer == "Permit or license required for operation"
 
+    def test_ssp_restriction_consistency_promotes_registration_required_operation(self):
+        response = LegalQueryResponse(
+            short_answer="No restrictions listed",
+            reasoning="Registration requirement governs SSP operation.",
+            citations=["§ 9-15-9"],
+            supporting_passages=[
+                "A syringe exchange program registration is required for operation in the city.",
+            ],
+            confidence=0.71,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="Permit or license required for operation", selected=False),
+                ResponseOptionEvidence(option="No restrictions listed", selected=True),
+            ],
+        )
+
+        validated = query_module._apply_ssp_restriction_consistency_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "ssp_restriction",
+                "response_options": (
+                    "Permit or license required for operation AND/OR No restrictions listed"
+                ),
+            },
+        )
+
+        assert validated.short_answer == "Permit or license required for operation"
+
     def test_exemption_crosswalk_maps_lawful_hypodermic_to_approved_medical_use(self):
         response = LegalQueryResponse(
             short_answer="Lawful use of hypodermic syringes",
@@ -1221,6 +1318,38 @@ class TestSecondStageStructuredValidators:
         )
 
         assert gated.short_answer == "Syringes for approved medical use (i.e. diabetes)"
+
+    def test_exemption_crosswalk_keeps_lawful_hypodermic_without_medical_scope(self):
+        response = LegalQueryResponse(
+            short_answer="Lawful use of hypodermic syringes",
+            reasoning="Broad lawful carve-out with no medical qualifier.",
+            citations=["§ 607.17(d)"],
+            supporting_passages=[
+                "The lawful use of hypodermic syringes is exempt.",
+            ],
+            confidence=0.73,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Syringes for approved medical use (i.e. diabetes)",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(option="Lawful use of hypodermic syringes", selected=True),
+            ],
+        )
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            [],
+            {
+                "guidance_topic": "exemption_presence",
+                "response_options": (
+                    "Syringes for approved medical use (i.e. diabetes) AND/OR Lawful use of hypodermic syringes"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Lawful use of hypodermic syringes"
 
     def test_prohibited_activity_gate_drops_illegal_smoking_product_delivery_noise(self):
         response = LegalQueryResponse(
@@ -1784,6 +1913,182 @@ class TestCurrentThroughHelpers:
         )
 
         assert validated.short_answer == "09/03/2025"
+
+    def test_date_surface_validator_filters_historical_amendment_dates_for_collected(self):
+        response = LegalQueryResponse(
+            short_answer="02/04/1987",
+            reasoning="Using amendment history date.",
+            citations=["Legal Intro"],
+            supporting_passages=[
+                "History: amended 02/04/1987. Current through Ordinance 2025-026 as of 03/26/2025."
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="Legal Intro",
+                body_text=(
+                    "History: amended 02/04/1987. "
+                    "Current through Ordinance 2025-026 as of 03/26/2025."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_date_surface_validators(
+            response,
+            sections,
+            {
+                "query_id": "dp_collected",
+                "response_options": "Responses: <current-through date>",
+            },
+        )
+
+        assert validated.short_answer == "03/26/2025"
+
+    def test_date_surface_validator_prefers_date_sentence_nearest_anchor(self):
+        response = LegalQueryResponse(
+            short_answer="Unknown",
+            reasoning="No date found.",
+            citations=["Legal Intro"],
+            supporting_passages=[
+                (
+                    "Passed 01/01/1990 in early ordinance history. "
+                    "Current through Ordinance 2025-026. "
+                    "Passed 03/26/2025."
+                )
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="Legal Intro",
+                body_text=(
+                    "Passed 01/01/1990 in early ordinance history. "
+                    "Current through Ordinance 2025-026. "
+                    "Passed 03/26/2025."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_date_surface_validators(
+            response,
+            sections,
+            {
+                "query_id": "ssp_collected",
+                "response_options": "Responses: <current-through date>",
+            },
+        )
+
+        assert validated.short_answer == "03/26/2025"
+
+    def test_date_surface_validator_rejects_inferred_only_dates_to_unknown(self):
+        response = LegalQueryResponse(
+            short_answer="07/15/2001",
+            reasoning="Inferred year-only effective date.",
+            citations=["§ 4-1"],
+            supporting_passages=["This ordinance became effective in 2001."],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="Effective date",
+                body_text="This ordinance became effective in 2001.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_date_surface_validators(
+            response,
+            sections,
+            {
+                "query_id": "dp_effective_dt",
+                "response_options": "Responses: <effective date> OR Unknown",
+            },
+        )
+
+        assert validated.short_answer == "Unknown"
+
+    def test_date_surface_validator_uses_enacted_and_effective_scope_anchors(self):
+        enacted_response = LegalQueryResponse(
+            short_answer="Unknown",
+            reasoning="No date found.",
+            citations=["§ 7-1"],
+            supporting_passages=[
+                "This chapter was adopted by ordinance on 07/19/1989. Effective 02/04/1991."
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[],
+        )
+        effective_response = LegalQueryResponse(
+            short_answer="Unknown",
+            reasoning="No date found.",
+            citations=["§ 7-1"],
+            supporting_passages=[
+                "This chapter was adopted by ordinance on 07/19/1989. Takes effect 02/04/1991."
+            ],
+            confidence=0.6,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="History",
+                body_text=(
+                    "This chapter was adopted by ordinance on 07/19/1989. "
+                    "Takes effect 02/04/1991."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        enacted_validated = query_module._apply_date_surface_validators(
+            enacted_response,
+            sections,
+            {
+                "query_id": "dp_enacted",
+                "response_options": "Responses: <enactment date> OR Unknown",
+            },
+        )
+        effective_validated = query_module._apply_date_surface_validators(
+            effective_response,
+            sections,
+            {
+                "query_id": "dp_effective_dt",
+                "response_options": "Responses: <effective date> OR Unknown",
+            },
+        )
+
+        assert enacted_validated.short_answer == "07/19/1989"
+        assert effective_validated.short_answer == "02/04/1991"
 
     def test_ssp_permit_validator_promotes_no_to_yes_for_explicit_permit_regime(self):
         response = LegalQueryResponse(

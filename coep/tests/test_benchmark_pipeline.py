@@ -519,6 +519,29 @@ class TestBenchmarkPipelineHelpers:
         assert expanded["evaluation_expected_present"].to_list() == [True, True, False]
         assert expanded["evaluation_generated_present"].to_list() == [True, True, False]
 
+    def test_ensure_evaluation_prompt_columns_labels_short_answer_as_authoritative(
+        self,
+    ):
+        df = pl.DataFrame(
+            {
+                "query": ["Question: Is SSP operation permitted?"],
+                "query_text": ["Is SSP operation permitted?"],
+                "ground_truth": ["No"],
+                "short_answer": ["No"],
+                "reasoning": ["Yes, permitted under local law."],
+                "supporting_passages": ["['sample passage']"],
+                "evaluation_question": [None],
+                "evaluation_ground_truth": [None],
+                "evaluation_generated_answer": [None],
+            }
+        )
+
+        enriched = benchmark_pipeline._ensure_evaluation_prompt_columns(df)
+        generated = enriched[0, "evaluation_generated_answer"]
+
+        assert generated.startswith("Original generated short answer: No")
+        assert "Reasoning: Yes, permitted under local law." in generated
+
     def test_score_skipped_queries_uses_option_expectation_for_subquestions(self):
         df = pl.DataFrame(
             {

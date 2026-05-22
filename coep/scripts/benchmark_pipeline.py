@@ -869,11 +869,12 @@ def _ensure_evaluation_prompt_columns(df: pl.DataFrame) -> pl.DataFrame:
 
     comprehensive_answer_expr = pl.concat_str(
         [
-            pl.col("short_answer"),
+            pl.lit("Original generated short answer: "),
+            pl.col("short_answer").cast(pl.Utf8).fill_null(""),
             pl.lit("\n\nReasoning: "),
-            pl.col("reasoning"),
+            pl.col("reasoning").cast(pl.Utf8).fill_null(""),
             pl.lit("\n\nSupporting Passages: "),
-            pl.col("supporting_passages"),
+            pl.col("supporting_passages").cast(pl.Utf8).fill_null(""),
         ]
     ).alias("_fallback_comprehensive_answer")
 

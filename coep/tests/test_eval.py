@@ -439,6 +439,41 @@ class TestEvaluator:
             assert result == expected_result
             mock_client.chat.completions.create.assert_called_once()
 
+    def test_evaluate_response_instructs_short_answer_priority(self):
+        """Judge prompt should prioritize short_answer when reasoning conflicts."""
+        mock_client = Mock()
+
+        with patch("legiscope.llm_config.Config") as mock_config:
+            mock_config.get_powerful_client.return_value = mock_client
+            mock_config.get_llm_params.return_value = {
+                "temperature": 0.0,
+                "max_retries": 3,
+            }
+
+            evaluator = Evaluator()
+
+            mock_client.chat.completions.create.return_value = EvaluationResult(
+                score=10,
+                reasoning="Short answer matches; reasoning conflict ignored.",
+                accuracy_label="Correct",
+                error_type="none",
+            )
+
+            evaluator.evaluate_response(
+                question="Does the jurisdiction permit SSP operation?",
+                generated_answer=(
+                    "Original generated short answer: No\\n\\n"
+                    "Reasoning: Yes, it is permitted under section X"
+                ),
+                ground_truth="No",
+            )
+
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            messages = call_kwargs["messages"]
+            user_prompt = messages[1]["content"]
+            assert "treat the short answer as authoritative" in user_prompt
+            assert "Do not mark an answer incorrect solely because the reasoning" in user_prompt
+
     def test_evaluate_batch(self):
         """Test batch evaluation."""
         mock_client = Mock()
