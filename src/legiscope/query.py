@@ -950,7 +950,23 @@ def load_queries(
     try:
         df = pl.read_csv(path)
     except Exception as e:
-        raise ValueError(f"Error reading queries file: {e}")
+        error_message = str(e)
+        if isinstance(e, pl.exceptions.ComputeError) and (
+            "found more fields than defined in 'Schema'" in error_message
+            or "truncate_ragged_lines=True" in error_message
+        ):
+            logger.warning(
+                "Query CSV {} contains ragged rows; retrying with truncate_ragged_lines=True",
+                path,
+            )
+            try:
+                df = pl.read_csv(path, truncate_ragged_lines=True)
+            except Exception as fallback_error:
+                raise ValueError(
+                    f"Error reading queries file: {fallback_error}"
+                ) from fallback_error
+        else:
+            raise ValueError(f"Error reading queries file: {e}") from e
 
     df = _normalize_query_input_df(df)
 

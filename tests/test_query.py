@@ -1284,6 +1284,28 @@ class TestLoadQueries:
         finally:
             os.unlink(temp_path)
 
+    def test_load_queries_truncates_ragged_rows_for_exported_csvs(self):
+        """Extra trailing fields in exported benchmark rows should not abort query loading."""
+        csv_content = (
+            "question,variable_name,category\n"
+            "Question 1,var1,general,unexpected_extra_value\n"
+            "Question 2,var2,specific\n"
+        )
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False) as f:
+            f.write(csv_content)
+            temp_path = f.name
+
+        try:
+            queries = load_queries(temp_path, adjust_for_dataset=False)
+            assert len(queries) == 2
+            assert queries[0].question == "Question 1"
+            assert queries[0].variable_name == "var1"
+            assert queries[0].metadata == {"category": "general"}
+            assert queries[1].metadata == {"category": "specific"}
+        finally:
+            os.unlink(temp_path)
+
     def test_load_queries_parses_hierarchy_metadata_with_pipe_delimiters(self):
         """Enriched CSV hierarchy columns should normalize into structured metadata."""
         df = pl.DataFrame(
