@@ -779,7 +779,7 @@ class TestSecondStageStructuredValidators:
             "None"
         ]
 
-    def test_ssp_permit_validator_forces_no_for_registration_only_regime(self):
+    def test_ssp_permit_validator_leaves_registration_only_regime_unchanged(self):
         response = LegalQueryResponse(
             short_answer="Yes",
             reasoning="Initial answer treated registration and mayoral approval as explicit authorization.",
@@ -810,12 +810,12 @@ class TestSecondStageStructuredValidators:
             },
         )
 
-        assert validated.short_answer == "No"
+        assert validated.short_answer == "Yes"
         assert [item.option for item in validated.option_evidence if item.selected] == [
-            "No"
+            "Yes"
         ]
 
-    def test_ssp_restriction_gate_rejects_site_approval_as_operating_permit(self):
+    def test_ssp_restriction_gate_leaves_response_unchanged_without_authoritative_gating(self):
         response = LegalQueryResponse(
             short_answer="Permit or license required for operation AND/OR Restrictions on mobile sites",
             reasoning="Initial answer treated site approval as an operating permit requirement.",
@@ -870,7 +870,14 @@ class TestSecondStageStructuredValidators:
             },
         )
 
-        assert gated.short_answer == "Restrictions on mobile sites"
+        assert (
+            gated.short_answer
+            == "Permit or license required for operation AND/OR Restrictions on mobile sites"
+        )
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Permit or license required for operation",
+            "Restrictions on mobile sites",
+        ]
 
 
 class TestTimeoutExecution:

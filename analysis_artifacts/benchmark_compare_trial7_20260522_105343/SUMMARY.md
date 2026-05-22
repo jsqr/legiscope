@@ -1,0 +1,135 @@
+# Benchmark comparison summary
+
+- old: `data/output/all_jurisdictions/batches/trial7_dpl_ssp_20260521_2300/20260522_090635/all_jurisdictions_benchmark_20260522_090635.csv`
+- new: `data/output/all_jurisdictions/batches/trial7_dpl_ssp_20260522_1040/20260522_105343/all_jurisdictions_benchmark_20260522_105343.csv`
+- scored_llm field: `evaluation_status`
+
+## 1. Row-level counts for scored_llm rows by eval_label
+| eval_label        |   old_count |   new_count |   delta |
+|:------------------|------------:|------------:|--------:|
+| Correct           |         255 |         250 |      -5 |
+| Incorrect         |          49 |          55 |       6 |
+| Partially Correct |           2 |           1 |      -1 |
+
+## 2. Row-level counts excluding date variables
+Excluded: dp_collected, dp_effective_dt, dp_enacted, dp_valid_imp, ssp_collected, ssp_current_imp, ssp_effective_dt, ssp_enacted
+
+| eval_label        |   old_count |   new_count |   delta |
+|:------------------|------------:|------------:|--------:|
+| Correct           |         247 |         241 |      -6 |
+| Incorrect         |          30 |          36 |       6 |
+| Partially Correct |           1 |           1 |       0 |
+
+## 3. Non-date scored_llm incorrect rows by variable_name
+| variable_name           |   old_count |   new_count |   delta |
+|:------------------------|------------:|------------:|--------:|
+| dp_exemption            |           8 |           8 |       0 |
+| dp_exempt_can_activity  |           3 |           3 |       0 |
+| ssp_permit              |           2 |           2 |       0 |
+| ssp_state_fed_reference |           2 |           2 |       0 |
+| dp_state_fed_citation   |           1 |           1 |       0 |
+| dp_state_fed_reference  |           1 |           1 |       0 |
+| dp_type                 |           1 |           1 |       0 |
+| dp_activity             |           2 |           3 |       1 |
+| dp_penalties            |           6 |           8 |       2 |
+| ssp_restrict            |           4 |           7 |       3 |
+
+## 4. Non-date scored_llm incorrect rows by jurisdiction
+| jurisdiction    |   old_count |   new_count |   delta |
+|:----------------|------------:|------------:|--------:|
+| TX-Dallas       |           5 |           5 |       0 |
+| PA-Philadelphia |           4 |           4 |       0 |
+| FL-Hollywood    |           3 |           3 |       0 |
+| NH-Manchester   |           6 |           7 |       1 |
+| OH-Cleveland    |           3 |           4 |       1 |
+| CA-LosAngeles   |           0 |           1 |       1 |
+| NM-Albuquerque  |           9 |          12 |       3 |
+
+## 5. Query-level collapsed comparison for non-date variables
+Worst-to-best ranking used for collapse: Incorrect > Partially Correct > Correct
+
+Collapsed counts by label:
+| eval_label        |   old_count |   new_count |   delta |
+|:------------------|------------:|------------:|--------:|
+| Incorrect         |          17 |          20 |       3 |
+| Partially Correct |           1 |           1 |       0 |
+| Correct           |          37 |          34 |      -3 |
+
+Improved (2):
+| jurisdiction   | variable_name         | old_label   | new_label         |
+|:---------------|:----------------------|:------------|:------------------|
+| NM-Albuquerque | ssp_permit            | Incorrect   | Correct           |
+| OH-Cleveland   | dp_state_fed_citation | Incorrect   | Partially Correct |
+
+Regressed (5):
+| jurisdiction   | variable_name         | old_label         | new_label   |
+|:---------------|:----------------------|:------------------|:------------|
+| CA-LosAngeles  | ssp_permit            | Correct           | Incorrect   |
+| NM-Albuquerque | dp_activity           | Correct           | Incorrect   |
+| NM-Albuquerque | dp_state_fed_citation | Partially Correct | Incorrect   |
+| NM-Albuquerque | ssp_restrict          | Correct           | Incorrect   |
+| OH-Cleveland   | dp_penalties          | Correct           | Incorrect   |
+
+Stayed Incorrect (15):
+| jurisdiction    | variable_name           | old_label   | new_label   |
+|:----------------|:------------------------|:------------|:------------|
+| FL-Hollywood    | dp_penalties            | Incorrect   | Incorrect   |
+| NH-Manchester   | ssp_permit              | Incorrect   | Incorrect   |
+| NH-Manchester   | ssp_restrict            | Incorrect   | Incorrect   |
+| NH-Manchester   | ssp_state_fed_reference | Incorrect   | Incorrect   |
+| NM-Albuquerque  | dp_exempt_can_activity  | Incorrect   | Incorrect   |
+| NM-Albuquerque  | dp_exemption            | Incorrect   | Incorrect   |
+| NM-Albuquerque  | dp_penalties            | Incorrect   | Incorrect   |
+| NM-Albuquerque  | ssp_state_fed_reference | Incorrect   | Incorrect   |
+| OH-Cleveland    | dp_exemption            | Incorrect   | Incorrect   |
+| PA-Philadelphia | dp_exemption            | Incorrect   | Incorrect   |
+| PA-Philadelphia | dp_penalties            | Incorrect   | Incorrect   |
+| TX-Dallas       | dp_activity             | Incorrect   | Incorrect   |
+| TX-Dallas       | dp_exemption            | Incorrect   | Incorrect   |
+| TX-Dallas       | dp_state_fed_reference  | Incorrect   | Incorrect   |
+| TX-Dallas       | dp_type                 | Incorrect   | Incorrect   |
+
+## 6. Remaining non-date scored_llm incorrect rows in the new run
+Count: 36
+
+| jurisdiction    | variable_name           | eval_label   | eval_error_type_refined   | evaluation_option                                                                                             | short_answer                                                                                                                                                                                                                                                                                                                                                            |
+|:----------------|:------------------------|:-------------|:--------------------------|:--------------------------------------------------------------------------------------------------------------|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| CA-LosAngeles   | ssp_permit              | Incorrect    | off_topic_context         |                                                                                                               | No                                                                                                                                                                                                                                                                                                                                                                      |
+| FL-Hollywood    | dp_penalties            | Incorrect    | option_selection_error    | Incarceration                                                                                                 | Unlawful" only                                                                                                                                                                                                                                                                                                                                                          |
+| FL-Hollywood    | dp_penalties            | Incorrect    | option_selection_error    | Unlawful" only                                                                                                | Unlawful" only                                                                                                                                                                                                                                                                                                                                                          |
+| FL-Hollywood    | dp_penalties            | Incorrect    | option_selection_error    | Unspecified Fine                                                                                              | Unlawful" only                                                                                                                                                                                                                                                                                                                                                          |
+| NH-Manchester   | ssp_permit              | Incorrect    | scope_error               |                                                                                                               | No                                                                                                                                                                                                                                                                                                                                                                      |
+| NH-Manchester   | ssp_restrict            | Incorrect    | option_selection_error    | Other restrictions                                                                                            | Programs may not operate within certain distance of schools or childcare facilities AND/OR Programs may not operate within certain distance of parks or other public spaces AND/OR Restrictions on quantity of syringes that may be provided or exchanged AND/OR Restrictions on mobile sites AND/OR Permit or license required for operation AND/OR Other restrictions |
+| NH-Manchester   | ssp_restrict            | Incorrect    | option_selection_error    | Permit or license required for operation                                                                      | Programs may not operate within certain distance of schools or childcare facilities AND/OR Programs may not operate within certain distance of parks or other public spaces AND/OR Restrictions on quantity of syringes that may be provided or exchanged AND/OR Restrictions on mobile sites AND/OR Permit or license required for operation AND/OR Other restrictions |
+| NH-Manchester   | ssp_restrict            | Incorrect    | option_selection_error    | Programs may not operate within certain distance of schools or childcare facilities                           | Programs may not operate within certain distance of schools or childcare facilities AND/OR Programs may not operate within certain distance of parks or other public spaces AND/OR Restrictions on quantity of syringes that may be provided or exchanged AND/OR Restrictions on mobile sites AND/OR Permit or license required for operation AND/OR Other restrictions |
+| NH-Manchester   | ssp_restrict            | Incorrect    | option_selection_error    | Restrictions on mobile sites                                                                                  | Programs may not operate within certain distance of schools or childcare facilities AND/OR Programs may not operate within certain distance of parks or other public spaces AND/OR Restrictions on quantity of syringes that may be provided or exchanged AND/OR Restrictions on mobile sites AND/OR Permit or license required for operation AND/OR Other restrictions |
+| NH-Manchester   | ssp_restrict            | Incorrect    | option_selection_error    | Restrictions on quantity of syringes that may be provided or exchanged                                        | Programs may not operate within certain distance of schools or childcare facilities AND/OR Programs may not operate within certain distance of parks or other public spaces AND/OR Restrictions on quantity of syringes that may be provided or exchanged AND/OR Restrictions on mobile sites AND/OR Permit or license required for operation AND/OR Other restrictions |
+| NH-Manchester   | ssp_state_fed_reference | Incorrect    | scope_error               |                                                                                                               | Yes                                                                                                                                                                                                                                                                                                                                                                     |
+| NM-Albuquerque  | dp_activity             | Incorrect    | option_selection_error    | Sales, possession with intent to sell, offer for sale                                                         | Sales, possession with intent to sell, offer for sale AND/OR Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR Advertising, display AND/OR Manufacturing, manufacture with intent to deliver or sell                                                                                                             |
+| NM-Albuquerque  | dp_exempt_can_activity  | Incorrect    | option_selection_error    | Distribution                                                                                                  | Possession AND/OR Use AND/OR Distribution AND/OR Sales                                                                                                                                                                                                                                                                                                                  |
+| NM-Albuquerque  | dp_exempt_can_activity  | Incorrect    | option_selection_error    | Sales                                                                                                         | Possession AND/OR Use AND/OR Distribution AND/OR Sales                                                                                                                                                                                                                                                                                                                  |
+| NM-Albuquerque  | dp_exempt_can_activity  | Incorrect    | option_selection_error    | Use                                                                                                           | Possession AND/OR Use AND/OR Distribution AND/OR Sales                                                                                                                                                                                                                                                                                                                  |
+| NM-Albuquerque  | dp_exemption            | Incorrect    | option_selection_error    | Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites | Paraphernalia for consumption of cannabis, generally or medical use                                                                                                                                                                                                                                                                                                     |
+| NM-Albuquerque  | dp_exemption            | Incorrect    | option_selection_error    | Syringes from syringe services, harm reduction programs, or supervised use sites                              | Paraphernalia for consumption of cannabis, generally or medical use                                                                                                                                                                                                                                                                                                     |
+| NM-Albuquerque  | dp_penalties            | Incorrect    | option_selection_error    | Criminal Fine                                                                                                 | Unspecified Fine AND/OR Incarceration                                                                                                                                                                                                                                                                                                                                   |
+| NM-Albuquerque  | dp_penalties            | Incorrect    | option_selection_error    | Unspecified Fine                                                                                              | Unspecified Fine AND/OR Incarceration                                                                                                                                                                                                                                                                                                                                   |
+| NM-Albuquerque  | dp_state_fed_citation   | Incorrect    | citation_selection_error  |                                                                                                               | § 12-4-1                                                                                                                                                                                                                                                                                                                                                                |
+| NM-Albuquerque  | ssp_restrict            | Incorrect    | option_selection_error    | No restrictions listed                                                                                        | No restrictions listed                                                                                                                                                                                                                                                                                                                                                  |
+| NM-Albuquerque  | ssp_restrict            | Incorrect    | option_selection_error    | Permit or license required for operation                                                                      | No restrictions listed                                                                                                                                                                                                                                                                                                                                                  |
+| NM-Albuquerque  | ssp_state_fed_reference | Incorrect    | scope_error               |                                                                                                               | Yes                                                                                                                                                                                                                                                                                                                                                                     |
+| OH-Cleveland    | dp_exemption            | Incorrect    | option_selection_error    | Lawful use of hypodermic syringes                                                                             | Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers] AND/OR Lawful use of hypodermic syringes                                                                                                                                                                                                                                 |
+| OH-Cleveland    | dp_exemption            | Incorrect    | option_selection_error    | Syringes for approved medical use (i.e. diabetes)                                                             | Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers] AND/OR Lawful use of hypodermic syringes                                                                                                                                                                                                                                 |
+| OH-Cleveland    | dp_penalties            | Incorrect    | option_selection_error    | Incarceration                                                                                                 | Misdemeanor AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure                                                                                                                                                                                                                                                                                      |
+| OH-Cleveland    | dp_penalties            | Incorrect    | option_selection_error    | Unspecified Fine                                                                                              | Misdemeanor AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure                                                                                                                                                                                                                                                                                      |
+| PA-Philadelphia | dp_exemption            | Incorrect    | option_selection_error    | Drug checking/testing equipment, generally                                                                    | None                                                                                                                                                                                                                                                                                                                                                                    |
+| PA-Philadelphia | dp_exemption            | Incorrect    | option_selection_error    | None                                                                                                          | None                                                                                                                                                                                                                                                                                                                                                                    |
+| PA-Philadelphia | dp_exemption            | Incorrect    | option_selection_error    | Paraphernalia for consumption of cannabis, generally or medical use                                           | None                                                                                                                                                                                                                                                                                                                                                                    |
+| PA-Philadelphia | dp_penalties            | Incorrect    | option_selection_error    | Forfeiture/Seizure                                                                                            | Civil Fine AND/OR Forfeiture/Seizure                                                                                                                                                                                                                                                                                                                                    |
+| TX-Dallas       | dp_activity             | Incorrect    | option_selection_error    | Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange             | Sales, possession with intent to sell, offer for sale AND/OR Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR Possession, possession with intent to use, keep AND/OR Use                                                                                                                                        |
+| TX-Dallas       | dp_activity             | Incorrect    | option_selection_error    | Sales, possession with intent to sell, offer for sale                                                         | Sales, possession with intent to sell, offer for sale AND/OR Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR Possession, possession with intent to use, keep AND/OR Use                                                                                                                                        |
+| TX-Dallas       | dp_exemption            | Incorrect    | option_selection_error    | Other paraphernalia for approved medical use                                                                  | Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers] AND/OR Public officials in the course of their duties, generally AND/OR Other                                                                                                                                                                                            |
+| TX-Dallas       | dp_state_fed_reference  | Incorrect    | scope_error               |                                                                                                               | Yes                                                                                                                                                                                                                                                                                                                                                                     |
+| TX-Dallas       | dp_type                 | Incorrect    | option_selection_error    | Other                                                                                                         | Pipes, other smoke/ing or inhal/ing/ation equipment or supplies                                                                                                                                                                                                                                                                                                         |
+
+## 7. Failure mode flag
+No obvious new dependency/parent-field formatting anomaly detected from aggregate columns.

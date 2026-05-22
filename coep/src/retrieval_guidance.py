@@ -884,7 +884,6 @@ _VARIABLE_OVERRIDES = {
             "them; those consequences SHOULD NOT be coded as Other."
         ),
         anchor_terms=["civil penalty", "license revocation", "sanction"],
-        enable_relevance_backfill=False,
     ),
     "dp_exemption": RetrievalGuidance(
         relevance_instructions=(
@@ -1055,7 +1054,6 @@ _VARIABLE_OVERRIDES = {
             "yet ssp_permit is still No unless the ordinance expressly authorizes operation. Emergency-conditioned clean needle or needle-and-syringe exchange authority counts here only when the ordinance says the program may operate once the emergency condition is met."
             " Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization only when the ordinance itself authorizes operation, and do not infer authorization from site approval, state registration, or the mere existence of an SSP law. A permit-required operating regime for a syringe exchange facility is an explicit authorization regime and should be coded Yes rather than No."
         ),
-        enable_relevance_backfill=False,
     ),
     "ssp_prohibit": RetrievalGuidance(
         relevance_instructions=(
@@ -1072,7 +1070,6 @@ _VARIABLE_OVERRIDES = {
         completion_instructions=(
             "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed. Do not infer `Other restrictions` from general operating requirements, exchange-only language, or coordination duties unless the ordinance states a concrete residual restriction that fits no named label. Do not infer `Restrictions on quantity of syringes that may be provided or exchanged` unless the ordinance expressly limits number, amount, or quantity. Treat site approval, notice, or registration as `Permit or license required for operation` only when the ordinance requires a formal local operating permit or license. Treat mobile-site restrictions only when the ordinance expressly limits mobile or non-fixed-location operation."
         ),
-        enable_relevance_backfill=False,
     ),
     "dp_exempt_sygen_activity": RetrievalGuidance(
         relevance_instructions=(

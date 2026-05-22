@@ -3,12 +3,35 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Any
 
 
 REQUIRES_YES_COLUMN = 'Requires "yes" from upstream question:'
 REQUIRES_DATA_COLUMN = "Requires data from upstream question:"
 REQUIRES_LABELS_COLUMN = "Requires label(s) from upstream question:"
+
+_LIKELY_QUERY_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def _looks_like_query_id(value: str) -> bool:
+    normalized = value.strip()
+    if not normalized:
+        return False
+    if not _LIKELY_QUERY_ID_RE.fullmatch(normalized):
+        return False
+    lowered = normalized.lower()
+    disallowed_fragments = {
+        "question",
+        "answer",
+        "citation",
+        "references",
+        "cross-references",
+        "background",
+        "outside law",
+        "interpret the local paraphernalia rule",
+    }
+    return not any(fragment in lowered for fragment in disallowed_fragments)
 
 
 def _dedupe_preserve_order(values: list[str]) -> tuple[str, ...]:
@@ -28,7 +51,8 @@ def _split_pipe_delimited_ids(value: Any) -> tuple[str, ...]:
         return ()
     if not isinstance(value, str):
         value = str(value)
-    return _dedupe_preserve_order(value.split("||"))
+    raw_values = _dedupe_preserve_order(value.split("||"))
+    return tuple(item for item in raw_values if _looks_like_query_id(item))
 
 
 @dataclass(frozen=True)
@@ -78,7 +102,7 @@ def _parse_label_blockers(value: Any) -> tuple[LabelBlockerRule, ...]:
         parent_query_id, label_text = rule_text.split("=>", 1)
         parent_query_id = parent_query_id.strip()
         blocker_labels = _dedupe_preserve_order(label_text.split("||"))
-        if not parent_query_id or not blocker_labels:
+        if not _looks_like_query_id(parent_query_id) or not blocker_labels:
             continue
         rules.append(
             LabelBlockerRule(

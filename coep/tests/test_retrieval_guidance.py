@@ -81,7 +81,7 @@ class TestCoepRetrievalGuidance:
         assert "license revocation" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
         assert "nuisance, licensing, zoning, or business-remedy text" in guidance.relevance_instructions
-        assert guidance.enable_relevance_backfill is False
+        assert guidance.enable_relevance_backfill is None
 
     def test_returns_guidance_for_activity_variable_with_operative_only_rules(self):
         request = RetrievalGuidanceRequest(
@@ -757,7 +757,7 @@ class TestCoepRetrievalGuidance:
         assert "site approval, state registration" in guidance.completion_instructions
         assert "existence of an SSP law" in guidance.completion_instructions
         assert "permit-required operating regime" in guidance.completion_instructions
-        assert guidance.enable_relevance_backfill is False
+        assert guidance.enable_relevance_backfill is None
 
     def test_returns_guidance_for_ssp_current_imp_variable(self):
         request = RetrievalGuidanceRequest(
@@ -819,7 +819,7 @@ class TestCoepRetrievalGuidance:
         assert "bare authorization" in guidance.completion_instructions
         assert "formal local operating permit or license" in guidance.completion_instructions
         assert "non-fixed-location operation" in guidance.completion_instructions
-        assert guidance.enable_relevance_backfill is False
+        assert guidance.enable_relevance_backfill is None
 
     def test_returns_guidance_for_ssp_prohibition_variable(self):
         request = RetrievalGuidanceRequest(

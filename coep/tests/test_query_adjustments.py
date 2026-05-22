@@ -4,9 +4,10 @@ import os
 import tempfile
 
 import polars as pl
+import pytest
 
 from coep.src.query import adjust_drug_paraphernalia_queries
-from legiscope.query import load_queries
+from legiscope.query import _validate_query_dependency_columns, load_queries
 from legiscope.query_hierarchy import (
     REQUIRES_DATA_COLUMN,
     REQUIRES_LABELS_COLUMN,
@@ -62,6 +63,30 @@ class TestCoepQueryAdjustments:
             assert "Question: What types?" in queries[1].question
         finally:
             os.unlink(temp_path)
+
+    def test_dependency_validator_rejects_prose_in_dependency_columns(self):
+        df = pl.DataFrame(
+            {
+                "question_number": ["Q1", "Q1.6"],
+                "variable_name": ["dp_law", "dp_state_fed_reference"],
+                "prepend_text": ["Context.", "Context."],
+                "query_text": [
+                    "Does the ordinance regulate paraphernalia?",
+                    "Does local law reference state or federal law?",
+                ],
+                "response_options": ["Yes OR No", "Yes OR No"],
+                "coding_instructions": [
+                    "Code YES if found.",
+                    "Code YES only when outside law must actually be reviewed.",
+                ],
+                REQUIRES_YES_COLUMN: ["", "Do NOT code YES for bare citations"],
+                REQUIRES_DATA_COLUMN: ["", ""],
+                REQUIRES_LABELS_COLUMN: ["", ""],
+            }
+        )
+
+        with pytest.raises(ValueError, match="malformed dependency/query metadata"):
+            _validate_query_dependency_columns(df)
 
     def test_query_loader_normalizes_title_cased_coep_headers(self):
         df = pl.DataFrame(

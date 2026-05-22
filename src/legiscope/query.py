@@ -33,6 +33,7 @@ from legiscope.query_hierarchy import (
     REQUIRES_LABELS_COLUMN,
     REQUIRES_YES_COLUMN,
     QueryHierarchy,
+    _looks_like_query_id,
     build_query_hierarchy,
     hierarchy_from_metadata,
     hierarchy_to_metadata,
@@ -981,6 +982,7 @@ def load_queries(
             raise ValueError(f"Error reading queries file: {e}") from e
 
     df = _normalize_query_input_df(df)
+    _validate_query_dependency_columns(df)
 
     # Validate consistency between adjust_for_dataset and query_adjuster
     if adjust_for_dataset and query_adjuster is None:
@@ -998,6 +1000,7 @@ def load_queries(
         assert query_adjuster is not None
         df = query_adjuster(df)
         df = _normalize_query_input_df(df)
+        _validate_query_dependency_columns(df)
 
     # Check for question column after adjuster (adjuster may create it)
     if "question" not in df.columns:
@@ -1176,6 +1179,52 @@ def _normalize_query_input_df(df: pl.DataFrame) -> pl.DataFrame:
         df = df.drop(columns_to_drop)
 
     return df
+
+
+def _validate_query_dependency_columns(df: pl.DataFrame) -> None:
+    """Fail fast when dependency columns contain prose instead of query identifiers."""
+    dependency_columns = [
+        column
+        for column in (REQUIRES_YES_COLUMN, REQUIRES_DATA_COLUMN, REQUIRES_LABELS_COLUMN)
+        if column in df.columns
+    ]
+    if not dependency_columns:
+        return
+
+    invalid_entries: list[str] = []
+    for row in df.to_dicts():
+        variable_name = str(row.get("variable_name") or row.get("Variable") or "").strip()
+        for column in dependency_columns:
+            value = row.get(column)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if not text:
+                continue
+            if column == REQUIRES_LABELS_COLUMN:
+                candidate_ids = [
+                    part.split("=>", 1)[0].strip()
+                    for part in text.split(";;")
+                    if "=>" in part
+                ]
+            else:
+                candidate_ids = [part.strip() for part in text.split("||")]
+            invalid_candidates = [
+                candidate
+                for candidate in candidate_ids
+                if candidate and not _looks_like_query_id(candidate)
+            ]
+            if invalid_candidates:
+                invalid_entries.append(
+                    f"{variable_name or '<unknown>'} [{column}] -> {invalid_candidates}"
+                )
+
+    if invalid_entries:
+        preview = "; ".join(invalid_entries[:5])
+        raise ValueError(
+            "Query CSV contains malformed dependency/query metadata. "
+            f"Expected query identifiers in dependency columns, found: {preview}"
+        )
 
 
 def _serialize_result_query_metadata(metadata: dict[str, Any] | None) -> str:
@@ -4476,33 +4525,17 @@ def _apply_ssp_permit_validator(
     response_options = _clean_response_options(metadata.get("response_options"))
     if response_options != "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared":
         return response
-
-    answer = str(response.short_answer or "").strip()
-    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
-    has_explicit_authorization = any(
-        re.search(pattern, evidence_text, re.IGNORECASE)
-        for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
-    )
-
-    if answer == "No":
-        if not has_explicit_authorization:
-            return response
-        return _rewrite_structured_response_options(response, ("Yes",), query_metadata)
-
-    if answer in {
-        "Yes",
-        "Yes, only if a local public health emergency or disease outbreak has been declared",
-    }:
-        if has_explicit_authorization:
-            return response
-        if _ssp_reference_support_is_admin_only(evidence_text) or any(
-            re.search(pattern, evidence_text, re.IGNORECASE)
-            for pattern in _SSP_PERMIT_ADMIN_ONLY_PATTERNS
-        ):
-            return _rewrite_structured_response_options(response, ("No",), query_metadata)
+    if str(response.short_answer or "").strip() != "No":
         return response
 
-    return response
+    evidence_text = _collect_review_text(sections)
+    if not any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
+    ):
+        return response
+
+    return response.model_copy(update={"short_answer": "Yes"})
 
 
 def _build_current_through_metadata_retrieval_query(retrieval_query: str) -> str:
@@ -4586,14 +4619,12 @@ _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
     "penalty",
     "exemption_presence",
     "exemption_activity_scope",
-    "ssp_restriction",
 }
 
 _FALLBACK_OPTION_BY_GUIDANCE_TOPIC = {
     "prohibited_activity": "Not specified",
     "penalty": '"Unlawful" only',
     "exemption_presence": "None",
-    "ssp_restriction": "No restrictions listed",
 }
 
 _REFERENCE_DEFINITION_ONLY_PATTERNS = (
@@ -4807,7 +4838,6 @@ def _authoritative_option_supports_selection(
         "prohibited_activity",
         "penalty",
         "exemption_activity_scope",
-        "ssp_restriction",
     }:
         return bool(snippet) or (not patterns and has_option_specific_support)
 
