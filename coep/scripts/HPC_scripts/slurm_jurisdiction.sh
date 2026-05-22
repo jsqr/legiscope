@@ -1220,6 +1220,30 @@ print(int(load_params().get("segmentation", {}).get("llm_context_limit", 32768))
     printf '%s\n' "$resolved_context_limit"
 }
 
+resolve_prebuilt_code_txt_source() {
+    local docx_dir=""
+    local docx_stem=""
+    local candidate=""
+
+    docx_dir="$(dirname "$DOCX_PATH")"
+    docx_stem="$(basename "$DOCX_PATH")"
+    docx_stem="${docx_stem%.*}"
+
+    for candidate in \
+        "${SHARED_CODE_DIR}/code.txt" \
+        "${SHARED_CODE_DIR}/raw/code.txt" \
+        "${docx_dir}/code.txt" \
+        "${docx_dir}/${docx_stem}.txt"
+    do
+        if [[ -f "$candidate" ]]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
 # ── Step 2: Edit params.yaml with jurisdiction metadata ───────────
 echo "Setting params.yaml: ${STATE} / ${LOCALITY} / ${CODE_SLUG}..."
 rewrite_params_for_profile params.yaml
@@ -1230,13 +1254,21 @@ python scripts/init.py
 
 # ── Step 4: Copy DOCX and convert to TXT ──────────────────────────
 RAW_DIR="${CODE_DIR_REL}/raw"
+LOCAL_CODE_TXT="${CODE_DIR_REL}/code.txt"
+PREBUILT_CODE_TXT_SOURCE=""
 mkdir -p "$RAW_DIR"
 
 echo "Copying DOCX to ${RAW_DIR}/..."
 cp "$DOCX_PATH" "$RAW_DIR/"
 
-echo "Converting DOCX to TXT..."
-bash scripts/convert_docx.sh "$RAW_DIR"
+if PREBUILT_CODE_TXT_SOURCE="$(resolve_prebuilt_code_txt_source)"; then
+    echo "Found prebuilt code.txt: ${PREBUILT_CODE_TXT_SOURCE}"
+    cp "$PREBUILT_CODE_TXT_SOURCE" "$LOCAL_CODE_TXT"
+    echo "Copied prebuilt code.txt to ${LOCAL_CODE_TXT}; skipping DOCX conversion."
+else
+    echo "No prebuilt code.txt found; converting DOCX to TXT..."
+    bash scripts/convert_docx.sh "$RAW_DIR"
+fi
 
 IFS=$'\t' read -r RESOLVED_LLM_PROVIDER RESOLVED_LLM_SOURCE < <(resolve_llm_runtime_mode)
 

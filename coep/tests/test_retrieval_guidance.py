@@ -80,6 +80,8 @@ class TestCoepRetrievalGuidance:
         assert "Generic default penalties" in guidance.completion_instructions
         assert "license revocation" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
+        assert "nuisance, licensing, zoning, or business-remedy text" in guidance.relevance_instructions
+        assert guidance.enable_relevance_backfill is False
 
     def test_returns_guidance_for_activity_variable_with_operative_only_rules(self):
         request = RetrievalGuidanceRequest(
@@ -97,6 +99,7 @@ class TestCoepRetrievalGuidance:
             in guidance.relevance_instructions
         )
         assert "minors-only access restrictions" in guidance.relevance_instructions
+        assert "illegal-smoking-product text as noise" in guidance.relevance_instructions
         assert guidance.completion_instructions is not None
         assert (
             "only code items found directly in the legal text"
@@ -106,6 +109,8 @@ class TestCoepRetrievalGuidance:
             "Advertising or display language by itself does not prove Sales"
             in guidance.completion_instructions
         )
+        assert "illegal-smoking-product sales clauses" in guidance.completion_instructions
+        assert guidance.enable_relevance_backfill is False
 
     def test_returns_guidance_for_exemption_variable_with_strict_other_rules(self):
         request = RetrievalGuidanceRequest(
@@ -224,6 +229,8 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert "controlled-substance schedules" in guidance.completion_instructions
         assert "do not count by themselves" in guidance.completion_instructions
+        assert "broader cannabis, public-health, or business chapters" in guidance.completion_instructions
+        assert guidance.enable_relevance_backfill is False
 
     def test_relevance_filter_resolution_honors_global_switch_and_guidance_override(self):
         enabled_guidance = get_drug_paraphernalia_retrieval_guidance(
@@ -741,6 +748,7 @@ class TestCoepRetrievalGuidance:
             in guidance.relevance_instructions
         )
         assert "valid local permit counts as an authorization regime" in guidance.relevance_instructions
+        assert "state registration, annual reporting" in guidance.relevance_instructions
         assert guidance.completion_instructions is not None
         assert (
             "Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization"
@@ -749,6 +757,7 @@ class TestCoepRetrievalGuidance:
         assert "site approval, state registration" in guidance.completion_instructions
         assert "existence of an SSP law" in guidance.completion_instructions
         assert "permit-required operating regime" in guidance.completion_instructions
+        assert guidance.enable_relevance_backfill is False
 
     def test_returns_guidance_for_ssp_current_imp_variable(self):
         request = RetrievalGuidanceRequest(
@@ -808,6 +817,9 @@ class TestCoepRetrievalGuidance:
         )
         assert "No restrictions listed" in guidance.completion_instructions
         assert "bare authorization" in guidance.completion_instructions
+        assert "formal local operating permit or license" in guidance.completion_instructions
+        assert "non-fixed-location operation" in guidance.completion_instructions
+        assert guidance.enable_relevance_backfill is False
 
     def test_returns_guidance_for_ssp_prohibition_variable(self):
         request = RetrievalGuidanceRequest(

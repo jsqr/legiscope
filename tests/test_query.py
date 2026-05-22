@@ -499,6 +499,68 @@ class TestAuthoritativeOptionEvidenceGate:
 
 
 class TestSecondStageStructuredValidators:
+    def test_prohibited_activity_gate_drops_illegal_smoking_product_sales_noise(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Sales, possession with intent to sell, offer for sale AND/OR "
+                "Possession, possession with intent to use, keep"
+            ),
+            reasoning="Initial answer mixed illegal smoking product sales with paraphernalia possession.",
+            citations=["§ 31-32.1"],
+            supporting_passages=[
+                "A person commits an offense if the person sells any illegal smoking product. A person commits an offense if the person uses or possesses with intent to use any illegal smoking paraphernalia."
+            ],
+            confidence=0.62,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Sales, possession with intent to sell, offer for sale",
+                    selected=True,
+                    citations=["§ 31-32.1"],
+                    supporting_passages=[
+                        "A person commits an offense if the person sells any illegal smoking product."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Possession, possession with intent to use, keep",
+                    selected=True,
+                    citations=["§ 31-32.1"],
+                    supporting_passages=[
+                        "A person commits an offense if the person uses or possesses with intent to use any illegal smoking paraphernalia."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas",
+                heading_text="# Illegal smoking products and paraphernalia",
+                body_text=(
+                    "A person commits an offense if the person sells any illegal smoking product. "
+                    "A person commits an offense if the person uses or possesses with intent to use any illegal smoking paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Sales, possession with intent to sell, offer for sale AND/OR "
+                    "Possession, possession with intent to use, keep AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Possession, possession with intent to use, keep"
+
     def test_reference_necessity_forces_no_for_definition_only_support(self):
         response = LegalQueryResponse(
             short_answer="Yes",
@@ -536,6 +598,104 @@ class TestSecondStageStructuredValidators:
         assert [item.option for item in validated.option_evidence if item.selected] == [
             "No"
         ]
+
+    def test_reference_necessity_forces_no_for_ssp_admin_only_state_reference(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="Initial answer treated RSA authorization background as a necessary outside-law dependency.",
+            citations=["R.S.A. 318-B:43"],
+            supporting_passages=[
+                "Syringe service program means a program authorized by R.S.A. 318-B:43 and coordinated with local health officials."
+            ],
+            confidence=0.58,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Yes",
+                    selected=True,
+                    citations=["R.S.A. 318-B:43"],
+                    supporting_passages=[
+                        "Syringe service program means a program authorized by R.S.A. 318-B:43 and coordinated with local health officials."
+                    ],
+                ),
+                ResponseOptionEvidence(option="No", selected=False),
+            ],
+        )
+
+        validated = query_module._apply_reference_necessity_validator(
+            response,
+            [],
+            {
+                "variable_name": "ssp_state_fed_reference",
+                "guidance_topic": "reference_necessity",
+                "response_options": "Yes OR No",
+            },
+        )
+
+        assert validated.short_answer == "No"
+        assert [item.option for item in validated.option_evidence if item.selected] == [
+            "No"
+        ]
+
+    def test_reference_citation_validator_prefers_parent_aligned_citation_family(self):
+        parent_contexts = [
+            query_module.ParentQueryContext(
+                query_id="parent-1",
+                question="Does the local law require state-law review?",
+                short_answer="Yes",
+                variable_name="dp_state_fed_reference",
+                response_options="Yes OR No",
+                option_evidence=[
+                    query_module.ParentOptionEvidence(
+                        option="Yes",
+                        selected=True,
+                        citations=["Sections 30-31-1 et seq. NMSA 1978"],
+                        supporting_passages=[
+                            "The ordinance relies on the Controlled Substances Act, Sections 30-31-1 et seq. NMSA 1978."
+                        ],
+                    )
+                ],
+            )
+        ]
+        response = LegalQueryResponse(
+            short_answer="§ 26-2B-1",
+            reasoning="Initial answer picked a local citation instead of the cited state-law family.",
+            citations=["§ 26-2B-1"],
+            supporting_passages=[
+                "The state controlled substances act, Sections 30-31-1 et seq. NMSA 1978, governs controlled substances."
+            ],
+            confidence=0.51,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-citation",
+                heading_text="# Cross references",
+                body_text=(
+                    "Local citation § 26-2B-1 appears elsewhere. The state controlled substances act, "
+                    "Sections 30-31-1 et seq. NMSA 1978, governs controlled substances."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_reference_citation_validator(
+            response,
+            sections,
+            {
+                "variable_name": "dp_state_fed_citation",
+                "response_options": "<citation>",
+                "parent_contexts": query_module._serialize_parent_contexts(parent_contexts),
+            },
+        )
+
+        assert validated.short_answer == "§ 30-31-1"
+        assert validated.citations == ["§ 30-31-1"]
 
     def test_penalty_validator_suppresses_inferred_labels_from_default_penalty_text(self):
         response = LegalQueryResponse(
@@ -618,6 +778,99 @@ class TestSecondStageStructuredValidators:
         assert [item.option for item in gated.option_evidence if item.selected] == [
             "None"
         ]
+
+    def test_ssp_permit_validator_forces_no_for_registration_only_regime(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="Initial answer treated registration and mayoral approval as explicit authorization.",
+            citations=["R.S.A. 318-B:43"],
+            supporting_passages=[
+                "Each program shall register annually with the city health department and maintain complaint procedures approved by the mayor."
+            ],
+            confidence=0.57,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="No", selected=False),
+                ResponseOptionEvidence(option="Yes", selected=True),
+                ResponseOptionEvidence(
+                    option="Yes, only if a local public health emergency or disease outbreak has been declared",
+                    selected=False,
+                ),
+            ],
+        )
+
+        validated = query_module._apply_ssp_permit_validator(
+            response,
+            [],
+            {
+                "variable_name": "ssp_permit",
+                "response_options": (
+                    "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared"
+                ),
+            },
+        )
+
+        assert validated.short_answer == "No"
+        assert [item.option for item in validated.option_evidence if item.selected] == [
+            "No"
+        ]
+
+    def test_ssp_restriction_gate_rejects_site_approval_as_operating_permit(self):
+        response = LegalQueryResponse(
+            short_answer="Permit or license required for operation AND/OR Restrictions on mobile sites",
+            reasoning="Initial answer treated site approval as an operating permit requirement.",
+            citations=["§ 46-3"],
+            supporting_passages=[
+                "Mobile units may operate only at approved sites designated by the health department."
+            ],
+            confidence=0.55,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Permit or license required for operation",
+                    selected=True,
+                    citations=["§ 46-3"],
+                    supporting_passages=[
+                        "Mobile units may operate only at approved sites designated by the health department."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Restrictions on mobile sites",
+                    selected=True,
+                    citations=["§ 46-3"],
+                    supporting_passages=[
+                        "Mobile units may operate only at approved sites designated by the health department."
+                    ],
+                ),
+                ResponseOptionEvidence(option="No restrictions listed", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-ssp-restrict",
+                heading_text="# Mobile units",
+                body_text="Mobile units may operate only at approved sites designated by the health department.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "ssp_restriction",
+                "response_options": (
+                    "Permit or license required for operation AND/OR "
+                    "Restrictions on mobile sites AND/OR No restrictions listed"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Restrictions on mobile sites"
 
 
 class TestTimeoutExecution:

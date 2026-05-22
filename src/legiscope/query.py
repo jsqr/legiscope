@@ -310,6 +310,18 @@ _CITATION_CANDIDATE_PATTERNS = [
         re.IGNORECASE,
     ),
     re.compile(
+        r"\b(?P<citation>R\.?\s*S\.?\s*A\.?\s*[\dA-Z]+(?:-[\dA-Z]+)*(?::\d+(?:\([^)]+\))*)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<citation>(?:RC|Revised Code)\s+Chapters?\s+\d+(?:,\s*\d+)*(?:\s*(?:and|&)\s*\d+)?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?P<citation>Chapters?\s+\d+(?:,\s*\d+)*(?:\s*(?:and|&)\s*\d+)?\s+of the Revised Code)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"\b(?P<citation>\d+\s+(?:P\.S\.|U\.S\.C\.)\s*§+\s*[\w().-]+)\b",
         re.IGNORECASE,
     ),
@@ -1887,6 +1899,7 @@ def query_legal_documents(
         response = _apply_penalty_specificity_validator(response, sections, query_metadata)
         response = _apply_exemption_noise_validator(response, sections, query_metadata)
         response = _normalize_response_citations(response, query_metadata)
+        response = _apply_reference_citation_validator(response, sections, query_metadata)
         response = _apply_date_surface_validators(response, sections, query_metadata)
         response = _apply_ssp_permit_validator(response, sections, query_metadata)
 
@@ -1980,6 +1993,11 @@ def query_legal_documents(
             )
             reviewed_response = _normalize_response_citations(
                 reviewed_response,
+                query_metadata,
+            )
+            reviewed_response = _apply_reference_citation_validator(
+                reviewed_response,
+                sections,
                 query_metadata,
             )
             reviewed_similarity_scores: list[float] = []
@@ -3603,6 +3621,25 @@ def _clean_citation_candidate(value: str) -> str:
 def _canonicalize_citation_output(citation: str) -> str:
     """Render a chosen citation in a compact, single-unit form when possible."""
     cleaned = str(citation or "").strip()
+    rc_chapters_match = re.match(
+        r"^(?P<prefix>(?:RC|Revised Code))\s+(?P<chapters>Chapters?\s+\d+(?:,\s*\d+)*(?:\s*(?:and|&)\s*\d+)?)$",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if rc_chapters_match is not None:
+        return (
+            f"{rc_chapters_match.group('prefix')} "
+            f"{rc_chapters_match.group('chapters')}"
+        )
+
+    revised_code_match = re.match(
+        r"^(?P<chapters>Chapters?\s+\d+(?:,\s*\d+)*(?:\s*(?:and|&)\s*\d+)?)\s+of the Revised Code$",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if revised_code_match is not None:
+        return f"{revised_code_match.group('chapters')} of the Revised Code"
+
     sections_match = re.match(
         r"^Sections?\s+(?P<section>\d+(?:-\d+)+)",
         cleaned,
@@ -3625,6 +3662,21 @@ def _canonicalize_citation_output(citation: str) -> str:
 def _citation_family_key(citation: str) -> str | None:
     """Collapse a citation to a family key for parent-context consistency checks."""
     normalized = _canonicalize_citation_output(citation).lower()
+    rc_match = re.search(r"(?:rc|revised code)\s+chapters?\s+(\d+)", normalized)
+    if rc_match is not None:
+        return rc_match.group(1)
+
+    revised_code_match = re.search(
+        r"chapters?\s+(\d+)(?:,\s*\d+)*(?:\s*(?:and|&)\s*\d+)?\s+of the revised code",
+        normalized,
+    )
+    if revised_code_match is not None:
+        return revised_code_match.group(1)
+
+    rsa_match = re.search(r"r\.?s\.?a\.?\s*([\d]+(?:-[\da-z]+)?)", normalized)
+    if rsa_match is not None:
+        return rsa_match.group(1)
+
     match = re.search(r"(\d+[a-z]?(?:-\d+[a-z]?){1,3})", normalized)
     if match is None:
         return None
@@ -3686,6 +3738,21 @@ def _select_best_citation_candidate(texts: list[str]) -> str | None:
             continue
         return min(candidates, key=_citation_specificity_key)
     return None
+
+
+def _ordered_citation_candidates(texts: list[str]) -> list[str]:
+    """Collect citation candidates in source order without duplicates."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        for candidate in _extract_citation_candidates(text):
+            canonical = _canonicalize_citation_output(candidate)
+            key = canonical.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            ordered.append(canonical)
+    return ordered
 
 
 def _is_citation_placeholder_response_options(response_options: str) -> bool:
@@ -4068,6 +4135,14 @@ _EFFECTIVE_DATE_VARIABLE_NAMES = {
 }
 
 _SSP_PERMIT_VARIABLE_NAMES = {"ssp_permit"}
+_REFERENCE_NECESSITY_VARIABLE_NAMES = {
+    "dp_state_fed_reference",
+    "ssp_state_fed_reference",
+}
+_REFERENCE_CITATION_VARIABLE_NAMES = {
+    "dp_state_fed_citation",
+    "ssp_state_fed_citation",
+}
 
 _SSP_PERMIT_AUTHORIZATION_PATTERNS = (
     r"\bno person shall operate\b[^.\n]{0,120}\bwithout having a valid permit\b",
@@ -4098,6 +4173,26 @@ _SSP_DISTINCT_RESTRICTION_PATTERNS = (
     r"\bquantity of syringes\b",
     r"\bfrequency of visits\b",
     r"\bcap on\b",
+)
+
+_SSP_REFERENCE_PATTERNS = (
+    r"\br\.?s\.?a\.?\b",
+    r"\brevised code\b",
+    r"\bstate law\b",
+    r"\bstate statute\b",
+    r"\bstate code\b",
+)
+
+_SSP_REFERENCE_ADMIN_ONLY_PATTERNS = (
+    r"\bauthoriz(?:ed|ation)\b[^.\n]{0,80}\br\.?s\.?a\.?\b",
+    r"\bpermitted under\b[^.\n]{0,80}\br\.?s\.?a\.?\b",
+    r"\bpursuant to\b[^.\n]{0,80}\br\.?s\.?a\.?\b",
+    r"\bin compliance with\b[^.\n]{0,80}\br\.?s\.?a\.?\b",
+    r"\bregistered with\b",
+    r"\bregistration\b",
+    r"\bapproved by\b",
+    r"\bcoordinate(?:d|s|ing)? with\b",
+    r"\breport(?:ing|s)?\b",
 )
 
 _PENALTY_OTHER_DISTINCT_PATTERNS = (
@@ -4381,17 +4476,33 @@ def _apply_ssp_permit_validator(
     response_options = _clean_response_options(metadata.get("response_options"))
     if response_options != "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared":
         return response
-    if str(response.short_answer or "").strip() != "No":
-        return response
 
-    evidence_text = _collect_review_text(sections)
-    if not any(
+    answer = str(response.short_answer or "").strip()
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    has_explicit_authorization = any(
         re.search(pattern, evidence_text, re.IGNORECASE)
         for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
-    ):
+    )
+
+    if answer == "No":
+        if not has_explicit_authorization:
+            return response
+        return _rewrite_structured_response_options(response, ("Yes",), query_metadata)
+
+    if answer in {
+        "Yes",
+        "Yes, only if a local public health emergency or disease outbreak has been declared",
+    }:
+        if has_explicit_authorization:
+            return response
+        if _ssp_reference_support_is_admin_only(evidence_text) or any(
+            re.search(pattern, evidence_text, re.IGNORECASE)
+            for pattern in _SSP_PERMIT_ADMIN_ONLY_PATTERNS
+        ):
+            return _rewrite_structured_response_options(response, ("No",), query_metadata)
         return response
 
-    return response.model_copy(update={"short_answer": "Yes"})
+    return response
 
 
 def _build_current_through_metadata_retrieval_query(retrieval_query: str) -> str:
@@ -4475,12 +4586,14 @@ _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
     "penalty",
     "exemption_presence",
     "exemption_activity_scope",
+    "ssp_restriction",
 }
 
 _FALLBACK_OPTION_BY_GUIDANCE_TOPIC = {
     "prohibited_activity": "Not specified",
     "penalty": '"Unlawful" only',
     "exemption_presence": "None",
+    "ssp_restriction": "No restrictions listed",
 }
 
 _REFERENCE_DEFINITION_ONLY_PATTERNS = (
@@ -4603,6 +4716,26 @@ def _reference_support_is_definition_only(evidence_text: str) -> bool:
     )
 
 
+def _ssp_reference_support_is_admin_only(evidence_text: str) -> bool:
+    """Return whether SSP outside-law support is only administrative or authorization background."""
+    if not evidence_text.strip():
+        return False
+    if not any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_REFERENCE_PATTERNS
+    ):
+        return False
+    if any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_DISTINCT_RESTRICTION_PATTERNS
+    ):
+        return False
+    return any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_REFERENCE_ADMIN_ONLY_PATTERNS
+    )
+
+
 def _exemption_support_is_noise_only(evidence_text: str) -> bool:
     """Return whether exemption evidence is only business/zoning/decriminalization/tobacco noise."""
     if not evidence_text.strip():
@@ -4662,7 +4795,20 @@ def _authoritative_option_supports_selection(
     ):
         snippet = None
 
-    if guidance_topic in {"prohibited_activity", "penalty", "exemption_activity_scope"}:
+    if (
+        guidance_topic == "prohibited_activity"
+        and snippet is not None
+        and re.search(r"\billegal smoking product\b", snippet, re.IGNORECASE)
+        and not re.search(r"\bparaphernalia\b", snippet, re.IGNORECASE)
+    ):
+        snippet = None
+
+    if guidance_topic in {
+        "prohibited_activity",
+        "penalty",
+        "exemption_activity_scope",
+        "ssp_restriction",
+    }:
         return bool(snippet) or (not patterns and has_option_specific_support)
 
     return bool(snippet) or has_option_specific_support
@@ -4756,7 +4902,8 @@ def _apply_reference_necessity_validator(
 ) -> LegalQueryResponse:
     """Force No when state/federal-reference support is only schedule or definition text."""
     metadata = query_metadata or {}
-    if _query_variable_name(metadata) != "dp_state_fed_reference":
+    variable_name = _query_variable_name(metadata)
+    if variable_name not in _REFERENCE_NECESSITY_VARIABLE_NAMES:
         return response
 
     response_options = _clean_response_options(metadata.get("response_options"))
@@ -4766,10 +4913,115 @@ def _apply_reference_necessity_validator(
         return response
 
     evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
-    if not _reference_support_is_definition_only(evidence_text):
+    if variable_name == "dp_state_fed_reference":
+        should_force_no = _reference_support_is_definition_only(evidence_text)
+    else:
+        should_force_no = _ssp_reference_support_is_admin_only(evidence_text)
+    if not should_force_no:
         return response
 
     return _rewrite_structured_response_options(response, ("No",), query_metadata)
+
+
+def _selected_parent_citation_family_keys(parent_contexts: list[ParentQueryContext]) -> set[str]:
+    """Return citation families implied by selected parent option evidence."""
+    family_keys: set[str] = set()
+    for context in parent_contexts:
+        for item in context.option_evidence:
+            if not item.selected:
+                continue
+            for text in [*item.citations, *item.supporting_passages]:
+                for candidate in _extract_citation_candidates(text):
+                    family_key = _citation_family_key(candidate)
+                    if family_key:
+                        family_keys.add(family_key)
+                direct_family_key = _citation_family_key(text)
+                if direct_family_key:
+                    family_keys.add(direct_family_key)
+    return family_keys
+
+
+def _apply_reference_citation_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Prefer citation answers that align with the selected parent dependency rationale."""
+    metadata = query_metadata or {}
+    if _query_variable_name(metadata) not in _REFERENCE_CITATION_VARIABLE_NAMES:
+        return response
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return response
+    if not (
+        _is_citation_placeholder_response_options(response_options)
+        or response_options == "Yes, <citation> OR No"
+    ):
+        return response
+
+    parent_contexts = _deserialize_parent_contexts(metadata.get("parent_contexts"))
+    parent_family_keys = _selected_parent_citation_family_keys(parent_contexts)
+
+    selected_option_evidence = [item for item in response.option_evidence if item.selected]
+    candidate_texts: list[str] = [response.short_answer]
+    candidate_texts.extend(response.citations)
+    candidate_texts.extend(response.supporting_passages)
+    candidate_texts.extend(
+        citation
+        for item in selected_option_evidence
+        for citation in item.citations
+        if str(citation).strip()
+    )
+    candidate_texts.extend(
+        passage
+        for item in selected_option_evidence
+        for passage in item.supporting_passages
+        if str(passage).strip()
+    )
+    for section in sections:
+        if str(section.heading_text or "").strip():
+            candidate_texts.append(str(section.heading_text))
+        if str(section.body_text or "").strip():
+            candidate_texts.append(str(section.body_text))
+
+    candidates = _ordered_citation_candidates(candidate_texts)
+    if not candidates:
+        return response
+
+    chosen_citation: str | None = None
+    if parent_family_keys:
+        matching_candidates = [
+            candidate
+            for candidate in candidates
+            if (family_key := _citation_family_key(candidate)) is not None
+            and family_key in parent_family_keys
+        ]
+        if matching_candidates:
+            chosen_citation = min(matching_candidates, key=_citation_specificity_key)
+        elif _is_citation_placeholder_response_options(response_options):
+            return response.model_copy(update={"short_answer": "Unknown", "citations": []})
+
+    if chosen_citation is None:
+        chosen_citation = min(candidates, key=_citation_specificity_key)
+
+    if _is_citation_placeholder_response_options(response_options):
+        return response.model_copy(
+            update={
+                "short_answer": chosen_citation,
+                "citations": [chosen_citation],
+            }
+        )
+
+    normalized_answer = _normalize_yes_no_citation_answer(response.short_answer)
+    if normalized_answer == "No":
+        return response.model_copy(update={"short_answer": "No", "citations": []})
+    return response.model_copy(
+        update={
+            "short_answer": f"Yes, {chosen_citation}",
+            "citations": [chosen_citation],
+        }
+    )
 
 
 def _apply_penalty_specificity_validator(
@@ -5402,6 +5654,51 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bprepare\b",
                 r"\bcompound\b",
             ),
+        }
+
+    if guidance_topic == "ssp_restriction":
+        return {
+            _normalize_option_text("Cap on total number of programs or sites"): (
+                r"\bcap on\b[^.\n]{0,40}\b(?:programs?|sites?)\b",
+                r"\b(?:no more than|not more than|limited to)\b[^.\n]{0,50}\b(?:programs?|sites?)\b",
+            ),
+            _normalize_option_text(
+                "Programs may not operate within certain distance of schools or childcare facilities"
+            ): (
+                r"\b(?:school|child\s*care|childcare|day care)\b[^.\n]{0,60}\b(?:distance|feet|foot|buffer|within)\b",
+                r"\b(?:distance|feet|foot|buffer|within)\b[^.\n]{0,60}\b(?:school|child\s*care|childcare|day care)\b",
+            ),
+            _normalize_option_text(
+                "Programs may not operate within certain distance of parks or other public spaces"
+            ): (
+                r"\b(?:park|public space|playground)\b[^.\n]{0,60}\b(?:distance|feet|foot|buffer|within)\b",
+                r"\b(?:distance|feet|foot|buffer|within)\b[^.\n]{0,60}\b(?:park|public space|playground)\b",
+            ),
+            _normalize_option_text("Restrictions on frequency of visits"): (
+                r"\bfrequency of visits\b",
+                r"\b(?:once|one time)\b[^.\n]{0,30}\b(?:per day|per week|per month)\b",
+                r"\bvisit(?:s)?\b[^.\n]{0,40}\b(?:limit|limited|once|maximum)\b",
+            ),
+            _normalize_option_text(
+                "Restrictions on quantity of syringes that may be provided or exchanged"
+            ): (
+                r"\bquantity of syringes\b",
+                r"\b(?:limit|limited|maximum|no more than)\b[^.\n]{0,40}\bsyringes?\b",
+                r"\bexchange only basis\b",
+                r"\bone-for-one\b",
+            ),
+            _normalize_option_text("Restrictions on mobile sites"): (
+                r"\bmobile\b[^.\n]{0,30}\b(?:site|sites|unit|units|program|programs)\b",
+                r"\bnon-fixed-location\b",
+            ),
+            _normalize_option_text("Permit or license required for operation"): (
+                r"\bvalid permit\b[^.\n]{0,50}\boperate\b",
+                r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b",
+                r"\boperate\b[^.\n]{0,40}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b",
+                r"\b(?:permit|license)\b[^.\n]{0,40}\brequired\b[^.\n]{0,20}\boperate\b",
+            ),
+            _normalize_option_text("Other restrictions"): (),
+            _normalize_option_text("No restrictions listed"): (),
         }
 
     return {}

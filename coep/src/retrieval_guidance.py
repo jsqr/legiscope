@@ -851,15 +851,16 @@ _VARIABLE_OVERRIDES = {
             "For dp_activity, code only parent-query activity labels that appear directly in the operative prohibition text. "
             "Do not count paraphernalia-shop zoning rules, retail-display or business-access restrictions, or minors-only "
             "sales/display provisions as general prohibited activities unless that same text expressly creates the benchmarked "
-            "ordinance-wide prohibition."
+            "ordinance-wide prohibition. Treat illegal-smoking-product text as noise unless the same sentence or subsection also expressly targets illegal smoking paraphernalia."
         ),
         completion_instructions=(
             "For dp_activity, only code items found directly in the legal text. Count only operative prohibitions. DO NOT code "
             "zoning, land-use, head-shop, retail-display, business-access, or minors-only restrictions as general activity labels. "
             "DO NOT code Sales unless the text itself prohibits sale, offer for sale, possession with intent to sell, or a clearly "
-            "equivalent sales act. Advertising or display language by itself does not prove Sales."
+            "equivalent sales act. Advertising or display language by itself does not prove Sales. Do not treat illegal-smoking-product sales clauses as paraphernalia activity support unless the same operative text also prohibits conduct involving illegal smoking paraphernalia."
         ),
         anchor_terms=["unlawful", "prohibited", "offer for sale"],
+        enable_relevance_backfill=False,
     ),
     "dp_penalties": RetrievalGuidance(
         relevance_instructions=(
@@ -867,7 +868,7 @@ _VARIABLE_OVERRIDES = {
             "business-license revocation, permitting consequences, or other collateral remedies into Other when the coding rules "
             "exclude them. Retrieve and use the actual cross-referenced penalty section before answering. Do not translate offense "
             "classes into benchmark labels unless the text itself states the exact benchmark label or the directly relevant sanction. Treat generic default-penalty language, offense grades, and "
-            "boilerplate classification clauses as low value unless the ordinance or direct penalty cross-reference states the benchmark sanction concept itself."
+            "boilerplate classification clauses as low value unless the ordinance or direct penalty cross-reference states the benchmark sanction concept itself. Ignore nuisance, licensing, zoning, or business-remedy text unless it is the direct operative penalty for the paraphernalia violation."
         ),
         completion_instructions=(
             "For dp_penalties, assign the exact labels supported by the exact penalty terms found in the legal text. Treat `Penalty, "
@@ -883,6 +884,7 @@ _VARIABLE_OVERRIDES = {
             "them; those consequences SHOULD NOT be coded as Other."
         ),
         anchor_terms=["civil penalty", "license revocation", "sanction"],
+        enable_relevance_backfill=False,
     ),
     "dp_exemption": RetrievalGuidance(
         relevance_instructions=(
@@ -940,9 +942,10 @@ _VARIABLE_OVERRIDES = {
             "or penalty/enforcement cross-references. DO NOT answer Yes just because the ordinance cites a state drug schedule, a "
             "controlled-substances definition, or similar background law unless that outside definition must actually be consulted to "
             "answer the benchmark questions. Definitional citations to controlled-substance schedules, controlled-substances acts, or background state-law categories do not count by themselves. Answer Yes when the ordinance makes an exemption or carve-out depend on whether conduct "
-            "complies with a cited outside statute, because reviewing that outside law is necessary to know the exemption's scope."
+            "complies with a cited outside statute, because reviewing that outside law is necessary to know the exemption's scope. If retrieved context mixes broader cannabis, public-health, or business chapters with the operative dependency clause, trust only the clause that actually makes outside law necessary."
         ),
         anchor_terms=["incorporated by reference", "as defined in", "pursuant to", "in accordance with"],
+        enable_relevance_backfill=False,
     ),
     "dp_state_fed_citation": RetrievalGuidance(
         completion_instructions=(
@@ -973,6 +976,7 @@ _VARIABLE_OVERRIDES = {
             "insufficient unless the outside law is actually dispositive of the local benchmarked rule."
         ),
         anchor_terms=["as defined in", "state health department", "harm reduction act"],
+        enable_relevance_backfill=False,
     ),
     "ssp_current_imp": RetrievalGuidance(
         completion_instructions=(
@@ -1044,13 +1048,14 @@ _VARIABLE_OVERRIDES = {
         relevance_instructions=(
             "For ssp_permit, focus on text that expressly permits, authorizes, allows, or establishes SSP operation. Do not treat a mere "
             "restriction, reporting rule, site-approval prerequisite, or the existence of an SSP law as authorization unless the text itself says the program may operate. "
-            "A rule that no person may operate a syringe exchange facility without a valid local permit counts as an authorization regime, not just a restriction."
+            "A rule that no person may operate a syringe exchange facility without a valid local permit counts as an authorization regime, not just a restriction. Do not treat state registration, annual reporting, complaint-procedure requirements, or mayoral/site approval alone as authorization."
         ),
         completion_instructions=(
             "For ssp_permit, distinguish explicit authorization from broader SSP-law existence. A jurisdiction can have an SSP law because it bans or restricts programs, "
             "yet ssp_permit is still No unless the ordinance expressly authorizes operation. Emergency-conditioned clean needle or needle-and-syringe exchange authority counts here only when the ordinance says the program may operate once the emergency condition is met."
             " Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization only when the ordinance itself authorizes operation, and do not infer authorization from site approval, state registration, or the mere existence of an SSP law. A permit-required operating regime for a syringe exchange facility is an explicit authorization regime and should be coded Yes rather than No."
         ),
+        enable_relevance_backfill=False,
     ),
     "ssp_prohibit": RetrievalGuidance(
         relevance_instructions=(
@@ -1065,8 +1070,9 @@ _VARIABLE_OVERRIDES = {
             "For ssp_restrict, focus on operational limits after SSPs are otherwise recognized by the ordinance. Do not treat a total ban or a bare authorization clause as a restriction. Count only listed operating conditions such as permits, caps, buffers, mobile-site limits, visit limits, or syringe-quantity limits."
         ),
         completion_instructions=(
-            "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed. Do not infer `Other restrictions` from general operating requirements, exchange-only language, or coordination duties unless the ordinance states a concrete residual restriction that fits no named label. Do not infer `Restrictions on quantity of syringes that may be provided or exchanged` unless the ordinance expressly limits number, amount, or quantity."
+            "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed. Do not infer `Other restrictions` from general operating requirements, exchange-only language, or coordination duties unless the ordinance states a concrete residual restriction that fits no named label. Do not infer `Restrictions on quantity of syringes that may be provided or exchanged` unless the ordinance expressly limits number, amount, or quantity. Treat site approval, notice, or registration as `Permit or license required for operation` only when the ordinance requires a formal local operating permit or license. Treat mobile-site restrictions only when the ordinance expressly limits mobile or non-fixed-location operation."
         ),
+        enable_relevance_backfill=False,
     ),
     "dp_exempt_sygen_activity": RetrievalGuidance(
         relevance_instructions=(
