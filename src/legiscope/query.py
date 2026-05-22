@@ -4833,6 +4833,16 @@ def _authoritative_option_supports_selection(
 
     patterns = option_patterns.get(normalized, ())
     snippet = _first_matching_snippet(evidence_text, patterns) if patterns else None
+
+    if (
+        guidance_topic == "penalty"
+        and normalized == _normalize_option_text("Unspecified Fine")
+        and item is not None
+        and item.selected
+    ):
+        item_text = "\n".join([*item.citations, *item.supporting_passages])
+        if not re.search(r"\bfine\b|\bfined\b", item_text, re.IGNORECASE):
+            snippet = None
     if (
         guidance_topic == "prohibited_activity"
         and normalized
@@ -5914,7 +5924,6 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             ): (
                 r"\bquantity of syringes\b",
                 r"\b(?:limit|limited|maximum|no more than)\b[^.\n]{0,40}\bsyringes?\b",
-                r"\bexchange only basis\b",
                 r"\bone-for-one\b",
             ),
             _normalize_option_text("Restrictions on mobile sites"): (

@@ -181,6 +181,142 @@ class TestAuthoritativeOptionEvidenceGate:
             "Incarceration",
         ]
 
+    def test_penalty_gate_drops_unspecified_fine_when_item_has_no_fine_signal(self):
+        response = LegalQueryResponse(
+            short_answer="Misdemeanor AND/OR Unspecified Fine",
+            reasoning="Initial answer overcalled unspecified fine from generic penalty context.",
+            citations=["§ 607.18 Penalty"],
+            supporting_passages=[
+                "Whoever violates this section is guilty of a misdemeanor of the second degree."
+            ],
+            confidence=0.53,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=False),
+                ResponseOptionEvidence(
+                    option="Misdemeanor",
+                    selected=True,
+                    citations=["§ 607.18 Penalty"],
+                    supporting_passages=[
+                        "Whoever violates this section is guilty of a misdemeanor of the second degree."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Unspecified Fine",
+                    selected=True,
+                    citations=["§ 607.18 Penalty"],
+                    supporting_passages=[
+                        "Whoever violates this section is guilty of a misdemeanor of the second degree."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-oh-penalty",
+                heading_text="# Penalty",
+                body_text="Whoever violates this section is guilty of a misdemeanor of the second degree.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Misdemeanor AND/OR Unspecified Fine',
+            },
+        )
+
+        assert gated.short_answer == "Misdemeanor"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Misdemeanor",
+        ]
+
+    def test_ssp_restriction_gate_does_not_treat_exchange_only_basis_as_quantity_limit(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Programs may not operate within certain distance of schools or childcare facilities "
+                "AND/OR Programs may not operate within certain distance of parks or other public spaces "
+                "AND/OR Restrictions on quantity of syringes that may be provided or exchanged"
+            ),
+            reasoning="Initial answer overcalled quantity restriction from exchange-only operation text.",
+            citations=["§ 91.83(C)", "§ 91.87(D)"],
+            supporting_passages=[
+                "No SSP facility or mobile or pop-up exchange program will be allowed to operate within 750 feet of any playground, library, or state-licensed daycare facility; and no SSP facility or mobile or pop-up exchange program shall be located within a drug-free school zone.",
+                "The operation of an SSP, and mobile or pop-up exchange programs in a city park is prohibited.",
+                "An SSP shall operate to an exchange-only basis, whereby a participant receives sterile needles only by providing a used one.",
+            ],
+            confidence=0.58,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Programs may not operate within certain distance of schools or childcare facilities",
+                    selected=True,
+                    citations=["§ 91.83(C)"],
+                    supporting_passages=[
+                        "No SSP facility or mobile or pop-up exchange program will be allowed to operate within 750 feet of any playground, library, or state-licensed daycare facility; and no SSP facility or mobile or pop-up exchange program shall be located within a drug-free school zone."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Restrictions on quantity of syringes that may be provided or exchanged",
+                    selected=True,
+                    citations=["§ 91.87(D)"],
+                    supporting_passages=[
+                        "An SSP shall operate to an exchange-only basis, whereby a participant receives sterile needles only by providing a used one."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Programs may not operate within certain distance of parks or other public spaces",
+                    selected=True,
+                    citations=["§ 96.06(J)"],
+                    supporting_passages=[
+                        "The operation of an SSP, and mobile or pop-up exchange programs in a city park is prohibited."
+                    ],
+                ),
+                ResponseOptionEvidence(option="No restrictions listed", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-nh-ssp-restrict",
+                heading_text="# SSP restrictions",
+                body_text=(
+                    "No SSP facility or mobile or pop-up exchange program will be allowed to operate within 750 feet of any playground, library, or state-licensed daycare facility; and no SSP facility or mobile or pop-up exchange program shall be located within a drug-free school zone. "
+                    "The operation of an SSP, and mobile or pop-up exchange programs in a city park is prohibited. "
+                    "An SSP shall operate to an exchange-only basis, whereby a participant receives sterile needles only by providing a used one."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "ssp_restriction",
+                "response_options": (
+                    "Programs may not operate within certain distance of schools or childcare facilities AND/OR "
+                    "Programs may not operate within certain distance of parks or other public spaces AND/OR "
+                    "Restrictions on quantity of syringes that may be provided or exchanged AND/OR No restrictions listed"
+                ),
+            },
+        )
+
+        selected = [item.option for item in gated.option_evidence if item.selected]
+        assert "Restrictions on quantity of syringes that may be provided or exchanged" not in selected
+        assert "No restrictions listed" not in selected
+        assert "Programs may not operate within certain distance of parks or other public spaces" in selected
+
     def test_rewrites_unsupported_sales_to_display_only(self):
         response = LegalQueryResponse(
             short_answer="Sales, possession with intent to sell, offer for sale",
