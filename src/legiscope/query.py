@@ -1951,6 +1951,7 @@ def query_legal_documents(
         response = _apply_reference_citation_validator(response, sections, query_metadata)
         response = _apply_date_surface_validators(response, sections, query_metadata)
         response = _apply_ssp_permit_validator(response, sections, query_metadata)
+        response = _apply_ssp_restriction_consistency_validator(response, sections, query_metadata)
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
@@ -4213,6 +4214,12 @@ _SSP_PERMIT_ADMIN_ONLY_PATTERNS = (
     r"\bzoning enforcement officer\b",
 )
 
+_SSP_PERMIT_WEAK_OPERATION_PATTERNS = (
+    r"\bmay operate\b[^.\n]{0,90}\bapproved by\b",
+    r"\bshall operate\b[^.\n]{0,90}\bonly if registered\b",
+    r"\bregistered with\b[^.\n]{0,90}\br\.?s\.?a\.?\b",
+)
+
 _SSP_DISTINCT_RESTRICTION_PATTERNS = (
     r"\bdistance\b",
     r"\bschools?\b",
@@ -4441,7 +4448,7 @@ def _apply_penalty_label_crosswalk(
             != _normalize_option_text("Unspecified Fine")
         )
 
-    evidence_text = _collect_review_text(sections)
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
     if not _penalty_has_criminal_fine_cues(evidence_text, selected_lookup):
         return final_options
 
@@ -4525,17 +4532,31 @@ def _apply_ssp_permit_validator(
     response_options = _clean_response_options(metadata.get("response_options"))
     if response_options != "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared":
         return response
-    if str(response.short_answer or "").strip() != "No":
-        return response
-
-    evidence_text = _collect_review_text(sections)
-    if not any(
+    answer = str(response.short_answer or "").strip()
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    has_strong_authorization = any(
         re.search(pattern, evidence_text, re.IGNORECASE)
         for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
-    ):
+    )
+    if answer == "No":
+        if not has_strong_authorization:
+            return response
+        return response.model_copy(update={"short_answer": "Yes"})
+
+    if answer in {
+        "Yes",
+        "Yes, only if a local public health emergency or disease outbreak has been declared",
+    }:
+        if has_strong_authorization:
+            return response
+        if _ssp_reference_support_is_admin_only(evidence_text) or any(
+            re.search(pattern, evidence_text, re.IGNORECASE)
+            for pattern in _SSP_PERMIT_WEAK_OPERATION_PATTERNS
+        ):
+            return _rewrite_structured_response_options(response, ("No",), query_metadata)
         return response
 
-    return response.model_copy(update={"short_answer": "Yes"})
+    return response
 
 
 def _build_current_through_metadata_retrieval_query(retrieval_query: str) -> str:
@@ -4619,12 +4640,14 @@ _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
     "penalty",
     "exemption_presence",
     "exemption_activity_scope",
+    "ssp_restriction",
 }
 
 _FALLBACK_OPTION_BY_GUIDANCE_TOPIC = {
     "prohibited_activity": "Not specified",
     "penalty": '"Unlawful" only',
     "exemption_presence": "None",
+    "ssp_restriction": "No restrictions listed",
 }
 
 _REFERENCE_DEFINITION_ONLY_PATTERNS = (
@@ -4813,9 +4836,12 @@ def _authoritative_option_supports_selection(
     if (
         guidance_topic == "prohibited_activity"
         and normalized
-        == _normalize_option_text(
-            "Sales, possession with intent to sell, offer for sale"
-        )
+        in {
+            _normalize_option_text("Sales, possession with intent to sell, offer for sale"),
+            _normalize_option_text(
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
+            ),
+        }
         and snippet is not None
         and re.search(
             r"\b(advertis(?:e|ement|ing)|display|promote)\b",
@@ -4834,10 +4860,41 @@ def _authoritative_option_supports_selection(
     ):
         snippet = None
 
+    if (
+        guidance_topic == "ssp_restriction"
+        and normalized
+        == _normalize_option_text(
+            "Programs may not operate within certain distance of schools or childcare facilities"
+        )
+        and snippet is not None
+        and re.search(r"\bdrug-free school zone\b", snippet, re.IGNORECASE)
+        and not re.search(r"\bchild\s*care|childcare|day care\b", snippet, re.IGNORECASE)
+    ):
+        snippet = None
+
+    if (
+        guidance_topic == "exemption_activity_scope"
+        and normalized
+        in {
+            _normalize_option_text("Use"),
+            _normalize_option_text("Distribution"),
+            _normalize_option_text("Sales"),
+            _normalize_option_text("Manufacturing"),
+        }
+        and snippet is not None
+        and re.search(
+            r"\bactivities associated with\b|\bcannabis use or commerce\b|\bmarijuana use or commerce\b",
+            snippet,
+            re.IGNORECASE,
+        )
+    ):
+        snippet = None
+
     if guidance_topic in {
         "prohibited_activity",
         "penalty",
         "exemption_activity_scope",
+        "ssp_restriction",
     }:
         return bool(snippet) or (not patterns and has_option_specific_support)
 
@@ -4921,8 +4978,151 @@ def _apply_authoritative_option_evidence_gate(
         sections,
         query_metadata,
     )
+    final_options = _apply_exemption_label_crosswalk(
+        final_options,
+        response,
+        sections,
+        query_metadata,
+    )
 
     return _rewrite_structured_response_options(response, final_options, query_metadata)
+
+
+def _apply_exemption_label_crosswalk(
+    final_options: tuple[str, ...],
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> tuple[str, ...]:
+    """Normalize exemption labels across synonymous medical and SSP carve-out phrasing."""
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if guidance_topic != "exemption_presence":
+        return final_options
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return final_options
+    options, _separator = _split_response_options(response_options)
+
+    option_lookup = {_normalize_option_text(option): option for option in final_options}
+
+    lawful_hypodermic = _normalize_option_text("Lawful use of hypodermic syringes")
+    approved_medical = _normalize_option_text(
+        "Syringes for approved medical use (i.e. diabetes)"
+    )
+    if lawful_hypodermic in option_lookup and approved_medical not in option_lookup:
+        resolved = _resolve_declared_response_option(
+            options,
+            "Syringes for approved medical use (i.e. diabetes)",
+        )
+        if resolved is not None:
+            option_lookup[approved_medical] = resolved
+        option_lookup.pop(lawful_hypodermic, None)
+
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    has_ssp_context = bool(
+        re.search(
+            r"\bsyringe exchange\b|\bsyringe services\b|\bharm reduction\b|\bsupervised use\b",
+            evidence_text,
+            re.IGNORECASE,
+        )
+    )
+    has_syringe_text = bool(
+        re.search(r"\bsyringe\b|\bneedle\b|\bhypodermic\b", evidence_text, re.IGNORECASE)
+    )
+    has_dce_text = bool(
+        re.search(
+            r"\bdrug checking\b|\bdrug testing\b|\btest strip\b|\btesting equipment\b",
+            evidence_text,
+            re.IGNORECASE,
+        )
+    )
+
+    if has_ssp_context and has_syringe_text:
+        resolved = _resolve_declared_response_option(
+            options,
+            "Syringes from syringe services, harm reduction programs, or supervised use sites",
+        )
+        if resolved is not None:
+            option_lookup[_normalize_option_text(resolved)] = resolved
+    if has_ssp_context and has_dce_text:
+        resolved = _resolve_declared_response_option(
+            options,
+            "Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites",
+        )
+        if resolved is not None:
+            option_lookup[_normalize_option_text(resolved)] = resolved
+
+    specific_selected = [
+        option
+        for key, option in option_lookup.items()
+        if key != _normalize_option_text("None")
+    ]
+    if specific_selected:
+        option_lookup.pop(_normalize_option_text("None"), None)
+
+    ordered = [option for option in options if _normalize_option_text(option) in option_lookup]
+    return tuple(ordered) if ordered else final_options
+
+
+def _apply_ssp_restriction_consistency_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Resolve SSP restriction contradictions between selected labels and cited evidence."""
+    metadata = query_metadata or {}
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    if guidance_topic != "ssp_restriction":
+        return response
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if not response_options:
+        return response
+    options, separator = _split_response_options(response_options)
+    if separator != " AND/OR ":
+        return response
+
+    selected = list(_selected_response_options_from_option_evidence(response.option_evidence))
+    if not selected:
+        return response
+
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    permit_option = _resolve_declared_response_option(
+        options,
+        "Permit or license required for operation",
+    )
+    no_restrictions_option = _resolve_declared_response_option(options, "No restrictions listed")
+
+    has_permit_signal = bool(
+        re.search(r"\b(?:permit|license)\b[^.\n]{0,60}\b(?:required|operate|operation|facility)\b", evidence_text, re.IGNORECASE)
+        or re.search(r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b", evidence_text, re.IGNORECASE)
+        or re.search(r"\brequires?\b[^.\n]{0,30}\b(?:permit|license)\b", str(response.reasoning or ""), re.IGNORECASE)
+    )
+
+    normalized_selected = {_normalize_option_text(option) for option in selected}
+    if (
+        permit_option is not None
+        and has_permit_signal
+        and _normalize_option_text(permit_option) not in normalized_selected
+    ):
+        selected.append(permit_option)
+        normalized_selected.add(_normalize_option_text(permit_option))
+
+    if no_restrictions_option is not None and has_permit_signal:
+        selected = [
+            option
+            for option in selected
+            if _normalize_option_text(option) != _normalize_option_text(no_restrictions_option)
+        ]
+
+    if not selected and no_restrictions_option is not None:
+        selected = [no_restrictions_option]
+
+    if tuple(selected) == _selected_response_options_from_option_evidence(response.option_evidence):
+        return response
+    return _rewrite_structured_response_options(response, tuple(selected), query_metadata)
 
 
 def _apply_reference_necessity_validator(
@@ -5568,8 +5768,10 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bconfine(?:ment)?\b",
             ),
             _normalize_option_text("Forfeiture/Seizure"): (
-                r"\bforfeit(?:ed|ure)?\b",
-                r"\bseiz(?:e|ed|ure)\b",
+                r"\bforfeit(?:ed|ure)?\b[^.\n]{0,60}\bparaphernalia\b",
+                r"\bseiz(?:e|ed|ure)\b[^.\n]{0,60}\bparaphernalia\b",
+                r"\bparaphernalia\b[^.\n]{0,60}\bforfeit(?:ed|ure)?\b",
+                r"\bparaphernalia\b[^.\n]{0,60}\bseiz(?:e|ed|ure)\b",
             ),
         }
 
@@ -5662,9 +5864,8 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bpossess(?:ion|ed)?\b",
             ),
             _normalize_option_text("Use"): (
-                r"\bexclusive purpose of[^.\n]{0,40}\buse\b",
-                r"\bcannabis use\b",
-                r"\bmarijuana use\b",
+                r"\bshall not (?:apply|prohibit)\b[^.\n]{0,80}\buse\b",
+                r"\bexempt(?:ion|ed)?\b[^.\n]{0,80}\buse\b",
             ),
             _normalize_option_text("Distribution"): (
                 r"\bdistribution\b",
@@ -5677,7 +5878,6 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bsell\b",
                 r"\bsale\b",
                 r"\boffer for sale\b",
-                r"\bcommerce\b[^.\n]{0,25}\bsale\b",
             ),
             _normalize_option_text("Manufacturing"): (
                 r"\bmanufactur(?:e|ing)\b",
@@ -5695,8 +5895,8 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             _normalize_option_text(
                 "Programs may not operate within certain distance of schools or childcare facilities"
             ): (
-                r"\b(?:school|child\s*care|childcare|day care)\b[^.\n]{0,60}\b(?:distance|feet|foot|buffer|within)\b",
-                r"\b(?:distance|feet|foot|buffer|within)\b[^.\n]{0,60}\b(?:school|child\s*care|childcare|day care)\b",
+                r"\b(?:within|distance|buffer|feet|foot)\b[^.\n]{0,60}\b(?:school|child\s*care|childcare|day care)\b",
+                r"\b(?:school|child\s*care|childcare|day care)\b[^.\n]{0,60}\b(?:within|distance|buffer|feet|foot)\b",
             ),
             _normalize_option_text(
                 "Programs may not operate within certain distance of parks or other public spaces"
@@ -5718,7 +5918,8 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bone-for-one\b",
             ),
             _normalize_option_text("Restrictions on mobile sites"): (
-                r"\bmobile\b[^.\n]{0,30}\b(?:site|sites|unit|units|program|programs)\b",
+                r"\bmobile\b[^.\n]{0,50}\b(?:site|sites|unit|units|program|programs)\b[^.\n]{0,40}\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b",
+                r"\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b[^.\n]{0,40}\bmobile\b",
                 r"\bnon-fixed-location\b",
             ),
             _normalize_option_text("Permit or license required for operation"): (

@@ -858,6 +858,7 @@ _VARIABLE_OVERRIDES = {
             "zoning, land-use, head-shop, retail-display, business-access, or minors-only restrictions as general activity labels. "
             "DO NOT code Sales unless the text itself prohibits sale, offer for sale, possession with intent to sell, or a clearly "
             "equivalent sales act. Advertising or display language by itself does not prove Sales. Do not treat illegal-smoking-product sales clauses as paraphernalia activity support unless the same operative text also prohibits conduct involving illegal smoking paraphernalia."
+            " Do not map illegal-smoking-product delivery or transfer clauses to paraphernalia delivery labels unless the same clause explicitly targets paraphernalia conduct."
         ),
         anchor_terms=["unlawful", "prohibited", "offer for sale"],
         enable_relevance_backfill=False,
@@ -878,6 +879,7 @@ _VARIABLE_OVERRIDES = {
             "Do NOT translate a misdemeanor degree, conviction language, or other offense classification into Infraction, Civil Fine, "
             "Criminal Fine, Incarceration, Forfeiture/Seizure, or Other unless the text itself states those exact sanctions or an "
             "explicitly cross-referenced section states them. Generic default penalties, offense classes, and boilerplate criminal classifications do not count by themselves unless the text states the benchmark concept directly. "
+            "If penalties are provided in another section, retrieve and code that section before choosing Unlawful only. "
             "Include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If "
             "the text supports only Unlawful and Civil Fine, do not add Other as a hedge. IGNORE business-side licensing or "
             "permitting consequences such as license revocation, suspension, or denial unless the coding rules explicitly require "
@@ -1053,6 +1055,7 @@ _VARIABLE_OVERRIDES = {
             "For ssp_permit, distinguish explicit authorization from broader SSP-law existence. A jurisdiction can have an SSP law because it bans or restricts programs, "
             "yet ssp_permit is still No unless the ordinance expressly authorizes operation. Emergency-conditioned clean needle or needle-and-syringe exchange authority counts here only when the ordinance says the program may operate once the emergency condition is met."
             " Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization only when the ordinance itself authorizes operation, and do not infer authorization from site approval, state registration, or the mere existence of an SSP law. A permit-required operating regime for a syringe exchange facility is an explicit authorization regime and should be coded Yes rather than No."
+            " If text only states operation at approved sites or state registration prerequisites, do not treat that as explicit authorization unless a separate clause affirmatively authorizes SSP operation."
         ),
     ),
     "ssp_prohibit": RetrievalGuidance(
@@ -1069,6 +1072,7 @@ _VARIABLE_OVERRIDES = {
         ),
         completion_instructions=(
             "For ssp_restrict, distinguish operational restrictions from both total bans and bare authorization. If the ordinance only says SSPs are authorized, prohibited, or tied to a declared emergency without imposing a listed operating condition, use No restrictions listed. Do not infer `Other restrictions` from general operating requirements, exchange-only language, or coordination duties unless the ordinance states a concrete residual restriction that fits no named label. Do not infer `Restrictions on quantity of syringes that may be provided or exchanged` unless the ordinance expressly limits number, amount, or quantity. Treat site approval, notice, or registration as `Permit or license required for operation` only when the ordinance requires a formal local operating permit or license. Treat mobile-site restrictions only when the ordinance expressly limits mobile or non-fixed-location operation."
+            " If your selected labels conflict with your own reasoning, align the final labels to the cited operative clauses before returning the answer."
         ),
     ),
     "dp_exempt_sygen_activity": RetrievalGuidance(
@@ -1105,7 +1109,7 @@ _VARIABLE_OVERRIDES = {
             "carve-out, fall back to the prohibited activities selected in dp_activity. Do not expand broad phrases such as cannabis use "
             "or commerce into every response option unless the exemption truly operates at the definition-wide level. When a phrase like "
             "`possession ... or activities associated with cannabis use or commerce` appears, do not automatically code Use, Distribution, "
-            "Sales, and Other all together unless the legal text clearly makes those activities exempt. Be conservative and label-by-label."
+            "Sales, and Other all together unless the legal text clearly makes those activities exempt. Treat umbrella language as non-specific unless concrete activity verbs are explicitly listed. Be conservative and label-by-label."
         ),
         anchor_terms=[
             "cannabis",

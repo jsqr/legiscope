@@ -430,7 +430,7 @@ class TestAuthoritativeOptionEvidenceGate:
             },
         )
 
-        assert gated.short_answer == "Possession AND/OR Use"
+        assert gated.short_answer == "Possession"
 
     def test_defaults_binary_scope_question_to_no_when_yes_lacks_direct_support(self):
         response = LegalQueryResponse(
@@ -779,7 +779,7 @@ class TestSecondStageStructuredValidators:
             "None"
         ]
 
-    def test_ssp_permit_validator_leaves_registration_only_regime_unchanged(self):
+    def test_ssp_permit_validator_forces_no_for_registration_only_regime(self):
         response = LegalQueryResponse(
             short_answer="Yes",
             reasoning="Initial answer treated registration and mayoral approval as explicit authorization.",
@@ -810,12 +810,12 @@ class TestSecondStageStructuredValidators:
             },
         )
 
-        assert validated.short_answer == "Yes"
+        assert validated.short_answer == "No"
         assert [item.option for item in validated.option_evidence if item.selected] == [
-            "Yes"
+            "No"
         ]
 
-    def test_ssp_restriction_gate_leaves_response_unchanged_without_authoritative_gating(self):
+    def test_ssp_restriction_gate_keeps_only_mobile_restriction_without_permit_signal(self):
         response = LegalQueryResponse(
             short_answer="Permit or license required for operation AND/OR Restrictions on mobile sites",
             reasoning="Initial answer treated site approval as an operating permit requirement.",
@@ -870,14 +870,145 @@ class TestSecondStageStructuredValidators:
             },
         )
 
-        assert (
-            gated.short_answer
-            == "Permit or license required for operation AND/OR Restrictions on mobile sites"
-        )
+        assert gated.short_answer == "Restrictions on mobile sites"
         assert [item.option for item in gated.option_evidence if item.selected] == [
-            "Permit or license required for operation",
             "Restrictions on mobile sites",
         ]
+
+    def test_ssp_restriction_consistency_promotes_permit_when_reasoning_and_evidence_require_it(self):
+        response = LegalQueryResponse(
+            short_answer="No restrictions listed",
+            reasoning="The ordinance explicitly requires a permit to operate a syringe exchange facility.",
+            citations=["§ 9-15-4"],
+            supporting_passages=[
+                "No person shall operate a syringe exchange facility without having a valid permit.",
+            ],
+            confidence=0.72,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="Permit or license required for operation", selected=False),
+                ResponseOptionEvidence(option="No restrictions listed", selected=True),
+            ],
+        )
+
+        validated = query_module._apply_ssp_restriction_consistency_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "ssp_restriction",
+                "response_options": (
+                    "Permit or license required for operation AND/OR No restrictions listed"
+                ),
+            },
+        )
+
+        assert validated.short_answer == "Permit or license required for operation"
+
+    def test_exemption_crosswalk_maps_lawful_hypodermic_to_approved_medical_use(self):
+        response = LegalQueryResponse(
+            short_answer="Lawful use of hypodermic syringes",
+            reasoning="The exemption allows lawful use of hypodermic syringes by medical professionals.",
+            citations=["§ 607.17(d)"],
+            supporting_passages=[
+                "The lawful use of hypodermic syringes by practitioners is exempt.",
+            ],
+            confidence=0.77,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Syringes for approved medical use (i.e. diabetes)",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(option="Lawful use of hypodermic syringes", selected=True),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-exempt",
+                heading_text="# Exemptions",
+                body_text="The lawful use of hypodermic syringes by practitioners is exempt.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "exemption_presence",
+                "response_options": (
+                    "Syringes for approved medical use (i.e. diabetes) AND/OR Lawful use of hypodermic syringes"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Syringes for approved medical use (i.e. diabetes)"
+
+    def test_prohibited_activity_gate_drops_illegal_smoking_product_delivery_noise(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR "
+                "Possession, possession with intent to use, keep"
+            ),
+            reasoning="Initial answer mixed illegal smoking product delivery with paraphernalia possession.",
+            citations=["§ 31-32.1"],
+            supporting_passages=[
+                "A person commits an offense if the person delivers any illegal smoking product. A person commits an offense if the person possesses with intent to use illegal smoking paraphernalia."
+            ],
+            confidence=0.66,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange",
+                    selected=True,
+                    citations=["§ 31-32.1"],
+                    supporting_passages=[
+                        "A person commits an offense if the person delivers any illegal smoking product."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Possession, possession with intent to use, keep",
+                    selected=True,
+                    citations=["§ 31-32.1"],
+                    supporting_passages=[
+                        "A person commits an offense if the person possesses with intent to use illegal smoking paraphernalia."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-delivery",
+                heading_text="# Illegal smoking products and paraphernalia",
+                body_text=(
+                    "A person commits an offense if the person delivers any illegal smoking product. "
+                    "A person commits an offense if the person possesses with intent to use illegal smoking paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR "
+                    "Possession, possession with intent to use, keep AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Possession, possession with intent to use, keep"
 
 
 class TestTimeoutExecution:
