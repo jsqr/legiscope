@@ -685,7 +685,8 @@ _GUIDANCE_BY_FAMILY = {
             "for operation as high value only when the ordinance makes formal local operating authorization mandatory, not "
             "when it merely requires notice, registration, or approval of a particular site. Reject emergency-trigger text, coordination duties, reporting, "
             "state-registration references, and site-review language unless they impose a listed operational limit such as a permit requirement, buffer, cap, "
-            "mobile-site rule, visit limit, or syringe-quantity limit."
+            "mobile-site rule, visit limit, or syringe-quantity limit. Prefer option-specific clauses over umbrella operational text, and avoid assigning multiple labels "
+            "from a single broad sentence unless each selected label has its own distinct direct support."
         ),
         anchor_terms=[
             "syringe service program",
@@ -792,7 +793,8 @@ _GUIDANCE_BY_FAMILY = {
             "referenced state-law definition sections when the local text incorporates them. High-value "
             "passages may mention cannabis, marijuana, syringe services, harm reduction programs, "
             "medical use, professionals acting in the course of business, public officials, needle exchange, "
-            "syringe exchange facilities, test strips, or drug checking. Code only exemptions directly supported "
+            "syringe exchange facilities, syringe service program participants, test strips, fentanyl/xylazine "
+            "checking language, or drug checking. Code only exemptions directly supported "
             "by the legal text. Reject ordinary prohibitions, zoning restrictions, business permissions, and "
             "other nonoperative context unless they actually function as a paraphernalia exemption under the "
             "coding logic. Prefer the exact exemption clause over broad surrounding context so the answer stays label-by-label rather "
@@ -815,8 +817,14 @@ _GUIDANCE_BY_FAMILY = {
             "syringe services",
             "needle exchange",
             "syringe exchange",
+            "syringe service program participant",
+            "clean needle and syringe exchange",
             "harm reduction",
             "test strip",
+            "fentanyl test strip",
+            "xylazine test strip",
+            "drug testing equipment",
+            "does not include",
             "drug checking",
         ],
         enable_relevance_backfill=False,
@@ -885,7 +893,17 @@ _VARIABLE_OVERRIDES = {
             "permitting consequences such as license revocation, suspension, or denial unless the coding rules explicitly require "
             "them; those consequences SHOULD NOT be coded as Other."
         ),
-        anchor_terms=["civil penalty", "license revocation", "sanction"],
+        anchor_terms=[
+            "civil penalty",
+            "license revocation",
+            "sanction",
+            "penalty, see",
+            "punishable as provided in",
+            "general penalty section",
+            "imprisonment",
+            "jail",
+            "fine",
+        ],
     ),
     "dp_exemption": RetrievalGuidance(
         relevance_instructions=(
@@ -896,7 +914,7 @@ _VARIABLE_OVERRIDES = {
             "commercial-cannabis, marijuana-business, employment, or administrative provisions that mention cannabis or syringes "
             "without narrowing the paraphernalia prohibition or definition. Treat cannabis decriminalization, medical-marijuana zoning, marijuana-business permissions, "
             "general business-use permissions, and tobacco carve-outs as low-value noise unless the same text expressly narrows the paraphernalia prohibition or definition. Prefer the exact exemption clause over nearby business, "
-            "zoning, or facility-regulation text so the answer does not become overinclusive."
+            "zoning, or facility-regulation text so the answer does not become overinclusive. For SSP-related exemptions, prefer text that explicitly exempts syringes, needles, test strips, fentanyl/xylazine checking equipment, or similar paraphernalia."
         ),
         completion_instructions=(
             "For dp_exemption, only code labels found directly in operative exemption text, incorporated definition text, or other "
@@ -923,7 +941,12 @@ _VARIABLE_OVERRIDES = {
             "medical marijuana",
             "needle exchange",
             "syringe exchange",
+            "syringe service program participant",
+            "clean needle and syringe exchange",
             "test strip",
+            "fentanyl test strip",
+            "xylazine test strip",
+            "drug testing equipment",
             "drug checking",
         ],
     ),

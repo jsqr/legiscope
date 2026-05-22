@@ -4224,6 +4224,7 @@ _SSP_DISTINCT_RESTRICTION_PATTERNS = (
     r"\bdistance\b",
     r"\bschools?\b",
     r"\bchildcare\b",
+    r"\bdaycare\b",
     r"\bparks?\b",
     r"\bmobile\b",
     r"\bquantity of syringes\b",
@@ -4343,6 +4344,24 @@ def _penalty_has_criminal_fine_cues(
         or re.search(r"\bfine\b[^.\n]{0,60}\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b", normalized)
         or re.search(r"\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b[^.\n]{0,60}\bfine\b", normalized)
     )
+
+
+def _penalty_unlawful_only_has_explicit_support(
+    response: LegalQueryResponse,
+    evidence_text: str,
+) -> bool:
+    """Return whether fallback Unlawful-only is directly supported by explicit unlawful text."""
+    if re.search(r"\bunlawful\b", evidence_text, re.IGNORECASE):
+        return True
+
+    target = _normalize_option_text('"Unlawful" only')
+    for item in response.option_evidence:
+        if _normalize_option_text(item.option) != target:
+            continue
+        item_text = "\n".join([*item.citations, *item.supporting_passages])
+        if re.search(r"\bunlawful\b", item_text, re.IGNORECASE):
+            return True
+    return False
 
 
 def _other_option_is_fully_covered(
@@ -4590,6 +4609,7 @@ def _prefer_current_through_metadata_sections(
 def _authoritative_response_options_from_option_evidence(
     response: LegalQueryResponse,
     query_metadata: dict[str, Any] | None,
+    sections: list[SectionResult] | None = None,
 ) -> tuple[str, ...] | None:
     """Use direct option-specific evidence to conservatively finalize coded answers."""
     metadata = query_metadata or {}
@@ -4600,6 +4620,8 @@ def _authoritative_response_options_from_option_evidence(
         return None
 
     options, separator = _split_response_options(response_options)
+    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections or []))
     if separator not in {" AND/OR ", " OR "}:
         return None
     if any("<" in option and ">" in option for option in options):
@@ -4620,6 +4642,13 @@ def _authoritative_response_options_from_option_evidence(
             return tuple(supported_selected)
         for option in options:
             if _is_generic_fallback_response_option(option):
+                if (
+                    guidance_topic == "penalty"
+                    and _normalize_option_text(option)
+                    == _normalize_option_text('"Unlawful" only')
+                    and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
+                ):
+                    return None
                 return (option,)
         return None
 
@@ -4628,9 +4657,23 @@ def _authoritative_response_options_from_option_evidence(
     for option in options:
         item = evidence_by_option.get(option)
         if item is not None and item.selected and _is_generic_fallback_response_option(option):
+            if (
+                guidance_topic == "penalty"
+                and _normalize_option_text(option)
+                == _normalize_option_text('"Unlawful" only')
+                and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
+            ):
+                return None
             return (option,)
     for option in options:
         if _is_generic_fallback_response_option(option):
+            if (
+                guidance_topic == "penalty"
+                and _normalize_option_text(option)
+                == _normalize_option_text('"Unlawful" only')
+                and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
+            ):
+                return None
             return (option,)
     return None
 
@@ -4676,8 +4719,11 @@ _DEFAULT_PENALTY_REFERENCE_PATTERNS = (
     r"\bgeneral penalty\b",
     r"\bdefault penalty\b",
     r"\bpunish(?:ed|able)?\b[^.\n]{0,40}\bprovided in\b",
+    r"\bpunishable as provided in\b",
     r"\bsubject to\b[^.\n]{0,40}\bpenalt(?:y|ies)\b",
     r"\bpenalt(?:y|ies)\b[^.\n]{0,40}\bsection\b",
+    r"\bpenalt(?:y|ies)\b[^.\n]{0,20}\bsee\b",
+    r"\bsee\b[^.\n]{0,30}(?:§|section)\b",
     r"\bclass\s+[a-z0-9-]+\s+(?:offense|violation)\b",
 )
 
@@ -4833,6 +4879,18 @@ def _authoritative_option_supports_selection(
 
     patterns = option_patterns.get(normalized, ())
     snippet = _first_matching_snippet(evidence_text, patterns) if patterns else None
+    item_text = ""
+    if item is not None:
+        item_text = "\n".join([*item.citations, *item.supporting_passages])
+
+    if guidance_topic == "ssp_restriction":
+        # Require direct per-option support for SSP restriction labels to avoid multi-label inflation.
+        if not has_option_specific_support:
+            return False
+        if patterns:
+            snippet = _first_matching_snippet(item_text, patterns)
+        else:
+            snippet = item_text if item_text else None
 
     if (
         guidance_topic == "penalty"
@@ -4840,9 +4898,17 @@ def _authoritative_option_supports_selection(
         and item is not None
         and item.selected
     ):
-        item_text = "\n".join([*item.citations, *item.supporting_passages])
         if not re.search(r"\bfine\b|\bfined\b", item_text, re.IGNORECASE):
             snippet = None
+
+    if (
+        guidance_topic == "penalty"
+        and normalized == _normalize_option_text('"Unlawful" only')
+        and item is not None
+        and item.selected
+        and not re.search(r"\bunlawful\b", item_text, re.IGNORECASE)
+    ):
+        snippet = None
     if (
         guidance_topic == "prohibited_activity"
         and normalized
@@ -4871,6 +4937,23 @@ def _authoritative_option_supports_selection(
         snippet = None
 
     if (
+        guidance_topic == "prohibited_activity"
+        and normalized == _normalize_option_text("Use")
+        and snippet is None
+        and item is not None
+        and item.selected
+    ):
+        if (
+            re.search(r"\buse\b", item_text, re.IGNORECASE)
+            and not re.search(
+                r"\b(?:shall not be unlawful|does not apply|nothing in this (?:section|chapter|article) shall (?:apply|prohibit))\b[^.\n]{0,100}\buse\b",
+                item_text,
+                re.IGNORECASE,
+            )
+        ):
+            snippet = item_text
+
+    if (
         guidance_topic == "ssp_restriction"
         and normalized
         == _normalize_option_text(
@@ -4878,7 +4961,19 @@ def _authoritative_option_supports_selection(
         )
         and snippet is not None
         and re.search(r"\bdrug-free school zone\b", snippet, re.IGNORECASE)
-        and not re.search(r"\bchild\s*care|childcare|day care\b", snippet, re.IGNORECASE)
+        and not re.search(r"\bchild\s*care|childcare|day\s*care|daycare\b", snippet, re.IGNORECASE)
+    ):
+        snippet = None
+
+    if (
+        guidance_topic == "ssp_restriction"
+        and normalized == _normalize_option_text("Permit or license required for operation")
+        and snippet is not None
+        and re.search("|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text, re.IGNORECASE)
+        and not re.search("|".join(_SSP_DISTINCT_RESTRICTION_PATTERNS), item_text, re.IGNORECASE)
+        and not re.search(r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
+        and not re.search(r"\b(?:permit|license)\b[^.\n]{0,20}\brequired\b", item_text, re.IGNORECASE)
+        and not re.search(r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
     ):
         snippet = None
 
@@ -4954,6 +5049,13 @@ def _authoritative_response_options_from_evidence(
         else None
     )
     if declared_fallback_option is not None:
+        if (
+            guidance_topic == "penalty"
+            and _normalize_option_text(fallback_option or "")
+            == _normalize_option_text('"Unlawful" only')
+            and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
+        ):
+            return None
         return (fallback_option,)
     return None
 
@@ -4973,6 +5075,7 @@ def _apply_authoritative_option_evidence_gate(
         final_options = _authoritative_response_options_from_option_evidence(
             response,
             query_metadata,
+            sections,
         )
     if final_options is None:
         return response
@@ -5099,6 +5202,36 @@ def _apply_ssp_restriction_consistency_validator(
         return response
 
     evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    option_patterns = _option_pattern_map("ssp_restriction")
+    evidence_by_option = {item.option: item for item in response.option_evidence}
+
+    filtered_selected: list[str] = []
+    for option in selected:
+        if _normalize_option_text(option) == _normalize_option_text("No restrictions listed"):
+            continue
+
+        item = evidence_by_option.get(option)
+        if item is None or not (item.citations or item.supporting_passages):
+            continue
+
+        item_text = "\n".join([*item.citations, *item.supporting_passages])
+        patterns = option_patterns.get(_normalize_option_text(option), ())
+        if patterns and not any(re.search(pattern, item_text, re.IGNORECASE) for pattern in patterns):
+            continue
+
+        if (
+            _normalize_option_text(option)
+            == _normalize_option_text("Permit or license required for operation")
+            and re.search("|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text, re.IGNORECASE)
+            and not re.search("|".join(_SSP_DISTINCT_RESTRICTION_PATTERNS), item_text, re.IGNORECASE)
+            and not re.search(r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
+            and not re.search(r"\b(?:permit|license)\b[^.\n]{0,20}\brequired\b", item_text, re.IGNORECASE)
+            and not re.search(r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
+        ):
+            continue
+
+        filtered_selected.append(option)
+    selected = filtered_selected
     permit_option = _resolve_declared_response_option(
         options,
         "Permit or license required for operation",
@@ -5108,7 +5241,6 @@ def _apply_ssp_restriction_consistency_validator(
     has_permit_signal = bool(
         re.search(r"\b(?:permit|license)\b[^.\n]{0,60}\b(?:required|operate|operation|facility)\b", evidence_text, re.IGNORECASE)
         or re.search(r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b", evidence_text, re.IGNORECASE)
-        or re.search(r"\brequires?\b[^.\n]{0,30}\b(?:permit|license)\b", str(response.reasoning or ""), re.IGNORECASE)
     )
 
     normalized_selected = {_normalize_option_text(option) for option in selected}
@@ -5286,17 +5418,59 @@ def _apply_penalty_specificity_validator(
         for option in selected_options
         if _normalize_option_text(option) != _normalize_option_text(fallback_option)
     )
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    options, _separator = _split_response_options(response_options)
+    option_patterns = _option_pattern_map("penalty")
+
     if not selected_specific_options:
+        has_fallback_selected = any(
+            _normalize_option_text(option) == _normalize_option_text(fallback_option)
+            for option in selected_options
+        )
+        if not has_fallback_selected:
+            return response
+
+        stronger_supported = [
+            option
+            for option in options
+            if _normalize_option_text(option) != _normalize_option_text(fallback_option)
+            and _strong_option_support_signal(
+                guidance_topic="penalty",
+                option=option,
+                evidence_text=evidence_text,
+                option_patterns=option_patterns,
+            )[0]
+        ]
+        if stronger_supported:
+            return _rewrite_structured_response_options(
+                response,
+                tuple(stronger_supported),
+                query_metadata,
+            )
+
+        if not _penalty_unlawful_only_has_explicit_support(response, evidence_text):
+            selected_supported_nonfallback = tuple(
+                item.option
+                for item in response.option_evidence
+                if item.selected
+                and _normalize_option_text(item.option)
+                != _normalize_option_text(fallback_option)
+                and bool(item.citations or item.supporting_passages)
+            )
+            if selected_supported_nonfallback:
+                return _rewrite_structured_response_options(
+                    response,
+                    selected_supported_nonfallback,
+                    query_metadata,
+                )
         return response
 
-    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
     if not any(
         re.search(pattern, evidence_text, re.IGNORECASE)
         for pattern in _DEFAULT_PENALTY_REFERENCE_PATTERNS
     ):
         return response
 
-    option_patterns = _option_pattern_map("penalty")
     if any(
         _strong_option_support_signal(
             guidance_topic="penalty",
@@ -5308,7 +5482,6 @@ def _apply_penalty_specificity_validator(
     ):
         return response
 
-    options, _separator = _split_response_options(response_options)
     declared_fallback_option = _resolve_declared_response_option(options, fallback_option)
     if declared_fallback_option is None:
         return response
@@ -5740,6 +5913,7 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             _normalize_option_text("Use"): (
                 r"\buse or possess with intent to use\b",
                 r"\bit is unlawful[^.\n]{0,60}\buse\b",
+                r"\bit shall be unlawful[^.\n]{0,80}\buse\b",
                 r"\bno person shall[^.\n]{0,60}\buse\b",
             ),
             _normalize_option_text("Advertising, display"): (
@@ -5766,10 +5940,12 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\bcriminal fine\b",
                 r"\bfine\b[^.\n]{0,40}\bmisdemeanor\b",
                 r"\bmisdemeanor\b[^.\n]{0,40}\bfine\b",
+                r"\bconviction\b[^.\n]{0,40}\bfine\b",
             ),
             _normalize_option_text("Unspecified Fine"): (
                 r"\bfine\b",
                 r"\bfined\b",
+                r"\bpunishable\b[^.\n]{0,40}\bfine\b",
             ),
             _normalize_option_text("Incarceration"): (
                 r"\bimprison(?:ment|ed)?\b",
@@ -5905,14 +6081,15 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             _normalize_option_text(
                 "Programs may not operate within certain distance of schools or childcare facilities"
             ): (
-                r"\b(?:within|distance|buffer|feet|foot)\b[^.\n]{0,60}\b(?:school|child\s*care|childcare|day care)\b",
-                r"\b(?:school|child\s*care|childcare|day care)\b[^.\n]{0,60}\b(?:within|distance|buffer|feet|foot)\b",
+                r"\b(?:within|distance|buffer|feet|foot)\b[^.\n]{0,60}\b(?:school|child\s*care|childcare|day\s*care|daycare)\b",
+                r"\b(?:school|child\s*care|childcare|day\s*care|daycare)\b[^.\n]{0,60}\b(?:within|distance|buffer|feet|foot)\b",
             ),
             _normalize_option_text(
                 "Programs may not operate within certain distance of parks or other public spaces"
             ): (
                 r"\b(?:park|public space|playground)\b[^.\n]{0,60}\b(?:distance|feet|foot|buffer|within)\b",
                 r"\b(?:distance|feet|foot|buffer|within)\b[^.\n]{0,60}\b(?:park|public space|playground)\b",
+                r"\b(?:city\s+)?park\b[^.\n]{0,80}\bprohibit(?:ed|ion)?\b",
             ),
             _normalize_option_text("Restrictions on frequency of visits"): (
                 r"\bfrequency of visits\b",

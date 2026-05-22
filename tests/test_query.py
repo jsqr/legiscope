@@ -364,6 +364,62 @@ class TestAuthoritativeOptionEvidenceGate:
             "Advertising, display"
         ]
 
+    def test_keeps_use_when_selected_option_evidence_explicitly_supports_use(self):
+        response = LegalQueryResponse(
+            short_answer="Use AND/OR Possession, possession with intent to use, keep",
+            reasoning="Initial answer includes direct use prohibition language.",
+            citations=["§ 21-10"],
+            supporting_passages=[
+                "It shall be unlawful for any person to use or possess with intent to use drug paraphernalia."
+            ],
+            confidence=0.61,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Use",
+                    selected=True,
+                    citations=["§ 21-10"],
+                    supporting_passages=[
+                        "It shall be unlawful for any person to use or possess with intent to use drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Possession, possession with intent to use, keep",
+                    selected=True,
+                    citations=["§ 21-10"],
+                    supporting_passages=[
+                        "It shall be unlawful for any person to use or possess with intent to use drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(option="Not specified", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-use",
+                heading_text="# Prohibited activities",
+                body_text="It shall be unlawful for any person to use or possess with intent to use drug paraphernalia.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Use AND/OR Possession, possession with intent to use, keep AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert "Use" in [item.option for item in gated.option_evidence if item.selected]
+
     def test_promotes_supported_exemption_over_none(self):
         response = LegalQueryResponse(
             short_answer="None",
@@ -863,6 +919,88 @@ class TestSecondStageStructuredValidators:
         assert [item.option for item in validated.option_evidence if item.selected] == [
             '"Unlawful" only'
         ]
+
+    def test_penalty_validator_promotes_stronger_labels_over_unlawful_only_without_unlawful_text(self):
+        response = LegalQueryResponse(
+            short_answer='"Unlawful" only',
+            reasoning="Initial answer stopped at fallback despite stronger sanctions.",
+            citations=["§ 1-8-1"],
+            supporting_passages=[
+                "A violation is punishable by a fine and imprisonment for not more than 60 days."
+            ],
+            confidence=0.57,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=True),
+                ResponseOptionEvidence(option="Criminal Fine", selected=False),
+                ResponseOptionEvidence(option="Unspecified Fine", selected=False),
+                ResponseOptionEvidence(option="Incarceration", selected=False),
+            ],
+        )
+
+        validated = query_module._apply_penalty_specificity_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration',
+            },
+        )
+
+        selected = [item.option for item in validated.option_evidence if item.selected]
+        assert '"Unlawful" only' not in selected
+        assert "Incarceration" in selected
+
+    def test_ssp_restriction_validator_drops_labels_without_direct_option_support(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Programs may not operate within certain distance of schools or childcare facilities AND/OR "
+                "Permit or license required for operation"
+            ),
+            reasoning="Initial answer overcalled permit from broad operational context.",
+            citations=["§ 91.83(C)", "§ 91.87(D)"],
+            supporting_passages=[
+                "No SSP facility will be allowed to operate within 750 feet of any state-licensed daycare facility.",
+                "A mobile or pop-up exchange SSP program proposed to be operated on public property shall require prior approval of the commissioner.",
+            ],
+            confidence=0.64,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Programs may not operate within certain distance of schools or childcare facilities",
+                    selected=True,
+                    citations=["§ 91.83(C)"],
+                    supporting_passages=[
+                        "No SSP facility will be allowed to operate within 750 feet of any state-licensed daycare facility."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Permit or license required for operation",
+                    selected=True,
+                    citations=["§ 91.87(D)"],
+                    supporting_passages=[
+                        "A mobile or pop-up exchange SSP program proposed to be operated on public property shall require prior approval of the commissioner."
+                    ],
+                ),
+                ResponseOptionEvidence(option="No restrictions listed", selected=False),
+            ],
+        )
+
+        validated = query_module._apply_ssp_restriction_consistency_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "ssp_restriction",
+                "response_options": (
+                    "Programs may not operate within certain distance of schools or childcare facilities AND/OR "
+                    "Permit or license required for operation AND/OR No restrictions listed"
+                ),
+            },
+        )
+
+        selected = [item.option for item in validated.option_evidence if item.selected]
+        assert "Programs may not operate within certain distance of schools or childcare facilities" in selected
+        assert "Permit or license required for operation" not in selected
 
     def test_exemption_gate_drops_cannabis_business_zoning_noise_without_carveout(self):
         response = LegalQueryResponse(
