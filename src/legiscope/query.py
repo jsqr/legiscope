@@ -5393,7 +5393,7 @@ def _apply_exemption_label_crosswalk(
             [*(lawful_item.citations if lawful_item else []), *(lawful_item.supporting_passages if lawful_item else [])]
         )
         medical_scope_pattern = (
-            r"\b(diabet(?:es|ic)|insulin|approved\s+medical\s+use|prescri(?:be|ption))\b"
+            r"\b(diabet(?:es|ic)|insulin|medical|physician|pharmacist|practitioner(?:s)?|prescri(?:be|ption))\b"
         )
         medically_scoped_in_item = bool(
             re.search(
