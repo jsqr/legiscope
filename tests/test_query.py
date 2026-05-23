@@ -1278,10 +1278,10 @@ class TestSecondStageStructuredValidators:
     def test_exemption_crosswalk_maps_lawful_hypodermic_to_approved_medical_use(self):
         response = LegalQueryResponse(
             short_answer="Lawful use of hypodermic syringes",
-            reasoning="The exemption allows lawful use of hypodermic syringes by medical professionals.",
+            reasoning="The exemption allows lawful use of hypodermic syringes for approved medical use, including diabetes care.",
             citations=["§ 607.17(d)"],
             supporting_passages=[
-                "The lawful use of hypodermic syringes by practitioners is exempt.",
+                "The lawful use of hypodermic syringes for approved medical use, including diabetes treatment, is exempt.",
             ],
             confidence=0.77,
             limitations="",
@@ -1297,7 +1297,7 @@ class TestSecondStageStructuredValidators:
             SectionResult(
                 section_id="s-exempt",
                 heading_text="# Exemptions",
-                body_text="The lawful use of hypodermic syringes by practitioners is exempt.",
+                body_text="The lawful use of hypodermic syringes for approved medical use, including diabetes treatment, is exempt.",
                 heading_level=1,
                 parent_id=None,
                 matching_segments=[],

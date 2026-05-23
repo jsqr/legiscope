@@ -5387,26 +5387,43 @@ def _apply_exemption_label_crosswalk(
     approved_medical = _normalize_option_text(
         "Syringes for approved medical use (i.e. diabetes)"
     )
-    if lawful_hypodermic in option_lookup and approved_medical not in option_lookup:
+    if lawful_hypodermic in option_lookup:
         lawful_item = selected_item_by_option.get(lawful_hypodermic)
         lawful_item_text = "\n".join(
             [*(lawful_item.citations if lawful_item else []), *(lawful_item.supporting_passages if lawful_item else [])]
         )
-        medical_scope_text = lawful_item_text or evidence_text
-        medically_scoped = bool(
+        medical_scope_pattern = (
+            r"\b(diabet(?:es|ic)|insulin|approved\s+medical\s+use|prescri(?:be|ption))\b"
+        )
+        medically_scoped_in_item = bool(
             re.search(
-                r"\b(diabet(?:es|ic)|insulin|medical|physician|pharmacist|practitioner(?:s)?|prescri(?:be|ption))\b",
-                medical_scope_text,
+                medical_scope_pattern,
+                lawful_item_text,
                 re.IGNORECASE,
             )
         )
+        medically_scoped_in_context = False
+        if not medically_scoped_in_item and evidence_text:
+            for snippet in re.split(r"[\n.;]+", evidence_text):
+                if not snippet.strip():
+                    continue
+                if not re.search(r"\b(hypodermic|syringes?)\b", snippet, re.IGNORECASE):
+                    continue
+                if re.search(medical_scope_pattern, snippet, re.IGNORECASE):
+                    medically_scoped_in_context = True
+                    break
+        medically_scoped = bool(
+            medically_scoped_in_item
+            or medically_scoped_in_context
+        )
         if medically_scoped:
-            resolved = _resolve_declared_response_option(
-                options,
-                "Syringes for approved medical use (i.e. diabetes)",
-            )
-            if resolved is not None:
-                option_lookup[approved_medical] = resolved
+            if approved_medical not in option_lookup:
+                resolved = _resolve_declared_response_option(
+                    options,
+                    "Syringes for approved medical use (i.e. diabetes)",
+                )
+                if resolved is not None:
+                    option_lookup[approved_medical] = resolved
             option_lookup.pop(lawful_hypodermic, None)
 
     has_ssp_context = bool(
