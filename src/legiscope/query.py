@@ -5096,7 +5096,7 @@ def _authoritative_option_supports_selection(
             re.search(pattern, item_text, re.IGNORECASE)
             for pattern in _SSP_QUANTITY_LIMIT_PATTERNS
         ):
-            snippet = None
+                return False
 
         if normalized == _normalize_option_text("Restrictions on mobile sites") and not (
             any(re.search(pattern, item_text, re.IGNORECASE) for pattern in _SSP_MOBILE_RESTRICTION_PATTERNS)
@@ -5259,6 +5259,17 @@ def _authoritative_option_supports_selection(
         "ssp_restriction",
     }:
         return bool(snippet) or (not patterns and has_option_specific_support)
+
+    # For specific exemption_presence options that have defined patterns, require the
+    # evidence text to actually match — citations alone are insufficient.
+    if guidance_topic == "exemption_presence" and normalized in {
+        _normalize_option_text("Syringes for approved medical use (i.e. diabetes)"),
+        _normalize_option_text("Other paraphernalia for approved medical use"),
+    }:
+        if patterns and not any(
+            re.search(pattern, item_text, re.IGNORECASE) for pattern in patterns
+        ):
+            return False
 
     return bool(snippet) or has_option_specific_support
 
