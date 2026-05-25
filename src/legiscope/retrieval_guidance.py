@@ -51,6 +51,7 @@ class RetrievalGuidance:
     retrieval_instructions: str | None = None
     relevance_instructions: str | None = None
     anchor_terms: list[str] = field(default_factory=list)
+    negative_anchor_terms: list[str] = field(default_factory=list)
     completion_instructions: str | None = None
     no_context_fallback_short_answer: str | None = None
     enable_relevance_filter: bool | None = None
@@ -65,6 +66,7 @@ class RetrievalGuidance:
             or self.retrieval_instructions
             or self.relevance_instructions
             or self.anchor_terms
+            or self.negative_anchor_terms
             or self.completion_instructions
             or self.no_context_fallback_short_answer
             or self.enable_relevance_filter is not None

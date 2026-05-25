@@ -141,7 +141,9 @@ class TestAuthoritativeOptionEvidenceGate:
             short_answer='"Unlawful" only',
             reasoning="Initial answer undercalled the penalties.",
             citations=["§ 10.99"],
-            supporting_passages=["A violation is punishable by a fine and imprisonment."],
+            supporting_passages=[
+                "A violation is punishable by a fine and imprisonment."
+            ],
             confidence=0.4,
             limitations="",
             option_evidence=[
@@ -238,7 +240,9 @@ class TestAuthoritativeOptionEvidenceGate:
             "Misdemeanor",
         ]
 
-    def test_ssp_restriction_gate_does_not_treat_exchange_only_basis_as_quantity_limit(self):
+    def test_ssp_restriction_gate_does_not_treat_exchange_only_basis_as_quantity_limit(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer=(
                 "Programs may not operate within certain distance of schools or childcare facilities "
@@ -313,16 +317,24 @@ class TestAuthoritativeOptionEvidenceGate:
         )
 
         selected = [item.option for item in gated.option_evidence if item.selected]
-        assert "Restrictions on quantity of syringes that may be provided or exchanged" not in selected
+        assert (
+            "Restrictions on quantity of syringes that may be provided or exchanged"
+            not in selected
+        )
         assert "No restrictions listed" not in selected
-        assert "Programs may not operate within certain distance of parks or other public spaces" in selected
+        assert (
+            "Programs may not operate within certain distance of parks or other public spaces"
+            in selected
+        )
 
     def test_rewrites_unsupported_sales_to_display_only(self):
         response = LegalQueryResponse(
             short_answer="Sales, possession with intent to sell, offer for sale",
             reasoning="Initial answer overcalled sales.",
             citations=["§ 12-1"],
-            supporting_passages=["It is unlawful to display drug paraphernalia for advertising purposes."],
+            supporting_passages=[
+                "It is unlawful to display drug paraphernalia for advertising purposes."
+            ],
             confidence=0.5,
             limitations="",
             option_evidence=[
@@ -425,7 +437,9 @@ class TestAuthoritativeOptionEvidenceGate:
             short_answer="None",
             reasoning="Initial answer missed the exemption.",
             citations=["§ 5-10"],
-            supporting_passages=["Nothing in this section shall apply to cannabis paraphernalia."],
+            supporting_passages=[
+                "Nothing in this section shall apply to cannabis paraphernalia."
+            ],
             confidence=0.4,
             limitations="",
             option_evidence=[
@@ -581,7 +595,9 @@ class TestAuthoritativeOptionEvidenceGate:
             "Incarceration",
         ]
 
-    def test_limits_cannabis_exemption_activity_scope_to_explicitly_supported_labels(self):
+    def test_limits_cannabis_exemption_activity_scope_to_explicitly_supported_labels(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer="Possession AND/OR Use AND/OR Distribution AND/OR Sales",
             reasoning="Initial answer expanded cannabis use or commerce into every activity label.",
@@ -670,7 +686,9 @@ class TestAuthoritativeOptionEvidenceGate:
             short_answer="Yes",
             reasoning="Initial answer inferred an SSP law from nearby public-health text.",
             citations=[],
-            supporting_passages=["A local public health emergency may be declared for communicable disease control."],
+            supporting_passages=[
+                "A local public health emergency may be declared for communicable disease control."
+            ],
             confidence=0.35,
             limitations="",
             option_evidence=[
@@ -693,12 +711,16 @@ class TestAuthoritativeOptionEvidenceGate:
             "No"
         ]
 
-    def test_defaults_ssp_restriction_multi_select_to_no_restrictions_without_option_support(self):
+    def test_defaults_ssp_restriction_multi_select_to_no_restrictions_without_option_support(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer="Permit or license required for operation AND/OR Restrictions on mobile sites",
             reasoning="Initial answer inferred multiple restrictions from general administrative text.",
             citations=[],
-            supporting_passages=["The program is recognized during a declared emergency."],
+            supporting_passages=[
+                "The program is recognized during a declared emergency."
+            ],
             confidence=0.3,
             limitations="",
             option_evidence=[
@@ -923,14 +945,18 @@ class TestSecondStageStructuredValidators:
             {
                 "variable_name": "dp_state_fed_citation",
                 "response_options": "<citation>",
-                "parent_contexts": query_module._serialize_parent_contexts(parent_contexts),
+                "parent_contexts": query_module._serialize_parent_contexts(
+                    parent_contexts
+                ),
             },
         )
 
         assert validated.short_answer == "§ 30-31-1"
         assert validated.citations == ["§ 30-31-1"]
 
-    def test_penalty_validator_suppresses_inferred_labels_from_default_penalty_text(self):
+    def test_penalty_validator_suppresses_inferred_labels_from_default_penalty_text(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer="Criminal Fine AND/OR Incarceration",
             reasoning="Initial answer inferred benchmark sanctions from a generic default-penalty cross-reference.",
@@ -961,7 +987,9 @@ class TestSecondStageStructuredValidators:
             '"Unlawful" only'
         ]
 
-    def test_penalty_validator_promotes_stronger_labels_over_unlawful_only_without_unlawful_text(self):
+    def test_penalty_validator_promotes_stronger_labels_over_unlawful_only_without_unlawful_text(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer='"Unlawful" only',
             reasoning="Initial answer stopped at fallback despite stronger sanctions.",
@@ -992,7 +1020,9 @@ class TestSecondStageStructuredValidators:
         assert '"Unlawful" only' not in selected
         assert "Incarceration" in selected
 
-    def test_penalty_validator_suppresses_unlawful_only_when_forfeiture_is_explicit(self):
+    def test_penalty_validator_suppresses_unlawful_only_when_forfeiture_is_explicit(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer='"Unlawful" only',
             reasoning="Initial answer stopped at fallback despite explicit forfeiture.",
@@ -1067,7 +1097,10 @@ class TestSecondStageStructuredValidators:
         )
 
         selected = [item.option for item in validated.option_evidence if item.selected]
-        assert "Programs may not operate within certain distance of schools or childcare facilities" in selected
+        assert (
+            "Programs may not operate within certain distance of schools or childcare facilities"
+            in selected
+        )
         assert "Permit or license required for operation" not in selected
 
     def test_exemption_gate_drops_cannabis_business_zoning_noise_without_carveout(self):
@@ -1157,7 +1190,9 @@ class TestSecondStageStructuredValidators:
             "No"
         ]
 
-    def test_ssp_restriction_gate_keeps_only_mobile_restriction_without_permit_signal(self):
+    def test_ssp_restriction_gate_keeps_only_mobile_restriction_without_permit_signal(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer="Permit or license required for operation AND/OR Restrictions on mobile sites",
             reasoning="Initial answer treated site approval as an operating permit requirement.",
@@ -1217,7 +1252,9 @@ class TestSecondStageStructuredValidators:
             "Restrictions on mobile sites",
         ]
 
-    def test_ssp_restriction_consistency_promotes_permit_when_reasoning_and_evidence_require_it(self):
+    def test_ssp_restriction_consistency_promotes_permit_when_reasoning_and_evidence_require_it(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer="No restrictions listed",
             reasoning="The ordinance explicitly requires a permit to operate a syringe exchange facility.",
@@ -1228,7 +1265,9 @@ class TestSecondStageStructuredValidators:
             confidence=0.72,
             limitations="",
             option_evidence=[
-                ResponseOptionEvidence(option="Permit or license required for operation", selected=False),
+                ResponseOptionEvidence(
+                    option="Permit or license required for operation", selected=False
+                ),
                 ResponseOptionEvidence(option="No restrictions listed", selected=True),
             ],
         )
@@ -1246,7 +1285,9 @@ class TestSecondStageStructuredValidators:
 
         assert validated.short_answer == "Permit or license required for operation"
 
-    def test_ssp_restriction_consistency_promotes_registration_required_operation(self):
+    def test_ssp_restriction_consistency_does_not_promote_registration_only_operation(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer="No restrictions listed",
             reasoning="Registration requirement governs SSP operation.",
@@ -1257,7 +1298,9 @@ class TestSecondStageStructuredValidators:
             confidence=0.71,
             limitations="",
             option_evidence=[
-                ResponseOptionEvidence(option="Permit or license required for operation", selected=False),
+                ResponseOptionEvidence(
+                    option="Permit or license required for operation", selected=False
+                ),
                 ResponseOptionEvidence(option="No restrictions listed", selected=True),
             ],
         )
@@ -1273,7 +1316,7 @@ class TestSecondStageStructuredValidators:
             },
         )
 
-        assert validated.short_answer == "Permit or license required for operation"
+        assert validated.short_answer == "No restrictions listed"
 
     def test_exemption_crosswalk_maps_lawful_hypodermic_to_approved_medical_use(self):
         response = LegalQueryResponse(
@@ -1290,7 +1333,9 @@ class TestSecondStageStructuredValidators:
                     option="Syringes for approved medical use (i.e. diabetes)",
                     selected=False,
                 ),
-                ResponseOptionEvidence(option="Lawful use of hypodermic syringes", selected=True),
+                ResponseOptionEvidence(
+                    option="Lawful use of hypodermic syringes", selected=True
+                ),
             ],
         )
         sections = [
@@ -1334,7 +1379,9 @@ class TestSecondStageStructuredValidators:
                     option="Syringes for approved medical use (i.e. diabetes)",
                     selected=False,
                 ),
-                ResponseOptionEvidence(option="Lawful use of hypodermic syringes", selected=True),
+                ResponseOptionEvidence(
+                    option="Lawful use of hypodermic syringes", selected=True
+                ),
             ],
         )
 
@@ -1351,7 +1398,9 @@ class TestSecondStageStructuredValidators:
 
         assert gated.short_answer == "Lawful use of hypodermic syringes"
 
-    def test_prohibited_activity_gate_drops_illegal_smoking_product_delivery_noise(self):
+    def test_prohibited_activity_gate_drops_illegal_smoking_product_delivery_noise(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer=(
                 "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR "
@@ -1520,7 +1569,7 @@ class TestTimeoutExecution:
             confidence=0.8,
             limitations="None",
         )
-        
+
         with patch.object(
             query_module,
             "_run_with_timeout",
@@ -1531,7 +1580,7 @@ class TestTimeoutExecution:
                 filter_relevance=False,
                 validate_supporting_passages=False,
             )
-            
+
             response, similarity_scores = query_legal_documents(
                 retrieval_results,
                 "What does the ordinance say?",
@@ -1539,7 +1588,7 @@ class TestTimeoutExecution:
                 debug_capture=debug_capture,
                 execution_capture=execution_capture,
             )
-        
+
         assert response.short_answer == "Recovered answer"
         assert similarity_scores == []
         assert len(execution_capture["completion_sections"]) == 2
@@ -1797,11 +1846,22 @@ class TestPromptContracts:
         )
 
         assert "Dependency context from upstream questions:" in system_prompt
-        assert "You may use upstream dependency context to inform your reasoning" in system_prompt
-        assert "do not copy parent-question text or parent-answer text into `supporting_passages`" in system_prompt
-        assert "Every item in `supporting_passages` must be a verbatim quote from the retrieved Legal Context" in system_prompt
+        assert (
+            "You may use upstream dependency context to inform your reasoning"
+            in system_prompt
+        )
+        assert (
+            "do not copy parent-question text or parent-answer text into `supporting_passages`"
+            in system_prompt
+        )
+        assert (
+            "Every item in `supporting_passages` must be a verbatim quote from the retrieved Legal Context"
+            in system_prompt
+        )
 
-    def test_build_legal_prompts_tells_citation_children_to_stay_with_parent_family(self):
+    def test_build_legal_prompts_tells_citation_children_to_stay_with_parent_family(
+        self,
+    ):
         system_prompt, _user_prompt = _build_legal_prompts(
             "If yes, what is the citation of the relevant law?",
             "Retrieval Unit 1: Section 12-4-10 incorporates the State Controlled Substances Act.",
@@ -1876,7 +1936,9 @@ class TestCurrentThroughHelpers:
         preferred = query_module._prefer_current_through_metadata_sections(sections)
 
         assert [section.section_id for section in preferred] == ["s0"]
-        assert query_module._section_matches_current_through_metadata(sections[0]) is False
+        assert (
+            query_module._section_matches_current_through_metadata(sections[0]) is False
+        )
 
     def test_date_surface_validator_uses_explicit_current_through_date(self):
         response = LegalQueryResponse(
@@ -1914,7 +1976,9 @@ class TestCurrentThroughHelpers:
 
         assert validated.short_answer == "09/03/2025"
 
-    def test_date_surface_validator_filters_historical_amendment_dates_for_collected(self):
+    def test_date_surface_validator_filters_historical_amendment_dates_for_collected(
+        self,
+    ):
         response = LegalQueryResponse(
             short_answer="02/04/1987",
             reasoning="Using amendment history date.",
@@ -2129,6 +2193,166 @@ class TestCurrentThroughHelpers:
         )
 
         assert validated.short_answer == "Yes"
+
+    def test_answer_review_decision_flags_reasoning_short_answer_conflict(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning=(
+                "The ordinance explicitly authorizes syringe exchange operation once a valid local permit is obtained."
+            ),
+            citations=["§ 9-15-4"],
+            supporting_passages=[
+                "No person shall operate a syringe exchange facility without having a valid permit."
+            ],
+            confidence=0.61,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-review-1",
+                heading_text="# Permit",
+                body_text=(
+                    "No person shall operate a syringe exchange facility without having a valid permit."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        decision = query_module._build_answer_review_decision(
+            response=response,
+            sections=sections,
+            query_metadata={
+                "variable_name": "ssp_permit",
+                "guidance_topic": "ssp_authorization",
+                "response_options": (
+                    "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared"
+                ),
+            },
+            settings=QuerySettings(
+                llm=LLMConfig(client=Mock()),
+                enable_answer_review=True,
+                answer_review_topics=("ssp_authorization",),
+            ),
+        )
+
+        assert decision.should_rerun is True
+        assert any(
+            signal.issue == "reasoning_conflicts_with_short_answer"
+            for signal in decision.reasons
+        )
+
+    def test_resolve_completion_sections_relaxes_threshold_when_filter_empties(
+        self, monkeypatch
+    ):
+        sections = [
+            SectionResult(
+                section_id="s-fallback-1",
+                heading_text="# Permit",
+                body_text="A valid local permit is required to operate the syringe exchange facility.",
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=0.2,
+                segment_count=1,
+            )
+        ]
+        retrieval_results = SectionCollection(
+            sections=sections,
+            query_info=QueryInfo(original_query="query"),
+        )
+        calls: list[float] = []
+
+        def _fake_filter_sections(**kwargs):
+            calls.append(kwargs["relevance_threshold"])
+            if len(calls) == 1:
+                return SectionCollection(
+                    sections=[],
+                    query_info=retrieval_results.query_info,
+                    filtering_metadata=FilteringMetadata(
+                        original_count=1,
+                        filtered_count=0,
+                        threshold=kwargs["relevance_threshold"],
+                        assessments=[
+                            {
+                                "index": 0,
+                                "section_id": "s-fallback-1",
+                                "relevance_score": 0.55,
+                                "reasoning": "Borderline on first pass.",
+                                "kept": False,
+                                "keep_reason": "below_threshold",
+                            }
+                        ],
+                    ),
+                )
+            return SectionCollection(
+                sections=sections,
+                query_info=retrieval_results.query_info,
+                filtering_metadata=FilteringMetadata(
+                    original_count=1,
+                    filtered_count=1,
+                    threshold=kwargs["relevance_threshold"],
+                    assessments=[
+                        {
+                            "index": 0,
+                            "section_id": "s-fallback-1",
+                            "relevance_score": 0.55,
+                            "reasoning": "Recovered at relaxed threshold.",
+                            "kept": True,
+                            "keep_reason": "threshold_relaxation",
+                        }
+                    ],
+                ),
+            )
+
+        monkeypatch.setattr(query_module, "filter_sections", _fake_filter_sections)
+        monkeypatch.setattr(
+            query_module,
+            "resolve_relevance_filter_client_factory",
+            lambda _llm: None,
+        )
+
+        debug_capture = {"relevance": {}, "query": {}}
+        resolved = query_module._resolve_completion_sections(
+            retrieval_results,
+            "Does the ordinance explicitly authorize SSPs?",
+            QuerySettings(
+                llm=LLMConfig(client=Mock()),
+                filter_relevance=True,
+                relevance_threshold=0.7,
+            ),
+            debug_capture=debug_capture,
+        )
+
+        assert len(resolved) == 1
+        assert calls == [0.7, 0.5]
+        assert debug_capture["relevance"]["empty_filter_fallback_attempted"] is True
+        assert debug_capture["relevance"]["empty_filter_fallback_recovered"] is True
+
+    def test_dependency_decision_treats_abstaining_parent_as_non_blocking(self):
+        hierarchy = QueryHierarchy(query_id="child", boolean_parent_ids=["parent"])
+        parent_state = query_module.QueryExecutionState(
+            query_id="parent",
+            question="Parent question",
+            prompt_question="Parent question",
+            status="completed",
+            short_answer="I cannot answer your question as no relevant legal provisions were found after filtering.",
+        )
+
+        decision = query_module._evaluate_dependency_decision(
+            hierarchy=hierarchy,
+            state_by_query_id={"parent": parent_state},
+        )
+
+        assert decision.should_skip is False
+        assert any(
+            rule.get("status") == "parent_abstained_non_blocking"
+            for rule in decision.dependency_rules_evaluated
+        )
 
 
 class TestLoadQueries:
@@ -3519,8 +3743,7 @@ class TestQueryConfigBasics:
 
         assert response.short_answer == "Unspecified Fine AND/OR Incarceration"
         assert [
-            section.section_id
-            for section in execution_capture["completion_sections"]
+            section.section_id for section in execution_capture["completion_sections"]
         ] == ["s0", "s_penalty"]
         assert "SEC. 10.99. GENERAL PENALTY." in prompt_texts[0]
         assert "punishable by a fine not to exceed $500" in prompt_texts[0]
@@ -3963,7 +4186,9 @@ class TestQueryConfigBasics:
             in debug_capture["query"]["review_rerun_reasons"]
         )
 
-    def test_query_legal_documents_reruns_when_current_through_answer_lacks_explicit_date_support(self):
+    def test_query_legal_documents_reruns_when_current_through_answer_lacks_explicit_date_support(
+        self,
+    ):
         mock_client = Mock(spec=Instructor)
         retrieval_results = SectionCollection(
             sections=[
@@ -4185,9 +4410,14 @@ class TestQueryConfigBasics:
         assert len(prompts) == 2
         assert response.short_answer == "Permit or license required for operation"
         assert debug_capture["query"]["review_rerun_triggered"] is True
-        assert "multi_select_includes_other" in debug_capture["query"]["review_rerun_reasons"]
+        assert (
+            "multi_select_includes_other"
+            in debug_capture["query"]["review_rerun_reasons"]
+        )
 
-    def test_query_legal_documents_reruns_when_scalar_citation_conflicts_with_parent_family(self):
+    def test_query_legal_documents_reruns_when_scalar_citation_conflicts_with_parent_family(
+        self,
+    ):
         mock_client = Mock(spec=Instructor)
         retrieval_results = SectionCollection(
             sections=[
@@ -5562,7 +5792,9 @@ class TestBatchQueryConfigBasics:
         assert results_df[0, "all_retrieval_units_filtered_out"] is True
         assert results_df[0, "generated_abstention"] is True
 
-    def test_build_no_sections_response_uses_structured_ssp_fallback_when_no_anchor_text(self):
+    def test_build_no_sections_response_uses_structured_ssp_fallback_when_no_anchor_text(
+        self,
+    ):
         response = _build_no_sections_response(
             "no_sections_after_filtering",
             query_metadata={
@@ -5591,7 +5823,9 @@ class TestBatchQueryConfigBasics:
         assert response.short_answer == "No"
         assert not response.short_answer.startswith("I cannot answer your question")
 
-    def test_build_no_sections_response_keeps_abstention_when_anchor_text_was_seen(self):
+    def test_build_no_sections_response_keeps_abstention_when_anchor_text_was_seen(
+        self,
+    ):
         response = _build_no_sections_response(
             "no_sections_after_filtering",
             query_metadata={

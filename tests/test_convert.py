@@ -955,9 +955,12 @@ Some body text here."""
             assert "These are 200 representative elements" in first_prompt
             assert "These are 150 representative elements" in second_prompt
             assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT
-            assert second_call.kwargs.get(
-                "max_retries", second_call.kwargs.get("num_retries")
-            ) == 3
+            assert (
+                second_call.kwargs.get(
+                    "max_retries", second_call.kwargs.get("num_retries")
+                )
+                == 3
+            )
             assert "PREVIOUS ATTEMPT HAD THESE ISSUES" not in second_prompt
             assert "RETRY_FEEDBACK:" not in second_prompt
 
@@ -1027,9 +1030,12 @@ Some body text here."""
             assert "These are 200 representative elements" in first_prompt
             assert "These are 100 representative elements" in second_prompt
             assert second_call.kwargs["messages"][0]["content"] == SCAN_SYSTEM_PROMPT
-            assert second_call.kwargs.get(
-                "max_retries", second_call.kwargs.get("num_retries")
-            ) == 3
+            assert (
+                second_call.kwargs.get(
+                    "max_retries", second_call.kwargs.get("num_retries")
+                )
+                == 3
+            )
             assert "PREVIOUS ATTEMPT HAD THESE ISSUES" not in second_prompt
             assert "RETRY_FEEDBACK:" not in second_prompt
 
@@ -1380,9 +1386,10 @@ Some body text here."""
             prompt = scan_call.kwargs["messages"][1]["content"]
 
             assert "These are 120 representative elements" in prompt
-            assert scan_call.kwargs.get(
-                "max_retries", scan_call.kwargs.get("num_retries")
-            ) == 7
+            assert (
+                scan_call.kwargs.get("max_retries", scan_call.kwargs.get("num_retries"))
+                == 7
+            )
             assert scan_call.kwargs["timeout"] == 480
             assert scan_call.kwargs["max_tokens"] == 1400
 

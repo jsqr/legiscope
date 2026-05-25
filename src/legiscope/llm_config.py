@@ -86,7 +86,9 @@ def _litellm_uses_fixed_temperature(model: str) -> bool:
     return normalized.startswith("gpt-5")
 
 
-def _apply_provider_specific_llm_params(provider: str, params: dict[str, Any]) -> dict[str, Any]:
+def _apply_provider_specific_llm_params(
+    provider: str, params: dict[str, Any]
+) -> dict[str, Any]:
     """Normalize provider-specific request params after all overrides are merged."""
     if provider == "litellm":
         model = str(params.get("model") or "")
@@ -98,7 +100,9 @@ def _apply_provider_specific_llm_params(provider: str, params: dict[str, Any]) -
     return params
 
 
-def _build_client(provider: str, model: str, mode: instructor.Mode | None) -> Instructor:
+def _build_client(
+    provider: str, model: str, mode: instructor.Mode | None
+) -> Instructor:
     """Construct an instructor client for the configured provider/model pair."""
     if provider == "litellm":
         try:
@@ -106,7 +110,7 @@ def _build_client(provider: str, model: str, mode: instructor.Mode | None) -> In
         except ImportError as exc:
             raise ImportError(
                 "LiteLLM support requires the 'litellm' package. "
-                "Install dependencies with `uv sync` or `uv pip install -e \".[dev]\"`."
+                'Install dependencies with `uv sync` or `uv pip install -e ".[dev]"`.'
             ) from exc
 
         completion_with_defaults = partial(

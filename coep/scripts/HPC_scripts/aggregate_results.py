@@ -124,9 +124,11 @@ def _iter_jurisdiction_output_dirs(output_dir: Path) -> list[Path]:
     for child in sorted(output_dir.iterdir()):
         if not child.is_dir():
             continue
-        has_metrics = (child / CANONICAL_METRICS_NAME).exists() or any(
-            child.glob(TIMESTAMPED_METRICS_GLOB)
-        ) or any(child.glob(BATCH_METRICS_GLOB))
+        has_metrics = (
+            (child / CANONICAL_METRICS_NAME).exists()
+            or any(child.glob(TIMESTAMPED_METRICS_GLOB))
+            or any(child.glob(BATCH_METRICS_GLOB))
+        )
         has_canonical_results = (child / CANONICAL_RESULTS_NAME).exists()
         has_timestamped_results = any(child.glob(TIMESTAMPED_RESULTS_GLOB)) or any(
             child.glob(BATCH_RESULTS_GLOB)
@@ -243,8 +245,10 @@ def _sanitize_batch_id(batch_id: str) -> str:
 
 def _batch_output_dir(output_dir: Path, batch_id: str) -> Path:
     """Return the root directory for a batch manifest and aggregate outputs."""
-    return _all_jurisdictions_output_dir(output_dir) / BATCHES_DIR_NAME / _sanitize_batch_id(
-        batch_id
+    return (
+        _all_jurisdictions_output_dir(output_dir)
+        / BATCHES_DIR_NAME
+        / _sanitize_batch_id(batch_id)
     )
 
 

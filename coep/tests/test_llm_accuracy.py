@@ -111,6 +111,27 @@ class TestDeriveQuestionType:
 
 
 class TestAggregateQueryScoping:
+    def test_filter_results_for_analysis_excludes_requested_variables(self):
+        raw_df = pl.DataFrame(
+            {
+                "variable_name": ["ssp_enacted", None, "dp_possession"],
+                "query_id": [None, "dp_state_fed_reference", None],
+                "query_metadata": [
+                    json.dumps({"query_id": "ssp_enacted"}),
+                    json.dumps({"query_id": "dp_state_fed_reference"}),
+                    json.dumps({"query_id": "dp_possession"}),
+                ],
+                "jurisdiction_id": ["A", "A", "A"],
+                "evaluation_mode": ["whole_answer", "whole_answer", "whole_answer"],
+                "eval_label": ["Correct", "Incorrect", "Correct"],
+                "eval_score": [1.0, 0.0, 1.0],
+            }
+        )
+
+        filtered = llm_accuracy.filter_results_for_analysis(raw_df)
+
+        assert filtered["variable_name"].to_list() == ["dp_possession"]
+
     def test_make_scored_rows_preserves_refined_error_type(self):
         scored = llm_accuracy.make_scored_rows(
             pl.DataFrame(
@@ -217,14 +238,15 @@ class TestAggregateQueryScoping:
         summary = llm_accuracy.make_jurisdiction_score_summary(query_credit_df)
 
         rows = {
-            (row["dataset"], row["jurisdiction"]): row
-            for row in summary.to_dicts()
+            (row["dataset"], row["jurisdiction"]): row for row in summary.to_dicts()
         }
         assert rows[("DPL", "A")]["query_count"] == 2
         assert rows[("DPL", "A")]["query_weighted_score_pct"] == 75.0
         assert rows[("DPL", "B")]["query_weighted_score_pct"] == 25.0
 
-    def test_summarize_metrics_excludes_dependency_skipped_queries_from_denominator(self):
+    def test_summarize_metrics_excludes_dependency_skipped_queries_from_denominator(
+        self,
+    ):
         scored_df = pl.DataFrame(
             {
                 "query_instance_id": ["A::benchmark:0"],
@@ -251,7 +273,9 @@ class TestAggregateQueryScoping:
 class TestOutputRouting:
     def test_extract_results_timestamp_from_aggregate_file(self):
         timestamp = llm_accuracy.extract_results_timestamp(
-            Path("data/output/all_jurisdictions/20260515_104348/all_jurisdictions_benchmark_20260515_104348.csv")
+            Path(
+                "data/output/all_jurisdictions/20260515_104348/all_jurisdictions_benchmark_20260515_104348.csv"
+            )
         )
 
         assert timestamp == "20260515_104348"
@@ -270,17 +294,21 @@ class TestOutputRouting:
 
         assert output_dir == input_path.parent
 
-    def test_resolve_output_dir_routes_timestamped_input_to_all_jurisdictions_folder(self):
-        input_path = PROJECT_ROOT / "data" / "output" / "PA-Philadelphia" / "benchmark_results_20260515_104348.csv"
+    def test_resolve_output_dir_routes_timestamped_input_to_all_jurisdictions_folder(
+        self,
+    ):
+        input_path = (
+            PROJECT_ROOT
+            / "data"
+            / "output"
+            / "PA-Philadelphia"
+            / "benchmark_results_20260515_104348.csv"
+        )
 
         output_dir = llm_accuracy.resolve_output_dir(input_path, None)
 
         assert output_dir == (
-            PROJECT_ROOT
-            / "data"
-            / "output"
-            / "all_jurisdictions"
-            / "20260515_104348"
+            PROJECT_ROOT / "data" / "output" / "all_jurisdictions" / "20260515_104348"
         )
 
     def test_resolve_output_dir_uses_batch_aggregate_folder_when_present(self):
@@ -299,7 +327,9 @@ class TestOutputRouting:
 
         assert output_dir == input_path.parent
 
-    def test_resolve_input_path_prefers_newest_batch_aggregate(self, tmp_path, monkeypatch):
+    def test_resolve_input_path_prefers_newest_batch_aggregate(
+        self, tmp_path, monkeypatch
+    ):
         project_root = tmp_path / "project"
         batch_dir = (
             project_root

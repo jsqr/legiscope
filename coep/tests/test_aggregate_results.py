@@ -31,10 +31,7 @@ class TestAggregateResults:
             tmp_path, "20260508_153000"
         )
 
-        assert (
-            output_dir
-            == tmp_path / "all_jurisdictions" / "20260508_153000"
-        )
+        assert output_dir == tmp_path / "all_jurisdictions" / "20260508_153000"
 
     def test_aggregate_run_output_dir_nests_batch_runs_under_batch_folder(
         self, tmp_path
@@ -101,7 +98,9 @@ class TestAggregateResults:
     def test_iter_jurisdiction_output_dirs_detects_batch_only_artifacts(self, tmp_path):
         jurisdiction_dir = tmp_path / "PA-Philadelphia"
         jurisdiction_dir.mkdir()
-        (jurisdiction_dir / "benchmark_results_batch_batch-50.csv").write_text("value\n1\n")
+        (jurisdiction_dir / "benchmark_results_batch_batch-50.csv").write_text(
+            "value\n1\n"
+        )
 
         discovered = aggregate_results._iter_jurisdiction_output_dirs(tmp_path)
 

@@ -472,7 +472,10 @@ class TestEvaluator:
             messages = call_kwargs["messages"]
             user_prompt = messages[1]["content"]
             assert "treat the short answer as authoritative" in user_prompt
-            assert "Do not mark an answer incorrect solely because the reasoning" in user_prompt
+            assert (
+                "Do not mark an answer incorrect solely because the reasoning"
+                in user_prompt
+            )
 
     def test_evaluate_batch(self):
         """Test batch evaluation."""

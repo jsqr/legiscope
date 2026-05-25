@@ -1185,7 +1185,11 @@ def _validate_query_dependency_columns(df: pl.DataFrame) -> None:
     """Fail fast when dependency columns contain prose instead of query identifiers."""
     dependency_columns = [
         column
-        for column in (REQUIRES_YES_COLUMN, REQUIRES_DATA_COLUMN, REQUIRES_LABELS_COLUMN)
+        for column in (
+            REQUIRES_YES_COLUMN,
+            REQUIRES_DATA_COLUMN,
+            REQUIRES_LABELS_COLUMN,
+        )
         if column in df.columns
     ]
     if not dependency_columns:
@@ -1193,7 +1197,9 @@ def _validate_query_dependency_columns(df: pl.DataFrame) -> None:
 
     invalid_entries: list[str] = []
     for row in df.to_dicts():
-        variable_name = str(row.get("variable_name") or row.get("Variable") or "").strip()
+        variable_name = str(
+            row.get("variable_name") or row.get("Variable") or ""
+        ).strip()
         for column in dependency_columns:
             value = row.get(column)
             if value is None:
@@ -1642,8 +1648,74 @@ def _resolve_completion_sections(
                         "original_retrieval_unit_count": filtered_results.filtering_metadata.original_count,
                         "filtered_retrieval_unit_count": filtered_results.filtering_metadata.filtered_count,
                         "relevance_assessments": _json_debug(assessments),
+                        "empty_filter_fallback_attempted": False,
+                        "empty_filter_fallback_recovered": False,
                     }
                 )
+
+            if not sections:
+                relaxed_threshold = max(
+                    0.0,
+                    round(settings.relevance_threshold - 0.2, 6),
+                )
+                if relaxed_threshold < settings.relevance_threshold:
+                    fallback_results = filter_sections(
+                        client=settings.filter_llm.client,
+                        sections_results=retrieval_results,
+                        query=query,
+                        relevance_threshold=relaxed_threshold,
+                        model=settings.filter_llm.model,
+                        retrieval_guidance=settings.retrieval_guidance,
+                        client_factory=resolve_relevance_filter_client_factory(
+                            settings.filter_llm
+                        ),
+                    )
+                    sections = fallback_results.sections
+                    if debug_capture is not None:
+                        debug_capture["relevance"].update(
+                            {
+                                "empty_filter_fallback_attempted": True,
+                                "empty_filter_original_threshold": settings.relevance_threshold,
+                                "empty_filter_relaxed_threshold": relaxed_threshold,
+                                "empty_filter_fallback_recovered": bool(sections),
+                            }
+                        )
+                        if fallback_results.filtering_metadata:
+                            fallback_assessments = []
+                            for (
+                                assessment
+                            ) in fallback_results.filtering_metadata.assessments:
+                                idx = assessment.get("index", -1)
+                                heading_text = ""
+                                if 0 <= idx < len(retrieval_results.sections):
+                                    heading_text = retrieval_results.sections[
+                                        idx
+                                    ].heading_text
+
+                                fallback_assessments.append(
+                                    {
+                                        "section_id": assessment.get("section_id"),
+                                        "heading_text": heading_text,
+                                        "relevance_score": assessment.get(
+                                            "relevance_score"
+                                        ),
+                                        "reasoning": _truncate_debug_text(
+                                            assessment.get("reasoning"),
+                                            DEBUG_REASONING_LIMIT,
+                                        ),
+                                        "kept": bool(assessment.get("kept")),
+                                        "keep_reason": assessment.get("keep_reason"),
+                                    }
+                                )
+
+                            debug_capture["relevance"].update(
+                                {
+                                    "fallback_filtered_section_count": fallback_results.filtering_metadata.filtered_count,
+                                    "fallback_relevance_assessments": _json_debug(
+                                        fallback_assessments
+                                    ),
+                                }
+                            )
 
         except Exception:
             sections = retrieval_results.sections
@@ -1944,14 +2016,22 @@ def query_legal_documents(
             sections,
             query_metadata,
         )
-        response = _apply_reference_necessity_validator(response, sections, query_metadata)
-        response = _apply_penalty_specificity_validator(response, sections, query_metadata)
+        response = _apply_reference_necessity_validator(
+            response, sections, query_metadata
+        )
+        response = _apply_penalty_specificity_validator(
+            response, sections, query_metadata
+        )
         response = _apply_exemption_noise_validator(response, sections, query_metadata)
         response = _normalize_response_citations(response, query_metadata)
-        response = _apply_reference_citation_validator(response, sections, query_metadata)
+        response = _apply_reference_citation_validator(
+            response, sections, query_metadata
+        )
         response = _apply_date_surface_validators(response, sections, query_metadata)
         response = _apply_ssp_permit_validator(response, sections, query_metadata)
-        response = _apply_ssp_restriction_consistency_validator(response, sections, query_metadata)
+        response = _apply_ssp_restriction_consistency_validator(
+            response, sections, query_metadata
+        )
 
         logger.info(
             f"Query processing completed - confidence: {response.confidence:.2f}, "
@@ -2817,7 +2897,9 @@ def _augment_sections_with_same_text_cross_references(
     augmented_sections: list[SectionResult] = []
     for section in sections:
         augmented_sections.append(section)
-        augmented_sections.extend(imported_after_source.get(str(section.section_id), []))
+        augmented_sections.extend(
+            imported_after_source.get(str(section.section_id), [])
+        )
 
     logger.info(
         "Imported {} same-text cross-reference sections for guidance topic {}",
@@ -3286,6 +3368,10 @@ def _build_relevance_debug_prompt(query: str, settings: QuerySettings) -> str:
             lines.append(f"Relevance instructions: {guidance.relevance_instructions}")
         if guidance.anchor_terms:
             lines.append("Anchor terms: " + ", ".join(guidance.anchor_terms))
+        if guidance.negative_anchor_terms:
+            lines.append(
+                "Negative anchor terms: " + ", ".join(guidance.negative_anchor_terms)
+            )
 
     threshold_summary = (
         "Thresholds: keep when relevance_score "
@@ -3294,9 +3380,7 @@ def _build_relevance_debug_prompt(query: str, settings: QuerySettings) -> str:
     if guidance and guidance.enable_relevance_backfill is False:
         threshold_summary += "backfill is disabled for this query family."
     else:
-        threshold_summary += (
-            "backfill preserves a small relevant evidence set if the filter would otherwise collapse."
-        )
+        threshold_summary += "backfill preserves a small relevant evidence set if the filter would otherwise collapse."
     lines.append(threshold_summary)
 
     return "\n".join(lines)
@@ -3331,7 +3415,9 @@ def _structured_no_context_fallback_short_answer(
     if not fallback_short_answer:
         return None
 
-    if _sections_contain_anchor_terms(original_sections, retrieval_guidance.anchor_terms):
+    if _sections_contain_anchor_terms(
+        original_sections, retrieval_guidance.anchor_terms
+    ):
         return None
 
     return _normalize_structured_short_answer(
@@ -3499,11 +3585,7 @@ def _normalize_option_text(text: str) -> str:
 def _query_variable_name(query_metadata: dict[str, Any] | None) -> str:
     """Return the effective variable name for a structured query."""
     metadata = query_metadata or {}
-    return str(
-        metadata.get("variable_name")
-        or metadata.get("query_id")
-        or ""
-    ).strip()
+    return str(metadata.get("variable_name") or metadata.get("query_id") or "").strip()
 
 
 def _looks_like_unknown(answer: str) -> bool:
@@ -3521,11 +3603,27 @@ def _collect_evidence_texts(
 ) -> list[str]:
     """Collect raw evidence texts from the answer and completion sections."""
     texts: list[str] = []
-    texts.extend(str(passage).strip() for passage in response.supporting_passages if str(passage).strip())
-    texts.extend(str(citation).strip() for citation in response.citations if str(citation).strip())
+    texts.extend(
+        str(passage).strip()
+        for passage in response.supporting_passages
+        if str(passage).strip()
+    )
+    texts.extend(
+        str(citation).strip()
+        for citation in response.citations
+        if str(citation).strip()
+    )
     for item in response.option_evidence:
-        texts.extend(str(passage).strip() for passage in item.supporting_passages if str(passage).strip())
-        texts.extend(str(citation).strip() for citation in item.citations if str(citation).strip())
+        texts.extend(
+            str(passage).strip()
+            for passage in item.supporting_passages
+            if str(passage).strip()
+        )
+        texts.extend(
+            str(citation).strip()
+            for citation in item.citations
+            if str(citation).strip()
+        )
     for section in sections:
         heading = str(section.heading_text or "").strip()
         body = str(section.body_text or "").strip()
@@ -3583,12 +3681,16 @@ def _extract_explicit_date_from_texts(
             if explicit_date is None:
                 continue
 
-            if rejected_patterns and any(
-                re.search(pattern, sentence, re.IGNORECASE)
-                for pattern in rejected_patterns
-            ) and not any(
-                re.search(pattern, sentence, re.IGNORECASE)
-                for pattern in required_patterns
+            if (
+                rejected_patterns
+                and any(
+                    re.search(pattern, sentence, re.IGNORECASE)
+                    for pattern in rejected_patterns
+                )
+                and not any(
+                    re.search(pattern, sentence, re.IGNORECASE)
+                    for pattern in required_patterns
+                )
             ):
                 continue
 
@@ -3729,8 +3831,7 @@ def _canonicalize_citation_output(citation: str) -> str:
     )
     if rc_chapters_match is not None:
         return (
-            f"{rc_chapters_match.group('prefix')} "
-            f"{rc_chapters_match.group('chapters')}"
+            f"{rc_chapters_match.group('prefix')} {rc_chapters_match.group('chapters')}"
         )
 
     revised_code_match = re.match(
@@ -3820,7 +3921,9 @@ def _citation_specificity_key(citation: str) -> tuple[int, int, int, int]:
     """Sort narrower citation units ahead of broader or noisier ones."""
     normalized = citation.lower()
     et_seq_penalty = 1 if "et seq" in normalized else 0
-    has_section_marker_bonus = 0 if re.search(r"(?:§|\bsec(?:tion)?\.?)", normalized) else 1
+    has_section_marker_bonus = (
+        0 if re.search(r"(?:§|\bsec(?:tion)?\.?)", normalized) else 1
+    )
     numeric_depth_bonus = -len(re.findall(r"\d+", citation))
     length_penalty = len(citation)
     return (
@@ -4317,9 +4420,39 @@ _SSP_MOBILE_RESTRICTION_PATTERNS = (
 )
 
 _SSP_OPERATIONAL_PERMIT_PATTERNS = (
-    r"\b(?:permit|license|registration)\b[^.\n]{0,40}\b(?:required|operate|operation)\b",
+    r"\b(?:permit|license)\b[^.\n]{0,40}\b(?:required|operate|operation)\b",
     r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license|registration)\b",
     r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b",
+    r"\bvalid permit\b[^.\n]{0,80}\b(?:syringe exchange|needle exchange|syringe service)\b",
+)
+
+_EXEMPTION_APPROVED_MEDICAL_PATIENT_PATTERNS = (
+    r"\bdiabet(?:es|ic)\b",
+    r"\binsulin\b",
+    r"\bpatient\b",
+    r"\bprescri(?:be|bed|ption)\b",
+    r"\bmedical use\b",
+    r"\btreatment\b",
+)
+
+_EXEMPTION_PROFESSIONAL_PATTERNS = (
+    r"\bphysician\b",
+    r"\bpharmacist\b",
+    r"\bpractitioner\b",
+    r"\bmanufacturer\b",
+    r"\bwholesaler\b",
+    r"\bdistributor\b",
+    r"\bcourse of business\b",
+    r"\bprofessional practice\b",
+)
+
+_EXEMPTION_PUBLIC_OFFICIAL_PATTERNS = (
+    r"\bpublic official\b",
+    r"\bofficial duties\b",
+    r"\bpeace officer\b",
+    r"\blaw enforcement\b",
+    r"\bgovernment(?:al)? entit(?:y|ies)\b",
+    r"\bpublic employee\b",
 )
 
 _SSP_OTHER_RESIDUAL_PATTERNS = (
@@ -4417,7 +4550,10 @@ def _response_option_evidence_text_is_covered(
         return False
 
     return all(
-        any(item_text == covered or item_text in covered or covered in item_text for covered in covered_texts)
+        any(
+            item_text == covered or item_text in covered or covered in item_text
+            for covered in covered_texts
+        )
         for item_text in item_texts
     )
 
@@ -4437,9 +4573,18 @@ def _penalty_has_criminal_fine_cues(
         return True
     return bool(
         re.search(r"\bcriminal fine\b", normalized)
-        or re.search(r"\bfine\b[^.\n]{0,60}\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b", normalized)
-        or re.search(r"\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b[^.\n]{0,60}\bfine\b", normalized)
-        or re.search(r"\bclass\s+[a-z0-9-]+\s+(?:misdemeanor|felony|offense|violation)\b[^.\n]{0,80}\bfine\b", normalized)
+        or re.search(
+            r"\bfine\b[^.\n]{0,60}\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b",
+            normalized,
+        )
+        or re.search(
+            r"\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b[^.\n]{0,60}\bfine\b",
+            normalized,
+        )
+        or re.search(
+            r"\bclass\s+[a-z0-9-]+\s+(?:misdemeanor|felony|offense|violation)\b[^.\n]{0,80}\bfine\b",
+            normalized,
+        )
         or re.search(r"\bpenalty\s+class\b[^.\n]{0,80}\bfine\b", normalized)
     )
 
@@ -4460,6 +4605,34 @@ def _penalty_unlawful_only_has_explicit_support(
         if re.search(r"\bunlawful\b", item_text, re.IGNORECASE):
             return True
     return False
+
+
+def _penalty_has_any_supported_concrete_sanction(
+    evidence_text: str,
+    option_patterns: dict[str, tuple[str, ...]],
+) -> bool:
+    """Return whether the evidence directly supports any non-fallback penalty label."""
+    for normalized_option, patterns in option_patterns.items():
+        if normalized_option in {
+            _normalize_option_text('"Unlawful" only'),
+            _normalize_option_text("Other"),
+        }:
+            continue
+        if patterns and _first_matching_snippet(evidence_text, patterns) is not None:
+            return True
+    return False
+
+
+def _ssp_has_explicit_operational_permit_requirement(evidence_text: str) -> bool:
+    """Return whether text creates a true local operating permit/license regime for SSPs."""
+    if not evidence_text.strip():
+        return False
+    if _ssp_reference_support_is_admin_only(evidence_text):
+        return False
+    return any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_OPERATIONAL_PERMIT_PATTERNS
+    )
 
 
 def _penalty_concrete_supported_options(
@@ -4508,23 +4681,38 @@ def _other_option_is_fully_covered(
 
     item_text = "\n".join([*item.citations, *item.supporting_passages]).lower()
     normalized_option = _normalize_option_text(option)
-    selected_lookup = {_normalize_option_text(selected.option) for selected in selected_named_items}
+    selected_lookup = {
+        _normalize_option_text(selected.option) for selected in selected_named_items
+    }
 
-    if guidance_topic == "penalty" and normalized_option == _normalize_option_text("Other"):
+    if guidance_topic == "penalty" and normalized_option == _normalize_option_text(
+        "Other"
+    ):
         if re.search("|".join(_PENALTY_OTHER_EXCLUDED_PATTERNS), item_text):
             return True
         if not re.search("|".join(_PENALTY_OTHER_DISTINCT_PATTERNS), item_text):
             return True
 
-    if guidance_topic == "ssp_restriction" and normalized_option == _normalize_option_text("Other restrictions"):
-        if _normalize_option_text("Permit or license required for operation") in selected_lookup:
-            if re.search("|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text) and not re.search(
+    if (
+        guidance_topic == "ssp_restriction"
+        and normalized_option == _normalize_option_text("Other restrictions")
+    ):
+        if (
+            _normalize_option_text("Permit or license required for operation")
+            in selected_lookup
+        ):
+            if re.search(
+                "|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text
+            ) and not re.search(
                 "|".join(_SSP_DISTINCT_RESTRICTION_PATTERNS),
                 item_text,
             ):
                 return True
 
-    if guidance_topic == "exemption_activity_scope" and normalized_option == _normalize_option_text("Other"):
+    if (
+        guidance_topic == "exemption_activity_scope"
+        and normalized_option == _normalize_option_text("Other")
+    ):
         if re.search("|".join(_GENERIC_ACTIVITY_SCOPE_UMBRELLA_PATTERNS), item_text):
             return True
         if not re.search(
@@ -4665,7 +4853,10 @@ def _apply_date_surface_validators(
         return response.model_copy(update={"short_answer": "Unknown"})
 
     if is_status_date:
-        label = _extract_status_date_label(response.short_answer, response_options) or "Known"
+        label = (
+            _extract_status_date_label(response.short_answer, response_options)
+            or "Known"
+        )
         updated_short_answer = f"{label}, {explicit_date}"
     else:
         updated_short_answer = explicit_date
@@ -4687,13 +4878,18 @@ def _apply_ssp_permit_validator(
         return response
 
     response_options = _clean_response_options(metadata.get("response_options"))
-    if response_options != "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared":
+    if (
+        response_options
+        != "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared"
+    ):
         return response
     answer = str(response.short_answer or "").strip()
     evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
-    has_strong_authorization = any(
+    has_strong_authorization = _ssp_has_explicit_operational_permit_requirement(
+        evidence_text
+    ) or any(
         re.search(pattern, evidence_text, re.IGNORECASE)
-        for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
+        for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS[2:]
     )
     if answer == "No":
         if not has_strong_authorization:
@@ -4710,7 +4906,9 @@ def _apply_ssp_permit_validator(
             re.search(pattern, evidence_text, re.IGNORECASE)
             for pattern in _SSP_PERMIT_WEAK_OPERATION_PATTERNS
         ):
-            return _rewrite_structured_response_options(response, ("No",), query_metadata)
+            return _rewrite_structured_response_options(
+                response, ("No",), query_metadata
+            )
         return response
 
     return response
@@ -4728,19 +4926,29 @@ def _section_matches_current_through_metadata(section: SectionResult) -> bool:
     """Return whether a section looks like current-through metadata rather than ordinance substance."""
     text = "\n".join(
         part
-        for part in [str(section.heading_text or "").strip(), str(section.body_text or "").strip()]
+        for part in [
+            str(section.heading_text or "").strip(),
+            str(section.body_text or "").strip(),
+        ]
         if part
     )
     if not text:
         return False
-    return any(re.search(pattern, text, re.IGNORECASE) for pattern in _CURRENT_THROUGH_METADATA_PATTERNS)
+    return any(
+        re.search(pattern, text, re.IGNORECASE)
+        for pattern in _CURRENT_THROUGH_METADATA_PATTERNS
+    )
 
 
 def _prefer_current_through_metadata_sections(
     sections: list[SectionResult],
 ) -> list[SectionResult]:
     """Keep current-through metadata sections when present, otherwise fall back to the original slice."""
-    metadata_sections = [section for section in sections if _section_matches_current_through_metadata(section)]
+    metadata_sections = [
+        section
+        for section in sections
+        if _section_matches_current_through_metadata(section)
+    ]
     return metadata_sections or sections
 
 
@@ -4784,7 +4992,9 @@ def _authoritative_response_options_from_option_evidence(
                     guidance_topic == "penalty"
                     and _normalize_option_text(option)
                     == _normalize_option_text('"Unlawful" only')
-                    and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
+                    and not _penalty_unlawful_only_has_explicit_support(
+                        response, evidence_text
+                    )
                 ):
                     return None
                 return (option,)
@@ -4794,12 +5004,18 @@ def _authoritative_response_options_from_option_evidence(
         return (supported_selected[0],)
     for option in options:
         item = evidence_by_option.get(option)
-        if item is not None and item.selected and _is_generic_fallback_response_option(option):
+        if (
+            item is not None
+            and item.selected
+            and _is_generic_fallback_response_option(option)
+        ):
             if (
                 guidance_topic == "penalty"
                 and _normalize_option_text(option)
                 == _normalize_option_text('"Unlawful" only')
-                and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
+                and not _penalty_unlawful_only_has_explicit_support(
+                    response, evidence_text
+                )
             ):
                 return None
             return (option,)
@@ -4809,7 +5025,9 @@ def _authoritative_response_options_from_option_evidence(
                 guidance_topic == "penalty"
                 and _normalize_option_text(option)
                 == _normalize_option_text('"Unlawful" only')
-                and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
+                and not _penalty_unlawful_only_has_explicit_support(
+                    response, evidence_text
+                )
             ):
                 return None
             return (option,)
@@ -4905,9 +5123,7 @@ def _rewrite_structured_response_options(
         response.option_evidence
     )
     gated_short_answer = (
-        separator.join(final_options)
-        if separator == " AND/OR "
-        else final_options[0]
+        separator.join(final_options) if separator == " AND/OR " else final_options[0]
     )
     if current_options == final_options and response.short_answer == gated_short_answer:
         return response
@@ -5018,7 +5234,10 @@ def _ssp_has_residual_other_restriction(
     option_patterns: dict[str, tuple[str, ...]],
 ) -> bool:
     """Return whether SSP evidence supports a true residual restriction not covered by named labels."""
-    if not any(re.search(pattern, item_text, re.IGNORECASE) for pattern in _SSP_OTHER_RESIDUAL_PATTERNS):
+    if not any(
+        re.search(pattern, item_text, re.IGNORECASE)
+        for pattern in _SSP_OTHER_RESIDUAL_PATTERNS
+    ):
         return False
 
     named_patterns = _ssp_named_restriction_pattern_map(option_patterns)
@@ -5059,9 +5278,8 @@ def _authoritative_option_supports_selection(
     if fallback_option and normalized == _normalize_option_text(fallback_option):
         return False
 
-    if (
-        guidance_topic == "exemption_presence"
-        and _exemption_support_is_noise_only(evidence_text)
+    if guidance_topic == "exemption_presence" and _exemption_support_is_noise_only(
+        evidence_text
     ):
         return False
 
@@ -5096,17 +5314,27 @@ def _authoritative_option_supports_selection(
             re.search(pattern, item_text, re.IGNORECASE)
             for pattern in _SSP_QUANTITY_LIMIT_PATTERNS
         ):
-                return False
+            snippet = None
 
-        if normalized == _normalize_option_text("Restrictions on mobile sites") and not (
-            any(re.search(pattern, item_text, re.IGNORECASE) for pattern in _SSP_MOBILE_RESTRICTION_PATTERNS)
-            and re.search(r"\b(?:restrict|limit|prohibit|not\s+operate|allowed\s+only|operate\s+only)\b", item_text, re.IGNORECASE)
+        if normalized == _normalize_option_text(
+            "Restrictions on mobile sites"
+        ) and not (
+            any(
+                re.search(pattern, item_text, re.IGNORECASE)
+                for pattern in _SSP_MOBILE_RESTRICTION_PATTERNS
+            )
+            and re.search(
+                r"\b(?:restrict|limit|prohibit|not\s+operate|allowed\s+only|operate\s+only)\b",
+                item_text,
+                re.IGNORECASE,
+            )
         ):
             snippet = None
 
-        if normalized == _normalize_option_text("Permit or license required for operation") and not any(
-            re.search(pattern, item_text, re.IGNORECASE)
-            for pattern in _SSP_OPERATIONAL_PERMIT_PATTERNS
+        if normalized == _normalize_option_text(
+            "Permit or license required for operation"
+        ) and not any(
+            _ssp_has_explicit_operational_permit_requirement(item_text) for _ in [0]
         ):
             snippet = None
 
@@ -5124,14 +5352,18 @@ def _authoritative_option_supports_selection(
         and normalized == _normalize_option_text('"Unlawful" only')
         and item is not None
         and item.selected
-        and not re.search(r"\bunlawful\b", item_text, re.IGNORECASE)
     ):
-        snippet = None
+        if not re.search(r"\bunlawful\b", item_text, re.IGNORECASE):
+            snippet = None
+        if _penalty_has_any_supported_concrete_sanction(evidence_text, option_patterns):
+            snippet = None
     if (
         guidance_topic == "prohibited_activity"
         and normalized
         in {
-            _normalize_option_text("Sales, possession with intent to sell, offer for sale"),
+            _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale"
+            ),
             _normalize_option_text(
                 "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
             ),
@@ -5161,13 +5393,10 @@ def _authoritative_option_supports_selection(
         and item is not None
         and item.selected
     ):
-        if (
-            re.search(r"\buse\b", item_text, re.IGNORECASE)
-            and not re.search(
-                r"\b(?:shall not be unlawful|does not apply|nothing in this (?:section|chapter|article) shall (?:apply|prohibit))\b[^.\n]{0,100}\buse\b",
-                item_text,
-                re.IGNORECASE,
-            )
+        if re.search(r"\buse\b", item_text, re.IGNORECASE) and not re.search(
+            r"\b(?:shall not be unlawful|does not apply|nothing in this (?:section|chapter|article) shall (?:apply|prohibit))\b[^.\n]{0,100}\buse\b",
+            item_text,
+            re.IGNORECASE,
         ):
             snippet = item_text
 
@@ -5179,19 +5408,34 @@ def _authoritative_option_supports_selection(
         )
         and snippet is not None
         and re.search(r"\bdrug-free school zone\b", snippet, re.IGNORECASE)
-        and not re.search(r"\bchild\s*care|childcare|day\s*care|daycare\b", snippet, re.IGNORECASE)
+        and not re.search(
+            r"\bchild\s*care|childcare|day\s*care|daycare\b", snippet, re.IGNORECASE
+        )
     ):
         snippet = None
 
     if (
         guidance_topic == "ssp_restriction"
-        and normalized == _normalize_option_text("Permit or license required for operation")
+        and normalized
+        == _normalize_option_text("Permit or license required for operation")
         and snippet is not None
-        and re.search("|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text, re.IGNORECASE)
-        and not re.search("|".join(_SSP_DISTINCT_RESTRICTION_PATTERNS), item_text, re.IGNORECASE)
-        and not re.search(r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
-        and not re.search(r"\b(?:permit|license)\b[^.\n]{0,20}\brequired\b", item_text, re.IGNORECASE)
-        and not re.search(r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
+        and re.search(
+            "|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text, re.IGNORECASE
+        )
+        and not re.search(
+            "|".join(_SSP_DISTINCT_RESTRICTION_PATTERNS), item_text, re.IGNORECASE
+        )
+        and not re.search(
+            r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE
+        )
+        and not re.search(
+            r"\b(?:permit|license)\b[^.\n]{0,20}\brequired\b", item_text, re.IGNORECASE
+        )
+        and not re.search(
+            r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b",
+            item_text,
+            re.IGNORECASE,
+        )
     ):
         snippet = None
 
@@ -5260,17 +5504,6 @@ def _authoritative_option_supports_selection(
     }:
         return bool(snippet) or (not patterns and has_option_specific_support)
 
-    # For specific exemption_presence options that have defined patterns, require the
-    # evidence text to actually match — citations alone are insufficient.
-    if guidance_topic == "exemption_presence" and normalized in {
-        _normalize_option_text("Syringes for approved medical use (i.e. diabetes)"),
-        _normalize_option_text("Other paraphernalia for approved medical use"),
-    }:
-        if patterns and not any(
-            re.search(pattern, item_text, re.IGNORECASE) for pattern in patterns
-        ):
-            return False
-
     return bool(snippet) or has_option_specific_support
 
 
@@ -5324,7 +5557,7 @@ def _authoritative_response_options_from_evidence(
             and not _penalty_unlawful_only_has_explicit_support(response, evidence_text)
         ):
             return None
-        return (fallback_option,)
+        return (declared_fallback_option,)
     return None
 
 
@@ -5398,14 +5631,24 @@ def _apply_exemption_label_crosswalk(
     approved_medical = _normalize_option_text(
         "Syringes for approved medical use (i.e. diabetes)"
     )
+    other_approved_medical = _normalize_option_text(
+        "Other paraphernalia for approved medical use"
+    )
+    professionals = _normalize_option_text(
+        "Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]"
+    )
+    public_officials = _normalize_option_text(
+        "Public officials in the course of their duties, generally"
+    )
     if lawful_hypodermic in option_lookup:
         lawful_item = selected_item_by_option.get(lawful_hypodermic)
         lawful_item_text = "\n".join(
-            [*(lawful_item.citations if lawful_item else []), *(lawful_item.supporting_passages if lawful_item else [])]
+            [
+                *(lawful_item.citations if lawful_item else []),
+                *(lawful_item.supporting_passages if lawful_item else []),
+            ]
         )
-        medical_scope_pattern = (
-            r"\b(diabet(?:es|ic)|insulin|medical|physician|pharmacist|practitioner(?:s)?|prescri(?:be|ption))\b"
-        )
+        medical_scope_pattern = r"\b(diabet(?:es|ic)|insulin|approved\s+medical\s+use|prescri(?:be|ption))\b"
         medically_scoped_in_item = bool(
             re.search(
                 medical_scope_pattern,
@@ -5423,10 +5666,7 @@ def _apply_exemption_label_crosswalk(
                 if re.search(medical_scope_pattern, snippet, re.IGNORECASE):
                     medically_scoped_in_context = True
                     break
-        medically_scoped = bool(
-            medically_scoped_in_item
-            or medically_scoped_in_context
-        )
+        medically_scoped = bool(medically_scoped_in_item or medically_scoped_in_context)
         if medically_scoped:
             if approved_medical not in option_lookup:
                 resolved = _resolve_declared_response_option(
@@ -5437,6 +5677,39 @@ def _apply_exemption_label_crosswalk(
                     option_lookup[approved_medical] = resolved
             option_lookup.pop(lawful_hypodermic, None)
 
+    def _option_text_for_disambiguation(normalized_option: str) -> str:
+        item = selected_item_by_option.get(normalized_option)
+        if item is not None:
+            return "\n".join([*item.citations, *item.supporting_passages])
+        return evidence_text
+
+    def _has_any_pattern(text: str, patterns: tuple[str, ...]) -> bool:
+        return any(re.search(pattern, text, re.IGNORECASE) for pattern in patterns)
+
+    for medical_key in (approved_medical, other_approved_medical):
+        if medical_key not in option_lookup:
+            continue
+        option_text = _option_text_for_disambiguation(medical_key)
+        if _has_any_pattern(option_text, _EXEMPTION_APPROVED_MEDICAL_PATIENT_PATTERNS):
+            continue
+        if _has_any_pattern(
+            option_text, _EXEMPTION_PROFESSIONAL_PATTERNS
+        ) or _has_any_pattern(
+            option_text,
+            _EXEMPTION_PUBLIC_OFFICIAL_PATTERNS,
+        ):
+            option_lookup.pop(medical_key, None)
+
+    if professionals in option_lookup:
+        option_text = _option_text_for_disambiguation(professionals)
+        if not _has_any_pattern(option_text, _EXEMPTION_PROFESSIONAL_PATTERNS):
+            option_lookup.pop(professionals, None)
+
+    if public_officials in option_lookup:
+        option_text = _option_text_for_disambiguation(public_officials)
+        if not _has_any_pattern(option_text, _EXEMPTION_PUBLIC_OFFICIAL_PATTERNS):
+            option_lookup.pop(public_officials, None)
+
     has_ssp_context = bool(
         re.search(
             r"\bsyringe exchange\b|\bsyringe services\b|\bharm reduction\b|\bsupervised use\b",
@@ -5445,7 +5718,9 @@ def _apply_exemption_label_crosswalk(
         )
     )
     has_syringe_text = bool(
-        re.search(r"\bsyringe\b|\bneedle\b|\bhypodermic\b", evidence_text, re.IGNORECASE)
+        re.search(
+            r"\bsyringe\b|\bneedle\b|\bhypodermic\b", evidence_text, re.IGNORECASE
+        )
     )
     has_dce_text = bool(
         re.search(
@@ -5501,7 +5776,9 @@ def _apply_exemption_label_crosswalk(
     if specific_selected:
         option_lookup.pop(_normalize_option_text("None"), None)
 
-    ordered = [option for option in options if _normalize_option_text(option) in option_lookup]
+    ordered = [
+        option for option in options if _normalize_option_text(option) in option_lookup
+    ]
     return tuple(ordered) if ordered else final_options
 
 
@@ -5523,7 +5800,9 @@ def _apply_ssp_restriction_consistency_validator(
     if separator != " AND/OR ":
         return response
 
-    selected = list(_selected_response_options_from_option_evidence(response.option_evidence))
+    selected = list(
+        _selected_response_options_from_option_evidence(response.option_evidence)
+    )
     if not selected:
         return response
 
@@ -5534,7 +5813,9 @@ def _apply_ssp_restriction_consistency_validator(
     filtered_selected: list[str] = []
     explicit_support_by_option: dict[str, set[str]] = {}
     for option in selected:
-        if _normalize_option_text(option) == _normalize_option_text("No restrictions listed"):
+        if _normalize_option_text(option) == _normalize_option_text(
+            "No restrictions listed"
+        ):
             continue
 
         item = evidence_by_option.get(option)
@@ -5543,23 +5824,21 @@ def _apply_ssp_restriction_consistency_validator(
 
         item_text = "\n".join([*item.citations, *item.supporting_passages])
         patterns = option_patterns.get(_normalize_option_text(option), ())
-        if patterns and not any(re.search(pattern, item_text, re.IGNORECASE) for pattern in patterns):
+        if patterns and not any(
+            re.search(pattern, item_text, re.IGNORECASE) for pattern in patterns
+        ):
             continue
 
-        support_sentences = _ssp_option_support_sentences(option, item_text, option_patterns)
+        support_sentences = _ssp_option_support_sentences(
+            option, item_text, option_patterns
+        )
         if patterns and not support_sentences:
             continue
         explicit_support_by_option[option] = support_sentences
 
-        if (
-            _normalize_option_text(option)
-            == _normalize_option_text("Permit or license required for operation")
-            and re.search("|".join(_SSP_PERMIT_ADMIN_ONLY_PATTERNS), item_text, re.IGNORECASE)
-            and not re.search("|".join(_SSP_DISTINCT_RESTRICTION_PATTERNS), item_text, re.IGNORECASE)
-            and not re.search(r"\bobtain\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
-            and not re.search(r"\b(?:permit|license)\b[^.\n]{0,20}\brequired\b", item_text, re.IGNORECASE)
-            and not re.search(r"\boperate\b[^.\n]{0,60}\bwithout\b[^.\n]{0,20}\b(?:permit|license)\b", item_text, re.IGNORECASE)
-        ):
+        if _normalize_option_text(option) == _normalize_option_text(
+            "Permit or license required for operation"
+        ) and not _ssp_has_explicit_operational_permit_requirement(item_text):
             continue
 
         filtered_selected.append(option)
@@ -5585,14 +5864,11 @@ def _apply_ssp_restriction_consistency_validator(
         options,
         "Permit or license required for operation",
     )
-    no_restrictions_option = _resolve_declared_response_option(options, "No restrictions listed")
-
-    has_permit_signal = bool(
-        any(
-            re.search(pattern, evidence_text, re.IGNORECASE)
-            for pattern in _SSP_OPERATIONAL_PERMIT_PATTERNS
-        )
+    no_restrictions_option = _resolve_declared_response_option(
+        options, "No restrictions listed"
     )
+
+    has_permit_signal = _ssp_has_explicit_operational_permit_requirement(evidence_text)
 
     normalized_selected = {_normalize_option_text(option) for option in selected}
     if (
@@ -5607,15 +5883,20 @@ def _apply_ssp_restriction_consistency_validator(
         selected = [
             option
             for option in selected
-            if _normalize_option_text(option) != _normalize_option_text(no_restrictions_option)
+            if _normalize_option_text(option)
+            != _normalize_option_text(no_restrictions_option)
         ]
 
     if not selected and no_restrictions_option is not None:
         selected = [no_restrictions_option]
 
-    if tuple(selected) == _selected_response_options_from_option_evidence(response.option_evidence):
+    if tuple(selected) == _selected_response_options_from_option_evidence(
+        response.option_evidence
+    ):
         return response
-    return _rewrite_structured_response_options(response, tuple(selected), query_metadata)
+    return _rewrite_structured_response_options(
+        response, tuple(selected), query_metadata
+    )
 
 
 def _apply_reference_necessity_validator(
@@ -5646,7 +5927,9 @@ def _apply_reference_necessity_validator(
     return _rewrite_structured_response_options(response, ("No",), query_metadata)
 
 
-def _selected_parent_citation_family_keys(parent_contexts: list[ParentQueryContext]) -> set[str]:
+def _selected_parent_citation_family_keys(
+    parent_contexts: list[ParentQueryContext],
+) -> set[str]:
     """Return citation families implied by selected parent option evidence."""
     family_keys: set[str] = set()
     for context in parent_contexts:
@@ -5686,7 +5969,9 @@ def _apply_reference_citation_validator(
     parent_contexts = _deserialize_parent_contexts(metadata.get("parent_contexts"))
     parent_family_keys = _selected_parent_citation_family_keys(parent_contexts)
 
-    selected_option_evidence = [item for item in response.option_evidence if item.selected]
+    selected_option_evidence = [
+        item for item in response.option_evidence if item.selected
+    ]
     candidate_texts: list[str] = [response.short_answer]
     candidate_texts.extend(response.citations)
     candidate_texts.extend(response.supporting_passages)
@@ -5723,7 +6008,9 @@ def _apply_reference_citation_validator(
         if matching_candidates:
             chosen_citation = min(matching_candidates, key=_citation_specificity_key)
         elif _is_citation_placeholder_response_options(response_options):
-            return response.model_copy(update={"short_answer": "Unknown", "citations": []})
+            return response.model_copy(
+                update={"short_answer": "Unknown", "citations": []}
+            )
 
     if chosen_citation is None:
         chosen_citation = min(candidates, key=_citation_specificity_key)
@@ -5762,7 +6049,9 @@ def _apply_penalty_specificity_validator(
     if not response_options:
         return response
 
-    selected_options = _selected_response_options_from_option_evidence(response.option_evidence)
+    selected_options = _selected_response_options_from_option_evidence(
+        response.option_evidence
+    )
     fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC["penalty"]
     selected_specific_options = tuple(
         option
@@ -5845,7 +6134,9 @@ def _apply_penalty_specificity_validator(
     ):
         return response
 
-    declared_fallback_option = _resolve_declared_response_option(options, fallback_option)
+    declared_fallback_option = _resolve_declared_response_option(
+        options, fallback_option
+    )
     if declared_fallback_option is None:
         return response
     return _rewrite_structured_response_options(
@@ -5870,7 +6161,9 @@ def _apply_exemption_noise_validator(
     if not response_options:
         return response
 
-    selected_options = _selected_response_options_from_option_evidence(response.option_evidence)
+    selected_options = _selected_response_options_from_option_evidence(
+        response.option_evidence
+    )
     fallback_option = _FALLBACK_OPTION_BY_GUIDANCE_TOPIC["exemption_presence"]
     selected_specific_options = tuple(
         option
@@ -5885,7 +6178,9 @@ def _apply_exemption_noise_validator(
         return response
 
     options, _separator = _split_response_options(response_options)
-    declared_fallback_option = _resolve_declared_response_option(options, fallback_option)
+    declared_fallback_option = _resolve_declared_response_option(
+        options, fallback_option
+    )
     if declared_fallback_option is None:
         return response
     return _rewrite_structured_response_options(
@@ -5905,7 +6200,9 @@ def _normalize_response_citations(
     if not response_options:
         return response
 
-    selected_option_evidence = [item for item in response.option_evidence if item.selected]
+    selected_option_evidence = [
+        item for item in response.option_evidence if item.selected
+    ]
     citation_texts: list[str] = [response.short_answer]
     citation_texts.extend(
         passage
@@ -5929,7 +6226,9 @@ def _normalize_response_citations(
 
     if _is_citation_placeholder_response_options(response_options):
         if _looks_like_unknown(response.short_answer):
-            return response.model_copy(update={"short_answer": "Unknown", "citations": []})
+            return response.model_copy(
+                update={"short_answer": "Unknown", "citations": []}
+            )
         if best_citation:
             return response.model_copy(
                 update={
@@ -5972,8 +6271,12 @@ def _option_evidence_review_signals(
         response.short_answer,
         metadata,
     )
-    if short_answer_selected and len(short_answer_selected) > 1 and any(
-        _is_other_like_response_option(option) for option in short_answer_selected
+    if (
+        short_answer_selected
+        and len(short_answer_selected) > 1
+        and any(
+            _is_other_like_response_option(option) for option in short_answer_selected
+        )
     ):
         reasons.append(
             AnswerReviewSignal(
@@ -6083,6 +6386,108 @@ class AnswerReviewDecision:
     should_rerun: bool = False
     guidance_topic: str | None = None
     reasons: tuple[AnswerReviewSignal, ...] = ()
+
+
+def _review_text_sentences(text: str) -> list[str]:
+    """Split review text into compact sentence-sized units."""
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+|\n+", str(text or "").strip())
+        if sentence.strip()
+    ]
+
+
+def _short_answer_reasoning_conflict_signal(
+    response: LegalQueryResponse,
+    query_metadata: dict[str, Any] | None,
+) -> AnswerReviewSignal | None:
+    """Return a review signal when the reasoning contradicts the structured short answer."""
+    metadata = query_metadata or {}
+    response_options = _clean_response_options(metadata.get("response_options"))
+    short_answer = str(response.short_answer or "").strip()
+    reasoning_sentences = _review_text_sentences(response.reasoning)
+    if not short_answer or not reasoning_sentences:
+        return None
+
+    affirmative_patterns = (
+        r"\bexplicit(?:ly)?\s+(?:authoriz(?:e|es|ed)|permit(?:s|ted)?|allow(?:s|ed)?)\b",
+        r"\b(?:may|can) operate\b",
+        r"\bpermit-required operating regime\b",
+        r"\bmust be reviewed\b",
+        r"\boutside law (?:must|needs to) be reviewed\b",
+    )
+    negative_patterns = (
+        r"\bno relevant legal provisions\b",
+        r"\bdoes not\b[^.\n]{0,40}\b(?:authoriz(?:e|es)|permit(?:s)?|allow(?:s)?|require(?:s)?|prohibit(?:s)?|ban(?:s)?|include(?:s)?|reference(?:s)?)\b",
+        r"\bself-contained\b",
+        r"\bnot necessary\b",
+        r"\bno outside-law review\b",
+        r"\bcannot answer\b",
+        r"\bno law\b",
+    )
+
+    def _first_conflicting_sentence(patterns: tuple[str, ...]) -> str | None:
+        for sentence in reasoning_sentences:
+            if any(re.search(pattern, sentence, re.IGNORECASE) for pattern in patterns):
+                return sentence
+        return None
+
+    if _is_abstention_response(short_answer):
+        snippet = _first_conflicting_sentence(affirmative_patterns)
+        if snippet is not None or response.citations or response.supporting_passages:
+            return AnswerReviewSignal(
+                option="short_answer",
+                issue="reasoning_conflicts_with_abstention_short_answer",
+                evidence_snippet=snippet
+                or "Abstention short_answer was paired with cited or quoted support.",
+            )
+        return None
+
+    normalized_short_answer = _normalize_structured_short_answer(
+        short_answer,
+        _query_variable_name(metadata),
+        metadata,
+    )
+    selected_options = _selected_response_options_from_short_answer(
+        normalized_short_answer,
+        metadata,
+    )
+    selected_lookup = {
+        _normalize_option_text(option) for option in (selected_options or ())
+    }
+
+    is_negative_answer = bool(
+        _normalize_option_text("No") in selected_lookup
+        or _normalize_option_text("Unknown") in selected_lookup
+    )
+    is_positive_answer = bool(selected_lookup) and not is_negative_answer
+
+    if (
+        response_options
+        in {
+            "Yes OR No",
+            "Yes, <citation> OR No",
+        }
+        or _query_variable_name(metadata) in _SSP_PERMIT_VARIABLE_NAMES
+    ):
+        if is_negative_answer:
+            snippet = _first_conflicting_sentence(affirmative_patterns)
+            if snippet is not None:
+                return AnswerReviewSignal(
+                    option="short_answer",
+                    issue="reasoning_conflicts_with_short_answer",
+                    evidence_snippet=snippet,
+                )
+        if is_positive_answer:
+            snippet = _first_conflicting_sentence(negative_patterns)
+            if snippet is not None:
+                return AnswerReviewSignal(
+                    option="short_answer",
+                    issue="reasoning_conflicts_with_short_answer",
+                    evidence_snippet=snippet,
+                )
+
+    return None
 
 
 def _extract_selected_response_options(
@@ -6197,6 +6602,7 @@ _EXEMPTION_COMPOSITE_SUPPORT_GROUPS = {
         ),
     ),
 }
+
 
 def _strong_option_support_signal(
     *,
@@ -6335,9 +6741,7 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
                 r"\binsulin\b",
                 r"\bhypodermic\b[^.\n]{0,40}\bmedical\b",
             ),
-            _normalize_option_text(
-                "Other paraphernalia for approved medical use"
-            ): (
+            _normalize_option_text("Other paraphernalia for approved medical use"): (
                 r"\bauthorized to prescribe\b",
                 r"\blegitimate medical\b",
                 r"\bmedical use\b",
@@ -6463,9 +6867,7 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             ),
             _normalize_option_text(
                 "Restrictions on quantity of syringes that may be provided or exchanged"
-            ): (
-                *_SSP_QUANTITY_LIMIT_PATTERNS,
-            ),
+            ): (*_SSP_QUANTITY_LIMIT_PATTERNS,),
             _normalize_option_text("Restrictions on mobile sites"): (
                 r"\b(?:mobile|vehicle|van|roving|non-fixed-location)\b[^.\n]{0,50}\b(?:site|sites|unit|units|program|programs)\b[^.\n]{0,40}\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b",
                 r"\b(?:restrict|limit|prohibit|not\s+operate|not\s+allowed|allowed\s+only|operate\s+only)\b[^.\n]{0,40}\b(?:mobile|vehicle|van|roving|non-fixed-location)\b",
@@ -6498,12 +6900,18 @@ def _build_answer_review_decision(
 
     metadata = query_metadata or {}
     generic_reasons = list(_option_evidence_review_signals(response, metadata))
+    short_answer_conflict = _short_answer_reasoning_conflict_signal(response, metadata)
+    if short_answer_conflict is not None:
+        generic_reasons.append(short_answer_conflict)
     guidance_topic = str(metadata.get("guidance_topic") or "").strip()
     response_options = _clean_response_options(metadata.get("response_options"))
 
     if response_options:
         parent_contexts = _deserialize_parent_contexts(metadata.get("parent_contexts"))
-        if _is_citation_placeholder_response_options(response_options) and parent_contexts:
+        if (
+            _is_citation_placeholder_response_options(response_options)
+            and parent_contexts
+        ):
             selected_citation = _canonicalize_citation_output(response.short_answer)
             parent_family_keys = {
                 family_key
@@ -6530,13 +6938,15 @@ def _build_answer_review_decision(
                     )
                 )
 
-        if _is_date_placeholder_response_options(response_options) or _is_status_date_response_options(
+        if _is_date_placeholder_response_options(
             response_options
-        ):
+        ) or _is_status_date_response_options(response_options):
             review_text = _collect_review_text(sections)
             evidence_texts = _collect_evidence_texts(response, sections)
             variable_name = _query_variable_name(metadata)
-            if re.fullmatch(r"07/15/\d{4}", str(response.short_answer).strip()) and not re.search(
+            if re.fullmatch(
+                r"07/15/\d{4}", str(response.short_answer).strip()
+            ) and not re.search(
                 r"\b\d{1,2}/\d{1,2}/\d{4}\b",
                 review_text,
             ):
@@ -6547,9 +6957,12 @@ def _build_answer_review_decision(
                     )
                 )
 
-            if variable_name in _CURRENT_THROUGH_VARIABLE_NAMES and not _date_answer_has_explicit_support(
-                response.short_answer,
-                evidence_texts,
+            if (
+                variable_name in _CURRENT_THROUGH_VARIABLE_NAMES
+                and not _date_answer_has_explicit_support(
+                    response.short_answer,
+                    evidence_texts,
+                )
             ):
                 generic_reasons.append(
                     AnswerReviewSignal(
@@ -6569,7 +6982,9 @@ def _build_answer_review_decision(
                     for section in sections
                     if str(section.heading_text or "").strip()
                 }
-                if sections and (len(metadata_sections) < len(sections) or len(unique_headings) > 1):
+                if sections and (
+                    len(metadata_sections) < len(sections) or len(unique_headings) > 1
+                ):
                     generic_reasons.append(
                         AnswerReviewSignal(
                             option="short_answer",
@@ -6583,9 +6998,14 @@ def _build_answer_review_decision(
         if (
             _query_variable_name(metadata) in _SSP_PERMIT_VARIABLE_NAMES
             and response.short_answer == "No"
-            and any(
-                re.search(pattern, _collect_review_text(sections), re.IGNORECASE)
-                for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS
+            and (
+                _ssp_has_explicit_operational_permit_requirement(
+                    _collect_review_text(sections)
+                )
+                or any(
+                    re.search(pattern, _collect_review_text(sections), re.IGNORECASE)
+                    for pattern in _SSP_PERMIT_AUTHORIZATION_PATTERNS[2:]
+                )
             )
         ):
             generic_reasons.append(
@@ -6611,9 +7031,9 @@ def _build_answer_review_decision(
             reasons=tuple(generic_reasons),
         )
 
-    if _is_scalar_placeholder_response_options(response_options) or _is_status_date_response_options(
+    if _is_scalar_placeholder_response_options(
         response_options
-    ):
+    ) or _is_status_date_response_options(response_options):
         return AnswerReviewDecision(
             should_rerun=bool(generic_reasons),
             guidance_topic=guidance_topic,
@@ -6629,7 +7049,11 @@ def _build_answer_review_decision(
 
     option_patterns = _option_pattern_map(guidance_topic)
     if not option_patterns:
-        return AnswerReviewDecision()
+        return AnswerReviewDecision(
+            should_rerun=bool(generic_reasons),
+            guidance_topic=guidance_topic,
+            reasons=tuple(generic_reasons),
+        )
 
     options, separator = _split_response_options(response_options)
     if separator not in {" AND/OR ", " OR "}:
@@ -6747,12 +7171,24 @@ def _build_answer_review_prompt(
         "You are not required to change the answer. If the original answer is still the best-supported answer, keep it.",
         f"Original short_answer: {response.short_answer}",
         f"Original confidence: {response.confidence:.2f}",
+        f"Original reasoning: {response.reasoning}",
         "Possible issues:",
     ]
     for signal in decision.reasons[:6]:
         lines.append(f"- {signal.option}: {signal.issue}")
         if signal.evidence_snippet:
             lines.append(f"  Evidence cue: {signal.evidence_snippet}")
+    if any(
+        signal.issue
+        in {
+            "reasoning_conflicts_with_short_answer",
+            "reasoning_conflicts_with_abstention_short_answer",
+        }
+        for signal in decision.reasons
+    ):
+        lines.append(
+            "Focus first on resolving the mismatch between the structured short_answer and the explanatory reasoning. If one is wrong, revise the full answer so both say the same thing and match the retrieved legal text."
+        )
     lines.append(
         "Return the full JSON response again. Keep the same answer if you remain confident it is supported by the evidence."
     )
@@ -7032,6 +7468,16 @@ def _evaluate_dependency_decision(
             continue
 
         explicit_no = _is_explicit_no_answer(parent_state.short_answer)
+        if _is_abstention_response(parent_state.short_answer):
+            decision.dependency_rules_evaluated.append(
+                {
+                    "rule_type": "requires_yes",
+                    "parent_query_id": parent_query_id,
+                    "status": "parent_abstained_non_blocking",
+                    "parent_short_answer": parent_state.short_answer,
+                }
+            )
+            continue
         if explicit_no is True:
             if _should_override_dependency_skip_for_low_confidence(
                 parent_state,
@@ -7096,6 +7542,22 @@ def _evaluate_dependency_decision(
             parent_state.metadata.get("response_options"),
         )
         if parent_labels is None:
+            if _is_abstention_response(parent_state.short_answer):
+                decision.label_match = LabelMatchDiagnostic(
+                    method="parent_abstained_non_blocking",
+                    ambiguous=True,
+                    configured_blocker_labels=list(label_rule.blocker_labels),
+                )
+                decision.dependency_rules_evaluated.append(
+                    {
+                        "rule_type": "requires_labels",
+                        "parent_query_id": label_rule.parent_query_id,
+                        "status": "parent_abstained_non_blocking",
+                        "parent_short_answer": parent_state.short_answer,
+                        "configured_blocker_labels": list(label_rule.blocker_labels),
+                    }
+                )
+                continue
             decision.label_match = LabelMatchDiagnostic(
                 method="ambiguous_parent_labels"
                 if ambiguous_parent_labels

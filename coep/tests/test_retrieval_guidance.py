@@ -76,14 +76,22 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert "assign the exact labels" in guidance.completion_instructions
         assert "DO NOT answer Unlawful only" in guidance.completion_instructions
-        assert "Do NOT translate a misdemeanor degree" in guidance.completion_instructions
+        assert (
+            "Do NOT translate a misdemeanor degree" in guidance.completion_instructions
+        )
         assert "Generic default penalties" in guidance.completion_instructions
         assert "suppress Unlawful only" in guidance.completion_instructions
         assert "penalty class" in guidance.completion_instructions
-        assert "Keep Civil Fine separate from Forfeiture/Seizure" in guidance.completion_instructions
+        assert (
+            "Keep Civil Fine separate from Forfeiture/Seizure"
+            in guidance.completion_instructions
+        )
         assert "license revocation" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
-        assert "nuisance, licensing, zoning, or business-remedy text" in guidance.relevance_instructions
+        assert (
+            "nuisance, licensing, zoning, or business-remedy text"
+            in guidance.relevance_instructions
+        )
         assert guidance.enable_relevance_backfill is None
 
     def test_returns_guidance_for_activity_variable_with_operative_only_rules(self):
@@ -102,7 +110,9 @@ class TestCoepRetrievalGuidance:
             in guidance.relevance_instructions
         )
         assert "minors-only access restrictions" in guidance.relevance_instructions
-        assert "illegal-smoking-product text as noise" in guidance.relevance_instructions
+        assert (
+            "illegal-smoking-product text as noise" in guidance.relevance_instructions
+        )
         assert guidance.completion_instructions is not None
         assert (
             "only code items found directly in the legal text"
@@ -112,7 +122,9 @@ class TestCoepRetrievalGuidance:
             "Advertising or display language by itself does not prove Sales"
             in guidance.completion_instructions
         )
-        assert "illegal-smoking-product sales clauses" in guidance.completion_instructions
+        assert (
+            "illegal-smoking-product sales clauses" in guidance.completion_instructions
+        )
         assert guidance.enable_relevance_backfill is False
 
     def test_returns_guidance_for_exemption_variable_with_strict_other_rules(self):
@@ -131,9 +143,15 @@ class TestCoepRetrievalGuidance:
             "only code labels found directly in operative exemption text"
             in guidance.completion_instructions
         )
-        assert "Evaluate each exemption label independently" in guidance.completion_instructions
+        assert (
+            "Evaluate each exemption label independently"
+            in guidance.completion_instructions
+        )
         assert "lawful use of hypodermic syringes" in guidance.completion_instructions
-        assert "If any explicit exemption label is supported, do not return None" in guidance.completion_instructions
+        assert (
+            "If any explicit exemption label is supported, do not return None"
+            in guidance.completion_instructions
+        )
         assert "tobacco-only exceptions" in guidance.completion_instructions
         assert "cannabis decriminalization" in guidance.completion_instructions
         assert "SHOULD NOT be coded as Other" in guidance.completion_instructions
@@ -175,8 +193,14 @@ class TestCoepRetrievalGuidance:
         )
         assert "same operative sentence/subsection" in guidance.completion_instructions
         assert "cannabis use or commerce" in guidance.completion_instructions
-        assert "Only map Distribution/Sales/Use when those verbs" in guidance.completion_instructions
-        assert "Require at least one direct quote per selected activity label" in guidance.completion_instructions
+        assert (
+            "Only map Distribution/Sales/Use when those verbs"
+            in guidance.completion_instructions
+        )
+        assert (
+            "Require at least one direct quote per selected activity label"
+            in guidance.completion_instructions
+        )
         assert "Be conservative and label-by-label" in guidance.completion_instructions
 
     def test_ssp_law_guidance_treats_emergency_exchange_authorization_as_yes(self):
@@ -197,10 +221,22 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert guidance.enable_relevance_filter is True
         assert "ssp_law should be coded as Yes" in guidance.completion_instructions
-        assert "Reserve the conditional answer wording for ssp_permit" in guidance.completion_instructions
-        assert "Do not require an explicit authorization clause" in guidance.completion_instructions
-        assert "Declaration of Local Public Health Emergency" in guidance.completion_instructions
-        assert "clean needle and syringe exchange projects" in guidance.completion_instructions
+        assert (
+            "Reserve the conditional answer wording for ssp_permit"
+            in guidance.completion_instructions
+        )
+        assert (
+            "Do not require an explicit authorization clause"
+            in guidance.completion_instructions
+        )
+        assert (
+            "Declaration of Local Public Health Emergency"
+            in guidance.completion_instructions
+        )
+        assert (
+            "clean needle and syringe exchange projects"
+            in guidance.completion_instructions
+        )
 
     def test_dp_guidance_adds_direct_topic_scope_guardrail(self):
         request = RetrievalGuidanceRequest(
@@ -218,10 +254,15 @@ class TestCoepRetrievalGuidance:
         )
         assert guidance.completion_instructions is not None
         assert guidance.enable_relevance_filter is True
-        assert "Business-only restrictions do not count" in guidance.completion_instructions
+        assert (
+            "Business-only restrictions do not count"
+            in guidance.completion_instructions
+        )
         assert "small business-only mentions" in guidance.completion_instructions
 
-    def test_returns_guidance_for_state_reference_variable_with_harder_negative_rules(self):
+    def test_returns_guidance_for_state_reference_variable_with_harder_negative_rules(
+        self,
+    ):
         request = RetrievalGuidanceRequest(
             query="Does local law require state-law review?",
             variable_name="dp_state_fed_reference",
@@ -236,10 +277,15 @@ class TestCoepRetrievalGuidance:
         assert guidance.completion_instructions is not None
         assert "controlled-substance schedules" in guidance.completion_instructions
         assert "do not count by themselves" in guidance.completion_instructions
-        assert "broader cannabis, public-health, or business chapters" in guidance.completion_instructions
+        assert (
+            "broader cannabis, public-health, or business chapters"
+            in guidance.completion_instructions
+        )
         assert guidance.enable_relevance_backfill is False
 
-    def test_relevance_filter_resolution_honors_global_switch_and_guidance_override(self):
+    def test_relevance_filter_resolution_honors_global_switch_and_guidance_override(
+        self,
+    ):
         enabled_guidance = get_drug_paraphernalia_retrieval_guidance(
             RetrievalGuidanceRequest(query="Q", variable_name="dp_penalties")
         )
@@ -555,7 +601,10 @@ class TestCoepRetrievalGuidance:
             "DO NOT answer Yes for bare citations" in guidance.completion_instructions
         )
         assert "controlled-substances definition" in guidance.completion_instructions
-        assert "exemption or carve-out depend on whether conduct complies" in guidance.completion_instructions
+        assert (
+            "exemption or carve-out depend on whether conduct complies"
+            in guidance.completion_instructions
+        )
         assert (
             "Treat the benchmark-question list in the query context as exhaustive"
             in guidance.completion_instructions
@@ -606,8 +655,14 @@ class TestCoepRetrievalGuidance:
             "same sentence, subsection, or immediately adjacent chunk"
             in guidance.completion_instructions
         )
-        assert "same outside-law family that justified the parent dependency answer" in guidance.completion_instructions
-        assert "broader operative paraphernalia or controlled-substances citation" in guidance.completion_instructions
+        assert (
+            "same outside-law family that justified the parent dependency answer"
+            in guidance.completion_instructions
+        )
+        assert (
+            "broader operative paraphernalia or controlled-substances citation"
+            in guidance.completion_instructions
+        )
 
     def test_returns_guidance_for_ssp_reference_variable_with_ssp_question_scope(self):
         request = RetrievalGuidanceRequest(
@@ -631,8 +686,7 @@ class TestCoepRetrievalGuidance:
             in guidance.shared_context
         )
         assert (
-            "Does the ordinance explicitly authorize SSPs?"
-            in guidance.shared_context
+            "Does the ordinance explicitly authorize SSPs?" in guidance.shared_context
         )
         assert (
             "Does the ordinance require any of the following restrictions on SSPs?"
@@ -715,6 +769,8 @@ class TestCoepRetrievalGuidance:
         assert "hypodermic" not in guidance.anchor_terms
         assert guidance.no_context_fallback_short_answer == "No"
         assert guidance.enable_relevance_backfill is False
+        assert "syringe buyback" in guidance.negative_anchor_terms
+        assert "state registration" in guidance.negative_anchor_terms
         assert guidance.retrieval_instructions is not None
         assert (
             "Distinguish true SSP programs from syringe buyback"
@@ -754,13 +810,18 @@ class TestCoepRetrievalGuidance:
             "Treat authorization of clean needle or needle-and-syringe exchange projects"
             in guidance.relevance_instructions
         )
-        assert "valid local permit counts as an authorization regime" in guidance.relevance_instructions
+        assert (
+            "valid local permit counts as an authorization regime"
+            in guidance.relevance_instructions
+        )
         assert "state registration, annual reporting" in guidance.relevance_instructions
         assert guidance.completion_instructions is not None
         assert (
             "Treat authorization of clean needle or needle-and-syringe exchange projects as SSP authorization"
             in guidance.completion_instructions
         )
+        assert "state registration" in guidance.negative_anchor_terms
+        assert "site approval" in guidance.negative_anchor_terms
         assert "site approval, state registration" in guidance.completion_instructions
         assert "existence of an SSP law" in guidance.completion_instructions
         assert "permit-required operating regime" in guidance.completion_instructions
@@ -824,10 +885,18 @@ class TestCoepRetrievalGuidance:
         )
         assert "No restrictions listed" in guidance.completion_instructions
         assert "bare authorization" in guidance.completion_instructions
-        assert "formal local operating permit or license" in guidance.completion_instructions
+        assert (
+            "formal local operating permit or license"
+            in guidance.completion_instructions
+        )
         assert "non-fixed-location operation" in guidance.completion_instructions
-        assert "quantity caps/max/per participant/per visit" in guidance.relevance_instructions
+        assert (
+            "quantity caps/max/per participant/per visit"
+            in guidance.relevance_instructions
+        )
         assert "one-vs-many guard" in guidance.completion_instructions
+        assert "annual reporting" in guidance.negative_anchor_terms
+        assert "implementation plan" in guidance.negative_anchor_terms
         assert guidance.enable_relevance_backfill is None
 
     def test_returns_guidance_for_ssp_prohibition_variable(self):

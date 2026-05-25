@@ -679,9 +679,7 @@ def _exception_debug_snapshot(exc: Exception) -> dict[str, object]:
                 "exception_type": type(failed_attempt.exception).__name__,
                 "message": " ".join(str(failed_attempt.exception).split())[:500],
                 "is_timeout": _is_timeout_error(failed_attempt.exception),
-                "is_output_length": _is_output_length_error(
-                    failed_attempt.exception
-                ),
+                "is_output_length": _is_output_length_error(failed_attempt.exception),
                 "is_context_length": _is_context_length_error(failed_attempt.exception),
             }
             completion_snapshot = _serialize_completion_debug(

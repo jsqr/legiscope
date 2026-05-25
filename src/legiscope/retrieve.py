@@ -610,6 +610,12 @@ Provide:
             guidance_lines.append(
                 f"Keyword hints that may indicate high-value text: {hints}."
             )
+        if retrieval_guidance.negative_anchor_terms:
+            hints = ", ".join(retrieval_guidance.negative_anchor_terms)
+            guidance_lines.append(
+                "Keyword hints that often indicate low-value or background text unless the same passage creates the operative rule: "
+                f"{hints}."
+            )
 
         system_prompt = (
             f"{system_prompt}\n\nAdditional retrieval guidance:\n"
@@ -875,6 +881,8 @@ def _estimate_relevance_filter_prompt_tokens(
             guidance_parts.append(retrieval_guidance.relevance_instructions)
         if retrieval_guidance.anchor_terms:
             guidance_parts.append(" ".join(retrieval_guidance.anchor_terms))
+        if retrieval_guidance.negative_anchor_terms:
+            guidance_parts.append(" ".join(retrieval_guidance.negative_anchor_terms))
 
     prompt_text = "\n\n".join(
         part for part in [query, section_text, *guidance_parts] if part

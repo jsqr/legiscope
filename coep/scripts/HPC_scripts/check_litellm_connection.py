@@ -141,7 +141,9 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_environment_diagnostics(api_base: str | None, api_key_env: str | None) -> None:
+def _print_environment_diagnostics(
+    api_base: str | None, api_key_env: str | None
+) -> None:
     print(f"python_executable={sys.executable}")
     print(f"python_version={platform.python_version()}")
     print(f"openssl={ssl.OPENSSL_VERSION}")
@@ -262,7 +264,6 @@ def main() -> int:
     args = _build_parser().parse_args()
 
     try:
-        import litellm
         from litellm import completion
     except ImportError as exc:
         print(f"litellm_import_error={type(exc).__name__}: {exc}")

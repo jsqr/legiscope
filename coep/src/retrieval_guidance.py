@@ -443,6 +443,19 @@ _GUIDANCE_BY_FAMILY = {
             "public health emergency",
             "disease outbreak",
         ],
+        negative_anchor_terms=[
+            "harm reduction background",
+            "public health findings",
+            "hiv/aids findings",
+            "overdose prevention background",
+            "syringe disposal",
+            "sharps disposal",
+            "syringe buyback",
+            "state registration",
+            "annual reporting",
+            "site approval",
+            "complaint procedures",
+        ],
         no_context_fallback_short_answer="No",
         enable_relevance_backfill=False,
     ),
@@ -625,6 +638,13 @@ _GUIDANCE_BY_FAMILY = {
             "harm reduction act",
             "administrative code",
         ],
+        negative_anchor_terms=[
+            "state registration",
+            "annual reporting",
+            "site approval",
+            "implementation background",
+            "public health findings",
+        ],
         enable_relevance_backfill=False,
     ),
     "ssp_prohibition": RetrievalGuidance(
@@ -674,6 +694,15 @@ _GUIDANCE_BY_FAMILY = {
             "syringe exchange program",
             "syringe service",
         ],
+        negative_anchor_terms=[
+            "state registration",
+            "annual reporting",
+            "site approval",
+            "complaint procedures",
+            "coordination duties",
+            "implementation background",
+            "public health findings",
+        ],
     ),
     "ssp_restriction": RetrievalGuidance(
         guidance_topic="ssp_restriction",
@@ -702,6 +731,16 @@ _GUIDANCE_BY_FAMILY = {
             "exchange only basis",
             "quantity of syringes",
             "frequency of visits",
+        ],
+        negative_anchor_terms=[
+            "harm reduction background",
+            "public health findings",
+            "state registration",
+            "annual reporting",
+            "site approval",
+            "coordination duties",
+            "complaint procedures",
+            "implementation plan",
         ],
     ),
     "definition_type": RetrievalGuidance(
@@ -974,7 +1013,12 @@ _VARIABLE_OVERRIDES = {
             "answer the benchmark questions. Definitional citations to controlled-substance schedules, controlled-substances acts, or background state-law categories do not count by themselves. Answer Yes when the ordinance makes an exemption or carve-out depend on whether conduct "
             "complies with a cited outside statute, because reviewing that outside law is necessary to know the exemption's scope. If retrieved context mixes broader cannabis, public-health, or business chapters with the operative dependency clause, trust only the clause that actually makes outside law necessary."
         ),
-        anchor_terms=["incorporated by reference", "as defined in", "pursuant to", "in accordance with"],
+        anchor_terms=[
+            "incorporated by reference",
+            "as defined in",
+            "pursuant to",
+            "in accordance with",
+        ],
         enable_relevance_backfill=False,
     ),
     "dp_state_fed_citation": RetrievalGuidance(
@@ -1479,6 +1523,10 @@ def _merge_guidance(
 
     override_terms = override.anchor_terms if override else []
     merged_keywords = list(dict.fromkeys(base.anchor_terms + override_terms))
+    override_negative_terms = override.negative_anchor_terms if override else []
+    merged_negative_keywords = list(
+        dict.fromkeys(base.negative_anchor_terms + override_negative_terms)
+    )
 
     return RetrievalGuidance(
         guidance_topic=(override.guidance_topic if override else None)
@@ -1486,6 +1534,7 @@ def _merge_guidance(
         retrieval_instructions=" ".join(retrieval_parts) if retrieval_parts else None,
         relevance_instructions=" ".join(prompt_parts) if prompt_parts else None,
         anchor_terms=merged_keywords,
+        negative_anchor_terms=merged_negative_keywords,
         completion_instructions=(
             " ".join(completion_parts) if completion_parts else None
         ),
@@ -1621,6 +1670,11 @@ def _build_retrieval_query(
 
     if guidance.anchor_terms:
         parts.append("High-value legal terms: " + ", ".join(guidance.anchor_terms))
+    if guidance.negative_anchor_terms:
+        parts.append(
+            "Low-value/noise terms unless paired with operative authorization, prohibition, or restriction text: "
+            + ", ".join(guidance.negative_anchor_terms)
+        )
 
     return "\n\n".join(parts)
 
@@ -1645,6 +1699,12 @@ def _build_completion_instructions(guidance: RetrievalGuidance) -> str | None:
         parts.append(
             "Completion-relevant legal anchors and terms: "
             + ", ".join(guidance.anchor_terms)
+            + "."
+        )
+    if guidance.negative_anchor_terms:
+        parts.append(
+            "Completion-stage noise cues to discount unless the same clause creates the operative rule: "
+            + ", ".join(guidance.negative_anchor_terms)
             + "."
         )
 
@@ -1686,6 +1746,7 @@ def get_drug_paraphernalia_retrieval_guidance(
         anchor_terms=_dedupe_preserving_order(
             list(guidance.anchor_terms) + inherited_anchor_terms
         ),
+        negative_anchor_terms=list(guidance.negative_anchor_terms),
         completion_instructions=guidance.completion_instructions,
         no_context_fallback_short_answer=guidance.no_context_fallback_short_answer,
         enable_relevance_filter=_coep_relevance_filter_enabled(request.variable_name),
@@ -1699,6 +1760,7 @@ def get_drug_paraphernalia_retrieval_guidance(
         retrieval_instructions=guidance.retrieval_instructions,
         relevance_instructions=guidance.relevance_instructions,
         anchor_terms=guidance.anchor_terms,
+        negative_anchor_terms=guidance.negative_anchor_terms,
         completion_instructions=_build_completion_instructions(guidance),
         no_context_fallback_short_answer=guidance.no_context_fallback_short_answer,
         enable_relevance_filter=guidance.enable_relevance_filter,
