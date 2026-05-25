@@ -14,7 +14,7 @@ from loguru import logger
 from polars import DataFrame
 from pydantic import BaseModel, Field, model_validator
 
-from legiscope.utils import LLMConfig
+from legiscope.utils import LLMConfig, create_structured_completion
 
 
 EvaluationErrorType: TypeAlias = Literal[
@@ -234,12 +234,14 @@ class Evaluator:
 
         try:
             client = self._get_client()
-            return client.chat.completions.create(
+            return create_structured_completion(
+                client=client,
                 response_model=EvaluationResult,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content},
                 ],
+                retry_label="coep evaluation",
                 **self._request_params,
             )
         except Exception as e:

@@ -895,6 +895,19 @@ _GUIDANCE_BY_FAMILY = {
 
 
 _VARIABLE_OVERRIDES = {
+    "dp_law": RetrievalGuidance(
+        retrieval_query=(
+            "Question: Does the jurisdiction have an ordinance that prohibits or regulates drug paraphernalia-related activities?\n\n"
+            "Retrieval target: operative local drug paraphernalia law in municipal code text.\n\n"
+            "High-value legal terms: drug paraphernalia, paraphernalia, bong, pipe, syringe, needle, hypodermic, roach clip, ingestion device, inhalation device, unlawful, prohibited, no person shall, offer for sale, deliver, furnish, transfer, possess with intent, manufacture."
+        ),
+        completion_instructions=(
+            "For dp_law, answer Yes whenever operative local ordinance text prohibits or regulates drug paraphernalia used with controlled substances beyond a narrow minors-only or business-access rule. "
+            "A generally applicable paraphernalia prohibition, paraphernalia sales/delivery/manufacturing rule, or local paraphernalia-regulation chapter counts as Yes. "
+            "Do not answer No merely because the ordinance is framed around sale, delivery, display, or business operation if the same operative text governs drug paraphernalia legality more broadly. "
+            "Answer No only when the local code is genuinely silent on operative paraphernalia prohibitions or regulations, or only contains unrelated tobacco, non-controlled-substance, or SSP-program text."
+        ),
+    ),
     "dp_activity": RetrievalGuidance(
         relevance_instructions=(
             "For dp_activity, code only parent-query activity labels that appear directly in the operative prohibition text. "
@@ -1102,6 +1115,11 @@ _VARIABLE_OVERRIDES = {
         ],
     ),
     "ssp_law": RetrievalGuidance(
+        retrieval_query=(
+            "Question: Does the jurisdiction have a local law that authorizes, prohibits, or limits syringe service programs (SSPs)?\n\n"
+            "Retrieval target: operative local SSP law in municipal code text.\n\n"
+            "High-value legal terms: syringe service program, syringe services, syringe exchange, syringe exchange facility, syringe exchange program, needle exchange, needle exchange program, needle and syringe exchange, clean needle, sterile syringe, sterile needle, harm reduction, authorize, permit, prohibit, restrict, operate, local public health emergency, disease outbreak, mayor empowered."
+        ),
         relevance_instructions=(
             "For ssp_law, answer Yes whenever the ordinance expressly authorizes, prohibits, or limits SSPs. Do not require an explicit "
             "authorization clause. A total ban, a conditional authorization, or an operative restriction all count as evidence that an SSP law exists. "
@@ -1534,6 +1552,8 @@ def _merge_guidance(
     return RetrievalGuidance(
         guidance_topic=(override.guidance_topic if override else None)
         or base.guidance_topic,
+        retrieval_query=(override.retrieval_query if override else None)
+        or base.retrieval_query,
         retrieval_instructions=" ".join(retrieval_parts) if retrieval_parts else None,
         relevance_instructions=" ".join(prompt_parts) if prompt_parts else None,
         anchor_terms=merged_keywords,
@@ -1741,6 +1761,7 @@ def get_drug_paraphernalia_retrieval_guidance(
     guidance = RetrievalGuidance(
         guidance_topic=guidance.guidance_topic,
         shared_context=query_context,
+        retrieval_query=guidance.retrieval_query,
         retrieval_instructions=_build_retrieval_instructions(
             request.variable_name,
             family,
@@ -1759,7 +1780,11 @@ def get_drug_paraphernalia_retrieval_guidance(
     return RetrievalGuidance(
         guidance_topic=guidance.guidance_topic,
         shared_context=guidance.shared_context,
-        retrieval_query=_build_retrieval_query(request, guidance),
+        retrieval_query=(
+            guidance.retrieval_query
+            if guidance.retrieval_query
+            else _build_retrieval_query(request, guidance)
+        ),
         retrieval_instructions=guidance.retrieval_instructions,
         relevance_instructions=guidance.relevance_instructions,
         anchor_terms=guidance.anchor_terms,

@@ -73,11 +73,11 @@ embeddings:
 # Segmentation settings
 segmentation:
   embedding_model_token_limit: 1024
-  llm_context_limit: 65536
+  llm_context_limit: 16385
 
 # Retrieval: vector search and post-retrieval filtering
 retrieval:
-  n_results: 10
+  n_results: 5
   distance_metric: l2
   debug: true  
 
@@ -91,7 +91,7 @@ retrieval:
 
   # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
-    enabled: true
+    enabled: false
     threshold: 0.6
     max_concurrency: 4
     target_concurrent_prompt_tokens: 16000

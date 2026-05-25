@@ -3,6 +3,7 @@ Utility functions for the legiscope package.
 """
 
 import argparse
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal, Type, TypeVar
@@ -20,6 +21,7 @@ T = TypeVar("T", bound=BaseModel)
 # Safe fallback defaults for LLM operations.
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_MAX_RETRIES = 3
+DEFAULT_429_RETRY_BASE_DELAY_SECONDS = 2.0
 
 
 def _load_llm_defaults() -> tuple[float, int]:
@@ -141,6 +143,105 @@ def resolve_model_default(model: str | None, use_fast: bool = True) -> str:
     return Config.get_fast_model() if use_fast else Config.get_powerful_model()
 
 
+def _is_rate_limit_llm_error(exc: Exception) -> bool:
+    """Return whether an LLM request failed because the provider rate-limited us."""
+    message = str(exc).lower()
+    rate_limit_fragments = (
+        "too many requests",
+        "rate limit",
+        "rate_limit",
+        "429",
+    )
+    if any(fragment in message for fragment in rate_limit_fragments):
+        return True
+
+    try:
+        from openai import RateLimitError
+    except ImportError:
+        RateLimitError = ()
+
+    mistral_rate_limit_errors: tuple[type[Exception], ...] = ()
+    try:
+        from mistralai import MistralError
+
+        mistral_rate_limit_errors = (MistralError,)
+    except ImportError:
+        pass
+
+    return isinstance(
+        exc,
+        (
+            RateLimitError,
+            *mistral_rate_limit_errors,
+        ),
+    )
+
+
+def _get_retry_after_seconds(exc: Exception) -> float | None:
+    """Return a provider-supplied retry delay when available."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return None
+
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+
+    retry_after = None
+    if hasattr(headers, "get"):
+        retry_after = headers.get("retry-after") or headers.get("Retry-After")
+
+    if retry_after in {None, ""}:
+        return None
+
+    try:
+        return max(float(retry_after), 0.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def create_structured_completion(
+    *,
+    client: Instructor,
+    messages: list[dict[str, str]],
+    response_model: Type[T],
+    retry_label: str = "LLM request",
+    **params,
+) -> T:
+    """Create a structured chat completion with bounded local backoff retries."""
+    max_retries = int(params.get("max_retries", DEFAULT_MAX_RETRIES) or 0)
+
+    attempt = 0
+    while True:
+        try:
+            return client.chat.completions.create(
+                messages=messages,
+                response_model=response_model,
+                **params,
+            )
+        except Exception as exc:
+            if not _is_rate_limit_llm_error(exc) or attempt >= max_retries:
+                raise
+
+            retry_after = _get_retry_after_seconds(exc)
+            delay = (
+                retry_after
+                if retry_after is not None
+                else DEFAULT_429_RETRY_BASE_DELAY_SECONDS * (2**attempt)
+            )
+            logger.warning(
+                "{} failed with retryable error; retrying in {:.1f}s "
+                "(attempt {}/{}): {}",
+                retry_label,
+                delay,
+                attempt + 1,
+                max_retries,
+                exc,
+            )
+            time.sleep(delay)
+            attempt += 1
+
+
 def ask(
     client: Instructor,
     prompt: str,
@@ -201,8 +302,12 @@ def ask(
     messages.append({"role": "user", "content": prompt})
 
     # Make the API call
-    return client.chat.completions.create(
-        messages=messages, response_model=response_model, **params
+    return create_structured_completion(
+        client=client,
+        messages=messages,
+        response_model=response_model,
+        retry_label="ask() LLM request",
+        **params,
     )
 
 

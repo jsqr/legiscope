@@ -12,6 +12,7 @@ from legiscope.utils import (
     DEFAULT_MAX_RETRIES,
     DEFAULT_TEMPERATURE,
     ask,
+    create_structured_completion,
     create_code_structure,
     create_jurisdiction_structure,
     resolve_model_default,
@@ -173,6 +174,51 @@ class TestAskFunction:
         )
 
         mock_get_llm_params.assert_called_once_with(model="gpt-5.5-2026-04-23")
+
+    @patch("legiscope.utils.time.sleep")
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_retries_on_429_error(self, mock_get_llm_params, mock_sleep):
+        """ask() should back off and retry on 429-style provider errors."""
+        mock_get_llm_params.return_value = {
+            "temperature": DEFAULT_TEMPERATURE,
+            "max_retries": 2,
+        }
+        mock_client = Mock()
+        mock_response = MockResponseModel(name="retried", value=7)
+        mock_client.chat.completions.create.side_effect = [
+            Exception("429 Too Many Requests"),
+            mock_response,
+        ]
+
+        result = ask(
+            client=mock_client,
+            prompt="test prompt",
+            response_model=MockResponseModel,
+        )
+
+        assert result == mock_response
+        assert mock_client.chat.completions.create.call_count == 2
+        mock_sleep.assert_called_once_with(2.0)
+
+    @patch("legiscope.utils.time.sleep")
+    def test_create_structured_completion_uses_retry_after_header(self, mock_sleep):
+        """Provider retry-after headers should override exponential backoff."""
+        mock_client = Mock()
+        mock_response = MockResponseModel(name="retried", value=9)
+
+        retry_exc = Exception("Too Many Requests")
+        retry_exc.response = Mock(headers={"retry-after": "4.5"})
+        mock_client.chat.completions.create.side_effect = [retry_exc, mock_response]
+
+        result = create_structured_completion(
+            client=mock_client,
+            messages=[{"role": "user", "content": "hi"}],
+            response_model=MockResponseModel,
+            max_retries=1,
+        )
+
+        assert result == mock_response
+        mock_sleep.assert_called_once_with(4.5)
 
 
 class TestStr2Bool:

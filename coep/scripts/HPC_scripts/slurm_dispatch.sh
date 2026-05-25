@@ -5,7 +5,8 @@
 # This script runs on the LOGIN NODE (no GPU needed). It:
 #   1. Scans a directory for *.docx files
 #   2. Parses STATE and Locality from each filename
-#   3. Submits coep/scripts/HPC_scripts/slurm_jurisdiction.sh via sbatch for each file
+#   3. Optionally groups submissions into sequential batches using Slurm dependencies
+#   4. Submits coep/scripts/HPC_scripts/slurm_jurisdiction.sh via sbatch for each file
 #
 # All heavy lifting (init.py, file copy, DOCX conversion, params.yaml editing,
 # DVC pipeline) happens inside the SLURM job — NOT here.
@@ -47,6 +48,18 @@ DRY_RUN=false
 QUANTIZATION="fp16"
 BATCH_ID=""
 COMPUTE_MODE="external"
+BATCH_SIZE=0
+
+normalize_batch_size() {
+    local raw_value="${1:-0}"
+
+    if [[ ! "$raw_value" =~ ^[0-9]+$ ]]; then
+        echo "Error: --batch-size must be a non-negative integer." >&2
+        return 1
+    fi
+
+    printf '%s\n' "$raw_value"
+}
 
 normalize_compute_mode() {
     local raw_value="${1:-external}"
@@ -109,7 +122,7 @@ resolve_profile_label() {
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--dry-run] [--compute-mode external|self_hosted] [--quantization fp16|awq] [--batch-id ID] DOCX_DIR
+Usage: $(basename "$0") [--dry-run] [--compute-mode external|self_hosted] [--quantization fp16|awq] [--batch-id ID] [--batch-size N] DOCX_DIR
 
 Scan DOCX_DIR for *.docx files named STATE_Locality[_code-slug].docx and
 submit a SLURM job for each one.
@@ -119,10 +132,12 @@ Options:
     --compute-mode MODE       external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
   --quantization MODE       Submission profile for vLLM serving: fp16 or awq
     --batch-id ID             Stable identifier used to tie all submitted jobs together
+    --batch-size N            Limit active jurisdictions by chaining submissions into groups of N
   -h, --help                Show this help
 
 Examples:
     $(basename "$0") /gpfs/data/cerdalab/LegalAI/docx_sources
+        $(basename "$0") --batch-size 10 /gpfs/data/cerdalab/LegalAI/docx_sources
     $(basename "$0") --compute-mode external /gpfs/data/cerdalab/LegalAI/docx_sources
     $(basename "$0") --compute-mode self_hosted --quantization awq /gpfs/data/cerdalab/LegalAI/docx_sources
     $(basename "$0") --batch-id dpl_all_50_may19 /gpfs/data/cerdalab/LegalAI/docx_sources
@@ -203,6 +218,11 @@ while [[ $# -gt 0 ]]; do
             BATCH_ID="$2"
             shift 2
             ;;
+        --batch-size)
+            [[ $# -ge 2 ]] || { echo "Error: --batch-size requires a value" >&2; usage 1; }
+            BATCH_SIZE="$2"
+            shift 2
+            ;;
         -h|--help)   usage 0 ;;
         -*)          echo "Error: unknown option '$1'" >&2; usage 1 ;;
         *)           DOCX_DIR="$1"; shift ;;
@@ -211,6 +231,7 @@ done
 
 COMPUTE_MODE="$(normalize_compute_mode "$COMPUTE_MODE")"
 QUANTIZATION="$(normalize_vllm_quantization "$QUANTIZATION")"
+BATCH_SIZE="$(normalize_batch_size "$BATCH_SIZE")"
 SBATCH_PARTITION="$(resolve_sbatch_partition "$COMPUTE_MODE")"
 SBATCH_GRES="$(resolve_sbatch_gres "$COMPUTE_MODE")"
 PROFILE_LABEL="$(resolve_profile_label "$COMPUTE_MODE")"
@@ -253,6 +274,10 @@ mkdir -p /gpfs/data/cerdalab/LegalAI/legiscope/logs 2>/dev/null || true
 # ── Iterate DOCX files and submit jobs ────────────────────────────
 SUBMITTED=0
 SKIPPED=0
+CURRENT_BATCH_INDEX=1
+CURRENT_BATCH_COUNT=0
+CURRENT_BATCH_DEPENDENCY=""
+CURRENT_BATCH_JOB_IDS=()
 
 echo "=== Legiscope Batch Dispatcher ==="
 echo "DOCX directory: $DOCX_DIR"
@@ -261,6 +286,9 @@ echo "Compute mode : ${COMPUTE_MODE}"
 echo "Quantization : ${PROFILE_LABEL}"
 echo "Partition    : ${SBATCH_PARTITION}"
 echo "GRES         : ${SBATCH_GRES}"
+if [[ "$BATCH_SIZE" -gt 0 ]]; then
+    echo "Batch size   : ${BATCH_SIZE} sequential jobs per wave"
+fi
 echo ""
 
 for docx in "$DOCX_DIR"/*.docx; do
@@ -290,19 +318,31 @@ for docx in "$DOCX_DIR"/*.docx; do
     JOB_ID=""
 
     if [[ "$DRY_RUN" == true ]]; then
+        if [[ "$BATCH_SIZE" -gt 0 && "$CURRENT_BATCH_COUNT" -eq 0 ]]; then
+            echo "  Batch ${CURRENT_BATCH_INDEX}"
+        fi
         echo "  [dry-run] ${JURISDICTION_ID} (${CODE_SLUG}) ← ${DOCX_ABS} [${PROFILE_LABEL}]"
     else
+        if [[ "$BATCH_SIZE" -gt 0 && "$CURRENT_BATCH_COUNT" -eq 0 ]]; then
+            echo "  Batch ${CURRENT_BATCH_INDEX}"
+        fi
         echo "  Submitting: ${JURISDICTION_ID} (${CODE_SLUG}) [${PROFILE_LABEL}]"
         SBATCH_ARGS=(
             --partition="${SBATCH_PARTITION}"
             --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,LEGISCOPE_COMPUTE_MODE=${COMPUTE_MODE},VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH}"
         )
+        if [[ -n "$CURRENT_BATCH_DEPENDENCY" ]]; then
+            SBATCH_ARGS+=(--dependency="afterany:${CURRENT_BATCH_DEPENDENCY}")
+        fi
         if [[ -n "$SBATCH_GRES" ]]; then
             SBATCH_ARGS+=(--gres="${SBATCH_GRES}")
         fi
         SBATCH_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" "$SLURM_SCRIPT")"
         echo "    ${SBATCH_OUTPUT}"
         JOB_ID="$(printf '%s\n' "$SBATCH_OUTPUT" | awk '/Submitted batch job/ {print $4}')"
+        if [[ -n "$JOB_ID" && "$BATCH_SIZE" -gt 0 ]]; then
+            CURRENT_BATCH_JOB_IDS+=("$JOB_ID")
+        fi
     fi
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -317,6 +357,19 @@ for docx in "$DOCX_DIR"/*.docx; do
     fi
 
     SUBMITTED=$((SUBMITTED + 1))
+
+    if [[ "$BATCH_SIZE" -gt 0 ]]; then
+        CURRENT_BATCH_COUNT=$((CURRENT_BATCH_COUNT + 1))
+
+        if [[ "$CURRENT_BATCH_COUNT" -ge "$BATCH_SIZE" ]]; then
+            if [[ "$DRY_RUN" == false && "${#CURRENT_BATCH_JOB_IDS[@]}" -gt 0 ]]; then
+                CURRENT_BATCH_DEPENDENCY="$(IFS=:; printf '%s' "${CURRENT_BATCH_JOB_IDS[*]}")"
+            fi
+            CURRENT_BATCH_JOB_IDS=()
+            CURRENT_BATCH_COUNT=0
+            CURRENT_BATCH_INDEX=$((CURRENT_BATCH_INDEX + 1))
+        fi
+    fi
 done
 
 echo ""

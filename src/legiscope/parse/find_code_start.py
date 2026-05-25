@@ -11,6 +11,7 @@ from instructor import Instructor
 from pydantic import BaseModel
 
 from legiscope.llm_config import Config
+from legiscope.utils import create_structured_completion
 
 logger = logging.getLogger(__name__)
 
@@ -490,12 +491,14 @@ def find_content_start(
         "If the code starts at the very beginning, return 0."
     )
 
-    result = client.chat.completions.create(
+    result = create_structured_completion(
+        client=client,
         messages=[
             {"role": "system", "content": system},
             {"role": "user", "content": numbered},
         ],
         response_model=ContentStart,
+        retry_label="find content start",
         **Config.get_llm_params(),
     )
     return max(0, min(result.line_number, len(lines) - 1))
@@ -530,12 +533,14 @@ def _forward_scan_start(
             _format_element(window.row(i, named=True)) for i in range(window.height)
         )
 
-        result = client.chat.completions.create(
+        result = create_structured_completion(
+            client=client,
             messages=[
                 {"role": "system", "content": _SCAN_SYSTEM},
                 {"role": "user", "content": formatted},
             ],
             response_model=ScanResult,
+            retry_label="forward code-start scan",
             **Config.get_llm_params(),
         )
 
@@ -637,12 +642,14 @@ def _verify_code_start(
 
     user_content = "\n\n".join(sections)
 
-    return client.chat.completions.create(
+    return create_structured_completion(
+        client=client,
         messages=[
             {"role": "system", "content": _VERIFY_SYSTEM},
             {"role": "user", "content": user_content},
         ],
         response_model=_VerifyResult,
+        retry_label="verify code start",
         **Config.get_llm_params(),
     )
 

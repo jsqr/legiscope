@@ -25,6 +25,7 @@ BATCH_ID=""
 LATEST_ONLY=false
 SSH_COMMON_ARGS=()
 OPEN_TARGETS=()
+FAILURE_MESSAGES=()
 
 usage() {
     cat <<'EOF'
@@ -148,6 +149,45 @@ pull_one_jurisdiction() {
     local jurisdiction="$1"
     pull_jurisdiction "$jurisdiction"
     say ""
+}
+
+record_pull_failure() {
+    local jurisdiction="$1"
+    local artifact_label="$2"
+    local detail="$3"
+
+    FAILURE_MESSAGES+=("${jurisdiction}|${artifact_label}|${detail}")
+    say "warning: ${jurisdiction} ${artifact_label} failed: ${detail}"
+}
+
+failure_count() {
+    set +u
+    local count=${#FAILURE_MESSAGES[@]}
+    set -u
+    printf '%s\n' "$count"
+}
+
+print_failure_summary() {
+    local failure_record=""
+    local jurisdiction=""
+    local artifact_label=""
+    local detail=""
+
+    if [[ "$(failure_count)" -eq 0 ]]; then
+        say "All requested jurisdictions pulled successfully."
+        return 0
+    fi
+
+    say ""
+    say "Pull completed with errors."
+    say "Failed jurisdiction artifacts:"
+
+    set +u
+    for failure_record in "${FAILURE_MESSAGES[@]}"; do
+        IFS='|' read -r jurisdiction artifact_label detail <<< "$failure_record"
+        say "- ${jurisdiction}: ${artifact_label} (${detail})"
+    done
+    set -u
 }
 
 while [[ $# -gt 0 ]]; do
@@ -291,6 +331,66 @@ ssh_run() {
     ssh "${SSH_COMMON_ARGS[@]}" "$remote" "$command"
 }
 
+probe_remote_jurisdiction() {
+    local remote_output_dir="$1"
+    local remote_code_dir="$2"
+    local benchmark_mode="$3"
+    local include_code_artifacts="$4"
+    local latest_only_mode="$5"
+    local batch_id="$6"
+
+    ssh_run "$REMOTE" "
+remote_output_dir='${remote_output_dir}'
+remote_code_dir='${remote_code_dir}'
+benchmark_mode='${benchmark_mode}'
+include_code_artifacts='${include_code_artifacts}'
+latest_only_mode='${latest_only_mode}'
+batch_id='${batch_id}'
+
+benchmark_exists=skip
+code_exists=skip
+latest_timestamp=''
+
+if [[ \"\${benchmark_mode}\" == true ]]; then
+    if [[ -n \"\${batch_id}\" ]]; then
+        if test -d \"\${remote_output_dir}\" && test -f \"\${remote_output_dir}/benchmark_results_batch_\${batch_id}.csv\"; then
+            benchmark_exists=true
+        else
+            benchmark_exists=false
+        fi
+    else
+        if test -d \"\${remote_output_dir}\" && find \"\${remote_output_dir}\" -maxdepth 1 -type f -name 'benchmark_results_*.csv' | grep -q .; then
+            benchmark_exists=true
+        else
+            benchmark_exists=false
+        fi
+    fi
+
+    if [[ \"\${latest_only_mode}\" == true ]]; then
+        latest_timestamp=\$(find \"\${remote_output_dir}\" -maxdepth 1 -type f -name 'benchmark_results_*.csv' -exec basename {} \\; | sed -nE 's/^benchmark_results_([0-9]{8}_[0-9]{6})\\.csv$/\\1/p' | sort | tail -n 1)
+    fi
+fi
+
+if [[ \"\${include_code_artifacts}\" == true ]]; then
+    if test -d \"\${remote_code_dir}\" \
+        -a -f \"\${remote_code_dir}/code.md\" \
+        -a -f \"\${remote_code_dir}/regions.parquet\" \
+        -a -f \"\${remote_code_dir}/chunks.parquet\" \
+        -a -f \"\${remote_code_dir}/segments.parquet\" \
+        -a -f \"\${remote_code_dir}/sections.parquet\" \
+        -a -f \"\${remote_code_dir}/headings.parquet\"; then
+        code_exists=true
+    else
+        code_exists=false
+    fi
+fi
+
+printf 'BENCHMARK_EXISTS=%s\\n' \"\${benchmark_exists}\"
+printf 'CODE_EXISTS=%s\\n' \"\${code_exists}\"
+printf 'LATEST_TIMESTAMP=%s\\n' \"\${latest_timestamp}\"
+"
+}
+
 open_file() {
     local file_path="$1"
 
@@ -308,12 +408,6 @@ latest_timestamped_benchmark_file() {
     local target_dir="$1"
 
     find "$target_dir" -maxdepth 1 -type f -name 'benchmark_results_*.csv' | sort | tail -n 1
-}
-
-latest_remote_benchmark_timestamp() {
-    local remote_output_dir="$1"
-
-    ssh_run "$REMOTE" "find '${remote_output_dir}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' -exec basename {} \\; | sed -nE 's/^benchmark_results_([0-9]{8}_[0-9]{6})\\.csv$/\\1/p' | sort | tail -n 1"
 }
 
 batch_remote_dir() {
@@ -415,11 +509,98 @@ report_local_artifact_status() {
 
     if [[ -e "$file_path" ]]; then
         say "${label}: ok"
+        return 0
     elif [[ "$required" == true ]]; then
-        die "download completed but required artifact is missing locally: ${file_path}"
+        say "${label}: missing"
+        return 1
     else
         say "${label}: missing"
+        return 0
     fi
+}
+
+verify_benchmark_artifacts() {
+    local target_dir="$1"
+    local latest_timestamped_csv=""
+    local latest_timestamped_metrics_json=""
+    local debug_file_count="0"
+
+    latest_timestamped_csv="$(preferred_local_benchmark_file "${target_dir}")"
+    if [[ -z "$latest_timestamped_csv" ]]; then
+        return 1
+    fi
+
+    if [[ -f "${target_dir}/benchmark_metrics.json" ]]; then
+        say "benchmark_metrics.json: ok"
+    else
+        say "benchmark_metrics.json: missing"
+    fi
+    if [[ -n "$BATCH_ID" ]]; then
+        if [[ -f "${target_dir}/benchmark_metrics_batch_${BATCH_ID}.json" ]]; then
+            say "batch metrics json: ${target_dir}/benchmark_metrics_batch_${BATCH_ID}.json"
+        else
+            say "batch metrics json: not present"
+        fi
+    fi
+    latest_timestamped_metrics_json="$(find "${target_dir}" -maxdepth 1 -type f -name 'benchmark_metrics_*.json' | sort | tail -n 1)"
+    if [[ -n "$latest_timestamped_metrics_json" ]]; then
+        say "latest timestamped metrics json: ${latest_timestamped_metrics_json}"
+    else
+        say "latest timestamped metrics json: not present"
+    fi
+    if [[ -d "${target_dir}/debug" ]]; then
+        debug_file_count=$(find "${target_dir}/debug" -type f | wc -l | tr -d ' ')
+        say "debug artifacts: ${debug_file_count} file(s)"
+    else
+        say "debug artifacts: not present"
+    fi
+    say "latest benchmark csv: ${latest_timestamped_csv}"
+    say "benchmark path: ${target_dir}"
+    OPEN_TARGETS+=("$latest_timestamped_csv")
+    return 0
+}
+
+verify_code_artifacts() {
+    local code_dir="$1"
+    local raw_file_count="0"
+    local missing_required=false
+
+    if ! report_local_artifact_status "${code_dir}/code.md" "code.md" true; then
+        missing_required=true
+    fi
+    report_local_artifact_status "${code_dir}/code.txt" "code.txt"
+    report_local_artifact_status "${code_dir}/heading_scan_debug.json" "heading_scan_debug.json"
+    if ! report_local_artifact_status "${code_dir}/headings.parquet" "headings.parquet" true; then
+        missing_required=true
+    fi
+    if ! report_local_artifact_status "${code_dir}/regions.parquet" "regions.parquet" true; then
+        missing_required=true
+    fi
+    if ! report_local_artifact_status "${code_dir}/sections.parquet" "sections.parquet" true; then
+        missing_required=true
+    fi
+    if ! report_local_artifact_status "${code_dir}/chunks.parquet" "chunks.parquet" true; then
+        missing_required=true
+    fi
+    if ! report_local_artifact_status "${code_dir}/segments.parquet" "segments.parquet" true; then
+        missing_required=true
+    fi
+    report_local_artifact_status "${code_dir}/relations.parquet" "relations.parquet"
+    report_local_artifact_status "${code_dir}/external_references.parquet" "external_references.parquet"
+    report_local_artifact_status "${code_dir}/embeddings.parquet" "embeddings.parquet"
+    if [[ -d "${code_dir}/raw" ]]; then
+        raw_file_count=$(find "${code_dir}/raw" -type f | wc -l | tr -d ' ')
+        say "raw inputs: ${raw_file_count} file(s)"
+    else
+        say "raw inputs: missing"
+    fi
+    say "code artifact path: ${code_dir}"
+
+    if [[ "$missing_required" == true ]]; then
+        return 1
+    fi
+
+    return 0
 }
 
 pull_jurisdiction() {
@@ -430,14 +611,17 @@ pull_jurisdiction() {
     local local_target_dir="${LOCAL_DIR%/}/${jurisdiction}"
     local remote_code_dir="${PROJECT_ROOT}/data/laws/${state}/${locality}/${CODE_SLUG}"
     local local_code_dir="${LOCAL_LAWS_DIR%/}/${state}/${locality}/${CODE_SLUG}"
-    local remote_benchmark_check_cmd=""
-    local remote_code_check_cmd=""
     local latest_timestamped_csv=""
-    local latest_timestamped_metrics_json=""
     local latest_remote_timestamp=""
-    local debug_file_count="0"
-    local raw_file_count="0"
     local benchmark_rsync_filters=()
+    local should_probe_benchmark=false
+    local probe_output=""
+    local probe_key=""
+    local probe_value=""
+    local benchmark_exists="skip"
+    local code_exists="skip"
+    local benchmark_ready=false
+    local code_ready=false
 
     say "=== Pull BigPurple Artifacts ==="
     say "Remote        : ${REMOTE}"
@@ -452,72 +636,84 @@ pull_jurisdiction() {
     fi
     say ""
 
-    remote_benchmark_check_cmd=$(cat <<EOF
-test -d '${remote_output_dir}' && \
-$(
-if [[ -n "$BATCH_ID" ]]; then
-cat <<INNER
-test -f '${remote_output_dir}/benchmark_results_batch_${BATCH_ID}.csv'
-INNER
-else
-cat <<INNER
-find '${remote_output_dir}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' | grep -q .
-INNER
-fi
-)
-EOF
-)
+    if [[ "$SKIP_BENCHMARK" == false || "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+        if [[ "$SKIP_BENCHMARK" == false ]]; then
+            say ">>> Checking remote benchmark output exists"
+            should_probe_benchmark=true
+        fi
 
-    remote_code_check_cmd=$(cat <<EOF
-test -d '${remote_code_dir}' \
-    -a -f '${remote_code_dir}/code.md' \
-    -a -f '${remote_code_dir}/regions.parquet' \
-    -a -f '${remote_code_dir}/chunks.parquet' \
-    -a -f '${remote_code_dir}/segments.parquet' \
-    -a -f '${remote_code_dir}/sections.parquet' \
-    -a -f '${remote_code_dir}/headings.parquet'
-EOF
-)
+        if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+            say ">>> Checking remote code artifacts exist"
+        fi
 
-    if [[ "$SKIP_BENCHMARK" == false ]]; then
-        say ">>> Checking remote benchmark output exists"
+        if [[ "$LATEST_ONLY" == true && "$SKIP_BENCHMARK" == false ]]; then
+            say ">>> Resolving newest remote benchmark timestamp"
+        fi
+
         if [[ "$DRY_RUN" == true ]]; then
-            say "ssh ${REMOTE} \"${remote_benchmark_check_cmd}\""
+            say "ssh ${REMOTE} \"# combined remote probe for benchmark/code/timestamp\""
         else
-            if ! ssh_run "$REMOTE" "$remote_benchmark_check_cmd"; then
-                die "remote benchmark results not found at ${remote_output_dir}"
+            if ! probe_output="$(probe_remote_jurisdiction "$remote_output_dir" "$remote_code_dir" "$should_probe_benchmark" "$INCLUDE_CODE_ARTIFACTS" "$LATEST_ONLY" "$BATCH_ID")"; then
+                if [[ "$SKIP_BENCHMARK" == false ]]; then
+                    record_pull_failure "$jurisdiction" "benchmark artifacts" "remote probe failed"
+                fi
+                if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+                    record_pull_failure "$jurisdiction" "code artifacts" "remote probe failed"
+                fi
+            else
+                while IFS='=' read -r probe_key probe_value; do
+                    case "$probe_key" in
+                        BENCHMARK_EXISTS)
+                            benchmark_exists="$probe_value"
+                            ;;
+                        CODE_EXISTS)
+                            code_exists="$probe_value"
+                            ;;
+                        LATEST_TIMESTAMP)
+                            latest_remote_timestamp="$probe_value"
+                            ;;
+                    esac
+                done <<< "$probe_output"
+
+                if [[ "$should_probe_benchmark" == true && "$benchmark_exists" != true ]]; then
+                    record_pull_failure "$jurisdiction" "benchmark artifacts" "remote benchmark results not found at ${remote_output_dir}"
+                else
+                    benchmark_ready=$should_probe_benchmark
+                fi
+
+                if [[ "$INCLUDE_CODE_ARTIFACTS" == true && "$code_exists" != true ]]; then
+                    record_pull_failure "$jurisdiction" "code artifacts" "remote code artifacts not found at ${remote_code_dir}"
+                elif [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+                    code_ready=true
+                fi
             fi
         fi
     fi
 
-    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-        say ">>> Checking remote code artifacts exist"
-        if [[ "$DRY_RUN" == true ]]; then
-            say "ssh ${REMOTE} \"${remote_code_check_cmd}\""
-        else
-            if ! ssh_run "$REMOTE" "$remote_code_check_cmd"; then
-                die "remote code artifacts not found at ${remote_code_dir}"
-            fi
+    if [[ "$DRY_RUN" == true ]]; then
+        benchmark_ready=$should_probe_benchmark
+        if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+            code_ready=true
         fi
     fi
 
-    if [[ "$SKIP_BENCHMARK" == false ]]; then
+    if [[ "$benchmark_ready" == true ]]; then
         say ">>> Ensuring local benchmark directory exists"
-        mkdir -p "$local_target_dir"
-    fi
-
-    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-        say ">>> Ensuring local code directory exists"
-        mkdir -p "$local_code_dir"
-    fi
-
-    if [[ "$SKIP_BENCHMARK" == false && "$LATEST_ONLY" == true ]]; then
-        say ">>> Resolving newest remote benchmark timestamp"
-        if [[ "$DRY_RUN" == true ]]; then
-            say "ssh ${REMOTE} \"find '${remote_output_dir}' -maxdepth 1 -type f -name 'benchmark_results_*.csv' ...\""
-        else
-            latest_remote_timestamp="$(latest_remote_benchmark_timestamp "$remote_output_dir")"
+        if ! mkdir -p "$local_target_dir"; then
+            record_pull_failure "$jurisdiction" "benchmark artifacts" "failed to create local directory ${local_target_dir}"
+            benchmark_ready=false
         fi
+    fi
+
+    if [[ "$code_ready" == true ]]; then
+        say ">>> Ensuring local code directory exists"
+        if ! mkdir -p "$local_code_dir"; then
+            record_pull_failure "$jurisdiction" "code artifacts" "failed to create local directory ${local_code_dir}"
+            code_ready=false
+        fi
+    fi
+
+    if [[ "$benchmark_ready" == true && "$LATEST_ONLY" == true ]]; then
         if [[ -n "$latest_remote_timestamp" ]]; then
             say "Latest benchmark timestamp: ${latest_remote_timestamp}"
         else
@@ -548,18 +744,21 @@ EOF
     fi
     benchmark_rsync_filters+=(--exclude='*')
 
-    if [[ "$SKIP_BENCHMARK" == false ]]; then
+    if [[ "$benchmark_ready" == true ]]; then
         say ">>> Pulling benchmark artifacts"
-        rsync "${RSYNC_ARGS[@]}" \
+        if ! rsync "${RSYNC_ARGS[@]}" \
             "${benchmark_rsync_filters[@]}" \
             -e "$RSYNC_RSH" \
             "${REMOTE}:${remote_output_dir}/" \
-            "${local_target_dir}/"
+            "${local_target_dir}/"; then
+            record_pull_failure "$jurisdiction" "benchmark artifacts" "rsync failed"
+            benchmark_ready=false
+        fi
     fi
 
-    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+    if [[ "$code_ready" == true ]]; then
         say ">>> Pulling code artifacts"
-        rsync "${RSYNC_ARGS[@]}" \
+        if ! rsync "${RSYNC_ARGS[@]}" \
             --include='raw/***' \
             --include='code.txt' \
             --include='code.md' \
@@ -575,71 +774,33 @@ EOF
             --exclude='*' \
             -e "$RSYNC_RSH" \
             "${REMOTE}:${remote_code_dir}/" \
-            "${local_code_dir}/"
+            "${local_code_dir}/"; then
+            record_pull_failure "$jurisdiction" "code artifacts" "rsync failed"
+            code_ready=false
+        fi
     fi
 
     say ">>> Local verification"
     if [[ "$DRY_RUN" == true ]]; then
-        if [[ "$SKIP_BENCHMARK" == false ]]; then
+        if [[ "$benchmark_ready" == true ]]; then
             say "Would verify files under ${local_target_dir}"
         fi
-        if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
+        if [[ "$code_ready" == true ]]; then
             say "Would verify files under ${local_code_dir}"
         fi
         return 0
     fi
 
-    if [[ "$SKIP_BENCHMARK" == false ]]; then
-        latest_timestamped_csv="$(preferred_local_benchmark_file "${local_target_dir}")"
-        [[ -n "$latest_timestamped_csv" ]] || die "download completed but no benchmark results CSV files were found locally"
-        if [[ -f "${local_target_dir}/benchmark_metrics.json" ]]; then
-            say "benchmark_metrics.json: ok"
-        else
-            say "benchmark_metrics.json: missing"
+    if [[ "$benchmark_ready" == true ]]; then
+        if ! verify_benchmark_artifacts "$local_target_dir"; then
+            record_pull_failure "$jurisdiction" "benchmark artifacts" "download completed but no benchmark results CSV files were found locally"
         fi
-        if [[ -n "$BATCH_ID" ]]; then
-            if [[ -f "${local_target_dir}/benchmark_metrics_batch_${BATCH_ID}.json" ]]; then
-                say "batch metrics json: ${local_target_dir}/benchmark_metrics_batch_${BATCH_ID}.json"
-            else
-                say "batch metrics json: not present"
-            fi
-        fi
-        latest_timestamped_metrics_json="$(find "${local_target_dir}" -maxdepth 1 -type f -name 'benchmark_metrics_*.json' | sort | tail -n 1)"
-        if [[ -n "$latest_timestamped_metrics_json" ]]; then
-            say "latest timestamped metrics json: ${latest_timestamped_metrics_json}"
-        else
-            say "latest timestamped metrics json: not present"
-        fi
-        if [[ -d "${local_target_dir}/debug" ]]; then
-            debug_file_count=$(find "${local_target_dir}/debug" -type f | wc -l | tr -d ' ')
-            say "debug artifacts: ${debug_file_count} file(s)"
-        else
-            say "debug artifacts: not present"
-        fi
-        say "latest benchmark csv: ${latest_timestamped_csv}"
-        say "benchmark path: ${local_target_dir}"
-        OPEN_TARGETS+=("$latest_timestamped_csv")
     fi
 
-    if [[ "$INCLUDE_CODE_ARTIFACTS" == true ]]; then
-        report_local_artifact_status "${local_code_dir}/code.md" "code.md" true
-        report_local_artifact_status "${local_code_dir}/code.txt" "code.txt"
-        report_local_artifact_status "${local_code_dir}/heading_scan_debug.json" "heading_scan_debug.json"
-        report_local_artifact_status "${local_code_dir}/headings.parquet" "headings.parquet" true
-        report_local_artifact_status "${local_code_dir}/regions.parquet" "regions.parquet" true
-        report_local_artifact_status "${local_code_dir}/sections.parquet" "sections.parquet" true
-        report_local_artifact_status "${local_code_dir}/chunks.parquet" "chunks.parquet" true
-        report_local_artifact_status "${local_code_dir}/segments.parquet" "segments.parquet" true
-        report_local_artifact_status "${local_code_dir}/relations.parquet" "relations.parquet"
-        report_local_artifact_status "${local_code_dir}/external_references.parquet" "external_references.parquet"
-        report_local_artifact_status "${local_code_dir}/embeddings.parquet" "embeddings.parquet"
-        if [[ -d "${local_code_dir}/raw" ]]; then
-            raw_file_count=$(find "${local_code_dir}/raw" -type f | wc -l | tr -d ' ')
-            say "raw inputs: ${raw_file_count} file(s)"
-        else
-            say "raw inputs: missing"
+    if [[ "$code_ready" == true ]]; then
+        if ! verify_code_artifacts "$local_code_dir"; then
+            record_pull_failure "$jurisdiction" "code artifacts" "download completed but one or more required local artifacts are missing"
         fi
-        say "code artifact path: ${local_code_dir}"
     fi
 }
 
@@ -686,13 +847,22 @@ for_each_jurisdiction pull_one_jurisdiction
 if [[ "$OPEN_AFTER" == true && "$DRY_RUN" == false && "$SKIP_BENCHMARK" == false ]]; then
     set +u
     open_target_count=${#OPEN_TARGETS[@]}
-    [[ $open_target_count -gt 0 ]] || die "cannot open benchmark results because no benchmark_results_*.csv files were downloaded"
-    say ">>> Opening latest timestamped benchmark results"
-    for latest_timestamped_csv in "${OPEN_TARGETS[@]}"; do
-        open_file "$latest_timestamped_csv"
-    done
+    if [[ $open_target_count -gt 0 ]]; then
+        say ">>> Opening latest timestamped benchmark results"
+        for latest_timestamped_csv in "${OPEN_TARGETS[@]}"; do
+            open_file "$latest_timestamped_csv"
+        done
+    else
+        say ">>> Skipping open: no benchmark_results_*.csv files were downloaded"
+    fi
     set -u
 fi
 
 say ""
+print_failure_summary
+
+if [[ "$(failure_count)" -gt 0 ]]; then
+    exit 1
+fi
+
 say "Pull complete."

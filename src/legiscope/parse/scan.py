@@ -17,6 +17,7 @@ from legiscope.params import load_params
 from legiscope.parse.elements import split_elements
 from legiscope.parse.find_code_start import find_code_start
 from legiscope.parse.headings import HeadingLevel, HeadingStructure
+from legiscope.utils import create_structured_completion
 
 
 # ── Constants ──────────────────────────────────────────────────────────
@@ -1755,7 +1756,8 @@ def scan_headings(
             iteration_record["retry_feedback"] = scored_retry_feedback
 
         try:
-            structure = client.chat.completions.create(
+            structure = create_structured_completion(
+                client=client,
                 messages=[
                     {
                         "role": "system",
@@ -1764,6 +1766,7 @@ def scan_headings(
                     {"role": "user", "content": user_prompt},
                 ],
                 response_model=HeadingStructure,
+                retry_label="parse scan headings",
                 **Config.get_llm_params(
                     max_retries=scan_create_max_retries,
                     timeout=llm_timeout_seconds,

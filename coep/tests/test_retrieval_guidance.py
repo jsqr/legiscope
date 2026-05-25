@@ -422,10 +422,15 @@ class TestCoepRetrievalGuidance:
         assert guidance.guidance_topic == "existence_scope"
         assert "drug paraphernalia" in guidance.anchor_terms
         assert guidance.retrieval_query is not None
-        assert "Question: Does a law exist?" in guidance.retrieval_query
+        assert (
+            "Question: Does the jurisdiction have an ordinance that prohibits or regulates drug paraphernalia-related activities?"
+            in guidance.retrieval_query
+        )
+        assert "no person shall" in guidance.retrieval_query
         assert guidance.completion_instructions is not None
         assert "sales-to-minors rules" in guidance.completion_instructions
-        assert "SSP administration" in guidance.completion_instructions
+        assert "business-access rule" in guidance.completion_instructions
+        assert "same operative text governs drug paraphernalia legality more broadly" in guidance.completion_instructions
 
     def test_retrieval_query_prefers_query_text_over_full_composed_prompt(self):
         request = RetrievalGuidanceRequest(
@@ -760,6 +765,12 @@ class TestCoepRetrievalGuidance:
 
         assert guidance is not None
         assert guidance.guidance_topic == "ssp_scope"
+        assert guidance.retrieval_query is not None
+        assert (
+            "Question: Does the jurisdiction have a local law that authorizes, prohibits, or limits syringe service programs (SSPs)?"
+            in guidance.retrieval_query
+        )
+        assert "mayor empowered" in guidance.retrieval_query
         assert "syringe exchange" in guidance.anchor_terms
         assert "syringe exchange program" in guidance.anchor_terms
         assert "needle exchange program" in guidance.anchor_terms
