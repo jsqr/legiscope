@@ -712,7 +712,7 @@ _GUIDANCE_BY_FAMILY = {
             "limits, mobile-site limits, permit or license requirements, or similar operational conditions. Reject outright "
             "prohibitions when the question asks about restrictions rather than total bans. Treat permit or license required "
             "for operation as high value only when the ordinance makes formal local operating authorization mandatory, not "
-            "when it merely requires notice, registration, or approval of a particular site. Reject emergency-trigger text, coordination duties, reporting, "
+            "when it merely requires notice, registration, or approval of a particular site. Keep bare authorization or emergency-trigger text when it is the only operative SSP language because it can support `No restrictions listed`, but do not promote it into a named restriction label by itself. Reject coordination duties, reporting, "
             "state-registration references, and site-review language unless they impose a listed operational limit such as a permit requirement, buffer, cap, "
             "mobile-site rule, visit limit, or syringe-quantity limit. Prefer option-specific clauses over umbrella operational text, and avoid assigning multiple labels "
             "from a single broad sentence unless each selected label has its own distinct direct support."
@@ -721,6 +721,8 @@ _GUIDANCE_BY_FAMILY = {
             "syringe service program",
             "syringe exchange facility",
             "needle exchange program",
+            "clean needle",
+            "public health emergency",
             "distance",
             "schools",
             "childcare",
@@ -976,6 +978,7 @@ _VARIABLE_OVERRIDES = {
             "retrieved context mentions it; add a label only when the exemption text itself supports that specific label. If no specific "
             "listed label is directly supported, do not guess and do not use Other as a fallback. "
             "Map lawful use of hypodermic syringes to approved medical-use labels only when medical scope is explicit (e.g., diabetes, insulin, practitioner/prescription context). "
+            "Map prescription-only carve-outs for paraphernalia or devices to `Other paraphernalia for approved medical use` when the text grounds the carve-out in practitioner or prescription authority but does not specifically name syringes. "
             "For drug-checking equipment labels, use SSP/harm-reduction context-specific DCE only when SSP/harm-reduction context is explicit; otherwise keep the general DCE label. "
             "If any explicit exemption label is supported, do not return None."
         ),

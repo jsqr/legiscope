@@ -3744,6 +3744,14 @@ def _format_date(month: int, day: int, year: int) -> str:
     return datetime(year, month, day).strftime("%m/%d/%Y")
 
 
+def _safe_format_date(month: int, day: int, year: int) -> str | None:
+    """Return a canonical date or None when the calendar value is invalid."""
+    try:
+        return _format_date(month, day, year)
+    except ValueError:
+        return None
+
+
 def _extract_canonical_date(
     answer: str,
     coding_instructions: str,
@@ -3758,11 +3766,17 @@ def _extract_canonical_date(
         year = int(match.group("year"))
         if year < 100:
             year += 2000 if year < 50 else 1900
-        return _format_date(int(match.group("month")), int(match.group("day")), year)
+        canonical = _safe_format_date(
+            int(match.group("month")),
+            int(match.group("day")),
+            year,
+        )
+        if canonical is not None:
+            return canonical
 
     textual_match = _MONTH_DAY_YEAR_RE.search(answer)
     if textual_match is not None:
-        return _format_date(
+        return _safe_format_date(
             _parse_month_name(textual_match.group("month")),
             int(textual_match.group("day")),
             int(textual_match.group("year")),
@@ -3778,7 +3792,7 @@ def _extract_canonical_date(
 
     numeric_month_year_match = _NUMERIC_MONTH_YEAR_RE.search(answer)
     if numeric_month_year_match is not None and allow_month_imputation:
-        return _format_date(
+        return _safe_format_date(
             int(numeric_month_year_match.group("month")),
             15,
             int(numeric_month_year_match.group("year")),
@@ -3786,7 +3800,7 @@ def _extract_canonical_date(
 
     month_year_match = _MONTH_YEAR_RE.search(answer)
     if month_year_match is not None and allow_month_imputation:
-        return _format_date(
+        return _safe_format_date(
             _parse_month_name(month_year_match.group("month")),
             15,
             int(month_year_match.group("year")),
@@ -3794,9 +3808,28 @@ def _extract_canonical_date(
 
     year_match = _YEAR_ONLY_RE.search(answer)
     if year_match is not None and allow_year_imputation:
-        return _format_date(7, 15, int(year_match.group("year")))
+        return _safe_format_date(7, 15, int(year_match.group("year")))
 
     return None
+
+
+def _answer_has_invalid_explicit_date_surface(
+    answer: str,
+    coding_instructions: str,
+) -> bool:
+    """Return whether text contains an explicit-looking date that fails canonical validation."""
+    stripped = str(answer or "").strip()
+    if not stripped or _looks_like_unknown(stripped):
+        return False
+
+    has_explicit_date_surface = any(
+        pattern.search(stripped)
+        for pattern in (_ISO_DATE_RE, _NUMERIC_DATE_RE, _MONTH_DAY_YEAR_RE)
+    )
+    if not has_explicit_date_surface:
+        return False
+
+    return _extract_canonical_date(stripped, coding_instructions) is None
 
 
 def _normalize_binary_answer(answer: str) -> str:
@@ -4820,6 +4853,7 @@ def _apply_date_surface_validators(
         return response
 
     original_short_answer = str(response.short_answer or "").strip()
+    coding_instructions = str(metadata.get("coding_instructions") or "")
     texts = _collect_evidence_texts(response, sections)
     explicit_date: str | None = None
     if variable_name in _CURRENT_THROUGH_VARIABLE_NAMES:
@@ -4842,10 +4876,15 @@ def _apply_date_surface_validators(
     if explicit_date is None:
         answer_date = _extract_canonical_date(
             original_short_answer,
-            "",
+            coding_instructions,
             allow_partial_imputation=False,
         )
         if answer_date is None:
+            if _answer_has_invalid_explicit_date_surface(
+                original_short_answer,
+                coding_instructions,
+            ):
+                return response.model_copy(update={"short_answer": "Unknown"})
             return response
         if _date_answer_has_explicit_support(answer_date, texts):
             return response
@@ -5035,6 +5074,7 @@ def _authoritative_response_options_from_option_evidence(
 
 
 _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
+    "definition_type",
     "prohibited_activity",
     "penalty",
     "exemption_presence",
@@ -5043,6 +5083,7 @@ _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS = {
 }
 
 _FALLBACK_OPTION_BY_GUIDANCE_TOPIC = {
+    "definition_type": "Not specified",
     "prohibited_activity": "Not specified",
     "penalty": '"Unlawful" only',
     "exemption_presence": "None",
@@ -5264,6 +5305,31 @@ def _ssp_option_support_sentences(
     return matches
 
 
+_PARAPHERNALIA_OBJECT_PATTERNS = (
+    r"\bparaphernalia\b",
+    r"\billegal smoking paraphernalia\b",
+    r"\bdrug paraphernalia\b",
+    r"\b(?:equipment|device|utensil|instrument|suppl(?:y|ies))\b",
+    r"\b(?:pipe|bong|chillum|needle|syringe|hypodermic|roach clip|spoon|straw)\b",
+)
+
+
+def _sentence_has_option_and_paraphernalia_object(
+    text: str,
+    patterns: tuple[str, ...],
+) -> bool:
+    """Return whether any sentence ties the option trigger to a paraphernalia object."""
+    for sentence in _ssp_sentence_slices(text):
+        if not any(re.search(pattern, sentence, re.IGNORECASE) for pattern in patterns):
+            continue
+        if any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _PARAPHERNALIA_OBJECT_PATTERNS
+        ):
+            return True
+    return False
+
+
 def _authoritative_option_supports_selection(
     *,
     guidance_topic: str,
@@ -5287,6 +5353,19 @@ def _authoritative_option_supports_selection(
         item and (item.citations or item.supporting_passages)
     )
     if normalized == _normalize_option_text("Other"):
+        if guidance_topic == "definition_type":
+            patterns = option_patterns.get(normalized, ())
+            if item is not None:
+                item_text = "\n".join([*item.citations, *item.supporting_passages])
+                if patterns and _sentence_has_option_and_paraphernalia_object(
+                    item_text,
+                    patterns,
+                ):
+                    return True
+            return bool(patterns) and _sentence_has_option_and_paraphernalia_object(
+                evidence_text,
+                patterns,
+            )
         return has_option_specific_support
 
     patterns = option_patterns.get(normalized, ())
@@ -5358,6 +5437,14 @@ def _authoritative_option_supports_selection(
         if _penalty_has_any_supported_concrete_sanction(evidence_text, option_patterns):
             snippet = None
     if (
+        guidance_topic == "definition_type"
+        and patterns
+        and snippet is not None
+        and not _sentence_has_option_and_paraphernalia_object(evidence_text, patterns)
+    ):
+        snippet = None
+
+    if (
         guidance_topic == "prohibited_activity"
         and normalized
         in {
@@ -5377,6 +5464,23 @@ def _authoritative_option_supports_selection(
         and not re.search(r"\boffer for sale\b", snippet, re.IGNORECASE)
     ):
         snippet = None
+
+    if (
+        guidance_topic == "prohibited_activity"
+        and normalized
+        in {
+            _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale"
+            ),
+            _normalize_option_text(
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
+            ),
+        }
+        and patterns
+    ):
+        preferred_text = item_text or evidence_text
+        if not _sentence_has_option_and_paraphernalia_object(preferred_text, patterns):
+            snippet = None
 
     if (
         guidance_topic == "prohibited_activity"
@@ -5640,6 +5744,20 @@ def _apply_exemption_label_crosswalk(
     public_officials = _normalize_option_text(
         "Public officials in the course of their duties, generally"
     )
+    has_syringe_text = bool(
+        re.search(
+            r"\bsyringe\b|\bneedle\b|\bhypodermic\b",
+            evidence_text,
+            re.IGNORECASE,
+        )
+    )
+    has_prescription_medical_scope = bool(
+        re.search(
+            r"\b(?:prescription|prescribed|licensed physician|licensed dentist|authorized to prescribe|medical use|approved medical use|diabet(?:es|ic)|insulin)\b",
+            evidence_text,
+            re.IGNORECASE,
+        )
+    )
     if lawful_hypodermic in option_lookup:
         lawful_item = selected_item_by_option.get(lawful_hypodermic)
         lawful_item_text = "\n".join(
@@ -5676,6 +5794,23 @@ def _apply_exemption_label_crosswalk(
                 if resolved is not None:
                     option_lookup[approved_medical] = resolved
             option_lookup.pop(lawful_hypodermic, None)
+
+    if has_prescription_medical_scope:
+        if has_syringe_text or lawful_hypodermic in option_lookup:
+            if approved_medical not in option_lookup:
+                resolved = _resolve_declared_response_option(
+                    options,
+                    "Syringes for approved medical use (i.e. diabetes)",
+                )
+                if resolved is not None:
+                    option_lookup[approved_medical] = resolved
+        elif other_approved_medical not in option_lookup:
+            resolved = _resolve_declared_response_option(
+                options,
+                "Other paraphernalia for approved medical use",
+            )
+            if resolved is not None:
+                option_lookup[other_approved_medical] = resolved
 
     def _option_text_for_disambiguation(normalized_option: str) -> str:
         item = selected_item_by_option.get(normalized_option)
@@ -5715,11 +5850,6 @@ def _apply_exemption_label_crosswalk(
             r"\bsyringe exchange\b|\bsyringe services\b|\bharm reduction\b|\bsupervised use\b",
             evidence_text,
             re.IGNORECASE,
-        )
-    )
-    has_syringe_text = bool(
-        re.search(
-            r"\bsyringe\b|\bneedle\b|\bhypodermic\b", evidence_text, re.IGNORECASE
         )
     )
     has_dce_text = bool(
@@ -6698,6 +6828,51 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             ),
         }
 
+    if guidance_topic == "definition_type":
+        return {
+            _normalize_option_text(
+                "Syringes, hypodermic needles, other inject/ion/ing equipment/instrument/supplies"
+            ): (
+                r"\bsyringe\b",
+                r"\bneedle\b",
+                r"\bhypodermic\b",
+                r"\binject(?:ion|ing)?\b",
+            ),
+            _normalize_option_text(
+                "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies"
+            ): (
+                r"\bpipe\b",
+                r"\bbong\b",
+                r"\bchillum\b",
+                r"\bsmok(?:e|ing|able)\b",
+                r"\binhal(?:e|ing|ation)\b",
+                r"\bwater pipe\b",
+                r"\belectric pipe\b",
+            ),
+            _normalize_option_text(
+                "Drug test/ing or check/ing equipment or supplies"
+            ): (
+                r"\bdrug checking\b",
+                r"\bdrug testing\b",
+                r"\btest(?:ing)? kit\b",
+                r"\btest strip\b",
+                r"\banaly(?:sis|ze|zing)\b",
+            ),
+            _normalize_option_text("Other"): (
+                r"\bingest(?:ion)?\b",
+                r"\bintroduc(?:e|ing)\b[^.\n]{0,40}\bhuman body\b",
+                r"\broach clip\b",
+                r"\bspoon\b",
+                r"\bstraw\b",
+                r"\bprepare\b",
+                r"\bpack\b",
+                r"\brepack\b",
+                r"\bstore\b",
+                r"\bcontain\b",
+                r"\bconceal\b",
+            ),
+        }
+
     if guidance_topic == "penalty":
         return {
             _normalize_option_text('"Unlawful" only'): (),
@@ -7029,6 +7204,21 @@ def _build_answer_review_decision(
             should_rerun=bool(generic_reasons),
             guidance_topic=guidance_topic,
             reasons=tuple(generic_reasons),
+        )
+
+    if (
+        _is_scalar_placeholder_response_options(response_options)
+        or _is_status_date_response_options(response_options)
+    ) and _answer_has_invalid_explicit_date_surface(
+        response.short_answer,
+        str(metadata.get("coding_instructions") or ""),
+    ):
+        generic_reasons.append(
+            AnswerReviewSignal(
+                option="short_answer",
+                issue="date_answer_has_invalid_calendar_value",
+                evidence_snippet=str(response.short_answer or "").strip(),
+            )
         )
 
     if _is_scalar_placeholder_response_options(

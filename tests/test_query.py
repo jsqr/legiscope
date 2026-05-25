@@ -376,6 +376,129 @@ class TestAuthoritativeOptionEvidenceGate:
             "Advertising, display"
         ]
 
+    def test_prohibited_activity_gate_drops_product_only_sales_and_delivery_noise(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Sales, possession with intent to sell, offer for sale AND/OR "
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
+            ),
+            reasoning="Initial answer treated illegal smoking product clauses as paraphernalia activity support.",
+            citations=["§ 41A-13.11"],
+            supporting_passages=[
+                "A person commits an offense if the person sells any illegal smoking product.",
+                "A person commits an offense if the person delivers any illegal smoking product.",
+            ],
+            confidence=0.61,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Sales, possession with intent to sell, offer for sale",
+                    selected=True,
+                    citations=["§ 41A-13.11(b)(1)"],
+                    supporting_passages=[
+                        "A person commits an offense if the person sells any illegal smoking product."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange",
+                    selected=True,
+                    citations=["§ 41A-13.11(b)(2)"],
+                    supporting_passages=[
+                        "A person commits an offense if the person delivers any illegal smoking product."
+                    ],
+                ),
+                ResponseOptionEvidence(option="Not specified", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-product-only",
+                heading_text="# Product-only offense",
+                body_text=(
+                    "A person commits an offense if the person sells any illegal smoking product. "
+                    "A person commits an offense if the person delivers any illegal smoking product."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Sales, possession with intent to sell, offer for sale AND/OR "
+                    "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Not specified"
+
+    def test_definition_type_gate_promotes_explicit_pipe_and_ingestion_support(self):
+        response = LegalQueryResponse(
+            short_answer="Not specified",
+            reasoning="Initial answer missed the explicit paraphernalia definition.",
+            citations=["§ 41A-13.1"],
+            supporting_passages=[
+                "ILLEGAL SMOKING PARAPHERNALIA means any equipment, device, or utensil that is used or intended to be used in ingesting, inhaling, or otherwise introducing into the human body an illegal smoking product, which paraphernalia includes but is not limited to: a pipe, a water pipe, an electric pipe, a chillum, or a bong."
+            ],
+            confidence=0.52,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Syringes, hypodermic needles, other inject/ion/ing equipment/instrument/supplies",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(
+                    option="Pipes, other smoke/ing or inhal/ing/ation equipment or supplies",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(
+                    option="Drug test/ing or check/ing equipment or supplies",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(option="Other", selected=False),
+                ResponseOptionEvidence(option="Not specified", selected=True),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-type",
+                heading_text="# Definition",
+                body_text=(
+                    "ILLEGAL SMOKING PARAPHERNALIA means any equipment, device, or utensil that is used or intended to be used in ingesting, inhaling, or otherwise introducing into the human body an illegal smoking product, which paraphernalia includes but is not limited to: a pipe, a water pipe, an electric pipe, a chillum, or a bong."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "definition_type",
+                "response_options": (
+                    "Syringes, hypodermic needles, other inject/ion/ing equipment/instrument/supplies AND/OR "
+                    "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR "
+                    "Drug test/ing or check/ing equipment or supplies AND/OR Other AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == (
+            "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR Other"
+        )
+
     def test_keeps_use_when_selected_option_evidence_explicitly_supports_use(self):
         response = LegalQueryResponse(
             short_answer="Use AND/OR Possession, possession with intent to use, keep",
@@ -892,6 +1015,70 @@ class TestSecondStageStructuredValidators:
             "No"
         ]
 
+    def test_prohibited_activity_gate_drops_product_only_sales_and_delivery_noise(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Sales, possession with intent to sell, offer for sale AND/OR "
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
+            ),
+            reasoning="Initial answer treated illegal smoking product clauses as paraphernalia activity support.",
+            citations=["§ 31-32.1"],
+            supporting_passages=[
+                "A person commits an offense if the person sells any illegal smoking product.",
+                "A person commits an offense if the person delivers any illegal smoking product.",
+            ],
+            confidence=0.62,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Sales, possession with intent to sell, offer for sale",
+                    selected=True,
+                    citations=["§ 31-32.1"],
+                    supporting_passages=[
+                        "A person commits an offense if the person sells any illegal smoking product."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange",
+                    selected=True,
+                    citations=["§ 31-32.1"],
+                    supporting_passages=[
+                        "A person commits an offense if the person delivers any illegal smoking product."
+                    ],
+                ),
+                ResponseOptionEvidence(option="Not specified", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-product-only",
+                heading_text="# Product-only offense",
+                body_text=(
+                    "A person commits an offense if the person sells any illegal smoking product. "
+                    "A person commits an offense if the person delivers any illegal smoking product."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Sales, possession with intent to sell, offer for sale AND/OR "
+                    "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Not specified"
+
     def test_reference_citation_validator_prefers_parent_aligned_citation_family(self):
         parent_contexts = [
             query_module.ParentQueryContext(
@@ -1363,6 +1550,66 @@ class TestSecondStageStructuredValidators:
         )
 
         assert gated.short_answer == "Syringes for approved medical use (i.e. diabetes)"
+
+    def test_exemption_crosswalk_maps_prescription_carveout_to_other_approved_medical_use(
+        self,
+    ):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]"
+            ),
+            reasoning="Initial answer omitted the medical-use carve-out tied to prescription authority.",
+            citations=["§ 41A-13.12(c)"],
+            supporting_passages=[
+                "This section does not apply to paraphernalia possessed or used by a person under a prescription issued by a licensed physician or dentist authorized to prescribe controlled substances."
+            ],
+            confidence=0.71,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="None", selected=False),
+                ResponseOptionEvidence(
+                    option="Other paraphernalia for approved medical use",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(
+                    option="Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]",
+                    selected=True,
+                    citations=["§ 41A-13.12(c)"],
+                    supporting_passages=[
+                        "This section does not apply to paraphernalia possessed or used by a person under a prescription issued by a licensed physician or dentist authorized to prescribe controlled substances."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-prescription-exemption",
+                heading_text="# Exemptions",
+                body_text=(
+                    "This section does not apply to paraphernalia possessed or used by a person under a prescription issued by a licensed physician or dentist authorized to prescribe controlled substances."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "exemption_presence",
+                "response_options": (
+                    "None AND/OR Other paraphernalia for approved medical use AND/OR "
+                    "Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]"
+                ),
+            },
+        )
+
+        selected = [item.option for item in gated.option_evidence if item.selected]
+        assert "Other paraphernalia for approved medical use" in selected
 
     def test_exemption_crosswalk_keeps_lawful_hypodermic_without_medical_scope(self):
         response = LegalQueryResponse(
@@ -4249,6 +4496,83 @@ class TestQueryConfigBasics:
 
         assert len(prompts) == 2
         assert response.short_answer == "02/21/2025"
+        assert debug_capture["query"]["review_rerun_triggered"] is True
+        assert (
+            "current_through_answer_lacks_explicit_date_support"
+            in debug_capture["query"]["review_rerun_reasons"]
+        )
+
+    def test_query_legal_documents_reruns_when_date_answer_has_invalid_calendar_value(
+        self,
+    ):
+        mock_client = Mock(spec=Instructor)
+        retrieval_results = SectionCollection(
+            sections=[
+                SectionResult(
+                    section_id="s0",
+                    heading_text="# Current through",
+                    body_text="Current through July 2, 2025.",
+                    heading_level=1,
+                    parent_id=None,
+                    matching_segments=[],
+                    relevance_score=0.1,
+                    segment_count=1,
+                )
+            ],
+            query_info=QueryInfo(
+                original_query="current through",
+                total_segments_found=1,
+                unique_sections=1,
+            ),
+        )
+        first_response = LegalQueryResponse(
+            short_answer="13/02/2025",
+            reasoning="Using the displayed date.",
+            citations=["§ 1-1"],
+            supporting_passages=["Current through July 2, 2025."],
+            confidence=0.62,
+            limitations="None",
+            option_evidence=[],
+        )
+        second_response = LegalQueryResponse(
+            short_answer="07/02/2025",
+            reasoning="The explicit current-through date is July 2, 2025.",
+            citations=["§ 1-1"],
+            supporting_passages=["Current through July 2, 2025."],
+            confidence=0.85,
+            limitations="None",
+            option_evidence=[],
+        )
+        debug_capture = {"query": {}}
+        prompts: list[str] = []
+
+        def fake_ask(*args, **kwargs):
+            prompts.append(kwargs["prompt"])
+            if len(prompts) == 1:
+                return first_response
+            return second_response
+
+        with patch("legiscope.query.ask", side_effect=fake_ask):
+            settings = QuerySettings(
+                llm=LLMConfig(client=mock_client, model="test-model"),
+                filter_relevance=False,
+                validate_supporting_passages=False,
+            )
+
+            response, _similarity_scores = query_legal_documents(
+                retrieval_results,
+                "What is the current-through date of the ordinance?",
+                settings,
+                query_metadata={
+                    "query_id": "dp_collected",
+                    "guidance_topic": "date_current_through",
+                    "response_options": "Responses: <current-through date>",
+                },
+                debug_capture=debug_capture,
+            )
+
+        assert len(prompts) == 2
+        assert response.short_answer == "07/02/2025"
         assert debug_capture["query"]["review_rerun_triggered"] is True
         assert (
             "current_through_answer_lacks_explicit_date_support"

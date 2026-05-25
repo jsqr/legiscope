@@ -894,6 +894,9 @@ class TestCoepRetrievalGuidance:
             "quantity caps/max/per participant/per visit"
             in guidance.relevance_instructions
         )
+        assert "can support `No restrictions listed`" in guidance.relevance_instructions
+        assert "public health emergency" in guidance.anchor_terms
+        assert "clean needle" in guidance.anchor_terms
         assert "one-vs-many guard" in guidance.completion_instructions
         assert "annual reporting" in guidance.negative_anchor_terms
         assert "implementation plan" in guidance.negative_anchor_terms
