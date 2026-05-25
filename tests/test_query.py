@@ -1868,6 +1868,104 @@ class TestSecondStageStructuredValidators:
 
         assert gated.short_answer == "Possession, possession with intent to use, keep"
 
+    def test_prohibited_activity_gate_drops_tobacco_retail_noise(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR "
+                "Give away, give, gift, free distribution"
+            ),
+            reasoning="Initial answer relied on tobacco-retailer compliance text.",
+            citations=["§ 5.90.020(G)"],
+            supporting_passages=[
+                "It shall be a violation of this chapter for any person engaged in tobacco retailing or any of the tobacco retailer's agents or employees to violate any local, state, or federal law regulating controlled substances or drug paraphernalia."
+            ],
+            confidence=0.64,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange",
+                    selected=True,
+                    citations=["§ 5.90.020(G)"],
+                    supporting_passages=[
+                        "It shall be a violation of this chapter for any person engaged in tobacco retailing or any of the tobacco retailer's agents or employees to violate any local, state, or federal law regulating controlled substances or drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Give away, give, gift, free distribution",
+                    selected=True,
+                    citations=["§ 5.90.020(G)"],
+                    supporting_passages=[
+                        "It shall be a violation of this chapter for any person engaged in tobacco retailing or any of the tobacco retailer's agents or employees to violate any local, state, or federal law regulating controlled substances or drug paraphernalia."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-alhambra-noise",
+                heading_text="# Tobacco retail license",
+                body_text=(
+                    "It shall be a violation of this chapter for any person engaged in tobacco retailing or any of the tobacco retailer's agents or employees to violate any local, state, or federal law regulating controlled substances or drug paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR "
+                    "Give away, give, gift, free distribution AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Not specified"
+
+    def test_dp_scope_validator_forces_no_for_tobacco_retail_scope_noise(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="The local code references drug paraphernalia in a tobacco retail license chapter.",
+            citations=["§ 5.90.020(G)"],
+            supporting_passages=[
+                "It shall be a violation of this chapter for any person engaged in tobacco retailing or any of the tobacco retailer's agents or employees to violate any local, state, or federal law regulating controlled substances or drug paraphernalia."
+            ],
+            confidence=0.72,
+            limitations="",
+        )
+        sections = [
+            SectionResult(
+                section_id="s-alhambra-dp-law-noise",
+                heading_text="# Tobacco retail license",
+                body_text=(
+                    "It shall be a violation of this chapter for any person engaged in tobacco retailing or any of the tobacco retailer's agents or employees to violate any local, state, or federal law regulating controlled substances or drug paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_dp_scope_validator(
+            response,
+            sections,
+            {
+                "variable_name": "dp_law",
+                "response_options": "Yes OR No",
+            },
+        )
+
+        assert validated.short_answer == "No"
+
 
 class TestTimeoutExecution:
     """Test timeout behavior for wrapped LLM calls."""
@@ -6656,6 +6754,90 @@ class TestHierarchicalQueryExecution:
         assert child_row[0, "query_status"] == "skipped"
         assert child_row[0, "skip_reason"] == "label_blocker_not_satisfied"
         assert child_row[0, "label_match_method"] == "no_confident_match"
+
+    def test_run_queries_skips_child_when_dp_exemption_option_evidence_omits_blocker_label(
+        self, tmp_path
+    ):
+        sections_path = self._write_sections_parquet(tmp_path)
+        retrieval_results = SectionCollection(
+            sections=[self._make_section("s1")],
+            query_info=QueryInfo(
+                original_query="query", total_segments_found=1, unique_sections=1
+            ),
+        )
+        parent_response = LegalQueryResponse(
+            short_answer="I cannot answer your question as no relevant legal provisions were found after filtering.",
+            reasoning="Parent abstained after gating.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.9,
+            limitations="None",
+            option_evidence=[
+                ResponseOptionEvidence(option="None", selected=True),
+                ResponseOptionEvidence(option="Syringes, generally", selected=False),
+            ],
+        )
+        child_response = LegalQueryResponse(
+            short_answer="Possession",
+            reasoning="Child answer.",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        parent_hierarchy = QueryHierarchy(query_id="Q1")
+        child_hierarchy = QueryHierarchy(
+            query_id="Q1.1",
+            parent_ids=("dp_exemption",),
+            label_blockers=(
+                LabelBlockerRule(
+                    parent_query_id="dp_exemption",
+                    blocker_labels=("Syringes, generally",),
+                ),
+            ),
+        )
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=[(parent_response, []), (child_response, [])],
+            ) as mock_query:
+                mock_client = Mock(spec=Instructor)
+                settings = BatchQuerySettings(
+                    llm=LLMConfig(client=mock_client, model="test-model"),
+                )
+
+                results_df = run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Parent",
+                            variable_name="dp_exemption",
+                            metadata={
+                                "response_options": "None AND/OR Syringes, generally",
+                                "hierarchy": hierarchy_to_metadata(parent_hierarchy),
+                            },
+                            query_id="Q1",
+                        ),
+                        QueryInput(
+                            question="Child",
+                            variable_name="dp_exempt_sygen_activity",
+                            metadata={
+                                "hierarchy": hierarchy_to_metadata(child_hierarchy),
+                            },
+                            query_id="Q1.1",
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        child_row = results_df.filter(pl.col("query_id") == "Q1.1")
+        assert mock_query.call_count == 1
+        assert child_row[0, "query_status"] == "skipped"
+        assert child_row[0, "skip_reason"] == "label_blocker_not_satisfied"
 
     def test_run_queries_executes_child_when_label_blocker_parent_confidence_is_low(
         self, tmp_path

@@ -2016,6 +2016,7 @@ def query_legal_documents(
             sections,
             query_metadata,
         )
+        response = _apply_dp_scope_validator(response, sections, query_metadata)
         response = _apply_reference_necessity_validator(
             response, sections, query_metadata
         )
@@ -2117,6 +2118,11 @@ def query_legal_documents(
                 query_metadata,
             )
             reviewed_response = _apply_authoritative_option_evidence_gate(
+                reviewed_response,
+                sections,
+                query_metadata,
+            )
+            reviewed_response = _apply_dp_scope_validator(
                 reviewed_response,
                 sections,
                 query_metadata,
@@ -5372,6 +5378,41 @@ _PARAPHERNALIA_OBJECT_PATTERNS = (
     r"\b(?:pipe|bong|chillum|needle|syringe|hypodermic|roach clip|spoon|straw)\b",
 )
 
+_DPL_SCOPE_NOISE_ONLY_PATTERNS = (
+    r"\btobacco retail(?:er|ing| license)?\b",
+    r"\bsmoking regulated\b",
+    r"\btobacco paraphernalia\b",
+    r"\bsyringe (?:exchange|service) facilit(?:y|ies)\b",
+    r"\bneedle exchange\b",
+    r"\bcity park\b",
+    r"\bland development code\b",
+    r"\bzoning\b",
+    r"\bemployment policies\b",
+    r"\bpublic lodging\b",
+    r"\bbusiness license\b",
+    r"\bpermit for such syringe exchange facilit(?:y|ies)\b",
+)
+
+_DPL_OPERATIVE_SUPPORT_PATTERNS = (
+    r"\b(?:drug|illegal smoking) paraphernalia\b[^.\n]{0,120}\b(?:unlawful|prohibited|illegal|offense|shall not|no person shall)\b",
+    r"\b(?:unlawful|prohibited|illegal|offense|no person shall)\b[^.\n]{0,120}\b(?:drug|illegal smoking) paraphernalia\b",
+    r"\bpossess(?:ion)? with intent to use\b[^.\n]{0,80}\bparaphernalia\b",
+    r"\bdeliver(?:y)?\b[^.\n]{0,80}\bparaphernalia\b",
+    r"\bmanufactur(?:e|ing)\b[^.\n]{0,80}\bparaphernalia\b",
+    r"\bdrug paraphernalia means\b",
+    r"\bdefinitions?\b[^.\n]{0,80}\bdrug paraphernalia\b",
+    r"\bdoes not apply\b[^.\n]{0,120}\bparaphernalia\b",
+    r"\bdrug paraphernalia does not include\b",
+)
+
+_PENALTY_ADMIN_ONLY_PATTERNS = (
+    r"\bcivil citation\b",
+    r"\bacc program\b",
+    r"\bdiversion program\b",
+    r"\bpretrial diversion\b",
+    r"\balternative citation\b",
+)
+
 
 def _sentence_has_option_and_paraphernalia_object(
     text: str,
@@ -5387,6 +5428,22 @@ def _sentence_has_option_and_paraphernalia_object(
         ):
             return True
     return False
+
+
+def _dpl_scope_support_is_noise_only(text: str) -> bool:
+    """Return whether DPL support is only adjacent tobacco/SSP/business scope noise."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    if any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DPL_OPERATIVE_SUPPORT_PATTERNS
+    ):
+        return False
+    return any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DPL_SCOPE_NOISE_ONLY_PATTERNS
+    )
 
 
 def _authoritative_option_supports_selection(
@@ -5433,6 +5490,14 @@ def _authoritative_option_supports_selection(
     if item is not None:
         item_text = "\n".join([*item.citations, *item.supporting_passages])
 
+    if guidance_topic in {"prohibited_activity", "penalty", "exemption_presence"}:
+        preferred_scope_text = item_text or evidence_text
+        if _dpl_scope_support_is_noise_only(preferred_scope_text):
+            return False
+
+    if guidance_topic == "exemption_presence" and not has_option_specific_support:
+        return False
+
     if guidance_topic == "ssp_restriction":
         # Require direct per-option support for SSP restriction labels to avoid multi-label inflation.
         if not has_option_specific_support:
@@ -5475,6 +5540,113 @@ def _authoritative_option_supports_selection(
             _ssp_has_explicit_operational_permit_requirement(item_text) for _ in [0]
         ):
             snippet = None
+
+    if (
+        guidance_topic == "exemption_presence"
+        and normalized
+        == _normalize_option_text(
+            "Paraphernalia for consumption of cannabis, generally or medical use"
+        )
+        and item is not None
+        and item.selected
+        and not re.search(
+            r"\bcannabis\b|\bmarijuana\b|\bmarihuana\b",
+            item_text,
+            re.IGNORECASE,
+        )
+    ):
+        snippet = None
+
+    if (
+        guidance_topic == "exemption_presence"
+        and normalized
+        in {
+            _normalize_option_text("Syringes, generally"),
+            _normalize_option_text(
+                "Syringes from syringe services, harm reduction programs, or supervised use sites"
+            ),
+            _normalize_option_text("Lawful use of hypodermic syringes"),
+        }
+        and item is not None
+        and item.selected
+        and not re.search(
+            r"\bsyringe\b|\bneedle\b|\bhypodermic\b",
+            item_text,
+            re.IGNORECASE,
+        )
+    ):
+        snippet = None
+
+    if (
+        guidance_topic == "exemption_presence"
+        and normalized
+        == _normalize_option_text(
+            "Syringes from syringe services, harm reduction programs, or supervised use sites"
+        )
+        and item is not None
+        and item.selected
+        and not re.search(
+            r"\bsyringe (?:services|exchange)\b|\bharm reduction\b|\bsupervised use\b",
+            item_text,
+            re.IGNORECASE,
+        )
+    ):
+        snippet = None
+
+    if (
+        guidance_topic == "exemption_presence"
+        and normalized
+        in {
+            _normalize_option_text("Drug checking/testing equipment, generally"),
+            _normalize_option_text(
+                "Drug checking equipment, in the context of syringe services, harm reduction programs, or supervised use sites"
+            ),
+            _normalize_option_text(
+                "Fentanyl checking/testing equipment specifically, in the context of syringe services, harm reduction programs, or supervised use sites"
+            ),
+            _normalize_option_text(
+                "Xylazine checking/testing equipment specifically, in the context syringe services, harm reduction programs, or supervised use sites"
+            ),
+            _normalize_option_text(
+                "Drug checking/testing equipment for fentanyl or fentanyl analogues"
+            ),
+            _normalize_option_text("Drug checking/testing equipment for xylazine"),
+        }
+        and item is not None
+        and item.selected
+        and not re.search(
+            r"\bdrug checking\b|\bdrug testing\b|\btest strip\b|\btesting equipment\b|\bfentanyl\b|\bxylazine\b",
+            item_text,
+            re.IGNORECASE,
+        )
+    ):
+        snippet = None
+
+    if (
+        guidance_topic == "exemption_presence"
+        and normalized == _normalize_option_text("Other paraphernalia for approved medical use")
+        and item is not None
+        and item.selected
+        and not re.search(
+            r"\bprescription\b|\blicensed physician\b|\blicensed dentist\b|\bmedical use\b|\bapproved medical use\b",
+            item_text,
+            re.IGNORECASE,
+        )
+    ):
+        snippet = None
+
+    if (
+        guidance_topic == "penalty"
+        and item is not None
+        and item.selected
+        and re.search("|".join(_PENALTY_ADMIN_ONLY_PATTERNS), item_text, re.IGNORECASE)
+        and not re.search(
+            r"\bfine\b|\bimprison(?:ment)?\b|\bjail\b|\bmisdemeanor\b|\bfelony\b|\bcivil fine\b|\bcriminal fine\b",
+            item_text,
+            re.IGNORECASE,
+        )
+    ):
+        snippet = None
 
     if (
         guidance_topic == "penalty"
@@ -5763,6 +5935,29 @@ def _apply_authoritative_option_evidence_gate(
     )
 
     return _rewrite_structured_response_options(response, final_options, query_metadata)
+
+
+def _apply_dp_scope_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Force dp_law to No when evidence is only adjacent tobacco/SSP/business scope text."""
+    metadata = query_metadata or {}
+    if _query_variable_name(metadata) != "dp_law":
+        return response
+
+    response_options = _clean_response_options(metadata.get("response_options"))
+    if response_options != "Yes OR No":
+        return response
+    if str(response.short_answer or "").strip() != "Yes":
+        return response
+
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    if not _dpl_scope_support_is_noise_only(evidence_text):
+        return response
+
+    return _rewrite_structured_response_options(response, ("No",), query_metadata)
 
 
 def _apply_exemption_label_crosswalk(
@@ -7785,6 +7980,36 @@ def _evaluate_dependency_decision(
                 }
             )
             continue
+
+        if parent_state.variable_name == "dp_exemption" and parent_state.option_evidence:
+            parent_labels = [
+                item.option.strip()
+                for item in parent_state.option_evidence
+                if item.selected and item.option.strip()
+            ]
+            label_match = _match_label_sets(parent_labels, list(label_rule.blocker_labels))
+            decision.label_match = label_match
+            decision.dependency_rules_evaluated.append(
+                {
+                    "rule_type": "requires_labels",
+                    "parent_query_id": label_rule.parent_query_id,
+                    "status": label_match.method or "authoritative_parent_labels_absent",
+                    "parent_short_answer": parent_state.short_answer,
+                    "parent_labels": parent_labels,
+                    "configured_blocker_labels": list(label_rule.blocker_labels),
+                    "score": label_match.score,
+                    "ambiguous": False,
+                    "used_authoritative_option_evidence": True,
+                }
+            )
+            if label_match.method in {"exact_normalized", "fuzzy_unique"}:
+                continue
+            decision.should_skip = True
+            decision.skip_reason = "label_blocker_not_satisfied"
+            decision.blocking_parent_query_id = label_rule.parent_query_id
+            decision.blocking_parent_short_answer = parent_state.short_answer
+            decision.blocking_parent_confidence = parent_state.confidence
+            return decision
 
         parent_labels, ambiguous_parent_labels = _normalize_parent_label_set(
             parent_state.short_answer,

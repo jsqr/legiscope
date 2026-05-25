@@ -259,6 +259,10 @@ class TestCoepRetrievalGuidance:
             in guidance.completion_instructions
         )
         assert "small business-only mentions" in guidance.completion_instructions
+        assert guidance.negative_anchor_terms
+        assert "tobacco retailer" in guidance.negative_anchor_terms
+        assert "syringe exchange facility" in guidance.negative_anchor_terms
+        assert "SSP facility-permitting/location rules" in guidance.completion_instructions
 
     def test_returns_guidance_for_state_reference_variable_with_harder_negative_rules(
         self,

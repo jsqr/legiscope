@@ -901,11 +901,26 @@ _VARIABLE_OVERRIDES = {
             "Retrieval target: operative local drug paraphernalia law in municipal code text.\n\n"
             "High-value legal terms: drug paraphernalia, paraphernalia, bong, pipe, syringe, needle, hypodermic, roach clip, ingestion device, inhalation device, unlawful, prohibited, no person shall, offer for sale, deliver, furnish, transfer, possess with intent, manufacture."
         ),
+        negative_anchor_terms=[
+            "tobacco retailer",
+            "tobacco retail license",
+            "smoking regulated",
+            "tobacco paraphernalia",
+            "syringe exchange facility",
+            "syringe service program facility",
+            "city park",
+            "land development code",
+            "zoning",
+            "business license",
+            "permit required",
+            "employment policies",
+        ],
         completion_instructions=(
             "For dp_law, answer Yes whenever operative local ordinance text prohibits or regulates drug paraphernalia used with controlled substances beyond a narrow minors-only or business-access rule. "
             "A generally applicable paraphernalia prohibition, paraphernalia sales/delivery/manufacturing rule, or local paraphernalia-regulation chapter counts as Yes. "
             "Do not answer No merely because the ordinance is framed around sale, delivery, display, or business operation if the same operative text governs drug paraphernalia legality more broadly. "
-            "Answer No only when the local code is genuinely silent on operative paraphernalia prohibitions or regulations, or only contains unrelated tobacco, non-controlled-substance, or SSP-program text."
+            "Answer No when the retrieved support is only tobacco-retailer compliance language, smoking-regulation text, SSP facility-permitting/location rules, park restrictions, zoning, or other business-administration text that mentions paraphernalia without creating the operative local paraphernalia rule. "
+            "Treat business-only restrictions, tobacco-retail chapters, and SSP facility-location chapters as noise unless the same operative clause independently creates or narrows the drug paraphernalia law."
         ),
     ),
     "dp_activity": RetrievalGuidance(
@@ -915,9 +930,20 @@ _VARIABLE_OVERRIDES = {
             "sales/display provisions as general prohibited activities unless that same text expressly creates the benchmarked "
             "ordinance-wide prohibition. Treat illegal-smoking-product text as noise unless the same sentence or subsection also expressly targets illegal smoking paraphernalia."
         ),
+        negative_anchor_terms=[
+            "tobacco retailer",
+            "tobacco retail license",
+            "smoking regulated",
+            "city park",
+            "syringe exchange facility",
+            "land development code",
+            "zoning",
+            "permit required",
+        ],
         completion_instructions=(
             "For dp_activity, only code items found directly in the legal text. Count only operative prohibitions. DO NOT code "
             "zoning, land-use, head-shop, retail-display, business-access, or minors-only restrictions as general activity labels. "
+            "DO NOT code SSP facility-location, park-operation, tobacco-retailer, smoking-regulation, or generic business-compliance text as DPL activity support unless the same clause expressly prohibits drug paraphernalia conduct. "
             "DO NOT code Sales unless the text itself prohibits sale, offer for sale, possession with intent to sell, or a clearly "
             "equivalent sales act. Advertising or display language by itself does not prove Sales. Do not treat illegal-smoking-product sales clauses as paraphernalia activity support unless the same operative text also prohibits conduct involving illegal smoking paraphernalia."
             " Do not map illegal-smoking-product delivery or transfer clauses to paraphernalia delivery labels unless the same clause explicitly targets paraphernalia conduct."
@@ -933,6 +959,15 @@ _VARIABLE_OVERRIDES = {
             "classes into benchmark labels unless the text itself states the exact benchmark label or the directly relevant sanction. Treat generic default-penalty language, offense grades, and "
             "boilerplate classification clauses as low value unless the ordinance or direct penalty cross-reference states the benchmark sanction concept itself. Ignore nuisance, licensing, zoning, or business-remedy text unless it is the direct operative penalty for the paraphernalia violation."
         ),
+        negative_anchor_terms=[
+            "civil citation",
+            "acc program",
+            "diversion program",
+            "business license",
+            "license revocation",
+            "permit suspension",
+            "tobacco retail license",
+        ],
         completion_instructions=(
             "For dp_penalties, assign the exact labels supported by the exact penalty terms found in the legal text. Treat `Penalty, "
             "see § ...` or similar cross-references as part of the governing penalty text. If the text states a fine, imprisonment, "
@@ -948,7 +983,7 @@ _VARIABLE_OVERRIDES = {
             "Include Other only when the ordinance imposes a genuine residual penalty that does not fit another named option. If "
             "the text supports only Unlawful and Civil Fine, do not add Other as a hedge. IGNORE business-side licensing or "
             "permitting consequences such as license revocation, suspension, or denial unless the coding rules explicitly require "
-            "them; those consequences SHOULD NOT be coded as Other."
+            "them; those consequences SHOULD NOT be coded as Other. Treat diversion programs, civil-citation eligibility, and similar charging alternatives as noise unless they directly state the benchmark penalty label."
         ),
         anchor_terms=[
             "civil penalty",
@@ -995,6 +1030,16 @@ _VARIABLE_OVERRIDES = {
             "For drug-checking equipment labels, use SSP/harm-reduction context-specific DCE only when SSP/harm-reduction context is explicit; otherwise keep the general DCE label. "
             "If any explicit exemption label is supported, do not return None."
         ),
+        negative_anchor_terms=[
+            "tobacco exception",
+            "tobacco retailer",
+            "medical marijuana business",
+            "land development code",
+            "zoning",
+            "employment policies",
+            "syringe exchange facility location",
+            "city park",
+        ],
         anchor_terms=[
             "exception",
             "does not apply",
