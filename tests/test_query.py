@@ -499,6 +499,55 @@ class TestAuthoritativeOptionEvidenceGate:
             "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR Other"
         )
 
+    def test_definition_type_gate_recovers_guidance_topic_from_variable_name(self):
+        response = LegalQueryResponse(
+            short_answer="Not specified",
+            reasoning="Initial answer missed the explicit paraphernalia definition.",
+            citations=["§ 31-32.1"],
+            supporting_passages=[
+                "ILLEGAL SMOKING PARAPHERNALIA means any equipment, device, or utensil that is used or intended to be used in ingesting, inhaling, or otherwise introducing into the human body an illegal smoking product, which paraphernalia includes but is not limited to: a pipe, a water pipe, an electric pipe, a chillum, or a bong."
+            ],
+            confidence=0.52,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Not specified",
+                    selected=True,
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-type-missing-topic",
+                heading_text="# Definition",
+                body_text=(
+                    "ILLEGAL SMOKING PARAPHERNALIA means any equipment, device, or utensil that is used or intended to be used in ingesting, inhaling, or otherwise introducing into the human body an illegal smoking product, which paraphernalia includes but is not limited to: a pipe, a water pipe, an electric pipe, a chillum, or a bong."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "variable_name": "dp_type",
+                "response_options": (
+                    "Syringes, hypodermic needles, other inject/ion/ing equipment/instrument/supplies AND/OR "
+                    "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR "
+                    "Drug test/ing or check/ing equipment or supplies AND/OR Other AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == (
+            "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR Other"
+        )
+
     def test_keeps_use_when_selected_option_evidence_explicitly_supports_use(self):
         response = LegalQueryResponse(
             short_answer="Use AND/OR Possession, possession with intent to use, keep",

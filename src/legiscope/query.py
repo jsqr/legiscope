@@ -3588,6 +3588,38 @@ def _query_variable_name(query_metadata: dict[str, Any] | None) -> str:
     return str(metadata.get("variable_name") or metadata.get("query_id") or "").strip()
 
 
+_VARIABLE_NAME_TO_AUTHORITATIVE_GUIDANCE_TOPIC = {
+    "dp_type": "definition_type",
+    "dp_activity": "prohibited_activity",
+    "dp_penalties": "penalty",
+    "dp_exemption": "exemption_presence",
+    "dp_exempt_sygen_activity": "exemption_activity_scope",
+    "dp_exempt_sy_ssp_activity": "exemption_activity_scope",
+    "dp_exempt_can_activity": "exemption_activity_scope",
+    "dp_exempt_dcegen_activity": "exemption_activity_scope",
+    "dp_exempt_fentdce_activity": "exemption_activity_scope",
+    "dp_exempt_xydce_activity": "exemption_activity_scope",
+    "dp_exempt_dce_ssp_activity": "exemption_activity_scope",
+    "ssp_restrict": "ssp_restriction",
+}
+
+
+def _effective_authoritative_guidance_topic(
+    query_metadata: dict[str, Any] | None,
+) -> str:
+    """Return the authoritative-gating topic, recovering it from variable_name when omitted."""
+    metadata = query_metadata or {}
+    explicit_topic = str(metadata.get("guidance_topic") or "").strip()
+    if explicit_topic:
+        return explicit_topic
+
+    variable_name = _query_variable_name(metadata)
+    return _VARIABLE_NAME_TO_AUTHORITATIVE_GUIDANCE_TOPIC.get(
+        variable_name.lower(),
+        "",
+    )
+
+
 def _looks_like_unknown(answer: str) -> bool:
     """Return whether an answer is effectively a null/unknown marker."""
     normalized = _normalize_option_text(answer)
@@ -5645,7 +5677,7 @@ def _authoritative_response_options_from_evidence(
 ) -> tuple[str, ...] | None:
     """Return the conservative final option set for high-risk benchmark families."""
     metadata = query_metadata or {}
-    guidance_topic = str(metadata.get("guidance_topic") or "").strip()
+    guidance_topic = _effective_authoritative_guidance_topic(metadata)
     if guidance_topic not in _AUTHORITATIVE_OPTION_EVIDENCE_TOPICS:
         return None
 
