@@ -72,6 +72,7 @@ class TestCoepRetrievalGuidance:
         assert "generic default-penalty" in guidance.relevance_instructions
         assert guidance.retrieval_query is not None
         assert "misdemeanor" in guidance.retrieval_query
+        assert "punishable as provided in" in guidance.retrieval_query
         assert guidance.enable_relevance_filter is True
         assert guidance.completion_instructions is not None
         assert "assign the exact labels" in guidance.completion_instructions
@@ -113,6 +114,9 @@ class TestCoepRetrievalGuidance:
         assert (
             "illegal-smoking-product text as noise" in guidance.relevance_instructions
         )
+        assert guidance.retrieval_query is not None
+        assert "no person shall" in guidance.retrieval_query
+        assert "operative prohibition clauses" in guidance.retrieval_query
         assert guidance.completion_instructions is not None
         assert (
             "only code items found directly in the legal text"
@@ -572,6 +576,8 @@ class TestCoepRetrievalGuidance:
         assert guidance is not None
         assert guidance.relevance_instructions is not None
         assert "Prefer definitions" in guidance.relevance_instructions
+        assert guidance.retrieval_query is not None
+        assert "operative local definition of drug paraphernalia" in guidance.retrieval_query
         assert guidance.completion_instructions is not None
         assert "Prefer definitions" not in guidance.completion_instructions
         assert "used with controlled substances" in guidance.completion_instructions
@@ -579,6 +585,7 @@ class TestCoepRetrievalGuidance:
             "ground the answer in the legal definition"
             in guidance.completion_instructions
         )
+        assert "illegal-smoking-product definition" in guidance.completion_instructions
 
     def test_returns_guidance_for_split_reference_variable(self):
         request = RetrievalGuidanceRequest(

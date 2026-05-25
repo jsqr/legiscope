@@ -9,7 +9,7 @@ import json
 import re
 from rapidfuzz import fuzz
 from pathlib import Path
-from typing import Any, Callable, Literal, cast
+from typing import Any, Callable, Literal, Optional, cast
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 from pydantic import ValidationError
@@ -91,7 +91,9 @@ _RESULT_QUERY_METADATA_EXCLUDE_KEYS = {
 }
 
 _LOCAL_SECTION_CROSS_REFERENCE_RE = re.compile(
-    r"(?i)\bsee\s+(?:section|sec\.?|§{1,2})\s*([A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*(?:\([A-Za-z0-9]+\))*)"
+    r"(?i)\b(?:see|provided in|as provided in|punishable as provided in|pursuant to|under)\s+"
+    r"(?:the\s+)?(?:general\s+penalty\s+)?(?:section|sec\.?|§{1,2})\s*"
+    r"([A-Za-z0-9]+(?:[.\-][A-Za-z0-9]+)*(?:\([A-Za-z0-9]+\))*)"
 )
 _MAX_SAME_TEXT_CROSS_REFERENCE_IMPORTS = 3
 
@@ -2016,7 +2018,6 @@ def query_legal_documents(
             sections,
             query_metadata,
         )
-        response = _apply_dp_scope_validator(response, sections, query_metadata)
         response = _apply_reference_necessity_validator(
             response, sections, query_metadata
         )
@@ -2118,11 +2119,6 @@ def query_legal_documents(
                 query_metadata,
             )
             reviewed_response = _apply_authoritative_option_evidence_gate(
-                reviewed_response,
-                sections,
-                query_metadata,
-            )
-            reviewed_response = _apply_dp_scope_validator(
                 reviewed_response,
                 sections,
                 query_metadata,
@@ -2902,10 +2898,8 @@ def _augment_sections_with_same_text_cross_references(
 
     augmented_sections: list[SectionResult] = []
     for section in sections:
+        augmented_sections.extend(imported_after_source.get(str(section.section_id), []))
         augmented_sections.append(section)
-        augmented_sections.extend(
-            imported_after_source.get(str(section.section_id), [])
-        )
 
     logger.info(
         "Imported {} same-text cross-reference sections for guidance topic {}",
@@ -5378,6 +5372,22 @@ _PARAPHERNALIA_OBJECT_PATTERNS = (
     r"\b(?:pipe|bong|chillum|needle|syringe|hypodermic|roach clip|spoon|straw)\b",
 )
 
+_DEFINITION_TYPE_PRODUCT_ONLY_NOISE_PATTERNS = (
+    r"\billegal smoking product\b",
+    r"\billegal smoking paraphernalia\b",
+    r"\btobacco paraphernalia\b",
+)
+
+_DEFINITION_TYPE_DRUG_SCOPE_PATTERNS = (
+    r"\bdrug paraphernalia\b",
+    r"\bcontrolled substances?\b",
+    r"\bcontrolled-substance\b",
+    r"\bsyringe\b",
+    r"\bneedle\b",
+    r"\bhypodermic\b",
+    r"\broach clip\b",
+)
+
 _DPL_SCOPE_NOISE_ONLY_PATTERNS = (
     r"\btobacco retail(?:er|ing| license)?\b",
     r"\bsmoking regulated\b",
@@ -5446,6 +5456,22 @@ def _dpl_scope_support_is_noise_only(text: str) -> bool:
     )
 
 
+def _definition_type_support_is_product_only_noise(text: str) -> bool:
+    """Return whether a definition is limited to smoking/tobacco product context."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    if not any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DEFINITION_TYPE_PRODUCT_ONLY_NOISE_PATTERNS
+    ):
+        return False
+    return not any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DEFINITION_TYPE_DRUG_SCOPE_PATTERNS
+    )
+
+
 def _authoritative_option_supports_selection(
     *,
     guidance_topic: str,
@@ -5496,6 +5522,13 @@ def _authoritative_option_supports_selection(
             return False
 
     if guidance_topic == "exemption_presence" and not has_option_specific_support:
+        return False
+
+    if (
+        guidance_topic == "definition_type"
+        and normalized != _normalize_option_text("Other")
+        and _definition_type_support_is_product_only_noise(item_text or evidence_text)
+    ):
         return False
 
     if guidance_topic == "ssp_restriction":
@@ -5937,27 +5970,31 @@ def _apply_authoritative_option_evidence_gate(
     return _rewrite_structured_response_options(response, final_options, query_metadata)
 
 
-def _apply_dp_scope_validator(
+def _dp_law_scope_review_signal(
     response: LegalQueryResponse,
     sections: list[SectionResult],
     query_metadata: dict[str, Any] | None,
-) -> LegalQueryResponse:
-    """Force dp_law to No when evidence is only adjacent tobacco/SSP/business scope text."""
+) -> Optional["AnswerReviewSignal"]:
+    """Flag dp_law answers that rely only on adjacent tobacco/SSP/business scope noise."""
     metadata = query_metadata or {}
     if _query_variable_name(metadata) != "dp_law":
-        return response
+        return None
 
     response_options = _clean_response_options(metadata.get("response_options"))
     if response_options != "Yes OR No":
-        return response
+        return None
     if str(response.short_answer or "").strip() != "Yes":
-        return response
+        return None
 
     evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
     if not _dpl_scope_support_is_noise_only(evidence_text):
-        return response
+        return None
 
-    return _rewrite_structured_response_options(response, ("No",), query_metadata)
+    return AnswerReviewSignal(
+        option="short_answer",
+        issue="dp_law_yes_may_rest_on_scope_noise_only",
+        evidence_snippet=evidence_text[:240] if evidence_text else None,
+    )
 
 
 def _apply_exemption_label_crosswalk(
@@ -7332,6 +7369,13 @@ def _build_answer_review_decision(
     short_answer_conflict = _short_answer_reasoning_conflict_signal(response, metadata)
     if short_answer_conflict is not None:
         generic_reasons.append(short_answer_conflict)
+    dp_law_scope_signal = _dp_law_scope_review_signal(
+        response,
+        sections,
+        metadata,
+    )
+    if dp_law_scope_signal is not None:
+        generic_reasons.append(dp_law_scope_signal)
     guidance_topic = str(metadata.get("guidance_topic") or "").strip()
     response_options = _clean_response_options(metadata.get("response_options"))
 

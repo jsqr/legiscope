@@ -440,7 +440,7 @@ class TestAuthoritativeOptionEvidenceGate:
 
         assert gated.short_answer == "Not specified"
 
-    def test_definition_type_gate_promotes_explicit_pipe_and_ingestion_support(self):
+    def test_definition_type_gate_keeps_product_only_smoking_definition_in_other(self):
         response = LegalQueryResponse(
             short_answer="Not specified",
             reasoning="Initial answer missed the explicit paraphernalia definition.",
@@ -495,9 +495,7 @@ class TestAuthoritativeOptionEvidenceGate:
             },
         )
 
-        assert gated.short_answer == (
-            "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR Other"
-        )
+        assert gated.short_answer == "Other"
 
     def test_definition_type_gate_recovers_guidance_topic_from_variable_name(self):
         response = LegalQueryResponse(
@@ -540,6 +538,54 @@ class TestAuthoritativeOptionEvidenceGate:
                     "Syringes, hypodermic needles, other inject/ion/ing equipment/instrument/supplies AND/OR "
                     "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR "
                     "Drug test/ing or check/ing equipment or supplies AND/OR Other AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Other"
+
+    def test_definition_type_gate_keeps_explicit_drug_paraphernalia_pipe_support(self):
+        response = LegalQueryResponse(
+            short_answer="Not specified",
+            reasoning="Initial answer missed the explicit drug paraphernalia definition.",
+            citations=["§ 12-34"],
+            supporting_passages=[
+                "Drug paraphernalia means any equipment, product, or material used with controlled substances, including a pipe, water pipe, bong, roach clip, spoon, or straw."
+            ],
+            confidence=0.54,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Pipes, other smoke/ing or inhal/ing/ation equipment or supplies",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(option="Other", selected=False),
+                ResponseOptionEvidence(option="Not specified", selected=True),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-drug-paraphernalia-type",
+                heading_text="# Definition",
+                body_text=(
+                    "Drug paraphernalia means any equipment, product, or material used with controlled substances, including a pipe, water pipe, bong, roach clip, spoon, or straw."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "definition_type",
+                "response_options": (
+                    "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR "
+                    "Other AND/OR Not specified"
                 ),
             },
         )
@@ -1929,7 +1975,7 @@ class TestSecondStageStructuredValidators:
 
         assert gated.short_answer == "Not specified"
 
-    def test_dp_scope_validator_forces_no_for_tobacco_retail_scope_noise(self):
+    def test_answer_review_decision_flags_dp_law_scope_noise_for_rerun(self):
         response = LegalQueryResponse(
             short_answer="Yes",
             reasoning="The local code references drug paraphernalia in a tobacco retail license chapter.",
@@ -1955,16 +2001,25 @@ class TestSecondStageStructuredValidators:
             )
         ]
 
-        validated = query_module._apply_dp_scope_validator(
-            response,
-            sections,
-            {
+        decision = query_module._build_answer_review_decision(
+            response=response,
+            sections=sections,
+            query_metadata={
                 "variable_name": "dp_law",
+                "guidance_topic": "existence_scope",
                 "response_options": "Yes OR No",
             },
+            settings=QuerySettings(
+                llm=LLMConfig(client=Mock()),
+                enable_answer_review=True,
+            ),
         )
 
-        assert validated.short_answer == "No"
+        assert decision.should_rerun is True
+        assert any(
+            signal.issue == "dp_law_yes_may_rest_on_scope_noise_only"
+            for signal in decision.reasons
+        )
 
 
 class TestTimeoutExecution:
@@ -4168,8 +4223,49 @@ class TestQueryConfigBasics:
             guidance_topic="penalty",
         )
 
-        assert [section.section_id for section in augmented] == ["s0", "s_penalty"]
-        assert [section.section_id for section in deduped] == ["s0", "s_penalty"]
+        assert [section.section_id for section in augmented] == ["s_penalty", "s0"]
+        assert [section.section_id for section in deduped] == ["s_penalty", "s0"]
+
+    def test_augment_sections_with_same_text_cross_references_handles_provided_in_reference(
+        self, tmp_path
+    ):
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_id": ["s0", "s_penalty"],
+                "section_ordinal": [0, 1],
+                "heading_text": [
+                    "# Drug Paraphernalia",
+                    "### SEC. 10.99. GENERAL PENALTY.",
+                ],
+                "body_text": [
+                    "A violation is punishable as provided in Section 10.99.",
+                    "A violation is punishable by a fine not to exceed $500 or imprisonment for up to 60 days.",
+                ],
+                "heading_level": [1, 3],
+                "parent_id": [None, None],
+                "context_path": [None, "Chapter 10 > Section 10.99"],
+            }
+        ).write_parquet(sections_path)
+
+        source_section = SectionResult(
+            section_id="s0",
+            heading_text="# Drug Paraphernalia",
+            body_text="A violation is punishable as provided in Section 10.99.",
+            heading_level=1,
+            parent_id=None,
+            matching_segments=[],
+            relevance_score=0.1,
+            segment_count=1,
+        )
+
+        augmented = query_module._augment_sections_with_same_text_cross_references(
+            [source_section],
+            sections_parquet_path=str(sections_path),
+            guidance_topic="penalty",
+        )
+
+        assert [section.section_id for section in augmented] == ["s_penalty", "s0"]
 
     def test_query_legal_documents_imports_same_text_penalty_cross_reference_into_completion_context(
         self, tmp_path
@@ -4248,7 +4344,7 @@ class TestQueryConfigBasics:
         assert response.short_answer == "Unspecified Fine AND/OR Incarceration"
         assert [
             section.section_id for section in execution_capture["completion_sections"]
-        ] == ["s0", "s_penalty"]
+        ] == ["s_penalty", "s0"]
         assert "SEC. 10.99. GENERAL PENALTY." in prompt_texts[0]
         assert "punishable by a fine not to exceed $500" in prompt_texts[0]
 

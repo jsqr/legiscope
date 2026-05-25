@@ -895,6 +895,28 @@ _GUIDANCE_BY_FAMILY = {
 
 
 _VARIABLE_OVERRIDES = {
+    "dp_type": RetrievalGuidance(
+        retrieval_query=(
+            "Question: What types of drug paraphernalia are included in the law?\n\n"
+            "Retrieval target: operative local definition of drug paraphernalia or incorporated definition text used to classify covered paraphernalia types.\n\n"
+            "High-value legal terms: drug paraphernalia means, used with controlled substances, pipe, bong, water pipe, syringe, needle, hypodermic, roach clip, spoon, straw, test strip, drug checking, analyze, ingest, inhale, inject, contain, conceal."
+        ),
+        negative_anchor_terms=[
+            "tobacco retailer",
+            "tobacco retail license",
+            "smoking regulated",
+            "zoning",
+            "land development code",
+            "business license",
+            "syringe exchange facility",
+        ],
+        completion_instructions=(
+            "For dp_type, ground the answer in the legal definition or incorporated definitional text itself. "
+            "Do not map a product-only or illegal-smoking-product definition into the standard pipes, syringes, or drug-checking buckets unless the same text clearly defines drug paraphernalia used with controlled substances. "
+            "If the retrieved definition is limited to illegal smoking products, tobacco paraphernalia, or another non-drug-specific smoking-product category, prefer Other over a specific benchmark bucket unless the legal text expressly supports that specific bucket within a true drug-paraphernalia definition."
+        ),
+        enable_relevance_backfill=False,
+    ),
     "dp_law": RetrievalGuidance(
         retrieval_query=(
             "Question: Does the jurisdiction have an ordinance that prohibits or regulates drug paraphernalia-related activities?\n\n"
@@ -924,6 +946,11 @@ _VARIABLE_OVERRIDES = {
         ),
     ),
     "dp_activity": RetrievalGuidance(
+        retrieval_query=(
+            "Question: Which specific drug paraphernalia-related activities are prohibited?\n\n"
+            "Retrieval target: operative prohibition clauses that directly state the acts forbidden for drug paraphernalia.\n\n"
+            "High-value legal terms: unlawful, prohibited, no person shall, offer for sale, sell, deliver, distribute, transfer, furnish, exchange, possess with intent, use, manufacture, advertise, display, drug paraphernalia."
+        ),
         relevance_instructions=(
             "For dp_activity, code only parent-query activity labels that appear directly in the operative prohibition text. "
             "Do not count paraphernalia-shop zoning rules, retail-display or business-access restrictions, or minors-only "
@@ -952,6 +979,11 @@ _VARIABLE_OVERRIDES = {
         enable_relevance_backfill=False,
     ),
     "dp_penalties": RetrievalGuidance(
+        retrieval_query=(
+            "Question: What penalties apply to drug paraphernalia violations?\n\n"
+            "Retrieval target: operative sanction text for the paraphernalia violation, including directly cited penalty sections.\n\n"
+            "High-value legal terms: penalty, punishable, fine, imprisonment, jail, forfeiture, seizure, misdemeanor, felony, infraction, civil penalty, criminal fine, penalty see, punishable as provided in, general penalty section."
+        ),
         relevance_instructions=(
             "Focus on operative sanction text. Follow direct cross-references such as `Penalty, see § ...`. Do not elevate "
             "business-license revocation, permitting consequences, or other collateral remedies into Other when the coding rules "
