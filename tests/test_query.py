@@ -1377,6 +1377,51 @@ class TestSecondStageStructuredValidators:
             "No"
         ]
 
+    def test_ssp_permit_validator_promotes_no_to_conditional_yes_for_emergency_authorization(
+        self,
+    ):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="Initial answer missed the emergency-conditioned authorization.",
+            citations=["Sec. 8.32(b)"],
+            supporting_passages=[
+                "The Mayor is hereby empowered to declare the existence of a Local Public Health Emergency when the Mayor finds that the authorization of clean needle and syringe exchange projects would abate the spread of HIV and AIDS."
+            ],
+            confidence=0.61,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-ssp-permit-emergency",
+                heading_text="# Local Public Health Emergency",
+                body_text=(
+                    "The Mayor is hereby empowered to declare the existence of a Local Public Health Emergency when the Mayor finds that the authorization of clean needle and syringe exchange projects would abate the spread of HIV and AIDS."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        validated = query_module._apply_ssp_permit_validator(
+            response,
+            sections,
+            {
+                "variable_name": "ssp_permit",
+                "response_options": (
+                    "No OR Yes OR Yes, only if a local public health emergency or disease outbreak has been declared"
+                ),
+            },
+        )
+
+        assert (
+            validated.short_answer
+            == "Yes, only if a local public health emergency or disease outbreak has been declared"
+        )
+
     def test_ssp_restriction_gate_keeps_only_mobile_restriction_without_permit_signal(
         self,
     ):
@@ -1610,6 +1655,71 @@ class TestSecondStageStructuredValidators:
 
         selected = [item.option for item in gated.option_evidence if item.selected]
         assert "Other paraphernalia for approved medical use" in selected
+
+    def test_exemption_crosswalk_keeps_professionals_when_institute_support_coexists_with_prescription_medical_use(
+        self,
+    ):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]"
+            ),
+            reasoning="The exemption includes both institute-based professional support and prescription-based medical use.",
+            citations=["§ 31-32.1(c)"],
+            supporting_passages=[
+                "This section does not apply to paraphernalia possessed or used by a medical, educational, or research institute operating in compliance with all applicable city ordinances and state and federal laws.",
+                "This section does not apply to paraphernalia possessed or used by a person under a prescription issued by a licensed physician or dentist authorized to prescribe controlled substances.",
+            ],
+            confidence=0.73,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="None", selected=False),
+                ResponseOptionEvidence(
+                    option="Other paraphernalia for approved medical use",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(
+                    option="Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]",
+                    selected=True,
+                    citations=["§ 31-32.1(c)(3)"],
+                    supporting_passages=[
+                        "This section does not apply to paraphernalia possessed or used by a medical, educational, or research institute operating in compliance with all applicable city ordinances and state and federal laws."
+                    ],
+                ),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-exemption-mixed",
+                heading_text="# Defenses",
+                body_text=(
+                    "This section does not apply to paraphernalia possessed or used by a medical, educational, or research institute operating in compliance with all applicable city ordinances and state and federal laws. This section does not apply to paraphernalia possessed or used by a person under a prescription issued by a licensed physician or dentist authorized to prescribe controlled substances."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "exemption_presence",
+                "response_options": (
+                    "None AND/OR Other paraphernalia for approved medical use AND/OR "
+                    "Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]"
+                ),
+            },
+        )
+
+        selected = [item.option for item in gated.option_evidence if item.selected]
+        assert "Other paraphernalia for approved medical use" in selected
+        assert (
+            "Professionals acting in their course of business [e.g. pharmacists, physicians, manufacturers]"
+            in selected
+        )
 
     def test_exemption_crosswalk_keeps_lawful_hypodermic_without_medical_scope(self):
         response = LegalQueryResponse(

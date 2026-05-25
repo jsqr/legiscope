@@ -4400,6 +4400,15 @@ _SSP_PERMIT_AUTHORIZATION_PATTERNS = (
     r"\bauthoriz(?:ed|es|ation)\b[^.\n]{0,80}\bneedle(?:-and-)?syringe exchange\b",
 )
 
+_SSP_PERMIT_CONDITIONAL_AUTHORIZATION_PATTERNS = (
+    r"\b(?:local\s+)?public health emergency\b[^.\n]{0,180}\bauthoriz(?:ed|es|ation)\b[^.\n]{0,120}\bclean needle\b",
+    r"\b(?:local\s+)?public health emergency\b[^.\n]{0,180}\bauthoriz(?:ed|es|ation)\b[^.\n]{0,120}\bneedle(?:-and-)?syringe exchange\b",
+    r"\bdisease outbreak\b[^.\n]{0,180}\bauthoriz(?:ed|es|ation)\b[^.\n]{0,120}\bclean needle\b",
+    r"\bdisease outbreak\b[^.\n]{0,180}\bauthoriz(?:ed|es|ation)\b[^.\n]{0,120}\bneedle(?:-and-)?syringe exchange\b",
+    r"\bdeclare\b[^.\n]{0,120}\b(?:local\s+)?public health emergency\b[^.\n]{0,180}\bclean needle\b",
+    r"\bdeclare\b[^.\n]{0,120}\b(?:local\s+)?public health emergency\b[^.\n]{0,180}\bneedle(?:-and-)?syringe exchange\b",
+)
+
 _SSP_PERMIT_ADMIN_ONLY_PATTERNS = (
     r"\bpermit\b",
     r"\blicense\b",
@@ -4477,6 +4486,9 @@ _EXEMPTION_PROFESSIONAL_PATTERNS = (
     r"\bdistributor\b",
     r"\bcourse of business\b",
     r"\bprofessional practice\b",
+    r"\bmedical(?:,? educational,? or research)? institute\b",
+    r"\beducational institute\b",
+    r"\bresearch institute\b",
 )
 
 _EXEMPTION_PUBLIC_OFFICIAL_PATTERNS = (
@@ -4924,6 +4936,10 @@ def _apply_ssp_permit_validator(
         return response
     answer = str(response.short_answer or "").strip()
     evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    has_conditional_authorization = any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_PERMIT_CONDITIONAL_AUTHORIZATION_PATTERNS
+    )
     has_strong_authorization = _ssp_has_explicit_operational_permit_requirement(
         evidence_text
     ) or any(
@@ -4933,12 +4949,23 @@ def _apply_ssp_permit_validator(
     if answer == "No":
         if not has_strong_authorization:
             return response
-        return response.model_copy(update={"short_answer": "Yes"})
+        promoted_answer = (
+            "Yes, only if a local public health emergency or disease outbreak has been declared"
+            if has_conditional_authorization
+            else "Yes"
+        )
+        return response.model_copy(update={"short_answer": promoted_answer})
 
     if answer in {
         "Yes",
         "Yes, only if a local public health emergency or disease outbreak has been declared",
     }:
+        if answer == "Yes" and has_conditional_authorization:
+            return response.model_copy(
+                update={
+                    "short_answer": "Yes, only if a local public health emergency or disease outbreak has been declared"
+                }
+            )
         if has_strong_authorization:
             return response
         if _ssp_reference_support_is_admin_only(evidence_text) or any(
