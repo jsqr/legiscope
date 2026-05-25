@@ -21,8 +21,8 @@ llm:
       powerful: Qwen/Qwen3.5-27B
 
     litellm:
-      fast: gemini/gemini-3.1-flash-lite-preview
-      powerful: gemini/gemini-3.1-flash-lite-preview
+      fast: gemini/gemini-3.1-flash-lite
+      powerful: gemini/gemini-3.1-flash-lite
       
     mistral:
       fast: mistral-small-2506
