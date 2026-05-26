@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-$(cd "${SCRIPT_DIR}/../../.." && pwd)}"
+LEGISCOPE_ENV_PREFIX="${LEGISCOPE_ENV_PREFIX:-/gpfs/data/cerdalab/LegalAI/conda_envs/legiscope_env_v3}"
 
 submit_job() {
     local partition="${SLURM_PARTITION:-cpu_short}"
@@ -43,6 +44,18 @@ run_job() {
         echo "ERROR: Python runner not found: $python_runner" >&2
         exit 1
     fi
+
+    # BigPurple's /etc/bashrc references BASHRCSOURCED before defining it,
+    # so disable nounset while sourcing ~/.bashrc.
+    set +u
+    source ~/.bashrc
+    set -u
+    export PYTHONNOUSERSITE=1
+    KNOWN_VLLM_WARNING_FILTERS="ignore:The cuda.cudart module is deprecated:FutureWarning,ignore:The cuda.nvrtc module is deprecated:FutureWarning"
+    export PYTHONWARNINGS="${PYTHONWARNINGS:+${PYTHONWARNINGS},}${KNOWN_VLLM_WARNING_FILTERS}"
+    module load pandoc 2>/dev/null || true
+    conda activate "$LEGISCOPE_ENV_PREFIX"
+    export PATH="${LEGISCOPE_ENV_PREFIX}/bin:${PATH}"
 
     cd "$PROJECT_ROOT"
 
