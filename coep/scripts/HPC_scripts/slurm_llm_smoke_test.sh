@@ -2,25 +2,17 @@
 
 set -euo pipefail
 
-repo_root() {
-    if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
-        printf '%s\n' "$SLURM_SUBMIT_DIR"
-        return 0
-    fi
-
-    cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd
-}
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 submit_job() {
     local partition="${SLURM_PARTITION:-cpu_short}"
     local time_limit="${SLURM_TIME_LIMIT:-00:05:00}"
     local script_path
     local logs_dir
-    local root_dir
 
-    script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-    root_dir="$(repo_root)"
-    logs_dir="$root_dir/logs"
+    script_path="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+    logs_dir="$PROJECT_ROOT/logs"
 
     mkdir -p "$logs_dir"
 
@@ -28,7 +20,7 @@ submit_job() {
         --job-name=llm-smoke \
         --partition="$partition" \
         --time="$time_limit" \
-        --chdir="$root_dir" \
+        --chdir="$PROJECT_ROOT" \
         --cpus-per-task=1 \
         --mem=2G \
         --output="$logs_dir/%x_%j.out" \
@@ -38,23 +30,21 @@ submit_job() {
 }
 
 run_job() {
-    local root_dir
     local python_runner
 
-    root_dir="$(pwd)"
-    if [[ ! -d "$root_dir" ]]; then
-        echo "ERROR: working directory not found: $root_dir" >&2
+    if [[ ! -d "$PROJECT_ROOT" ]]; then
+        echo "ERROR: project root not found: $PROJECT_ROOT" >&2
         exit 1
     fi
 
-    python_runner="$root_dir/scripts/dvc_python.sh"
+    python_runner="$PROJECT_ROOT/scripts/dvc_python.sh"
 
-    if [[ ! -x "$python_runner" ]]; then
+    if [[ ! -f "$python_runner" ]]; then
         echo "ERROR: Python runner not found: $python_runner" >&2
         exit 1
     fi
 
-    cd "$root_dir"
+    cd "$PROJECT_ROOT"
 
     bash "$python_runner" -c '
 from legiscope.llm_config import Config
