@@ -7095,6 +7095,7 @@ class TestScopeExistenceValidator:
 
         assert updated.short_answer == "No"
         assert "business-only" in updated.limitations
+        assert "found only narrow-scope or excluded support" in updated.reasoning
 
     def test_dp_law_downgrades_minors_only_paraphernalia_rule(self):
         response = LegalQueryResponse(
@@ -7166,6 +7167,7 @@ class TestScopeExistenceValidator:
 
         assert updated.short_answer == "Yes"
         assert "Validator promoted a No answer" in updated.limitations
+        assert "confirmed an explicit local operative paraphernalia prohibition" in updated.reasoning
 
     def test_dp_law_does_not_downgrade_yes_when_explicit_operative_rule_present(self):
         response = LegalQueryResponse(
@@ -7220,6 +7222,76 @@ class TestScopeExistenceValidator:
                 heading_text="# Chapter 9.29",
                 body_text=(
                     "No person shall furnish a syringe to an adult for either human or animal use other than as authorized by and in strict conformity with State and federal law."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "Yes"
+
+    def test_dp_law_promotes_general_person_including_retail_business(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="This appears limited to retail businesses.",
+            citations=["§ 9-629(1)"],
+            supporting_passages=[
+                "It shall be unlawful for any person, including any retail business, to sell or offer for sale any item that constitutes drug paraphernalia where the seller knows it would be used to inject, ingest, inhale or otherwise introduce into the human body a controlled substance."
+            ],
+            confidence=0.55,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-philly-dp-law",
+                heading_text="# Drug paraphernalia",
+                body_text=(
+                    "It shall be unlawful for any person, including any retail business, to sell or offer for sale any item that constitutes drug paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "Yes"
+
+    def test_dp_law_promotes_split_prohibition_and_activity_clause(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="The text is ambiguous.",
+            citations=["Sec. 14-157(b)(2)"],
+            supporting_passages=[
+                "It shall be unlawful for any person to: ... (2) Manufacture, deliver or possess with intent to deliver, sell, possess, use, or have under his control any empty gelatin capsule, hypodermic syringe or needle, roach clip, hash pipe or any other paraphernalia adapted for use with a controlled substance."
+            ],
+            confidence=0.55,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dearborn-dp-law",
+                heading_text="# Controlled substances",
+                body_text=(
+                    "It shall be unlawful for any person to: ... (2) Manufacture, deliver or possess with intent to deliver any paraphernalia adapted for use with a controlled substance."
                 ),
                 heading_level=1,
                 parent_id=None,
@@ -7306,6 +7378,77 @@ class TestScopeExistenceValidator:
         )
 
         assert updated.short_answer == "No"
+
+    def test_dp_law_does_not_promote_from_unrelated_section_context(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="Business-only tobacco retailer rule should remain out of scope.",
+            citations=["18.16.090.0304"],
+            supporting_passages=[
+                "It shall be a violation of this Section for any Tobacco Retailer to violate any applicable local, State, or federal law regulating the sale of drug paraphernalia."
+            ],
+            confidence=0.62,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-anaheim-unrelated-state-context",
+                heading_text="# State law excerpt",
+                body_text=(
+                    "No person shall possess with intent to deliver drug paraphernalia, and no person shall manufacture drug paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
+    def test_dp_law_does_not_downgrade_operative_regulation_language(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="The ordinance regulates paraphernalia and penalizes related activity.",
+            citations=["§ 133.03"],
+            supporting_passages=[
+                "The sale and display of narcotic and other paraphernalia, devices, contrivances, and instruments for the smoking or injection of marijuana, hashish, PCP, or any controlled substance, or the displaying or offering for sale, gift, or delivery of such devices to minors, shall be strictly regulated in accordance with this section.",
+                "Any person who shall sell, possess, purchase, transfer, use, manufacture, compound, produce, or prepare any of the aforementioned drugs or the drugs set forth in F.S. Chapter 893 shall be guilty of a punishable violation.",
+            ],
+            confidence=0.88,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-pembroke-regulation",
+                heading_text="# Paraphernalia Regulation",
+                body_text=(
+                    "The sale and display of paraphernalia shall be strictly regulated."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "Yes"
 
     def test_ssp_law_downgrades_exemption_only_text(self):
         response = LegalQueryResponse(

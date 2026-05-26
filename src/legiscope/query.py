@@ -3684,6 +3684,35 @@ def _collect_evidence_texts(
     return texts
 
 
+def _collect_response_evidence_texts(
+    response: LegalQueryResponse,
+) -> list[str]:
+    """Collect evidence text directly attached to the model response."""
+    texts: list[str] = []
+    texts.extend(
+        str(passage).strip()
+        for passage in response.supporting_passages
+        if str(passage).strip()
+    )
+    texts.extend(
+        str(citation).strip()
+        for citation in response.citations
+        if str(citation).strip()
+    )
+    for item in response.option_evidence:
+        texts.extend(
+            str(passage).strip()
+            for passage in item.supporting_passages
+            if str(passage).strip()
+        )
+        texts.extend(
+            str(citation).strip()
+            for citation in item.citations
+            if str(citation).strip()
+        )
+    return texts
+
+
 def _extract_explicit_date_from_texts(
     texts: list[str],
     required_patterns: tuple[str, ...],
@@ -4490,7 +4519,8 @@ _DP_LAW_BUSINESS_ONLY_PATTERNS = (
 
 _DP_LAW_MINORS_ONLY_PATTERNS = (
     r"\bunder the age of\b",
-    r"\bminor(?:s)?\b",
+    r"\bminor(?:s)?\b[^.\n]{0,40}\b(?:possess(?:ion)?|use|purchase|acquire|have|buy)\b",
+    r"\b(?:possess(?:ion)?|use|purchase|acquire|have|buy)\b[^.\n]{0,40}\bminor(?:s)?\b",
     r"\bnot accompanied by\b",
 )
 
@@ -5028,12 +5058,43 @@ def _response_short_answer_is_yes_no(response: LegalQueryResponse) -> bool:
     return str(response.short_answer or "").strip() in {"Yes", "No"}
 
 
+def _scope_validator_reasoning(
+    *,
+    variable_name: str,
+    short_answer: str,
+) -> str:
+    """Return a reasoning string aligned with scope-validator answer overrides."""
+    if variable_name == "dp_law" and short_answer == "Yes":
+        return (
+            "Validator reviewed cited evidence and confirmed an explicit local operative "
+            "paraphernalia prohibition that applies beyond business-only or minors-only scope."
+        )
+    if variable_name == "dp_law" and short_answer == "No":
+        return (
+            "Validator reviewed cited evidence and found only narrow-scope or excluded support "
+            "(for example business-only, minors-only, or non-operative background text), "
+            "not a generally applicable local paraphernalia prohibition."
+        )
+    if variable_name == "ssp_law" and short_answer == "No":
+        return (
+            "Validator reviewed cited evidence and found exemption-only or infectious-disease "
+            "carve-out language inside paraphernalia provisions, not a distinct operative SSP law."
+        )
+    return ""
+
+
 def _dp_law_support_is_scope_limited(evidence_text: str) -> bool:
     """Return whether dp_law support is limited to excluded narrow scopes."""
+    has_general_person_including_business = any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _DPL_GENERAL_PERSON_INCLUDING_BUSINESS_PATTERNS
+    )
     has_business_only = any(
         re.search(pattern, evidence_text, re.IGNORECASE)
         for pattern in _DP_LAW_BUSINESS_ONLY_PATTERNS
     )
+    if has_general_person_including_business:
+        has_business_only = False
     has_minors_only = any(
         re.search(pattern, evidence_text, re.IGNORECASE)
         for pattern in _DP_LAW_MINORS_ONLY_PATTERNS
@@ -5072,7 +5133,7 @@ def _apply_scope_existence_validator(
     if not _response_short_answer_is_yes_no(response):
         return response
 
-    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    evidence_text = "\n\n".join(_collect_response_evidence_texts(response))
     if not evidence_text.strip():
         return response
 
@@ -5090,6 +5151,10 @@ def _apply_scope_existence_validator(
                 "limitations": _append_validation_limitation(
                     response.limitations,
                     "Validator promoted a No answer because the cited support contains an explicit local operative paraphernalia prohibition rather than only narrow-scope or background text.",
+                ),
+                "reasoning": _scope_validator_reasoning(
+                    variable_name="dp_law",
+                    short_answer="Yes",
                 ),
             }
         )
@@ -5110,6 +5175,10 @@ def _apply_scope_existence_validator(
                     response.limitations,
                     "Validator downgraded a Yes answer because the cited support appears limited to business-only, minors-only, or generic state-code-adoption text rather than a generally applicable local paraphernalia rule.",
                 ),
+                "reasoning": _scope_validator_reasoning(
+                    variable_name="dp_law",
+                    short_answer="No",
+                ),
             }
         )
 
@@ -5121,6 +5190,10 @@ def _apply_scope_existence_validator(
                 "limitations": _append_validation_limitation(
                     response.limitations,
                     "Validator downgraded a Yes answer because the cited support appears to be an exemption or disease-prevention carve-out inside a paraphernalia law rather than an operative SSP rule.",
+                ),
+                "reasoning": _scope_validator_reasoning(
+                    variable_name="ssp_law",
+                    short_answer="No",
                 ),
             }
         )
@@ -5647,6 +5720,7 @@ _DPL_OPERATIVE_PROHIBITION_PATTERNS = (
     r"\bif any person shall\b",
     r"\bit is unlawful\b",
     r"\bshall be unlawful\b",
+    r"\bshall be strictly regulated\b",
     r"\bprohibited\b",
     r"\billegal\b",
     r"\boffense\b",
@@ -5667,6 +5741,10 @@ _DPL_HISTORICAL_ONLY_PATTERNS = (
     r"\bhistory\b",
     r"\bformer(?:ly)?\b",
     r"\brenumber(?:ed|ing)?\b",
+)
+
+_DPL_GENERAL_PERSON_INCLUDING_BUSINESS_PATTERNS = (
+    r"\bany person\b[^.\n]{0,120}\bincluding\b[^.\n]{0,120}\bretail business\b",
 )
 
 _PENALTY_ADMIN_ONLY_PATTERNS = (
@@ -5763,9 +5841,16 @@ def _dp_law_support_has_explicit_operative_rule(text: str) -> bool:
             for pattern in _DPL_HISTORICAL_ONLY_PATTERNS
         ):
             continue
-        if any(
+        has_general_person_including_business = any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_GENERAL_PERSON_INCLUDING_BUSINESS_PATTERNS
+        )
+        if (
+            any(
             re.search(pattern, sentence, re.IGNORECASE)
             for pattern in _DP_LAW_BUSINESS_ONLY_PATTERNS
+            )
+            and not has_general_person_including_business
         ):
             continue
         if any(
@@ -5794,6 +5879,29 @@ def _dp_law_support_has_explicit_operative_rule(text: str) -> bool:
         ):
             continue
         return True
+
+    # Some ordinances split prohibition lead-ins and numbered activities into
+    # adjacent clauses; allow whole-text detection when scope is not narrow.
+    if not _dp_law_support_is_scope_limited(normalized):
+        if (
+            any(
+                re.search(pattern, normalized, re.IGNORECASE)
+                for pattern in _DPL_OPERATIVE_PROHIBITION_PATTERNS
+            )
+            and any(
+                re.search(pattern, normalized, re.IGNORECASE)
+                for pattern in _DPL_OPERATIVE_ACTIVITY_PATTERNS
+            )
+            and any(
+                re.search(pattern, normalized, re.IGNORECASE)
+                for pattern in _PARAPHERNALIA_OBJECT_PATTERNS
+            )
+            and any(
+                re.search(pattern, normalized, re.IGNORECASE)
+                for pattern in _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS
+            )
+        ):
+            return True
 
     return False
 
