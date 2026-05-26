@@ -7484,6 +7484,77 @@ class TestScopeExistenceValidator:
 
         assert updated.short_answer == "No"
 
+    def test_dp_law_downgrades_yes_for_state_adoption_park_only_context(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="State-law incorporation in parks should not count as a local dp_law.",
+            citations=["§ 13.01.210"],
+            supporting_passages=[
+                "The provisions of the California Uniform Controlled Substances Act are applicable in city parks and shall be enforced and prosecuted in accordance with the provisions thereof."
+            ],
+            confidence=0.88,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-menifee-park-adoption-yes",
+                heading_text="# City parks",
+                body_text=(
+                    "The provisions of the California Uniform Controlled Substances Act are applicable in city parks."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
+    def test_dp_law_downgrades_yes_for_ssp_program_only_context(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="SSP operational chapter should not count as generally applicable dp_law.",
+            citations=["§ 91.81", "§ 91.87"],
+            supporting_passages=[
+                "DRUG PARAPHERNALIA. All equipment, products, and materials of any kind that are used or intended for use in introducing into the human body a scheduled drug in violation of R.S.A. 318-B:1 et seq.",
+                "An SSP shall operate to an exchange-only basis, whereby an SSP participant shall receive sterile needles and needle units only by providing the SSP with a used one.",
+            ],
+            confidence=0.91,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-manchester-ssp-only",
+                heading_text="# Syringe Service Program",
+                body_text=(
+                    "An SSP shall operate to an exchange-only basis and may provide only the drug paraphernalia permitted under state law."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
     def test_dp_law_does_not_downgrade_operative_regulation_language(self):
         response = LegalQueryResponse(
             short_answer="Yes",

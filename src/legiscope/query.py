@@ -4526,6 +4526,10 @@ _DP_LAW_MINORS_ONLY_PATTERNS = (
 
 _DP_LAW_STATE_ADOPTION_PATTERNS = (
     r"\badopted and incorporated .* by reference\b",
+    r"\bincorporat(?:e|ed|es|ing)\b[^.\n]{0,80}\b(?:state|uniform)\b[^.\n]{0,80}\b(?:act|code|law)\b",
+    r"\buniform controlled substances act\b",
+    r"\bapplicable in city parks\b",
+    r"\bshall be enforced and prosecuted in accordance with\b",
     r"\bviolations of city ordinances\b",
     r"\bstate criminal code\b",
     r"\butah code annotated title 76\b",
@@ -5106,6 +5110,52 @@ def _dp_law_support_is_scope_limited(evidence_text: str) -> bool:
     return has_business_only or has_minors_only or has_state_adoption_only
 
 
+def _dp_law_support_is_ssp_program_only(evidence_text: str) -> bool:
+    """Return whether dp_law evidence is limited to SSP program operations/context."""
+    normalized = str(evidence_text or "").strip()
+    if not normalized:
+        return False
+
+    has_program_language = any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _SSP_LAW_PROGRAM_PATTERNS
+    ) or bool(re.search(r"\bexchange-only\b", normalized, re.IGNORECASE))
+    if not has_program_language:
+        return False
+
+    for sentence in _ssp_sentence_slices(normalized):
+        if any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _SSP_LAW_PROGRAM_PATTERNS
+        ):
+            continue
+        if re.search(r"\bexchange-only\b", sentence, re.IGNORECASE):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_PROHIBITION_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_ACTIVITY_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_STRICT_OBJECT_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS
+        ):
+            continue
+        return False
+
+    return True
+
+
 def _ssp_law_support_is_exemption_only(evidence_text: str) -> bool:
     """Return whether ssp_law support comes only from exemption-like paraphernalia text."""
     has_program_language = any(
@@ -5166,7 +5216,10 @@ def _apply_scope_existence_validator(
 
     if (
         variable_name == "dp_law"
-        and _dp_law_support_is_scope_limited(evidence_text)
+        and (
+            _dp_law_support_is_scope_limited(evidence_text)
+            or _dp_law_support_is_ssp_program_only(evidence_text)
+        )
         and not _dp_law_support_has_explicit_operative_rule(evidence_text)
     ):
         return response.model_copy(
