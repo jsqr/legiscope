@@ -3,6 +3,11 @@
 set -euo pipefail
 
 repo_root() {
+    if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+        printf '%s\n' "$SLURM_SUBMIT_DIR"
+        return 0
+    fi
+
     cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd
 }
 
@@ -36,7 +41,12 @@ run_job() {
     local root_dir
     local python_runner
 
-    root_dir="$(repo_root)"
+    root_dir="$(pwd)"
+    if [[ ! -d "$root_dir" ]]; then
+        echo "ERROR: working directory not found: $root_dir" >&2
+        exit 1
+    fi
+
     python_runner="$root_dir/scripts/dvc_python.sh"
 
     if [[ ! -x "$python_runner" ]]; then
