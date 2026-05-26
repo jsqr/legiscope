@@ -34,27 +34,11 @@ submit_job() {
 
 run_job() {
     local root_dir
-    local python_bin
 
     root_dir="$(repo_root)"
     cd "$root_dir"
 
-    if [[ -x .venv/bin/python ]]; then
-        python_bin=".venv/bin/python"
-    else
-        python_bin="python3"
-    fi
-
-    export PYTHONPATH="$root_dir/src${PYTHONPATH:+:$PYTHONPATH}"
-    export LEGISCOPE_PROJECT_ROOT="$root_dir"
-
-    "$python_bin" - <<'PY'
-import os
-import sys
-
-project_root = os.environ["LEGISCOPE_PROJECT_ROOT"]
-sys.path.insert(0, os.path.join(project_root, "src"))
-
+    bash scripts/dvc_python.sh -c '
 from legiscope.llm_config import Config
 
 client = Config.get_fast_client()
@@ -67,7 +51,7 @@ response = client.chat.completions.create(
 )
 
 print(response.choices[0].message.content)
-PY
+'
 }
 
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then
