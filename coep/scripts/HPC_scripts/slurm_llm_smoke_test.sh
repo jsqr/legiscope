@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-project_root() {
+repo_root() {
     cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd
 }
 
@@ -11,9 +11,11 @@ submit_job() {
     local time_limit="${SLURM_TIME_LIMIT:-00:05:00}"
     local script_path
     local logs_dir
+    local root_dir
 
     script_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-    logs_dir="$(project_root)/logs"
+    root_dir="$(repo_root)"
+    logs_dir="$root_dir/logs"
 
     mkdir -p "$logs_dir"
 
@@ -21,7 +23,7 @@ submit_job() {
         --job-name=llm-smoke \
         --partition="$partition" \
         --time="$time_limit" \
-        --chdir="$project_root" \
+        --chdir="$root_dir" \
         --cpus-per-task=1 \
         --mem=2G \
         --output="$logs_dir/%x_%j.out" \
@@ -31,11 +33,11 @@ submit_job() {
 }
 
 run_job() {
-    local project_root
+    local root_dir
     local python_bin
 
-    project_root="$(project_root)"
-    cd "$project_root"
+    root_dir="$(repo_root)"
+    cd "$root_dir"
 
     if [[ -x .venv/bin/python ]]; then
         python_bin=".venv/bin/python"
@@ -43,8 +45,8 @@ run_job() {
         python_bin="python3"
     fi
 
-    export PYTHONPATH="$project_root/src${PYTHONPATH:+:$PYTHONPATH}"
-    export LEGISCOPE_PROJECT_ROOT="$project_root"
+    export PYTHONPATH="$root_dir/src${PYTHONPATH:+:$PYTHONPATH}"
+    export LEGISCOPE_PROJECT_ROOT="$root_dir"
 
     "$python_bin" - <<'PY'
 import os
