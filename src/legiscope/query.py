@@ -5097,7 +5097,11 @@ def _apply_scope_existence_validator(
     if answer != "Yes":
         return response
 
-    if variable_name == "dp_law" and _dp_law_support_is_scope_limited(evidence_text):
+    if (
+        variable_name == "dp_law"
+        and _dp_law_support_is_scope_limited(evidence_text)
+        and not _dp_law_support_has_explicit_operative_rule(evidence_text)
+    ):
         return response.model_copy(
             update={
                 "short_answer": "No",

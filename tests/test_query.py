@@ -7167,6 +7167,41 @@ class TestScopeExistenceValidator:
         assert updated.short_answer == "Yes"
         assert "Validator promoted a No answer" in updated.limitations
 
+    def test_dp_law_does_not_downgrade_yes_when_explicit_operative_rule_present(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="The local ordinance is generally applicable and operative.",
+            citations=["Sec. 11-40"],
+            supporting_passages=[
+                "If any person shall keep or exhibit any box, pipe, cup, hypodermic needle, thing or apparatus used for unlawfully smoking, eating, inhaling, injecting or consuming any substance defined as a narcotic by A.R.S. section 13-3401, he shall be guilty of a misdemeanor."
+            ],
+            confidence=0.91,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-tucson-dp-law-yes",
+                heading_text="# Narcotics",
+                body_text=(
+                    "If any person shall keep or exhibit any box, pipe, cup, hypodermic needle, thing or apparatus used for unlawfully smoking, eating, inhaling, injecting or consuming any substance defined as a narcotic by A.R.S. section 13-3401, he shall be guilty of a misdemeanor."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "Yes"
+
     def test_dp_law_promotes_explicit_syringe_furnishing_rule(self):
         response = LegalQueryResponse(
             short_answer="No",
