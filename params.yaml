@@ -1,42 +1,28 @@
-# Pipeline parameters tracked by DVC
-# Changes here trigger pipeline reruns
-
-# Jurisdiction targeting (override via: dvc exp run -S jurisdiction.state=CA ...)
 jurisdiction:
-  state: PA
-  locality: Philadelphia
+  state: SD
+  locality: SiouxFalls
   code_slug: municipal-code
-  code_name: Philadelphia Municipal Code
-
-# LLM configuration
+  code_name: SiouxFalls Municipal Code
 llm:
   default_provider: litellm
-  # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
-  # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
   source: external
-
   providers:
     openai:
       fast: Qwen/Qwen3.5-27B
       powerful: Qwen/Qwen3.5-27B
-
     litellm:
       fast: gemini/gemini-3.1-flash-lite
       powerful: gemini/gemini-3.1-flash-lite
-      
     mistral:
       fast: mistral-small-2506
       powerful: mistral-large-2512
-
     ollama:
       fast: gemma3:4b
       powerful: gemma3:4b
       num_ctx: 4096
-
   temperature: 0.0
   max_retries: 3
   timeout: 1200
-
 parse:
   scan:
     initial_sample_count: 200
@@ -45,64 +31,44 @@ parse:
     max_retries: 3
     timeout: 1200
     max_tokens: 2400
-
-# Embedding configuration
 embeddings:
   default_provider: mistral
   chroma_batch_size: 100
-
   providers:
     mistral:
       model: codestral-embed-2505
       batch_size: 50
-
     ollama:
       model: embeddinggemma
       batch_size: 1
-
     openrouter:
       model: qwen/qwen3-embedding-8b
       batch_size: 100
-
     openai:
       model: text-embedding-3-small
       batch_size: 100
-
   dtype: float32
-
-# Segmentation settings
 segmentation:
   embedding_model_token_limit: 1024
   llm_context_limit: 16385
-
-# Retrieval: vector search and post-retrieval filtering
 retrieval:
   n_results: 10
   distance_metric: l2
-  debug: true  
-
+  debug: true
   lexical_overfetch_factor: 3
   lexical_reranking:
     enabled: false
-
-  # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:
     enabled: false
-
-  # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
     enabled: false
     threshold: 0.6
     max_concurrency: 4
     target_concurrent_prompt_tokens: 16000
     prompt_overhead_tokens: 600
-
-# Benchmark evaluation settings
 benchmark:
   evaluation:
     max_concurrency: 4
-
-# Query: LLM analysis of retrieved context (uses powerful model)
 query:
   validation:
     enabled: true
@@ -111,6 +77,6 @@ query:
   review:
     enabled: true
     topics:
-      - prohibited_activity
-      - penalty
-      - exemption_presence
+    - prohibited_activity
+    - penalty
+    - exemption_presence
