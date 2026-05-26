@@ -34,11 +34,19 @@ submit_job() {
 
 run_job() {
     local root_dir
+    local python_runner
 
     root_dir="$(repo_root)"
+    python_runner="$root_dir/scripts/dvc_python.sh"
+
+    if [[ ! -x "$python_runner" ]]; then
+        echo "ERROR: Python runner not found: $python_runner" >&2
+        exit 1
+    fi
+
     cd "$root_dir"
 
-    bash scripts/dvc_python.sh -c '
+    bash "$python_runner" -c '
 from legiscope.llm_config import Config
 
 client = Config.get_fast_client()
