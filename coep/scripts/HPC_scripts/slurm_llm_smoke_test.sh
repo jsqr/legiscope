@@ -63,6 +63,7 @@ run_job() {
 from pydantic import BaseModel
 
 from legiscope.llm_config import Config
+from legiscope.utils import create_structured_completion
 
 
 class SmokeTestResponse(BaseModel):
@@ -70,12 +71,14 @@ class SmokeTestResponse(BaseModel):
 
 client = Config.get_fast_client()
 params = Config.get_llm_params(model=Config.get_fast_model())
-response = client.chat.completions.create(
+response = create_structured_completion(
+    client=client,
     messages=[
         {"role": "system", "content": "Return structured output with the exact user-requested reply text."},
         {"role": "user", "content": "Set reply to exactly: slurm smoke test passed"},
     ],
     response_model=SmokeTestResponse,
+    retry_label="SLURM smoke test LLM request",
     **params,
 )
 
