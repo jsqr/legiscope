@@ -60,18 +60,26 @@ run_job() {
     cd "$PROJECT_ROOT"
 
     bash "$python_runner" -c '
+from pydantic import BaseModel
+
 from legiscope.llm_config import Config
+
+
+class SmokeTestResponse(BaseModel):
+    reply: str
 
 client = Config.get_fast_client()
 params = Config.get_llm_params(model=Config.get_fast_model())
 response = client.chat.completions.create(
     messages=[
-        {"role": "user", "content": "Reply with exactly: slurm smoke test passed"},
+        {"role": "system", "content": "Return structured output with the exact user-requested reply text."},
+        {"role": "user", "content": "Set reply to exactly: slurm smoke test passed"},
     ],
+    response_model=SmokeTestResponse,
     **params,
 )
 
-print(response.choices[0].message.content)
+print(response.reply)
 '
 }
 
