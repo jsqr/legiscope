@@ -5493,6 +5493,69 @@ def _definition_type_support_is_product_only_noise(text: str) -> bool:
     )
 
 
+def _definition_type_pipe_support_survives_product_only_noise(text: str) -> bool:
+    """Return whether product-only smoking text still gives explicit pipe support."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:pipe|water pipe|electric pipe|chillum|bong|inhal(?:e|ing|ation))\b",
+            normalized,
+            re.IGNORECASE,
+        )
+        and re.search(r"\bparaphernalia\b", normalized, re.IGNORECASE)
+    )
+
+
+def _reasoning_mentions_positive_penalty_option(
+    reasoning_text: str,
+    option: str,
+) -> bool:
+    """Return whether reasoning positively asserts a penalty option rather than negating it."""
+    normalized_option = _normalize_option_text(option)
+    sentence_patterns: dict[str, tuple[str, ...]] = {
+        _normalize_option_text("Civil Fine"): (
+            r"\bcivil (?:fine|penalt)y\b",
+        ),
+        _normalize_option_text("Criminal Fine"): (
+            r"\bcriminal fine\b",
+        ),
+        _normalize_option_text("Infraction"): (r"\binfraction\b",),
+        _normalize_option_text("Misdemeanor"): (r"\bmisdemeanor\b",),
+        _normalize_option_text("Felony"): (r"\bfelony\b",),
+        _normalize_option_text("Incarceration"): (
+            r"\bimprison(?:ment|ed)?\b",
+            r"\bjail\b",
+            r"\bincarceration\b",
+        ),
+        _normalize_option_text("Forfeiture/Seizure"): (
+            r"\bforfeit(?:ed|ure)?\b",
+            r"\bseiz(?:e|ed|ure)\b",
+        ),
+    }
+    negation_patterns = (
+        r"\bno\b[^.\n]{0,80}\b(?:other\s+)?penalt(?:y|ies|ies are)\b",
+        r"\bnot\b[^.\n]{0,80}\b(?:coded|selected|specified|provided|supported|applicable|present|labeled|classified|included)\b",
+        r"\bdoes not\b[^.\n]{0,80}\b(?:mention|specify|provide|label|classify|support|include)\b",
+        r"\bdo not\b[^.\n]{0,80}\b(?:mention|specify|provide|label|classify|support|include)\b",
+        r"\bnot explicitly\b[^.\n]{0,80}\b(?:label|classify|call)\b",
+        r"\bexcluded?\b",
+        r"\bonly\b[^.\n]{0,80}\b(?:note|reference note|cross-reference)\b",
+        r"\bwithout\b[^.\n]{0,80}\b(?:support|penalt(?:y|ies)|mention)\b",
+    )
+    for sentence in _review_text_sentences(reasoning_text):
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in sentence_patterns.get(normalized_option, ())
+        ):
+            continue
+        if any(re.search(pattern, sentence, re.IGNORECASE) for pattern in negation_patterns):
+            continue
+        return True
+    return False
+
+
 def _authoritative_option_supports_selection(
     *,
     guidance_topic: str,
@@ -5550,7 +5613,12 @@ def _authoritative_option_supports_selection(
         and normalized != _normalize_option_text("Other")
         and _definition_type_support_is_product_only_noise(item_text or evidence_text)
     ):
-        return False
+        if normalized != _normalize_option_text(
+            "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies"
+        ) or not _definition_type_pipe_support_survives_product_only_noise(
+            item_text or evidence_text
+        ):
+            return False
 
     if guidance_topic == "ssp_restriction":
         # Require direct per-option support for SSP restriction labels to avoid multi-label inflation.
@@ -7025,27 +7093,19 @@ def _short_answer_reasoning_conflict_signal(
     if guidance_topic == "penalty":
         reasoning_text = str(response.reasoning or "")
         expected_options: list[str] = []
-        if re.search(r"\bcivil (?:fine|penalt)y\b", reasoning_text, re.IGNORECASE):
+        if _reasoning_mentions_positive_penalty_option(reasoning_text, "Civil Fine"):
             expected_options.append("Civil Fine")
-        if re.search(r"\bcriminal fine\b", reasoning_text, re.IGNORECASE):
+        if _reasoning_mentions_positive_penalty_option(reasoning_text, "Criminal Fine"):
             expected_options.append("Criminal Fine")
-        if re.search(r"\binfraction\b", reasoning_text, re.IGNORECASE):
+        if _reasoning_mentions_positive_penalty_option(reasoning_text, "Infraction"):
             expected_options.append("Infraction")
-        if re.search(r"\bmisdemeanor\b", reasoning_text, re.IGNORECASE):
+        if _reasoning_mentions_positive_penalty_option(reasoning_text, "Misdemeanor"):
             expected_options.append("Misdemeanor")
-        if re.search(r"\bfelony\b", reasoning_text, re.IGNORECASE):
+        if _reasoning_mentions_positive_penalty_option(reasoning_text, "Felony"):
             expected_options.append("Felony")
-        if re.search(
-            r"\bimprison(?:ment|ed)?\b|\bjail\b|\bincarceration\b",
-            reasoning_text,
-            re.IGNORECASE,
-        ):
+        if _reasoning_mentions_positive_penalty_option(reasoning_text, "Incarceration"):
             expected_options.append("Incarceration")
-        if re.search(
-            r"\bforfeit(?:ed|ure)?\b|\bseiz(?:e|ed|ure)\b",
-            reasoning_text,
-            re.IGNORECASE,
-        ):
+        if _reasoning_mentions_positive_penalty_option(reasoning_text, "Forfeiture/Seizure"):
             expected_options.append("Forfeiture/Seizure")
 
         missing_options = [

@@ -532,7 +532,7 @@ class TestAuthoritativeOptionEvidenceGate:
 
         assert gated.short_answer == "Not specified"
 
-    def test_definition_type_gate_keeps_product_only_smoking_definition_in_other(self):
+    def test_definition_type_gate_keeps_explicit_pipe_support_in_product_only_smoking_definition(self):
         response = LegalQueryResponse(
             short_answer="Not specified",
             reasoning="Initial answer missed the explicit paraphernalia definition.",
@@ -587,7 +587,10 @@ class TestAuthoritativeOptionEvidenceGate:
             },
         )
 
-        assert gated.short_answer == "Other"
+        assert (
+            gated.short_answer
+            == "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR Other"
+        )
 
     def test_definition_type_gate_recovers_guidance_topic_from_variable_name(self):
         response = LegalQueryResponse(
@@ -634,7 +637,10 @@ class TestAuthoritativeOptionEvidenceGate:
             },
         )
 
-        assert gated.short_answer == "Other"
+        assert (
+            gated.short_answer
+            == "Pipes, other smoke/ing or inhal/ing/ation equipment or supplies AND/OR Other"
+        )
 
     def test_definition_type_gate_keeps_explicit_drug_paraphernalia_pipe_support(self):
         response = LegalQueryResponse(
@@ -2279,6 +2285,45 @@ class TestSecondStageStructuredValidators:
         assert any(
             signal.issue == "reasoning_mentions_unselected_penalty_option"
             and signal.option == "Civil Fine"
+            for signal in decision.reasons
+        )
+
+    def test_answer_review_decision_ignores_negated_penalty_mentions(self):
+        response = LegalQueryResponse(
+            short_answer='"Unlawful" only',
+            reasoning=(
+                "The penalty section text is not provided here. No other penalties "
+                "such as incarceration or criminal fines are specified, and misdemeanor "
+                "appears only in a reference note so it is not coded."
+            ),
+            citations=["§ 134.26"],
+            supporting_passages=["It shall be unlawful for any person to use or possess with intent to use drug paraphernalia."],
+            confidence=0.71,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=True),
+                ResponseOptionEvidence(option="Misdemeanor", selected=False),
+                ResponseOptionEvidence(option="Criminal Fine", selected=False),
+                ResponseOptionEvidence(option="Incarceration", selected=False),
+            ],
+        )
+
+        decision = query_module._build_answer_review_decision(
+            response=response,
+            sections=[],
+            query_metadata={
+                "variable_name": "dp_penalties",
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Misdemeanor AND/OR Criminal Fine AND/OR Incarceration',
+            },
+            settings=QuerySettings(
+                llm=LLMConfig(client=Mock()),
+                enable_answer_review=True,
+            ),
+        )
+
+        assert not any(
+            signal.issue == "reasoning_mentions_unselected_penalty_option"
             for signal in decision.reasons
         )
 
