@@ -7131,6 +7131,77 @@ class TestScopeExistenceValidator:
 
         assert updated.short_answer == "No"
 
+    def test_dp_law_promotes_explicit_local_rule_with_state_reference(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="The local ordinance appears tied to a state narcotics definition.",
+            citations=["Sec. 11-40"],
+            supporting_passages=[
+                "If any person shall keep or exhibit any box, pipe, cup, hypodermic needle, thing or apparatus used for unlawfully smoking, eating, inhaling, injecting or consuming any substance defined as a narcotic by A.R.S. section 13-3401, he shall be guilty of a misdemeanor."
+            ],
+            confidence=0.55,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-tucson-dp-law",
+                heading_text="# Narcotics",
+                body_text=(
+                    "If any person shall keep or exhibit any box, pipe, cup, hypodermic needle, thing or apparatus used for unlawfully smoking, eating, inhaling, injecting or consuming any substance defined as a narcotic by A.R.S. section 13-3401, he shall be guilty of a misdemeanor."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "Yes"
+        assert "Validator promoted a No answer" in updated.limitations
+
+    def test_dp_law_promotes_explicit_syringe_furnishing_rule(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="This chapter concerns syringes and state-law compliance.",
+            citations=["§ 9.29.030"],
+            supporting_passages=[
+                "No person shall furnish a syringe to an adult for either human or animal use other than as authorized by and in strict conformity with State and federal law."
+            ],
+            confidence=0.51,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-chico-dp-law",
+                heading_text="# Chapter 9.29",
+                body_text=(
+                    "No person shall furnish a syringe to an adult for either human or animal use other than as authorized by and in strict conformity with State and federal law."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "Yes"
+
     def test_ssp_law_downgrades_exemption_only_text(self):
         response = LegalQueryResponse(
             short_answer="Yes",

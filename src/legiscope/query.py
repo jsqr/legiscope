@@ -5071,11 +5071,30 @@ def _apply_scope_existence_validator(
         return response
     if not _response_short_answer_is_yes_no(response):
         return response
-    if str(response.short_answer or "").strip() != "Yes":
-        return response
 
     evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
     if not evidence_text.strip():
+        return response
+
+    answer = str(response.short_answer or "").strip()
+
+    if (
+        variable_name == "dp_law"
+        and answer == "No"
+        and _dp_law_support_has_explicit_operative_rule(evidence_text)
+    ):
+        return response.model_copy(
+            update={
+                "short_answer": "Yes",
+                "confidence": max(float(response.confidence), 0.7),
+                "limitations": _append_validation_limitation(
+                    response.limitations,
+                    "Validator promoted a No answer because the cited support contains an explicit local operative paraphernalia prohibition rather than only narrow-scope or background text.",
+                ),
+            }
+        )
+
+    if answer != "Yes":
         return response
 
     if variable_name == "dp_law" and _dp_law_support_is_scope_limited(evidence_text):
@@ -5603,6 +5622,42 @@ _DPL_OPERATIVE_SUPPORT_PATTERNS = (
     r"\bdrug paraphernalia does not include\b",
 )
 
+_DPL_OPERATIVE_ACTIVITY_PATTERNS = (
+    r"\bpossess(?:ion)?\b",
+    r"\bkeep\b",
+    r"\bexhibit\b",
+    r"\bsell\b",
+    r"\boffer for sale\b",
+    r"\bdeliver(?:y)?\b",
+    r"\bdistribut(?:e|ion)\b",
+    r"\btransfer\b",
+    r"\bfurnish\b",
+    r"\bgive(?:n|away)?\b",
+    r"\bexchange\b",
+    r"\buse\b",
+    r"\bmanufactur(?:e|ing)\b",
+)
+
+_DPL_OPERATIVE_PROHIBITION_PATTERNS = (
+    r"\bno person shall\b",
+    r"\bif any person shall\b",
+    r"\bit is unlawful\b",
+    r"\bshall be unlawful\b",
+    r"\bprohibited\b",
+    r"\billegal\b",
+    r"\boffense\b",
+    r"\bshall be guilty\b",
+)
+
+_DPL_OPERATIVE_DRUG_SCOPE_PATTERNS = (
+    r"\bdrug paraphernalia\b",
+    r"\bparaphernalia\b",
+    r"\bnarcotic\b",
+    r"\bcontrolled substances?\b",
+    r"\b(?:smoking|eating|inhaling|injecting|consuming)\b",
+    r"\b(?:pipe|needle|syringe|hypodermic|apparatus)\b",
+)
+
 _PENALTY_ADMIN_ONLY_PATTERNS = (
     r"\bcivil citation\b",
     r"\bacc program\b",
@@ -5673,6 +5728,50 @@ def _dpl_scope_support_is_noise_only(text: str) -> bool:
         re.search(pattern, normalized, re.IGNORECASE)
         for pattern in _DPL_SCOPE_NOISE_ONLY_PATTERNS
     )
+
+
+def _dp_law_support_has_explicit_operative_rule(text: str) -> bool:
+    """Return whether evidence contains an explicit local operative paraphernalia prohibition."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    if _dpl_scope_support_is_noise_only(normalized):
+        return False
+
+    for sentence in _ssp_sentence_slices(normalized):
+        if any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DP_LAW_BUSINESS_ONLY_PATTERNS
+        ):
+            continue
+        if any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DP_LAW_MINORS_ONLY_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_PROHIBITION_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_ACTIVITY_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _PARAPHERNALIA_OBJECT_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS
+        ):
+            continue
+        return True
+
+    return False
 
 
 def _definition_type_support_is_product_only_noise(text: str) -> bool:
