@@ -20,9 +20,15 @@ llm:
       fast: Qwen/Qwen3.5-27B
       powerful: Qwen/Qwen3.5-27B
 
+    dashscope:
+      # Swap these for Alibaba-hosted frontier models as needed, e.g.
+      # qwen3.7-max, deepseek-v4-pro, kimi-k2.6
+      fast: qwen3.7-max
+      powerful: qwen3.7-max
+
     litellm:
-      fast: gemini/gemini-3.5-flash
-      powerful: gemini/gemini-3.5-flash
+      fast: gpt-5.5
+      powerful: gpt-5.5
       
     mistral:
       fast: mistral-small-2506

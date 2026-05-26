@@ -20,6 +20,7 @@ _BASE_PARAMS = {
     "llm": {
         "default_provider": "mistral",
         "providers": {
+            "dashscope": {"fast": "qwen3.7-max", "powerful": "qwen3.7-max"},
             "openai": {"fast": "gpt-4.1-mini", "powerful": "gpt-4.1"},
             "litellm": {
                 "fast": "gemini/gemini-3.5-flash",
@@ -142,6 +143,50 @@ class TestProviderSwitch:
                 Config.get_powerful_model()
                 == _BASE_PARAMS["llm"]["providers"]["litellm"]["powerful"]
             )
+
+    def test_dashscope_provider_models(self):
+        p = _params_with(**{"llm.default_provider": "dashscope"})
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            assert Config.get_llm_provider() == "dashscope"
+            assert (
+                Config.get_fast_model()
+                == _BASE_PARAMS["llm"]["providers"]["dashscope"]["fast"]
+            )
+            assert (
+                Config.get_powerful_model()
+                == _BASE_PARAMS["llm"]["providers"]["dashscope"]["powerful"]
+            )
+
+
+class TestDashScopeClient:
+    def test_dashscope_client_uses_openai_compatible_runtime_defaults(self):
+        p = _params_with(**{"llm.default_provider": "dashscope"})
+        fake_client = Mock()
+
+        with (
+            patch("legiscope.llm_config.load_params", return_value=p),
+            patch(
+                "legiscope.llm_config.get_config",
+                side_effect=lambda key, default=None: {
+                    "llm.dashscope.api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "llm.dashscope.api_key_env": "DASHSCOPE_API_KEY",
+                }.get(key, default),
+            ),
+            patch.dict("os.environ", {"DASHSCOPE_API_KEY": "secret"}),
+            patch("legiscope.llm_config.OpenAI", create=True) as _ignored,
+            patch("openai.OpenAI", return_value=fake_client) as mock_openai,
+            patch("legiscope.llm_config.instructor.from_openai") as mock_from_openai,
+        ):
+            Config.get_fast_client()
+
+        mock_openai.assert_called_once_with(
+            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+            api_key="secret",
+        )
+        mock_from_openai.assert_called_once_with(
+            fake_client,
+            mode=instructor.Mode.JSON,
+        )
 
 
 class TestLiteLLMClient:

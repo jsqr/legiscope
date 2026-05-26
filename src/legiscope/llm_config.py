@@ -38,6 +38,7 @@ def _provider_config() -> dict:
     providers = p.get("llm", {}).get("providers", {})
 
     mode_map = {
+        "dashscope": instructor.Mode.JSON,
         "openai": instructor.Mode.JSON,
         "mistral": instructor.Mode.MISTRAL_TOOLS,
         "ollama": None,  # auto-configures
@@ -78,6 +79,23 @@ def _get_litellm_runtime_kwargs() -> dict[str, Any]:
     return runtime_kwargs
 
 
+def _get_dashscope_runtime_kwargs() -> dict[str, Any]:
+    """Return DashScope OpenAI-compatible client kwargs from config.yaml."""
+    base_url = get_config("llm.dashscope.api_base") or os.getenv(
+        "DASHSCOPE_API_BASE"
+    )
+    api_key_env = get_config("llm.dashscope.api_key_env") or "DASHSCOPE_API_KEY"
+    api_key = os.getenv(str(api_key_env))
+
+    runtime_kwargs: dict[str, Any] = {
+        "base_url": str(base_url or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+    }
+    if api_key:
+        runtime_kwargs["api_key"] = api_key
+
+    return runtime_kwargs
+
+
 def _litellm_uses_fixed_temperature(model: str) -> bool:
     """Return whether the LiteLLM model rejects explicit temperature overrides."""
     normalized = model.strip().casefold()
@@ -104,6 +122,18 @@ def _build_client(
     provider: str, model: str, mode: instructor.Mode | None
 ) -> Instructor:
     """Construct an instructor client for the configured provider/model pair."""
+    if provider == "dashscope":
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "DashScope support requires the 'openai' package. "
+                'Install dependencies with `uv sync` or `uv pip install -e ".[dev]"`.'
+            ) from exc
+
+        client = OpenAI(**_get_dashscope_runtime_kwargs())
+        return instructor.from_openai(client, mode=mode or instructor.Mode.JSON)
+
     if provider == "litellm":
         try:
             from litellm import completion

@@ -26,6 +26,14 @@ database:
     model_suffix: true  # Append model name to collection (e.g., legal_code_mistral)
 
 llm:
+  dashscope:
+    # DashScope exposes an OpenAI-compatible endpoint used for Qwen, DeepSeek,
+    # Kimi, and other Alibaba-hosted models.
+    # International: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+    # China/Beijing: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    api_key_env: "DASHSCOPE_API_KEY"
+
   litellm:
     # Set these when routing through a LiteLLM proxy or gateway.
     # Leave unset when LiteLLM should talk directly to OpenAI/Anthropic/Gemini
