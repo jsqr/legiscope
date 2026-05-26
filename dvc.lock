@@ -1,26 +1,26 @@
 schema: '2.0'
 stages:
   parse:
-    cmd: bash scripts/dvc_python.sh scripts/parse.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/parse.py --state TX --locality 
+      FortWorth --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/raw
+    - path: data/laws/TX/FortWorth/municipal-code/raw
       hash: md5
-      md5: 68b50f2df420eb326d208024ef0da04a.dir
-      size: 23142398
+      md5: 00cde46b7c89fddba87c4b7058841df3.dir
+      size: 48956380
       nfiles: 1
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/parse.py
       hash: md5
       md5: c702515e8f681bc6163fc033787cfcc7
       size: 1111
     - path: src/legiscope/parse
       hash: md5
-      md5: b839f52ec65fc586e4cdf36f38d3c4bf.dir
-      size: 132603
+      md5: 53e789f233e04a63609af8fda55c9449.dir
+      size: 302352
       nfiles: 14
     - path: tmp/validate_import.ok
       hash: md5
@@ -29,16 +29,20 @@ stages:
     params:
       params.yaml:
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: TX
+          locality: FortWorth
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: FortWorth Municipal Code
         llm:
-          default_provider: ollama
+          default_provider: litellm
+          source: external
           providers:
             openai:
-              fast: Qwen/Qwen2.5-3B-Instruct
-              powerful: Qwen/Qwen2.5-3B-Instruct
+              fast: Qwen/Qwen3.5-27B
+              powerful: Qwen/Qwen3.5-27B
+            litellm:
+              fast: gemini/gemini-3.1-flash-lite
+              powerful: gemini/gemini-3.1-flash-lite
             mistral:
               fast: mistral-small-2506
               powerful: mistral-large-2512
@@ -48,163 +52,305 @@ stages:
               num_ctx: 4096
           temperature: 0.0
           max_retries: 3
-          timeout: 300
+          timeout: 1200
     outs:
-    - path: data/laws/PA/Philadelphia/municipal-code/code.md
+    - path: data/laws/TX/FortWorth/municipal-code/code.md
       hash: md5
-      md5: 19edf3e768a6365bc679c9cc254f68c4
-      size: 8473712
-    - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
+      md5: a5ea95b9a005deab95414d1398371ec6
+      size: 8541860
+    - path: data/laws/TX/FortWorth/municipal-code/headings.parquet
       hash: md5
-      md5: a69554ce15a1062263ccca0b0d1db65e
-      size: 18090
+      md5: 39f35e6adb91db7c6209346e56c4313e
+      size: 164325
+    - path: data/laws/TX/FortWorth/municipal-code/regions.parquet
+      hash: md5
+      md5: 1d9276c447818a86b9636d3dce5aad4b
+      size: 12713
+    - path: data/output/TX-FortWorth/debug/heading_scan_debug.json
+      hash: md5
+      md5: ec3be6a01c97ed50f67f2d7d74f83ac1
+      size: 77352
   segment:
-    cmd: bash scripts/dvc_python.sh scripts/segment.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/segment.py --state TX --locality 
+      FortWorth --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/code.md
+    - path: data/laws/TX/FortWorth/municipal-code/code.md
       hash: md5
-      md5: 19edf3e768a6365bc679c9cc254f68c4
-      size: 8473712
-    - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
+      md5: a5ea95b9a005deab95414d1398371ec6
+      size: 8541860
+    - path: data/laws/TX/FortWorth/municipal-code/headings.parquet
       hash: md5
-      md5: a69554ce15a1062263ccca0b0d1db65e
-      size: 18090
+      md5: 39f35e6adb91db7c6209346e56c4313e
+      size: 164325
+    - path: data/laws/TX/FortWorth/municipal-code/regions.parquet
+      hash: md5
+      md5: 1d9276c447818a86b9636d3dce5aad4b
+      size: 12713
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/segment.py
       hash: md5
-      md5: 50b01c5ddbc22131de2f890f89c50e02
-      size: 1541
+      md5: dc1c52cac2d96ce0c0839327fc8a2a96
+      size: 1717
     - path: src/legiscope/segment.py
       hash: md5
-      md5: 79af3f6fcb5d1b9a923864049132b71e
-      size: 35458
+      md5: a0a93d4e715a5de7fad59a623d3472c1
+      size: 70161
     params:
       params.yaml:
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: TX
+          locality: FortWorth
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: FortWorth Municipal Code
         segmentation:
-          token_limit: 1024
+          embedding_model_token_limit: 1024
+          llm_context_limit: 16385
     outs:
-    - path: data/laws/PA/Philadelphia/municipal-code/external_references.parquet
+    - path: data/laws/TX/FortWorth/municipal-code/chunks.parquet
+      hash: md5
+      md5: a984c37618746c6a43524b716ca21e8c
+      size: 1886952
+    - path: data/laws/TX/FortWorth/municipal-code/external_references.parquet
       hash: md5
       md5: 61a94b29211d82d0d4dd0bbba2d8735e
       size: 1146
-    - path: data/laws/PA/Philadelphia/municipal-code/relations.parquet
+    - path: data/laws/TX/FortWorth/municipal-code/relations.parquet
       hash: md5
       md5: 8438cdbe094beef79e1782de826157c0
       size: 913
-    - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
+    - path: data/laws/TX/FortWorth/municipal-code/sections.parquet
       hash: md5
-      md5: ca9f4b70bebf7de9ae511333f570c090
-      size: 1572
-    - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
+      md5: 9848d8ee47ad3c9db8fc67e8cbb5e194
+      size: 1886446
+    - path: data/laws/TX/FortWorth/municipal-code/segments.parquet
       hash: md5
-      md5: e09464f21ae4055c506ad295d00f9c7a
-      size: 1894
+      md5: 8f61fb23a784cedff099464067f837e1
+      size: 1908500
   embed:
-    cmd: bash scripts/dvc_python.sh scripts/embed.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/embed.py --state TX --locality 
+      FortWorth --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
+    - path: data/laws/TX/FortWorth/municipal-code/sections.parquet
       hash: md5
-      md5: ca9f4b70bebf7de9ae511333f570c090
-      size: 1572
-    - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
+      md5: 9848d8ee47ad3c9db8fc67e8cbb5e194
+      size: 1886446
+    - path: data/laws/TX/FortWorth/municipal-code/segments.parquet
       hash: md5
-      md5: e09464f21ae4055c506ad295d00f9c7a
-      size: 1894
+      md5: 8f61fb23a784cedff099464067f837e1
+      size: 1908500
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/embed.py
       hash: md5
-      md5: 74cde80e0872702b5ef327bf2ea94d9e
-      size: 2480
+      md5: 6825142bfaec08a1eb19ef407798a4d1
+      size: 2544
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: b44226404e62155c563f5a1b37657be6
-      size: 47056
+      md5: f54cbde38342d529d3a390c17d06604a
+      size: 62041
     params:
       params.yaml:
         embeddings:
-          default_provider: openrouter
+          default_provider: mistral
           chroma_batch_size: 100
           providers:
             mistral:
-              model: mistral-embed
-              batch_size: 100
+              model: codestral-embed-2505
+              batch_size: 50
             ollama:
               model: embeddinggemma
               batch_size: 1
             openrouter:
               model: qwen/qwen3-embedding-8b
               batch_size: 100
+            openai:
+              model: text-embedding-3-small
+              batch_size: 100
           dtype: float32
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: TX
+          locality: FortWorth
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: FortWorth Municipal Code
     outs:
-    - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
+    - path: data/laws/TX/FortWorth/municipal-code/embeddings.parquet
       hash: md5
-      md5: 39fb95de6d59faaf796be7a93ca57fd6
-      size: 1133
+      md5: d4c48fa971a8790d5fd1158982857649
+      size: 14089896
   index:
-    cmd: bash scripts/dvc_python.sh scripts/index.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/index.py --state TX --locality 
+      FortWorth --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
+    - path: data/laws/TX/FortWorth/municipal-code/embeddings.parquet
       hash: md5
-      md5: 39fb95de6d59faaf796be7a93ca57fd6
-      size: 1133
+      md5: d4c48fa971a8790d5fd1158982857649
+      size: 14089896
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/index.py
       hash: md5
-      md5: c60e4880c09de2a3292db1f0ecc51e89
-      size: 2658
+      md5: b82d34344694d7f8f5dd8b0e2627bbac
+      size: 2951
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: b44226404e62155c563f5a1b37657be6
-      size: 47056
+      md5: f54cbde38342d529d3a390c17d06604a
+      size: 62041
     params:
       params.yaml:
-        embeddings.default_provider: openrouter
+        embeddings.default_provider: mistral
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: TX
+          locality: FortWorth
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: FortWorth Municipal Code
         retrieval.distance_metric: l2
+    outs:
+    - path: data/laws/TX/FortWorth/municipal-code/index.stamp
+      hash: md5
+      md5: bc2100afe8d9e388aad80c9b94171342
+      size: 58
   validate:
     cmd: "bash -c 'bash scripts/dvc_python.sh -c \"import legiscope; print(f\\\"Package
       import works: {legiscope.__file__}\\\")\" && mkdir -p tmp && echo ok > tmp/validate_import.ok'"
     deps:
     - path: pyproject.toml
       hash: md5
-      md5: 281105843535089764191cf36093417b
-      size: 1269
+      md5: b743bd914220ca1b0d9d74c0a0efb7fc
+      size: 1300
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: src/legiscope/__init__.py
       hash: md5
-      md5: a8b33b5c5e1ef0f62eb486a23ed1cfef
-      size: 2189
+      md5: ebe365f9bcb5ddb104483565508e88b7
+      size: 2408
     outs:
     - path: tmp/validate_import.ok
       hash: md5
       md5: eff5bc1ef8ec9d03e640fc4370f5eacd
       size: 3
+  benchmark:
+    cmd: bash scripts/dvc_python.sh coep/scripts/benchmark_pipeline.py --state 
+      TX --locality FortWorth --code-slug municipal-code
+    deps:
+    - path: coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv
+      hash: md5
+      md5: 4894e1808fc491d39e24c4b5ba666887
+      size: 851633
+    - path: coep/scripts/benchmark_pipeline.py
+      hash: md5
+      md5: da88a35ca54e97e6fc24dcb9e20cb725
+      size: 68476
+    - path: coep/src/eval.py
+      hash: md5
+      md5: 20114a8ea357a35c51d4b8c841a6a45c
+      size: 28577
+    - path: coep/src/query.py
+      hash: md5
+      md5: e398cdeb1be9ab14cc2277ab2e4aabb3
+      size: 2812
+    - path: data/laws/TX/FortWorth/municipal-code/chunks.parquet
+      hash: md5
+      md5: a984c37618746c6a43524b716ca21e8c
+      size: 1886952
+    - path: data/laws/TX/FortWorth/municipal-code/embeddings.parquet
+      hash: md5
+      md5: d4c48fa971a8790d5fd1158982857649
+      size: 14089896
+    - path: data/laws/TX/FortWorth/municipal-code/index.stamp
+      hash: md5
+      md5: bc2100afe8d9e388aad80c9b94171342
+      size: 58
+    - path: data/laws/TX/FortWorth/municipal-code/sections.parquet
+      hash: md5
+      md5: 9848d8ee47ad3c9db8fc67e8cbb5e194
+      size: 1886446
+    - path: data/queries/DPL_queries_with_context.csv
+      hash: md5
+      md5: 5012fc22efcc75c2d0e27332f48ce6da
+      size: 35829
+    - path: scripts/dvc_python.sh
+      hash: md5
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
+    - path: src/legiscope/query.py
+      hash: md5
+      md5: 72aeaaee4d1a19c6d3015a3208a9a8e4
+      size: 351629
+    - path: src/legiscope/retrieve.py
+      hash: md5
+      md5: 087d052044f720a2958c4be8b58ce2b2
+      size: 63087
+    params:
+      params.yaml:
+        benchmark:
+          evaluation:
+            max_concurrency: 4
+        jurisdiction:
+          state: TX
+          locality: FortWorth
+          code_slug: municipal-code
+          code_name: FortWorth Municipal Code
+        llm:
+          default_provider: litellm
+          source: external
+          providers:
+            openai:
+              fast: Qwen/Qwen3.5-27B
+              powerful: Qwen/Qwen3.5-27B
+            litellm:
+              fast: gemini/gemini-3.1-flash-lite
+              powerful: gemini/gemini-3.1-flash-lite
+            mistral:
+              fast: mistral-small-2506
+              powerful: mistral-large-2512
+            ollama:
+              fast: gemma3:4b
+              powerful: gemma3:4b
+              num_ctx: 4096
+          temperature: 0.0
+          max_retries: 3
+          timeout: 1200
+        query:
+          validation:
+            enabled: true
+            exact_match_threshold: 1.0
+            fuzzy_match_threshold: 0.9
+          review:
+            enabled: true
+            topics:
+            - prohibited_activity
+            - penalty
+            - exemption_presence
+        retrieval:
+          n_results: 5
+          distance_metric: l2
+          debug: true
+          lexical_overfetch_factor: 3
+          lexical_reranking:
+            enabled: false
+          hyde:
+            enabled: false
+          relevance_filter:
+            enabled: false
+            threshold: 0.6
+            max_concurrency: 4
+            target_concurrent_prompt_tokens: 16000
+            prompt_overhead_tokens: 600
+    outs:
+    - path: data/output/TX-FortWorth/benchmark_metrics.json
+      hash: md5
+      md5: c02af034c7566b66ccf5e49be7310f76
+      size: 1244
+    - path: data/output/TX-FortWorth/benchmark_results.csv
+      hash: md5
+      md5: 6883b41b87774cfd97e6744e258b4bce
+      size: 490395
