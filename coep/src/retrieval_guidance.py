@@ -941,6 +941,7 @@ _VARIABLE_OVERRIDES = {
             "For dp_law, answer Yes whenever operative local ordinance text prohibits or regulates drug paraphernalia used with controlled substances beyond a narrow minors-only or business-access rule. "
             "A generally applicable paraphernalia prohibition, paraphernalia sales/delivery/manufacturing rule, or local paraphernalia-regulation chapter counts as Yes. "
             "Do not answer No merely because the ordinance is framed around sale, delivery, display, or business operation if the same operative text governs drug paraphernalia legality more broadly. "
+            "Answer No when the only support is a business-only ban on a paraphernalia retailer or head shop, a minors-only paraphernalia rule, or a generic citywide adoption of state criminal code that does not itself state the local paraphernalia rule. "
             "Answer No when the retrieved support is only tobacco-retailer compliance language, smoking-regulation text, SSP facility-permitting/location rules, park restrictions, zoning, or other business-administration text that mentions paraphernalia without creating the operative local paraphernalia rule. "
             "Treat business-only restrictions, tobacco-retail chapters, and SSP facility-location chapters as noise unless the same operative clause independently creates or narrows the drug paraphernalia law."
         ),
@@ -1213,6 +1214,7 @@ _VARIABLE_OVERRIDES = {
             "`Declaration of Local Public Health Emergency` and `The Mayor is hereby empowered to declare the existence of a Local "
             "Public Health Emergency when the authorization of clean needle and syringe exchange projects would abate the spread of HIV "
             "and AIDS` as qualifying evidence only when that same text or an immediately linked operative provision actually creates local SSP authorization. Do not "
+            "treat a syringe, paraphernalia, or infectious-disease exemption inside a general drug-paraphernalia ordinance as an SSP law unless the text expressly authorizes, prohibits, or limits SSP operation as a program. Do not "
             "generalize from public-health background or emergency text that does not itself create the operative SSP rule."
         ),
     ),

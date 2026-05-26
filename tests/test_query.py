@@ -38,6 +38,7 @@ from legiscope.query import (
     DEFAULT_HYDE_ENABLED,
     DEFAULT_LEXICAL_RERANKING_ENABLED,
     DEFAULT_VALIDATION_ENABLED,
+    _apply_scope_existence_validator,
 )
 from legiscope.query_hierarchy import (
     LabelBlockerRule,
@@ -1948,6 +1949,69 @@ class TestSecondStageStructuredValidators:
 
         assert gated.short_answer == "Lawful use of hypodermic syringes"
 
+    def test_exemption_crosswalk_maps_infectious_agent_carveout_to_ssp_syringe_option(
+        self,
+    ):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Other paraphernalia for approved medical use AND/OR Other"
+            ),
+            reasoning="Government-authorized infectious-agent carve-out.",
+            citations=["§ 35-52(B)(6)"],
+            supporting_passages=[
+                "An object sold, offered for sale, or given away by a state or local governmental agency or by a person specifically authorized by a state or local governmental agency to prevent the transmission of infectious agents.",
+                "Drug paraphernalia includes hypodermic syringes and needles.",
+            ],
+            confidence=0.81,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Other paraphernalia for approved medical use",
+                    selected=True,
+                    citations=["§ 35-52(B)(6)"],
+                    supporting_passages=[
+                        "An object sold, offered for sale, or given away by a state or local governmental agency or by a person specifically authorized by a state or local governmental agency to prevent the transmission of infectious agents."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Syringes from syringe services, harm reduction programs, or supervised use sites",
+                    selected=False,
+                ),
+                ResponseOptionEvidence(option="Other", selected=True),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-infectious-agents",
+                heading_text="# Drug paraphernalia",
+                body_text=(
+                    "Drug paraphernalia includes hypodermic syringes and needles. An object sold, offered for sale, or given away by a state or local governmental agency or by a person specifically authorized by a state or local governmental agency to prevent the transmission of infectious agents."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "exemption_presence",
+                "response_options": (
+                    "Other paraphernalia for approved medical use AND/OR "
+                    "Syringes from syringe services, harm reduction programs, or supervised use sites AND/OR Other"
+                ),
+            },
+        )
+
+        assert (
+            gated.short_answer
+            == "Syringes from syringe services, harm reduction programs, or supervised use sites"
+        )
+
     def test_prohibited_activity_gate_drops_illegal_smoking_product_delivery_noise(
         self,
     ):
@@ -2325,6 +2389,80 @@ class TestSecondStageStructuredValidators:
         assert not any(
             signal.issue == "reasoning_mentions_unselected_penalty_option"
             for signal in decision.reasons
+        )
+
+    def test_penalty_validator_drops_admin_only_diversion_penalty_labels(self):
+        response = LegalQueryResponse(
+            short_answer="Misdemeanor AND/OR Civil Fine",
+            reasoning="The cited text only describes eligibility for an ACC diversion program.",
+            citations=["§ 21-220"],
+            supporting_passages=[
+                "A person who commits a misdemeanor violation may be eligible for the ACC Program in lieu of arrest and criminal prosecution."
+            ],
+            confidence=0.7,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=False),
+                ResponseOptionEvidence(
+                    option="Misdemeanor",
+                    selected=True,
+                    citations=["§ 21-220"],
+                    supporting_passages=[
+                        "A person who commits a misdemeanor violation may be eligible for the ACC Program in lieu of arrest and criminal prosecution."
+                    ],
+                ),
+                ResponseOptionEvidence(option="Civil Fine", selected=True),
+            ],
+        )
+
+        gated = query_module._apply_penalty_specificity_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Misdemeanor AND/OR Civil Fine',
+            },
+        )
+
+        assert gated.short_answer == 'Unlawful" only'
+
+    def test_penalty_validator_keeps_only_directly_supported_sanctions(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Infraction AND/OR Misdemeanor AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure"
+            ),
+            reasoning="The ordinance states a misdemeanor punishable by a fine, imprisonment, and forfeiture.",
+            citations=["§ 134.26"],
+            supporting_passages=[
+                "A violation of this section is a misdemeanor punishable by a fine of not more than $500 or imprisonment for not more than 90 days, and the drug paraphernalia is subject to seizure and forfeiture."
+            ],
+            confidence=0.83,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option="Infraction", selected=True),
+                ResponseOptionEvidence(option="Misdemeanor", selected=True),
+                ResponseOptionEvidence(option="Criminal Fine", selected=True),
+                ResponseOptionEvidence(option="Unspecified Fine", selected=True),
+                ResponseOptionEvidence(option="Incarceration", selected=True),
+                ResponseOptionEvidence(option="Forfeiture/Seizure", selected=True),
+            ],
+        )
+
+        gated = query_module._apply_penalty_specificity_validator(
+            response,
+            [],
+            {
+                "guidance_topic": "penalty",
+                "response_options": (
+                    '"Unlawful" only AND/OR Infraction AND/OR Misdemeanor AND/OR Criminal Fine AND/OR '
+                    'Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure'
+                ),
+            },
+        )
+
+        assert (
+            gated.short_answer
+            == "Misdemeanor AND/OR Criminal Fine AND/OR Unspecified Fine AND/OR Incarceration AND/OR Forfeiture/Seizure"
         )
 
 
@@ -6626,6 +6764,87 @@ class TestBatchQueryConfigBasics:
             }
         ]
 
+    def test_run_queries_omits_prior_answers_for_ssp_law(self, tmp_path):
+        """ssp_law should not inherit prior structured answers from earlier queries."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="query",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        captured_prior_answers = []
+
+        def provider(request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            captured_prior_answers.append(request.metadata.get("prior_answers"))
+            return None
+
+        mock_responses = [
+            LegalQueryResponse(
+                short_answer="Yes",
+                reasoning="The paraphernalia ordinance exists.",
+                citations=[],
+                supporting_passages=[],
+                confidence=0.8,
+                limitations="None",
+            ),
+            LegalQueryResponse(
+                short_answer="No",
+                reasoning="No SSP ordinance was found.",
+                citations=[],
+                supporting_passages=[],
+                confidence=0.8,
+                limitations="None",
+            ),
+        ]
+
+        with patch("legiscope.query.retrieve_sections", return_value=retrieval_results):
+            with patch(
+                "legiscope.query.query_legal_documents",
+                side_effect=[(mock_responses[0], []), (mock_responses[1], [])],
+            ):
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    retrieval_guidance_provider=provider,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="Does the jurisdiction have a paraphernalia law?",
+                            variable_name="dp_law",
+                            metadata={"response_options": "Responses: Yes OR No"},
+                        ),
+                        QueryInput(
+                            question="Does the jurisdiction have an SSP law?",
+                            variable_name="ssp_law",
+                            metadata={"response_options": "Responses: Yes OR No"},
+                        ),
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        assert captured_prior_answers[0] is None
+        assert captured_prior_answers[1] is None
+
     def test_run_queries_serializes_query_metadata_without_flattening_query_subfields(
         self, tmp_path
     ):
@@ -6837,6 +7056,146 @@ class TestBatchQueryConfigBasics:
         assert response.short_answer.startswith(
             "I cannot answer your question as no relevant legal provisions were found after filtering."
         )
+
+
+class TestScopeExistenceValidator:
+    def test_dp_law_downgrades_business_only_paraphernalia_rule(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="This looks like a local drug paraphernalia law.",
+            citations=["§ 9-5.3843(C)"],
+            supporting_passages=[
+                "It is unlawful for any person to cause or permit the creation of, or operation of, a drug paraphernalia retailer business."
+            ],
+            confidence=1.0,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s1",
+                heading_text="# Article 38",
+                body_text=(
+                    "It is unlawful for any person to cause or permit the creation of, or operation of, a drug paraphernalia retailer business. "
+                    "The operation of a drug paraphernalia retail business shall constitute a public nuisance."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+        assert "business-only" in updated.limitations
+
+    def test_dp_law_downgrades_minors_only_paraphernalia_rule(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="This looks like a paraphernalia prohibition.",
+            citations=["9.7.210"],
+            supporting_passages=[
+                "It shall be unlawful for any person under the age of eighteen (18) to have in the person's possession any item of marijuana paraphernalia."
+            ],
+            confidence=0.97,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s2",
+                heading_text="# Part 2",
+                body_text=(
+                    "It shall be unlawful for any person under the age of eighteen (18) to have in the person's possession any item of marijuana paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
+    def test_ssp_law_downgrades_exemption_only_text(self):
+        response = LegalQueryResponse(
+            short_answer="Yes",
+            reasoning="This authorizes disease-prevention distribution.",
+            citations=["§ 35-52(B)(6)"],
+            supporting_passages=[
+                "An object sold, offered for sale, or given away by a state or local governmental agency or by a person specifically authorized by a state or local governmental agency to prevent the transmission of infectious agents."
+            ],
+            confidence=1.0,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s3",
+                heading_text="# Drug Paraphernalia",
+                body_text=(
+                    "An object sold, offered for sale, or given away by a state or local governmental agency or by a person specifically authorized by a state or local governmental agency to prevent the transmission of infectious agents."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "ssp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+        assert "operative SSP rule" in updated.limitations
+
+
+class TestStructuredAnswerContractPriorAnswers:
+    def test_ssp_law_omits_prior_answers_from_structured_contract(self):
+        contract = query_module._build_structured_answer_contract(
+            {
+                "variable_name": "ssp_law",
+                "response_options": "Yes OR No",
+                "prior_answers": {
+                    "dp_law": {"short_answer": "Yes"},
+                },
+            }
+        )
+
+        assert contract is not None
+        assert "Prior structured answers for dependency context:" not in contract
+
+    def test_other_queries_keep_prior_answers_in_structured_contract(self):
+        contract = query_module._build_structured_answer_contract(
+            {
+                "variable_name": "ssp_permit",
+                "response_options": "Yes OR No",
+                "prior_answers": {
+                    "dp_law": {"short_answer": "Yes"},
+                },
+            }
+        )
+
+        assert contract is not None
+        assert "Prior structured answers for dependency context:" in contract
 
 
 class TestHierarchicalQueryExecution:

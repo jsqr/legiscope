@@ -158,6 +158,17 @@ def _sanitize_prior_answers(prior_answers: Any) -> dict[str, dict[str, str]]:
     return sanitized_prior_answers
 
 
+_PRIOR_ANSWER_SUPPRESSED_VARIABLE_NAMES = {"ssp_law"}
+
+
+def _should_include_prior_answers(variable_name: str | None) -> bool:
+    """Return whether prior structured answers should be exposed to this query."""
+    normalized = str(variable_name or "").strip()
+    if not normalized:
+        return True
+    return normalized not in _PRIOR_ANSWER_SUPPRESSED_VARIABLE_NAMES
+
+
 def _parse_retrieval_inheritance_exclusions(value: Any) -> set[str]:
     """Normalize metadata-configured parent identifiers excluded from retrieval inheritance."""
     if value is None:
@@ -2021,6 +2032,7 @@ def query_legal_documents(
         response = _apply_reference_necessity_validator(
             response, sections, query_metadata
         )
+        response = _apply_scope_existence_validator(response, sections, query_metadata)
         response = _apply_penalty_specificity_validator(
             response, sections, query_metadata
         )
@@ -2119,6 +2131,11 @@ def query_legal_documents(
                 query_metadata,
             )
             reviewed_response = _apply_authoritative_option_evidence_gate(
+                reviewed_response,
+                sections,
+                query_metadata,
+            )
+            reviewed_response = _apply_scope_existence_validator(
                 reviewed_response,
                 sections,
                 query_metadata,
@@ -2431,11 +2448,16 @@ def run_queries(
             effective_query_metadata["prior_answers"] = sanitized_input_prior_answers
         else:
             effective_query_metadata.pop("prior_answers", None)
+        if not _should_include_prior_answers(query_input.variable_name):
+            effective_query_metadata.pop("prior_answers", None)
 
         if prior_answers:
-            effective_query_metadata["prior_answers"] = _sanitize_prior_answers(
-                prior_answers
-            )
+            if _should_include_prior_answers(query_input.variable_name):
+                effective_query_metadata["prior_answers"] = _sanitize_prior_answers(
+                    prior_answers
+                )
+            else:
+                effective_query_metadata.pop("prior_answers", None)
 
         dependency_decision = _evaluate_dependency_decision(
             hierarchy=planned_query.hierarchy,
@@ -3160,6 +3182,7 @@ def _build_structured_answer_contract(
 
     coding_instructions = str(metadata.get("coding_instructions") or "").strip()
     prior_answers = metadata.get("prior_answers") or {}
+    query_variable_name = _query_variable_name(metadata)
 
     lines = [
         "The `short_answer` field is benchmark-facing and must satisfy the declared response contract exactly.",
@@ -3246,7 +3269,7 @@ def _build_structured_answer_contract(
             lines.append(
                 "If dependency context identifies the outside-law family that made the parent answer applicable, keep the chosen citation in that same family unless the retrieved legal context for this query clearly contradicts it."
             )
-    elif prior_answers:
+    elif prior_answers and _should_include_prior_answers(query_variable_name):
         lines.append("Prior structured answers for dependency context:")
         for variable_name, payload in prior_answers.items():
             if not isinstance(payload, dict):
@@ -4411,6 +4434,7 @@ _EFFECTIVE_DATE_VARIABLE_NAMES = {
 }
 
 _SSP_PERMIT_VARIABLE_NAMES = {"ssp_permit"}
+_SCOPE_EXISTENCE_VARIABLE_NAMES = {"dp_law", "ssp_law"}
 _REFERENCE_NECESSITY_VARIABLE_NAMES = {
     "dp_state_fed_reference",
     "ssp_state_fed_reference",
@@ -4453,6 +4477,50 @@ _SSP_PERMIT_WEAK_OPERATION_PATTERNS = (
     r"\bmay operate\b[^.\n]{0,90}\bapproved by\b",
     r"\bshall operate\b[^.\n]{0,90}\bonly if registered\b",
     r"\bregistered with\b[^.\n]{0,90}\br\.?s\.?a\.?\b",
+)
+
+_DP_LAW_BUSINESS_ONLY_PATTERNS = (
+    r"\bdrug paraphernalia retailer\b",
+    r"\bhead shop\b",
+    r"\bretail(?:er|ing)?\b",
+    r"\bbusiness establishment\b",
+    r"\btobacco retailer\b",
+    r"\blicensee\b",
+)
+
+_DP_LAW_MINORS_ONLY_PATTERNS = (
+    r"\bunder the age of\b",
+    r"\bminor(?:s)?\b",
+    r"\bnot accompanied by\b",
+)
+
+_DP_LAW_STATE_ADOPTION_PATTERNS = (
+    r"\badopted and incorporated .* by reference\b",
+    r"\bviolations of city ordinances\b",
+    r"\bstate criminal code\b",
+    r"\butah code annotated title 76\b",
+)
+
+_SSP_LAW_EXEMPTION_ONLY_PATTERNS = (
+    r"\bprevent the transmission of infectious agents\b",
+    r"\bobject sold, offered for sale, or given away\b",
+    r"\bdoes not apply\b",
+    r"\bexception\b",
+    r"\bexempt(?:ion|ed)?\b",
+)
+
+_EXEMPTION_INFECTIOUS_AGENT_SSP_PATTERNS = (
+    r"\bprevent the transmission of infectious agents\b",
+    r"\bstate or local governmental agency\b",
+    r"\bspecifically authorized by a state or local governmental agency\b",
+)
+
+_SSP_LAW_PROGRAM_PATTERNS = (
+    r"\bsyringe service program\b",
+    r"\bsyringe exchange\b",
+    r"\bneedle exchange\b",
+    r"\bclean needle\b",
+    r"\bharm reduction\b",
 )
 
 _SSP_DISTINCT_RESTRICTION_PATTERNS = (
@@ -4724,8 +4792,13 @@ def _penalty_concrete_supported_options(
         normalized = _normalize_option_text(option)
         if normalized not in concrete_labels:
             continue
-        patterns = option_patterns.get(normalized, ())
-        if patterns and _first_matching_snippet(evidence_text, patterns) is not None:
+        has_support, _snippet = _strong_option_support_signal(
+            guidance_topic="penalty",
+            option=option,
+            evidence_text=evidence_text,
+            option_patterns=option_patterns,
+        )
+        if has_support:
             supported.append(option)
     return tuple(supported)
 
@@ -4938,6 +5011,98 @@ def _apply_date_surface_validators(
         return response
 
     return response.model_copy(update={"short_answer": updated_short_answer})
+
+
+def _append_validation_limitation(limitations: str | None, message: str) -> str:
+    """Append a validator note to limitations without duplicating text."""
+    existing = str(limitations or "").strip()
+    if not existing:
+        return message
+    if message in existing:
+        return existing
+    return f"{existing} {message}"
+
+
+def _response_short_answer_is_yes_no(response: LegalQueryResponse) -> bool:
+    """Return whether the response is a simple binary answer."""
+    return str(response.short_answer or "").strip() in {"Yes", "No"}
+
+
+def _dp_law_support_is_scope_limited(evidence_text: str) -> bool:
+    """Return whether dp_law support is limited to excluded narrow scopes."""
+    has_business_only = any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _DP_LAW_BUSINESS_ONLY_PATTERNS
+    )
+    has_minors_only = any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _DP_LAW_MINORS_ONLY_PATTERNS
+    )
+    has_state_adoption_only = any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _DP_LAW_STATE_ADOPTION_PATTERNS
+    ) and not re.search(r"\bdrug paraphernalia\b", evidence_text, re.IGNORECASE)
+    return has_business_only or has_minors_only or has_state_adoption_only
+
+
+def _ssp_law_support_is_exemption_only(evidence_text: str) -> bool:
+    """Return whether ssp_law support comes only from exemption-like paraphernalia text."""
+    has_program_language = any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_LAW_PROGRAM_PATTERNS
+    )
+    if has_program_language:
+        return False
+    return any(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _SSP_LAW_EXEMPTION_ONLY_PATTERNS
+    )
+
+
+def _apply_scope_existence_validator(
+    response: LegalQueryResponse,
+    sections: list[SectionResult],
+    query_metadata: dict[str, Any] | None,
+) -> LegalQueryResponse:
+    """Suppress binary scope false positives for dp_law and ssp_law."""
+    metadata = query_metadata or {}
+    variable_name = _query_variable_name(metadata)
+    if variable_name not in _SCOPE_EXISTENCE_VARIABLE_NAMES:
+        return response
+    if not _response_short_answer_is_yes_no(response):
+        return response
+    if str(response.short_answer or "").strip() != "Yes":
+        return response
+
+    evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
+    if not evidence_text.strip():
+        return response
+
+    if variable_name == "dp_law" and _dp_law_support_is_scope_limited(evidence_text):
+        return response.model_copy(
+            update={
+                "short_answer": "No",
+                "confidence": min(float(response.confidence), 0.55),
+                "limitations": _append_validation_limitation(
+                    response.limitations,
+                    "Validator downgraded a Yes answer because the cited support appears limited to business-only, minors-only, or generic state-code-adoption text rather than a generally applicable local paraphernalia rule.",
+                ),
+            }
+        )
+
+    if variable_name == "ssp_law" and _ssp_law_support_is_exemption_only(evidence_text):
+        return response.model_copy(
+            update={
+                "short_answer": "No",
+                "confidence": min(float(response.confidence), 0.55),
+                "limitations": _append_validation_limitation(
+                    response.limitations,
+                    "Validator downgraded a Yes answer because the cited support appears to be an exemption or disease-prevention carve-out inside a paraphernalia law rather than an operative SSP rule.",
+                ),
+            }
+        )
+
+    return response
 
 
 def _apply_ssp_permit_validator(
@@ -5302,6 +5467,39 @@ def _ssp_sentence_slices(text: str) -> list[str]:
         for sentence in re.split(r"(?<=[.!?])\s+|\n+", str(text or "").strip())
         if sentence.strip()
     ]
+
+
+def _penalty_support_is_admin_only(text: str) -> bool:
+    """Return whether penalty-like text is limited to diversion/citation program context."""
+    saw_admin_sentence = False
+    for sentence in _ssp_sentence_slices(text):
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _PENALTY_ADMIN_ONLY_PATTERNS
+        ):
+            continue
+        saw_admin_sentence = True
+        if re.search(
+            r"\b(?:fine|imprison(?:ment|ed)?|jail|incarceration|forfeit(?:ed|ure)?|seiz(?:e|ed|ure))\b",
+            sentence,
+            re.IGNORECASE,
+        ):
+            return False
+    return saw_admin_sentence
+
+
+def _first_non_admin_penalty_snippet(
+    text: str,
+    patterns: tuple[str, ...],
+) -> str | None:
+    """Return the first penalty snippet that is not limited to admin-only diversion text."""
+    for sentence in _ssp_sentence_slices(text):
+        if not any(re.search(pattern, sentence, re.IGNORECASE) for pattern in patterns):
+            continue
+        if _penalty_support_is_admin_only(sentence):
+            continue
+        return sentence
+    return None
 
 
 def _ssp_named_restriction_pattern_map(
@@ -6279,6 +6477,19 @@ def _apply_exemption_label_crosswalk(
             re.IGNORECASE,
         )
     )
+    has_infectious_agent_ssp_context = has_syringe_text and all(
+        re.search(pattern, evidence_text, re.IGNORECASE)
+        for pattern in _EXEMPTION_INFECTIOUS_AGENT_SSP_PATTERNS[:2]
+    )
+    if not has_infectious_agent_ssp_context and has_syringe_text:
+        has_infectious_agent_ssp_context = all(
+            re.search(pattern, evidence_text, re.IGNORECASE)
+            for pattern in (
+                _EXEMPTION_INFECTIOUS_AGENT_SSP_PATTERNS[0],
+                _EXEMPTION_INFECTIOUS_AGENT_SSP_PATTERNS[2],
+            )
+        )
+    has_ssp_context = has_ssp_context or has_infectious_agent_ssp_context
     has_dce_text = bool(
         re.search(
             r"\bdrug checking\b|\bdrug testing\b|\btest strip\b|\btesting equipment\b",
@@ -6299,6 +6510,8 @@ def _apply_exemption_label_crosswalk(
         )
         if resolved is not None:
             option_lookup[_normalize_option_text(resolved)] = resolved
+            option_lookup.pop(other_approved_medical, None)
+            option_lookup.pop(_normalize_option_text("Other"), None)
     if has_ssp_context and has_dce_text:
         resolved = _resolve_declared_response_option(
             options,
@@ -6618,6 +6831,26 @@ def _apply_penalty_specificity_validator(
     evidence_text = "\n\n".join(_collect_evidence_texts(response, sections))
     options, _separator = _split_response_options(response_options)
     option_patterns = _option_pattern_map("penalty")
+    directly_supported_selected = tuple(
+        option
+        for option in selected_specific_options
+        if _strong_option_support_signal(
+            guidance_topic="penalty",
+            option=option,
+            evidence_text=evidence_text,
+            option_patterns=option_patterns,
+        )[0]
+    )
+
+    if (
+        directly_supported_selected
+        and directly_supported_selected != selected_specific_options
+    ):
+        return _rewrite_structured_response_options(
+            response,
+            directly_supported_selected,
+            query_metadata,
+        )
 
     if not selected_specific_options:
         has_fallback_selected = any(
@@ -6678,6 +6911,16 @@ def _apply_penalty_specificity_validator(
         re.search(pattern, evidence_text, re.IGNORECASE)
         for pattern in _DEFAULT_PENALTY_REFERENCE_PATTERNS
     ):
+        if _penalty_support_is_admin_only(evidence_text):
+            declared_fallback_option = _resolve_declared_response_option(
+                options, fallback_option
+            )
+            if declared_fallback_option is not None:
+                return _rewrite_structured_response_options(
+                    response,
+                    (declared_fallback_option,),
+                    query_metadata,
+                )
         return response
 
     if any(
@@ -6698,7 +6941,7 @@ def _apply_penalty_specificity_validator(
         return response
     return _rewrite_structured_response_options(
         response,
-        (fallback_option,),
+        (declared_fallback_option,),
         query_metadata,
     )
 
@@ -7266,6 +7509,15 @@ def _strong_option_support_signal(
                     return False, None
                 snippets.append(snippet)
             return True, snippets[0] if snippets else None
+
+    if guidance_topic == "penalty":
+        patterns = option_patterns.get(normalized, ())
+        snippet = (
+            _first_non_admin_penalty_snippet(evidence_text, patterns)
+            if patterns
+            else None
+        )
+        return snippet is not None, snippet
 
     patterns = option_patterns.get(normalized, ())
     snippet = _first_matching_snippet(evidence_text, patterns) if patterns else None
