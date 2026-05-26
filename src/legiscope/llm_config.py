@@ -96,22 +96,11 @@ def _get_dashscope_runtime_kwargs() -> dict[str, Any]:
     return runtime_kwargs
 
 
-def _litellm_uses_fixed_temperature(model: str) -> bool:
-    """Return whether the LiteLLM model rejects explicit temperature overrides."""
-    normalized = model.strip().casefold()
-    if "/" in normalized:
-        _, normalized = normalized.split("/", 1)
-    return normalized.startswith("gpt-5")
-
-
 def _apply_provider_specific_llm_params(
     provider: str, params: dict[str, Any]
 ) -> dict[str, Any]:
     """Normalize provider-specific request params after all overrides are merged."""
     if provider == "litellm":
-        model = str(params.get("model") or "")
-        if _litellm_uses_fixed_temperature(model) and params.get("temperature") == 0.0:
-            params.pop("temperature", None)
         if "max_retries" in params:
             params["num_retries"] = params.pop("max_retries")
 

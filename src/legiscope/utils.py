@@ -200,6 +200,19 @@ def _get_retry_after_seconds(exc: Exception) -> float | None:
         return None
 
 
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    """Return whether an LLM request failed because explicit temperature is unsupported."""
+    message = str(exc).casefold()
+    return (
+        "temperature" in message
+        and (
+            "only the default" in message
+            or "does not support" in message
+            or "unsupported value" in message
+        )
+    )
+
+
 def create_structured_completion(
     *,
     client: Instructor,
@@ -209,7 +222,12 @@ def create_structured_completion(
     **params,
 ) -> T:
     """Create a structured chat completion with bounded local backoff retries."""
-    max_retries = int(params.get("max_retries", DEFAULT_MAX_RETRIES) or 0)
+    max_retries = int(
+        params.get("max_retries", params.get("num_retries", DEFAULT_MAX_RETRIES))
+        or 0
+    )
+    request_params = dict(params)
+    used_temperature_fallback = False
 
     attempt = 0
     while True:
@@ -217,9 +235,24 @@ def create_structured_completion(
             return client.chat.completions.create(
                 messages=messages,
                 response_model=response_model,
-                **params,
+                **request_params,
             )
         except Exception as exc:
+            if (
+                not used_temperature_fallback
+                and "temperature" in request_params
+                and _is_unsupported_temperature_error(exc)
+            ):
+                rejected_temperature = request_params.pop("temperature")
+                used_temperature_fallback = True
+                logger.warning(
+                    "{} rejected explicit temperature {}; retrying once with provider default temperature: {}",
+                    retry_label,
+                    rejected_temperature,
+                    exc,
+                )
+                continue
+
             if not _is_rate_limit_llm_error(exc) or attempt >= max_retries:
                 raise
 

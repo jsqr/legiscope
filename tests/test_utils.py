@@ -220,6 +220,65 @@ class TestAskFunction:
         assert result == mock_response
         mock_sleep.assert_called_once_with(4.5)
 
+    def test_create_structured_completion_retries_without_temperature_when_rejected(self):
+        """Explicit temperature should be retried once with provider defaults."""
+        mock_client = Mock()
+        mock_response = MockResponseModel(name="fallback", value=11)
+        mock_client.chat.completions.create.side_effect = [
+            Exception(
+                "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported."
+            ),
+            mock_response,
+        ]
+
+        result = create_structured_completion(
+            client=mock_client,
+            messages=[{"role": "user", "content": "hi"}],
+            response_model=MockResponseModel,
+            temperature=0.0,
+            max_retries=1,
+        )
+
+        assert result == mock_response
+        assert mock_client.chat.completions.create.call_count == 2
+        first_call = mock_client.chat.completions.create.call_args_list[0]
+        second_call = mock_client.chat.completions.create.call_args_list[1]
+        assert first_call.kwargs["temperature"] == 0.0
+        assert "temperature" not in second_call.kwargs
+
+    @patch("legiscope.llm_config.Config.get_llm_params")
+    def test_ask_retries_without_temperature_when_provider_rejects_it(
+        self, mock_get_llm_params
+    ):
+        mock_get_llm_params.return_value = {
+            "temperature": 0.0,
+            "max_retries": 1,
+            "model": "gpt-5.5",
+        }
+        mock_client = Mock()
+        mock_response = MockResponseModel(name="fallback", value=13)
+        mock_client.chat.completions.create.side_effect = [
+            Exception(
+                "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported."
+            ),
+            mock_response,
+        ]
+
+        result = ask(
+            client=mock_client,
+            prompt="test prompt",
+            response_model=MockResponseModel,
+            model="gpt-5.5",
+            temperature=0.0,
+        )
+
+        assert result == mock_response
+        assert mock_client.chat.completions.create.call_count == 2
+        first_call = mock_client.chat.completions.create.call_args_list[0]
+        second_call = mock_client.chat.completions.create.call_args_list[1]
+        assert first_call.kwargs["temperature"] == 0.0
+        assert "temperature" not in second_call.kwargs
+
 
 class TestStr2Bool:
     """Test str2bool function."""

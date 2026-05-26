@@ -334,12 +334,12 @@ class TestGetLLMParams:
             params = Config.get_llm_params(model="gpt-5.5-2026-04-23")
             assert params["num_retries"] == 3
             assert "max_retries" not in params
-            assert "temperature" not in params
+            assert params["temperature"] == 0.0
 
     def test_litellm_keeps_nondefault_temperature(self):
         p = _params_with(**{"llm.default_provider": "litellm", "llm.temperature": 0.7})
         with patch("legiscope.llm_config.load_params", return_value=p):
-            params = Config.get_llm_params()
+            params = Config.get_llm_params(model="gemma-3-27b-it")
             assert params["temperature"] == 0.7
             assert params["num_retries"] == 3
 
@@ -347,5 +347,5 @@ class TestGetLLMParams:
         p = _params_with(**{"llm.default_provider": "litellm"})
         with patch("legiscope.llm_config.load_params", return_value=p):
             params = Config.get_llm_params(model="gpt-5.5-2026-04-23", temperature=0.0)
-            assert "temperature" not in params
+            assert params["temperature"] == 0.0
             assert params["num_retries"] == 3
