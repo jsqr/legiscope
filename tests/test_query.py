@@ -177,9 +177,9 @@ class TestAuthoritativeOptionEvidenceGate:
             },
         )
 
-        assert gated.short_answer == "Criminal Fine AND/OR Incarceration"
+        assert gated.short_answer == "Unspecified Fine AND/OR Incarceration"
         assert [item.option for item in gated.option_evidence if item.selected] == [
-            "Criminal Fine",
+            "Unspecified Fine",
             "Incarceration",
         ]
 
@@ -238,6 +238,98 @@ class TestAuthoritativeOptionEvidenceGate:
         assert gated.short_answer == "Misdemeanor"
         assert [item.option for item in gated.option_evidence if item.selected] == [
             "Misdemeanor",
+        ]
+
+    def test_penalty_gate_promotes_civil_penalty_over_unlawful_only(self):
+        response = LegalQueryResponse(
+            short_answer='"Unlawful" only',
+            reasoning="The ordinance imposes a civil penalty for violations.",
+            citations=["§ 9-629(4)(a)"],
+            supporting_passages=[
+                "Any person violating this section shall be subject to a civil penalty of $150."
+            ],
+            confidence=0.58,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=True),
+                ResponseOptionEvidence(option="Civil Fine", selected=False),
+                ResponseOptionEvidence(option="Unspecified Fine", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-phl-penalty",
+                heading_text="# Penalty",
+                body_text=(
+                    "Any person violating this section shall be subject to a civil penalty of $150."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Civil Fine AND/OR Unspecified Fine',
+            },
+        )
+
+        assert gated.short_answer == "Civil Fine"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Civil Fine"
+        ]
+
+    def test_penalty_gate_keeps_conviction_fine_as_unspecified_without_offense_class(
+        self,
+    ):
+        response = LegalQueryResponse(
+            short_answer="Criminal Fine AND/OR Unspecified Fine",
+            reasoning="The section says the violation is punishable by a fine upon conviction.",
+            citations=["SEC. 31-32.1(d)"],
+            supporting_passages=[
+                "A person violating a provision of this section is, upon conviction, punishable by a fine not to exceed $2,000."
+            ],
+            confidence=0.71,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=False),
+                ResponseOptionEvidence(option="Criminal Fine", selected=True),
+                ResponseOptionEvidence(option="Unspecified Fine", selected=True),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-penalty",
+                heading_text="# Penalty",
+                body_text=(
+                    "A person violating a provision of this section is, upon conviction, punishable by a fine not to exceed $2,000."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Criminal Fine AND/OR Unspecified Fine',
+            },
+        )
+
+        assert gated.short_answer == "Unspecified Fine"
+        assert [item.option for item in gated.option_evidence if item.selected] == [
+            "Unspecified Fine"
         ]
 
     def test_ssp_restriction_gate_does_not_treat_exchange_only_basis_as_quantity_limit(
@@ -2018,6 +2110,175 @@ class TestSecondStageStructuredValidators:
         assert decision.should_rerun is True
         assert any(
             signal.issue == "dp_law_yes_may_rest_on_scope_noise_only"
+            for signal in decision.reasons
+        )
+
+    def test_activity_gate_drops_selected_labels_without_option_specific_support(self):
+        response = LegalQueryResponse(
+            short_answer=(
+                "Give away, give, gift, free distribution AND/OR Advertising, display AND/OR "
+                "Manufacturing, manufacture with intent to deliver or sell"
+            ),
+            reasoning="Initial answer over-selected unsupported activity labels.",
+            citations=["SEC. 31-32.1(b)(1)", "SEC. 31-32.1(b)(4)"],
+            supporting_passages=[
+                "(1) possesses, buys, sells, offers for sale, delivers, or transfers any illegal smoking product.",
+                "(4) uses or possesses with the intent to use any illegal smoking paraphernalia.",
+            ],
+            confidence=0.64,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Give away, give, gift, free distribution",
+                    selected=True,
+                ),
+                ResponseOptionEvidence(
+                    option="Advertising, display",
+                    selected=True,
+                ),
+                ResponseOptionEvidence(
+                    option="Manufacturing, manufacture with intent to deliver or sell",
+                    selected=True,
+                ),
+                ResponseOptionEvidence(option="Not specified", selected=False),
+            ],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-dallas-activity",
+                heading_text="# Smoking products",
+                body_text=(
+                    "(1) possesses, buys, sells, offers for sale, delivers, or transfers any illegal smoking product. "
+                    "(4) uses or possesses with the intent to use any illegal smoking paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        gated = query_module._apply_authoritative_option_evidence_gate(
+            response,
+            sections,
+            {
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Give away, give, gift, free distribution AND/OR Advertising, display AND/OR "
+                    "Manufacturing, manufacture with intent to deliver or sell AND/OR Not specified"
+                ),
+            },
+        )
+
+        assert gated.short_answer == "Not specified"
+
+    def test_answer_review_decision_flags_unselected_activity_option_with_strong_support(
+        self,
+    ):
+        response = LegalQueryResponse(
+            short_answer="Advertising, display AND/OR Manufacturing, manufacture with intent to deliver or sell",
+            reasoning=(
+                "The ordinance prohibits delivery, advertising, and manufacture with intent to deliver."
+            ),
+            citations=["§ 12-4-10(C)(1)", "§ 12-4-10(C)(2)"],
+            supporting_passages=[
+                "It is unlawful for any person to deliver, possess with intent to deliver, or manufacture with intent to deliver, drug paraphernalia.",
+                "It is unlawful for any person to place in any newspaper, magazine, handbill, or other publication any advertisement for drug paraphernalia.",
+            ],
+            confidence=0.83,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(
+                    option="Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange",
+                    selected=False,
+                    citations=["§ 12-4-10(C)(1)"],
+                    supporting_passages=[
+                        "It is unlawful for any person to deliver, possess with intent to deliver, or manufacture with intent to deliver, drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Advertising, display",
+                    selected=True,
+                    citations=["§ 12-4-10(C)(2)"],
+                    supporting_passages=[
+                        "It is unlawful for any person to place in any newspaper, magazine, handbill, or other publication any advertisement for drug paraphernalia."
+                    ],
+                ),
+                ResponseOptionEvidence(
+                    option="Manufacturing, manufacture with intent to deliver or sell",
+                    selected=True,
+                    citations=["§ 12-4-10(C)(1)"],
+                    supporting_passages=[
+                        "It is unlawful for any person to deliver, possess with intent to deliver, or manufacture with intent to deliver, drug paraphernalia."
+                    ],
+                ),
+            ],
+        )
+
+        decision = query_module._build_answer_review_decision(
+            response=response,
+            sections=[],
+            query_metadata={
+                "variable_name": "dp_activity",
+                "guidance_topic": "prohibited_activity",
+                "response_options": (
+                    "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange AND/OR "
+                    "Advertising, display AND/OR Manufacturing, manufacture with intent to deliver or sell"
+                ),
+            },
+            settings=QuerySettings(
+                llm=LLMConfig(client=Mock()),
+                enable_answer_review=True,
+            ),
+        )
+
+        assert decision.should_rerun is True
+        assert any(
+            signal.issue == "unselected_option_has_strong_support"
+            and signal.option
+            == "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
+            for signal in decision.reasons
+        )
+
+    def test_answer_review_decision_flags_penalty_reasoning_that_mentions_civil_penalty(
+        self,
+    ):
+        response = LegalQueryResponse(
+            short_answer='"Unlawful" only',
+            reasoning=(
+                "Section 9-629(4) states that a violator is subject to a civil penalty of $150."
+            ),
+            citations=["§ 9-629(4)"],
+            supporting_passages=[
+                "A violator is subject to a civil penalty of $150."
+            ],
+            confidence=0.74,
+            limitations="",
+            option_evidence=[
+                ResponseOptionEvidence(option='"Unlawful" only', selected=True),
+                ResponseOptionEvidence(option="Civil Fine", selected=False),
+            ],
+        )
+
+        decision = query_module._build_answer_review_decision(
+            response=response,
+            sections=[],
+            query_metadata={
+                "variable_name": "dp_penalties",
+                "guidance_topic": "penalty",
+                "response_options": '"Unlawful" only AND/OR Civil Fine',
+            },
+            settings=QuerySettings(
+                llm=LLMConfig(client=Mock()),
+                enable_answer_review=True,
+            ),
+        )
+
+        assert decision.should_rerun is True
+        assert any(
+            signal.issue == "reasoning_mentions_unselected_penalty_option"
+            and signal.option == "Civil Fine"
             for signal in decision.reasons
         )
 

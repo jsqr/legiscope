@@ -167,19 +167,49 @@ failure_count() {
     printf '%s\n' "$count"
 }
 
+failed_jurisdiction_count() {
+    local failure_record=""
+    local jurisdiction=""
+    local seen_jurisdictions="|"
+    local count="0"
+
+    set +u
+    for failure_record in "${FAILURE_MESSAGES[@]}"; do
+        jurisdiction="${failure_record%%|*}"
+        if [[ "$seen_jurisdictions" != *"|${jurisdiction}|"* ]]; then
+            seen_jurisdictions+="${jurisdiction}|"
+            count=$((count + 1))
+        fi
+    done
+    set -u
+
+    printf '%s\n' "$count"
+}
+
 print_failure_summary() {
     local failure_record=""
     local jurisdiction=""
     local artifact_label=""
     local detail=""
+    local requested_jurisdictions=""
+    local failed_jurisdictions="0"
+    local successful_jurisdictions="0"
+
+    requested_jurisdictions="$(jurisdiction_count)"
+    failed_jurisdictions="$(failed_jurisdiction_count)"
+    successful_jurisdictions=$((requested_jurisdictions - failed_jurisdictions))
 
     if [[ "$(failure_count)" -eq 0 ]]; then
         say "All requested jurisdictions pulled successfully."
+        say "Jurisdictions requested: ${requested_jurisdictions}"
+        say "Jurisdictions pulled: ${requested_jurisdictions}"
         return 0
     fi
 
     say ""
     say "Pull completed with errors."
+    say "Jurisdictions requested: ${requested_jurisdictions}"
+    say "Jurisdictions pulled: ${successful_jurisdictions}"
     say "Failed jurisdiction artifacts:"
 
     set +u

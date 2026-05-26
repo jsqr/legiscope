@@ -3095,11 +3095,6 @@ def _update_completion_debug_capture(
     metadata: dict[str, Any],
 ) -> None:
     """Persist completion-budget decisions and final prompt state into debug rows."""
-    if debug_capture is None:
-        return
-
-    metadata["final_context_tokens"] = _estimate_token_count(full_context)
-    metadata["final_chunk_ids"] = [_section_result_id(section) for section in sections]
     metadata["final_chunk_headings"] = [section.heading_text for section in sections]
 
     debug_capture.setdefault("query", {}).update(
@@ -4643,19 +4638,14 @@ def _penalty_has_criminal_fine_cues(
     normalized = evidence_text.lower()
     if re.search(r"\bcivil (?:fine|penalt)y\b", normalized):
         return False
-    if _normalize_option_text("Incarceration") in selected_lookup and re.search(
-        r"\bfine\b",
-        normalized,
-    ):
-        return True
     return bool(
         re.search(r"\bcriminal fine\b", normalized)
         or re.search(
-            r"\bfine\b[^.\n]{0,60}\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b",
+            r"\bfine\b[^.\n]{0,60}\b(?:misdemeanor|felony|infraction)\b",
             normalized,
         )
         or re.search(
-            r"\b(?:misdemeanor|felony|conviction|imprison(?:ment|ed)?)\b[^.\n]{0,60}\bfine\b",
+            r"\b(?:misdemeanor|felony|infraction)\b[^.\n]{0,60}\bfine\b",
             normalized,
         )
         or re.search(
@@ -5423,6 +5413,15 @@ _PENALTY_ADMIN_ONLY_PATTERNS = (
     r"\balternative citation\b",
 )
 
+_MINORS_ONLY_ACTIVITY_PATTERNS = (
+    r"\bjuvenile\b",
+    r"\bminor(?:s)?\b",
+    r"\bunder\s+18\b",
+    r"\bunder\s+twenty-one\b",
+    r"\bto\s+any\s+(?:juvenile|minor)\b",
+    r"\bperson\s+under\s+\d+\b",
+)
+
 
 def _sentence_has_option_and_paraphernalia_object(
     text: str,
@@ -5437,6 +5436,28 @@ def _sentence_has_option_and_paraphernalia_object(
             for pattern in _PARAPHERNALIA_OBJECT_PATTERNS
         ):
             return True
+    return False
+
+
+def _sentence_has_option_support_outside_minors_only(
+    text: str,
+    patterns: tuple[str, ...],
+) -> bool:
+    """Return whether an activity trigger appears in non-minors-only paraphernalia text."""
+    for sentence in _ssp_sentence_slices(text):
+        if not any(re.search(pattern, sentence, re.IGNORECASE) for pattern in patterns):
+            continue
+        if not any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _PARAPHERNALIA_OBJECT_PATTERNS
+        ):
+            continue
+        if any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _MINORS_ONLY_ACTIVITY_PATTERNS
+        ):
+            continue
+        return True
     return False
 
 
@@ -5684,10 +5705,15 @@ def _authoritative_option_supports_selection(
     if (
         guidance_topic == "penalty"
         and normalized == _normalize_option_text("Unspecified Fine")
-        and item is not None
-        and item.selected
     ):
-        if not re.search(r"\bfine\b|\bfined\b", item_text, re.IGNORECASE):
+        penalty_text = item_text or evidence_text
+        if re.search(
+            r"\bcivil (?:fine|penalt)y\b|\bcriminal fine\b",
+            penalty_text,
+            re.IGNORECASE,
+        ):
+            snippet = None
+        elif not re.search(r"\bfine\b|\bfined\b", penalty_text, re.IGNORECASE):
             snippet = None
 
     if (
@@ -5707,6 +5733,48 @@ def _authoritative_option_supports_selection(
         and not _sentence_has_option_and_paraphernalia_object(evidence_text, patterns)
     ):
         snippet = None
+
+    if (
+        guidance_topic == "prohibited_activity"
+        and normalized
+        in {
+            _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale"
+            ),
+            _normalize_option_text(
+                "Delivery, possession with intent to deliver/distribute, distribution, transfer, furnish, exchange"
+            ),
+            _normalize_option_text(
+                "Give away, give, gift, free distribution"
+            ),
+            _normalize_option_text("Advertising, display"),
+            _normalize_option_text(
+                "Manufacturing, manufacture with intent to deliver or sell"
+            ),
+        }
+    ):
+        if not has_option_specific_support:
+            return False
+        preferred_text = item_text or evidence_text
+        if patterns:
+            snippet = _first_matching_snippet(preferred_text, patterns)
+        else:
+            snippet = preferred_text if preferred_text else None
+
+    if (
+        guidance_topic == "prohibited_activity"
+        and normalized
+        == _normalize_option_text(
+            "Sales, possession with intent to sell, offer for sale"
+        )
+        and patterns
+    ):
+        preferred_text = item_text or evidence_text
+        if not _sentence_has_option_support_outside_minors_only(
+            preferred_text,
+            patterns,
+        ):
+            snippet = None
 
     if (
         guidance_topic == "prohibited_activity"
@@ -6748,6 +6816,8 @@ def _option_evidence_review_signals(
     selected_options = {
         item.option for item in response.option_evidence if item.selected
     }
+    guidance_topic = _effective_authoritative_guidance_topic(metadata)
+    option_patterns = _option_pattern_map(guidance_topic)
     none_selected = any(
         _normalize_option_text(item.option) == _normalize_option_text("None")
         and item.selected
@@ -6785,6 +6855,49 @@ def _option_evidence_review_signals(
                 AnswerReviewSignal(
                     option=item.option,
                     issue="other_selected_without_option_specific_support",
+                )
+            )
+        if guidance_topic == "prohibited_activity" and _normalize_option_text(
+            item.option
+        ) in {
+            _normalize_option_text(
+                "Give away, give, gift, free distribution"
+            ),
+            _normalize_option_text("Advertising, display"),
+            _normalize_option_text(
+                "Manufacturing, manufacture with intent to deliver or sell"
+            ),
+            _normalize_option_text(
+                "Sales, possession with intent to sell, offer for sale"
+            ),
+        } and not (item.citations or item.supporting_passages):
+            reasons.append(
+                AnswerReviewSignal(
+                    option=item.option,
+                    issue="selected_activity_option_missing_option_specific_support",
+                )
+            )
+
+    if guidance_topic in {"prohibited_activity", "penalty"}:
+        for item in response.option_evidence:
+            if item.selected or _is_generic_fallback_response_option(item.option):
+                continue
+            if not (item.citations or item.supporting_passages):
+                continue
+            item_text = "\n".join([*item.citations, *item.supporting_passages])
+            if not _authoritative_option_supports_selection(
+                guidance_topic=guidance_topic,
+                option=item.option,
+                item=item,
+                evidence_text=item_text,
+                option_patterns=option_patterns,
+            ):
+                continue
+            reasons.append(
+                AnswerReviewSignal(
+                    option=item.option,
+                    issue="unselected_option_has_strong_support",
+                    evidence_snippet=item_text[:240] if item_text else None,
                 )
             )
 
@@ -6907,6 +7020,54 @@ def _short_answer_reasoning_conflict_signal(
                     issue="reasoning_conflicts_with_short_answer",
                     evidence_snippet=snippet,
                 )
+
+    guidance_topic = _effective_authoritative_guidance_topic(metadata)
+    if guidance_topic == "penalty":
+        reasoning_text = str(response.reasoning or "")
+        expected_options: list[str] = []
+        if re.search(r"\bcivil (?:fine|penalt)y\b", reasoning_text, re.IGNORECASE):
+            expected_options.append("Civil Fine")
+        if re.search(r"\bcriminal fine\b", reasoning_text, re.IGNORECASE):
+            expected_options.append("Criminal Fine")
+        if re.search(r"\binfraction\b", reasoning_text, re.IGNORECASE):
+            expected_options.append("Infraction")
+        if re.search(r"\bmisdemeanor\b", reasoning_text, re.IGNORECASE):
+            expected_options.append("Misdemeanor")
+        if re.search(r"\bfelony\b", reasoning_text, re.IGNORECASE):
+            expected_options.append("Felony")
+        if re.search(
+            r"\bimprison(?:ment|ed)?\b|\bjail\b|\bincarceration\b",
+            reasoning_text,
+            re.IGNORECASE,
+        ):
+            expected_options.append("Incarceration")
+        if re.search(
+            r"\bforfeit(?:ed|ure)?\b|\bseiz(?:e|ed|ure)\b",
+            reasoning_text,
+            re.IGNORECASE,
+        ):
+            expected_options.append("Forfeiture/Seizure")
+
+        missing_options = [
+            option
+            for option in expected_options
+            if _normalize_option_text(option) not in selected_lookup
+        ]
+        if missing_options:
+            return AnswerReviewSignal(
+                option=missing_options[0],
+                issue="reasoning_mentions_unselected_penalty_option",
+                evidence_snippet=reasoning_text[:240] if reasoning_text else None,
+            )
+        if (
+            _normalize_option_text('"Unlawful" only') in selected_lookup
+            and expected_options
+        ):
+            return AnswerReviewSignal(
+                option='"Unlawful" only',
+                issue="reasoning_conflicts_with_unlawful_only_short_answer",
+                evidence_snippet=reasoning_text[:240] if reasoning_text else None,
+            )
 
     return None
 
@@ -7170,12 +7331,14 @@ def _option_pattern_map(guidance_topic: str) -> dict[str, tuple[str, ...]]:
             _normalize_option_text("Infraction"): (r"\binfraction\b",),
             _normalize_option_text("Misdemeanor"): (r"\bmisdemeanor\b",),
             _normalize_option_text("Felony"): (r"\bfelony\b",),
-            _normalize_option_text("Civil Fine"): (r"\bcivil fine\b",),
+            _normalize_option_text("Civil Fine"): (
+                r"\bcivil fine\b",
+                r"\bcivil penalty\b",
+            ),
             _normalize_option_text("Criminal Fine"): (
                 r"\bcriminal fine\b",
                 r"\bfine\b[^.\n]{0,40}\bmisdemeanor\b",
                 r"\bmisdemeanor\b[^.\n]{0,40}\bfine\b",
-                r"\bconviction\b[^.\n]{0,40}\bfine\b",
                 r"\bclass\s+[a-z0-9-]+\s+(?:misdemeanor|felony|offense|violation)\b[^.\n]{0,80}\bfine\b",
                 r"\bpenalty\s+class\b[^.\n]{0,80}\bfine\b",
             ),

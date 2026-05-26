@@ -253,6 +253,56 @@ class TestAggregateResults:
         assert row["variable_name"] == "batch"
         assert row["_aggregate_source_file"] == "benchmark_results_batch_batch-50.csv"
 
+    def test_collect_results_batch_mode_ignores_non_manifest_jurisdictions(
+        self, tmp_path
+    ):
+        output_dir = tmp_path / "output"
+        manifest_dir = output_dir / "all_jurisdictions" / "batches" / "batch-50"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "dispatch_manifest.json").write_text(
+            json.dumps(
+                {
+                    "batch_id": "batch-50",
+                    "jurisdictions": [
+                        {"jurisdiction_id": "CA-LosAngeles"},
+                    ],
+                }
+            )
+        )
+
+        ca_dir = output_dir / "CA-LosAngeles"
+        ca_dir.mkdir(parents=True)
+        pl.DataFrame({"variable_name": ["batch"], "eval_label": ["Correct"]}).write_csv(
+            ca_dir / "benchmark_results_batch_batch-50.csv"
+        )
+
+        pa_dir = output_dir / "PA-Philadelphia"
+        pa_dir.mkdir(parents=True)
+        pl.DataFrame({"variable_name": ["stale"], "eval_label": ["Incorrect"]}).write_csv(
+            pa_dir / "benchmark_results_20260502_020202.csv"
+        )
+
+        combined = aggregate_results.collect_results(output_dir, batch_id="batch-50")
+
+        assert combined.height == 1
+        row = combined.to_dicts()[0]
+        assert row["jurisdiction_id"] == "CA-LosAngeles"
+        assert row["variable_name"] == "batch"
+
+    def test_collect_metrics_batch_mode_does_not_fallback_to_non_batch_files(
+        self, tmp_path
+    ):
+        output_dir = tmp_path / "output"
+        jurisdiction_dir = output_dir / "TX-Dallas"
+        jurisdiction_dir.mkdir(parents=True)
+        (jurisdiction_dir / "benchmark_metrics_20260502_020202.json").write_text(
+            json.dumps({"avg_score": 8.0, "total": 8})
+        )
+
+        metrics_df = aggregate_results.collect_metrics(output_dir, batch_id="batch-50")
+
+        assert metrics_df.is_empty()
+
     def test_load_batch_manifest_jurisdictions_reads_dispatch_manifest(self, tmp_path):
         manifest_dir = tmp_path / "all_jurisdictions" / "batches" / "batch-50"
         manifest_dir.mkdir(parents=True)

@@ -138,6 +138,25 @@ def _iter_jurisdiction_output_dirs(output_dir: Path) -> list[Path]:
     return jurisdiction_dirs
 
 
+def _iter_target_jurisdiction_output_dirs(
+    output_dir: Path, batch_id: str | None = None
+) -> list[Path]:
+    """Return jurisdiction directories relevant to the current aggregation scope."""
+    if not batch_id:
+        return _iter_jurisdiction_output_dirs(output_dir)
+
+    manifest_jurisdictions = _load_batch_manifest_jurisdictions(output_dir, batch_id)
+    if not manifest_jurisdictions:
+        return _iter_jurisdiction_output_dirs(output_dir)
+
+    jurisdiction_dirs: list[Path] = []
+    for jurisdiction_id in manifest_jurisdictions:
+        jurisdiction_dir = output_dir / jurisdiction_id
+        if jurisdiction_dir.is_dir():
+            jurisdiction_dirs.append(jurisdiction_dir)
+    return jurisdiction_dirs
+
+
 def _extract_results_timestamp(results_file: Path) -> str | None:
     """Extract a benchmark timestamp from a timestamped results filename."""
     match = TIMESTAMPED_RESULTS_PATTERN.match(results_file.name)
@@ -167,6 +186,7 @@ def _select_results_file(
         batch_results = jurisdiction_dir / _batch_results_name(batch_id)
         if batch_results.exists():
             return batch_results
+        return None
 
     timestamped_files = sorted(jurisdiction_dir.glob(TIMESTAMPED_RESULTS_GLOB))
     if timestamped_files:
@@ -187,6 +207,7 @@ def _select_metrics_file(
         batch_metrics = jurisdiction_dir / _batch_metrics_name(batch_id)
         if batch_metrics.exists():
             return batch_metrics
+        return None
 
     timestamped_files = sorted(jurisdiction_dir.glob(TIMESTAMPED_METRICS_GLOB))
     if timestamped_files:
@@ -321,7 +342,7 @@ def _prepend_jurisdiction_column(df: pl.DataFrame) -> pl.DataFrame:
 def collect_metrics(output_dir: Path, batch_id: str | None = None) -> pl.DataFrame:
     """Collect all benchmark_metrics.json files into a single DataFrame."""
     rows = []
-    for jur_dir in _iter_jurisdiction_output_dirs(output_dir):
+    for jur_dir in _iter_target_jurisdiction_output_dirs(output_dir, batch_id=batch_id):
         metrics_file = _select_metrics_file(jur_dir, batch_id=batch_id)
         if metrics_file is None:
             continue
@@ -349,7 +370,7 @@ def collect_metrics(output_dir: Path, batch_id: str | None = None) -> pl.DataFra
 def collect_results(output_dir: Path, batch_id: str | None = None) -> pl.DataFrame:
     """Concatenate all benchmark_results.csv files."""
     frames = []
-    for jur_dir in _iter_jurisdiction_output_dirs(output_dir):
+    for jur_dir in _iter_target_jurisdiction_output_dirs(output_dir, batch_id=batch_id):
         results_file = _select_results_file(jur_dir, batch_id=batch_id)
         if results_file is None:
             continue
@@ -449,7 +470,7 @@ def main() -> None:
     # ── 1. Check expected vs completed jurisdictions ──────────────
     completed_dirs = [
         d.name
-        for d in _iter_jurisdiction_output_dirs(output_dir)
+        for d in _iter_target_jurisdiction_output_dirs(output_dir, batch_id=args.batch_id)
         if _select_results_file(d, batch_id=args.batch_id) is not None
         or _select_metrics_file(d, batch_id=args.batch_id) is not None
     ]
