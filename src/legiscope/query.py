@@ -5658,6 +5658,13 @@ _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS = (
     r"\b(?:pipe|needle|syringe|hypodermic|apparatus)\b",
 )
 
+_DPL_HISTORICAL_ONLY_PATTERNS = (
+    r"\brepeal(?:ed|s)?\b",
+    r"\bhistory\b",
+    r"\bformer(?:ly)?\b",
+    r"\brenumber(?:ed|ing)?\b",
+)
+
 _PENALTY_ADMIN_ONLY_PATTERNS = (
     r"\bcivil citation\b",
     r"\bacc program\b",
@@ -5737,8 +5744,21 @@ def _dp_law_support_has_explicit_operative_rule(text: str) -> bool:
         return False
     if _dpl_scope_support_is_noise_only(normalized):
         return False
+    if any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DPL_HISTORICAL_ONLY_PATTERNS
+    ) and not any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DPL_OPERATIVE_SUPPORT_PATTERNS
+    ):
+        return False
 
     for sentence in _ssp_sentence_slices(normalized):
+        if any(
+            re.search(pattern, sentence, re.IGNORECASE)
+            for pattern in _DPL_HISTORICAL_ONLY_PATTERNS
+        ):
+            continue
         if any(
             re.search(pattern, sentence, re.IGNORECASE)
             for pattern in _DP_LAW_BUSINESS_ONLY_PATTERNS

@@ -7202,6 +7202,76 @@ class TestScopeExistenceValidator:
 
         assert updated.short_answer == "Yes"
 
+    def test_dp_law_does_not_promote_repealed_chapter_text(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="The repealed chapter title should not count as an active paraphernalia law.",
+            citations=["Ord. 907-NS"],
+            supporting_passages=[
+                "Chapter 18, entitled 'Displays of Marijuana Paraphernalia,' repealed by Ordinance No. 907-NS, effective February 11, 1986."
+            ],
+            confidence=0.62,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-thousandoaks-repealed",
+                heading_text="# History",
+                body_text=(
+                    "Chapter 18, entitled 'Displays of Marijuana Paraphernalia,' repealed by Ordinance No. 907-NS, effective February 11, 1986."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
+    def test_dp_law_does_not_promote_business_only_tobacco_retailer_reference(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="Business-only tobacco retailer rule should remain out of scope.",
+            citations=["18.16.090.0304"],
+            supporting_passages=[
+                "It shall be a violation of this Section for any Tobacco Retailer to violate any applicable local, State, or federal law regulating the sale of drug paraphernalia."
+            ],
+            confidence=0.62,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-anaheim-business-only",
+                heading_text="# Tobacco Retailers",
+                body_text=(
+                    "It shall be a violation of this Section for any Tobacco Retailer to violate any applicable local, State, or federal law regulating the sale of drug paraphernalia."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
     def test_ssp_law_downgrades_exemption_only_text(self):
         response = LegalQueryResponse(
             short_answer="Yes",
