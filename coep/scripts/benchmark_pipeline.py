@@ -1253,9 +1253,9 @@ def _summarize_collapsed_query_accuracy(
     """Collapse scored subrows back to benchmark-query accuracy.
 
     A benchmark query is counted as correct only if every scored evaluation row for
-    that query is labeled ``Correct``. This keeps expanded option-level scoring for
-    diagnostics while also producing a binary per-query metric over the original
-    benchmark prompts.
+    that query is labeled ``Correct``. Query-level accuracy is computed only over
+    queries that have at least one scored evaluation row so missing/excluded ground
+    truth does not deflate the rate.
     """
     if eval_scored_df.is_empty():
         return {
@@ -1264,6 +1264,7 @@ def _summarize_collapsed_query_accuracy(
             "unscored_queries": int(total_queries),
             "correct_queries": 0,
             "incorrect_queries": 0,
+            "coverage_rate": 0.0,
             "accuracy_rate": 0.0,
         }
 
@@ -1276,9 +1277,10 @@ def _summarize_collapsed_query_accuracy(
 
     scored_queries = per_query.height
     correct_queries = per_query.filter(pl.col("all_rows_correct")).height
-    incorrect_queries = int(total_queries) - correct_queries
+    incorrect_queries = scored_queries - correct_queries
     unscored_queries = max(int(total_queries) - scored_queries, 0)
-    accuracy_rate = (correct_queries / total_queries) * 100 if total_queries else 0.0
+    accuracy_rate = (correct_queries / scored_queries) * 100 if scored_queries else 0.0
+    coverage_rate = (scored_queries / total_queries) * 100 if total_queries else 0.0
 
     return {
         "processed_queries": int(total_queries),
@@ -1286,6 +1288,7 @@ def _summarize_collapsed_query_accuracy(
         "unscored_queries": int(unscored_queries),
         "correct_queries": int(correct_queries),
         "incorrect_queries": int(incorrect_queries),
+        "coverage_rate": float(coverage_rate),
         "accuracy_rate": float(accuracy_rate),
     }
 
@@ -1755,7 +1758,7 @@ def main():
     print(
         "Collapsed query accuracy: "
         f"{collapsed_query_metrics['correct_queries']} / "
-        f"{collapsed_query_metrics['processed_queries']} "
+        f"{collapsed_query_metrics['scored_queries']} "
         f"({collapsed_query_metrics['accuracy_rate']:.1f}%)"
     )
     print(
@@ -1765,6 +1768,12 @@ def main():
     print(
         "Collapsed queries unscored (missing/excluded ground truth): "
         f"{collapsed_query_metrics['unscored_queries']}"
+    )
+    print(
+        "Collapsed query scoring coverage: "
+        f"{collapsed_query_metrics['scored_queries']} / "
+        f"{collapsed_query_metrics['processed_queries']} "
+        f"({collapsed_query_metrics['coverage_rate']:.1f}%)"
     )
     print(f"Expanded evaluation rows processed: {processed_count}")
     print(f"Expanded rows scored against ground truth: {scored_count}")
@@ -1826,6 +1835,10 @@ def main():
         "collapsed_query_incorrect": collapsed_query_metrics["incorrect_queries"],
         "collapsed_query_scored": collapsed_query_metrics["scored_queries"],
         "collapsed_query_unscored": collapsed_query_metrics["unscored_queries"],
+        "collapsed_query_coverage_rate": round(
+            collapsed_query_metrics["coverage_rate"],
+            2,
+        ),
         "queries_with_no_retrieval_units": no_retrieval_units_count,
         "queries_filtered_to_zero_units": filtered_out_all_units_count,
         "abstained_queries": abstention_count,

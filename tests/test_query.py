@@ -7414,6 +7414,76 @@ class TestScopeExistenceValidator:
 
         assert updated.short_answer == "No"
 
+    def test_dp_law_does_not_promote_tobacco_smoking_only_context(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="Smoking restrictions do not create a local drug paraphernalia law.",
+            citations=["Title 11"],
+            supporting_passages=[
+                "No person shall consume tobacco or illegal drugs in a taxicab. Smoking includes inhaling or possessing any substance in a cigarette or pipe."
+            ],
+            confidence=0.62,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-boise-smoking-only",
+                heading_text="# Smoking definitions",
+                body_text=(
+                    "Smoking includes inhaling any substance in a cigarette or pipe, including tobacco products."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
+    def test_dp_law_does_not_promote_state_adoption_park_only_reference(self):
+        response = LegalQueryResponse(
+            short_answer="No",
+            reasoning="Park-only state adoption should remain out of scope.",
+            citations=["§ 13.01.210"],
+            supporting_passages=[
+                "The provisions of the California Uniform Controlled Substances Act are applicable in city parks and shall be enforced and prosecuted in accordance with the provisions thereof."
+            ],
+            confidence=0.62,
+            limitations="",
+            option_evidence=[],
+        )
+        sections = [
+            SectionResult(
+                section_id="s-menifee-park-adoption",
+                heading_text="# City parks",
+                body_text=(
+                    "The provisions of the California Uniform Controlled Substances Act are applicable in city parks."
+                ),
+                heading_level=1,
+                parent_id=None,
+                matching_segments=[],
+                relevance_score=1.0,
+                segment_count=1,
+            )
+        ]
+
+        updated = _apply_scope_existence_validator(
+            response,
+            sections,
+            {"variable_name": "dp_law", "response_options": "Yes OR No"},
+        )
+
+        assert updated.short_answer == "No"
+
     def test_dp_law_does_not_downgrade_operative_regulation_language(self):
         response = LegalQueryResponse(
             short_answer="Yes",

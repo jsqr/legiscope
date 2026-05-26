@@ -5143,6 +5143,8 @@ def _apply_scope_existence_validator(
         variable_name == "dp_law"
         and answer == "No"
         and _dp_law_support_has_explicit_operative_rule(evidence_text)
+        and not _dp_law_support_is_tobacco_or_smoking_only(evidence_text)
+        and not _dp_law_promotion_blocked_by_scope_only_context(evidence_text)
     ):
         return response.model_copy(
             update={
@@ -5736,6 +5738,16 @@ _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS = (
     r"\b(?:pipe|needle|syringe|hypodermic|apparatus)\b",
 )
 
+_DPL_STRICT_OBJECT_PATTERNS = (
+    r"\bdrug paraphernalia\b",
+    r"\bparaphernalia\b",
+    r"\bsyringe\b",
+    r"\bneedle\b",
+    r"\bhypodermic\b",
+    r"\broach clip\b",
+    r"\bhash pipe\b",
+)
+
 _DPL_HISTORICAL_ONLY_PATTERNS = (
     r"\brepeal(?:ed|s)?\b",
     r"\bhistory\b",
@@ -5745,6 +5757,19 @@ _DPL_HISTORICAL_ONLY_PATTERNS = (
 
 _DPL_GENERAL_PERSON_INCLUDING_BUSINESS_PATTERNS = (
     r"\bany person\b[^.\n]{0,120}\bincluding\b[^.\n]{0,120}\bretail business\b",
+)
+
+_DPL_TOBACCO_SMOKING_ONLY_PATTERNS = (
+    r"\btobacco\b",
+    r"\btobacco product\b",
+    r"\be-?cig(?:arette)?\b",
+)
+
+_DPL_PARK_ONLY_APPLICABILITY_PATTERNS = (
+    r"\bapplicable in city parks\b",
+    r"\bin city parks\b",
+    r"\bwithin (?:any )?public park\b",
+    r"\bpark(?:s)?\b",
 )
 
 _PENALTY_ADMIN_ONLY_PATTERNS = (
@@ -5819,6 +5844,119 @@ def _dpl_scope_support_is_noise_only(text: str) -> bool:
     )
 
 
+def _dp_law_split_clause_has_explicit_operative_rule(text: str) -> bool:
+    """Return whether adjacent sentence slices form an explicit operative clause.
+
+    This captures lead-in clauses that end with a colon, followed by numbered
+    activity/object language in the next sentence.
+    """
+    sentences = _ssp_sentence_slices(text)
+    if len(sentences) < 2:
+        return False
+
+    for index in range(len(sentences) - 1):
+        lead = sentences[index]
+        follow = sentences[index + 1]
+        if ":" not in lead:
+            continue
+        if not any(
+            re.search(pattern, lead, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_PROHIBITION_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, follow, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_ACTIVITY_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, follow, re.IGNORECASE)
+            for pattern in _DPL_STRICT_OBJECT_PATTERNS
+        ):
+            continue
+        if not any(
+            re.search(pattern, follow, re.IGNORECASE)
+            for pattern in _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS
+        ):
+            continue
+        if any(
+            re.search(pattern, follow, re.IGNORECASE)
+            for pattern in _DPL_TOBACCO_SMOKING_ONLY_PATTERNS
+        ) and not re.search(r"\bdrug paraphernalia\b", follow, re.IGNORECASE):
+            continue
+        return True
+
+    return False
+
+
+def _dp_law_support_is_tobacco_or_smoking_only(text: str) -> bool:
+    """Return whether support is smoking/tobacco-only without explicit drug paraphernalia scope."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+    has_tobacco_smoking = any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DPL_TOBACCO_SMOKING_ONLY_PATTERNS
+    )
+    if not has_tobacco_smoking:
+        return False
+    if re.search(r"\bdrug paraphernalia\b", normalized, re.IGNORECASE):
+        return False
+    if any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DPL_STRICT_OBJECT_PATTERNS
+    ):
+        return False
+    if re.search(r"\b(?:controlled substances?|narcotic)\b", normalized, re.IGNORECASE):
+        return False
+    return True
+
+
+def _dp_law_promotion_blocked_by_scope_only_context(text: str) -> bool:
+    """Return whether promotion should be blocked for state-adoption/park-only context."""
+    normalized = str(text or "").strip()
+    if not normalized:
+        return False
+
+    has_state_adoption = any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DP_LAW_STATE_ADOPTION_PATTERNS
+    )
+    has_park_only = any(
+        re.search(pattern, normalized, re.IGNORECASE)
+        for pattern in _DPL_PARK_ONLY_APPLICABILITY_PATTERNS
+    )
+    if not has_state_adoption and not has_park_only:
+        return False
+
+    has_explicit_local_clause = _dp_law_split_clause_has_explicit_operative_rule(
+        normalized
+    ) or any(
+        all(
+            [
+                any(
+                    re.search(pattern, sentence, re.IGNORECASE)
+                    for pattern in _DPL_OPERATIVE_PROHIBITION_PATTERNS
+                ),
+                any(
+                    re.search(pattern, sentence, re.IGNORECASE)
+                    for pattern in _DPL_OPERATIVE_ACTIVITY_PATTERNS
+                ),
+                any(
+                    re.search(pattern, sentence, re.IGNORECASE)
+                    for pattern in _DPL_STRICT_OBJECT_PATTERNS
+                ),
+                any(
+                    re.search(pattern, sentence, re.IGNORECASE)
+                    for pattern in _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS
+                ),
+            ]
+        )
+        for sentence in _ssp_sentence_slices(normalized)
+    )
+    return not has_explicit_local_clause
+
+
 def _dp_law_support_has_explicit_operative_rule(text: str) -> bool:
     """Return whether evidence contains an explicit local operative paraphernalia prohibition."""
     normalized = str(text or "").strip()
@@ -5870,7 +6008,7 @@ def _dp_law_support_has_explicit_operative_rule(text: str) -> bool:
             continue
         if not any(
             re.search(pattern, sentence, re.IGNORECASE)
-            for pattern in _PARAPHERNALIA_OBJECT_PATTERNS
+            for pattern in _DPL_STRICT_OBJECT_PATTERNS
         ):
             continue
         if not any(
@@ -5880,28 +6018,8 @@ def _dp_law_support_has_explicit_operative_rule(text: str) -> bool:
             continue
         return True
 
-    # Some ordinances split prohibition lead-ins and numbered activities into
-    # adjacent clauses; allow whole-text detection when scope is not narrow.
-    if not _dp_law_support_is_scope_limited(normalized):
-        if (
-            any(
-                re.search(pattern, normalized, re.IGNORECASE)
-                for pattern in _DPL_OPERATIVE_PROHIBITION_PATTERNS
-            )
-            and any(
-                re.search(pattern, normalized, re.IGNORECASE)
-                for pattern in _DPL_OPERATIVE_ACTIVITY_PATTERNS
-            )
-            and any(
-                re.search(pattern, normalized, re.IGNORECASE)
-                for pattern in _PARAPHERNALIA_OBJECT_PATTERNS
-            )
-            and any(
-                re.search(pattern, normalized, re.IGNORECASE)
-                for pattern in _DPL_OPERATIVE_DRUG_SCOPE_PATTERNS
-            )
-        ):
-            return True
+    if _dp_law_split_clause_has_explicit_operative_rule(normalized):
+        return True
 
     return False
 

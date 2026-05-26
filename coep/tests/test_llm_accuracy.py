@@ -132,6 +132,57 @@ class TestAggregateQueryScoping:
 
         assert filtered["variable_name"].to_list() == ["dp_possession"]
 
+    def test_filter_results_for_analysis_can_include_date_variables(self):
+        raw_df = pl.DataFrame(
+            {
+                "variable_name": ["ssp_enacted", "dp_possession"],
+                "query_id": [None, None],
+                "query_metadata": [
+                    json.dumps({"query_id": "ssp_enacted"}),
+                    json.dumps({"query_id": "dp_possession"}),
+                ],
+                "jurisdiction_id": ["A", "A"],
+                "evaluation_mode": ["whole_answer", "whole_answer"],
+                "eval_label": ["Correct", "Correct"],
+                "eval_score": [1.0, 1.0],
+            }
+        )
+
+        filtered = llm_accuracy.filter_results_for_analysis(
+            raw_df,
+            exclude_date_variables=False,
+            exclude_state_fed_reference_variables=True,
+        )
+
+        assert filtered["variable_name"].to_list() == ["ssp_enacted", "dp_possession"]
+
+    def test_filter_results_for_analysis_can_include_state_fed_reference_variables(self):
+        raw_df = pl.DataFrame(
+            {
+                "variable_name": ["dp_state_fed_reference", "dp_possession"],
+                "query_id": [None, None],
+                "query_metadata": [
+                    json.dumps({"query_id": "dp_state_fed_reference"}),
+                    json.dumps({"query_id": "dp_possession"}),
+                ],
+                "jurisdiction_id": ["A", "A"],
+                "evaluation_mode": ["whole_answer", "whole_answer"],
+                "eval_label": ["Correct", "Correct"],
+                "eval_score": [1.0, 1.0],
+            }
+        )
+
+        filtered = llm_accuracy.filter_results_for_analysis(
+            raw_df,
+            exclude_date_variables=True,
+            exclude_state_fed_reference_variables=False,
+        )
+
+        assert filtered["variable_name"].to_list() == [
+            "dp_state_fed_reference",
+            "dp_possession",
+        ]
+
     def test_make_scored_rows_preserves_refined_error_type(self):
         scored = llm_accuracy.make_scored_rows(
             pl.DataFrame(
