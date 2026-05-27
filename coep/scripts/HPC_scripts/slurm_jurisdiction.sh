@@ -236,27 +236,6 @@ fi
 
 set -Eeo pipefail
 
-LEGISCOPE_ARRAY_TASKS_FILE="${LEGISCOPE_ARRAY_TASKS_FILE:-}"
-if [[ -n "${SLURM_ARRAY_TASK_ID:-}" ]]; then
-    if [[ -z "$LEGISCOPE_ARRAY_TASKS_FILE" || ! -f "$LEGISCOPE_ARRAY_TASKS_FILE" ]]; then
-        echo "ERROR: LEGISCOPE_ARRAY_TASKS_FILE is required for Slurm array tasks" >&2
-        exit 1
-    fi
-
-    TASK_ROW="$(awk -F '\t' -v row_number="$((SLURM_ARRAY_TASK_ID + 1))" 'NR == row_number { print; exit }' "$LEGISCOPE_ARRAY_TASKS_FILE")"
-    if [[ -z "$TASK_ROW" ]]; then
-        echo "ERROR: No task metadata found for SLURM_ARRAY_TASK_ID=${SLURM_ARRAY_TASK_ID}" >&2
-        exit 1
-    fi
-
-    IFS=$'\t' read -r TASK_STATE TASK_LOCALITY TASK_CODE_SLUG TASK_DOCX_PATH <<< "$TASK_ROW"
-
-    STATE="${STATE:-$TASK_STATE}"
-    LOCALITY="${LOCALITY:-$TASK_LOCALITY}"
-    CODE_SLUG="${CODE_SLUG:-${TASK_CODE_SLUG:-municipal-code}}"
-    DOCX_PATH="${DOCX_PATH:-$TASK_DOCX_PATH}"
-fi
-
 # ── Validate required inputs ─────────────────────────────────────
 for var in STATE LOCALITY DOCX_PATH; do
     if [[ -z "${!var:-}" ]]; then
