@@ -116,6 +116,7 @@ if provider == "dashscope":
     )
     runtime_key = os.getenv(str(api_key_env))
     dotenv_key = _load_env_value(Path(".env"), str(api_key_env))
+    openai_api_key_present = bool(os.getenv("OPENAI_API_KEY"))
     key_relation = "unavailable"
     if runtime_key and dotenv_key:
         key_relation = "same" if runtime_key == dotenv_key else "different"
@@ -125,7 +126,7 @@ if provider == "dashscope":
         f"api_base={base_url} api_key_env={api_key_env} "
         f"runtime_key={_fingerprint(runtime_key)} "
         f"dotenv_key={_fingerprint(dotenv_key)} relation={key_relation} "
-        f"openai_api_key_present={bool(os.getenv(\"OPENAI_API_KEY\"))}",
+        f"openai_api_key_present={openai_api_key_present}",
         file=sys.stderr,
     )
 
