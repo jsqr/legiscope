@@ -5,8 +5,8 @@
 # This script runs on the LOGIN NODE (no GPU needed). It:
 #   1. Scans a directory for *.docx files
 #   2. Parses STATE and Locality from each filename
-#   3. Optionally throttles submissions to keep queued and running jobs under a cap
-#   4. Submits coep/scripts/HPC_scripts/slurm_jurisdiction.sh via sbatch for each file
+#   3. Builds a task list from the DOCX filenames
+#   4. Submits one Slurm job array, optionally capped with %N concurrent tasks
 #
 # All heavy lifting (init.py, file copy, DOCX conversion, params.yaml editing,
 # DVC pipeline) happens inside the SLURM job — NOT here.
@@ -132,7 +132,7 @@ Options:
     --compute-mode MODE       external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
   --quantization MODE       Submission profile for vLLM serving: fp16 or awq
     --batch-id ID             Stable identifier used to tie all submitted jobs together
-        --batch-size N            Limit active jurisdictions to at most N concurrent jobs (default: 15)
+        --batch-size N            Limit the job array to at most N concurrent tasks (default: 15)
   -h, --help                Show this help
 
 Examples:
@@ -265,8 +265,16 @@ BATCH_DIR="/gpfs/data/cerdalab/LegalAI/legiscope/data/output/all_jurisdictions/b
 BATCH_MANIFEST_PATH="${BATCH_DIR}/dispatch_manifest.json"
 BATCH_JURISDICTIONS_PATH="${BATCH_DIR}/jurisdictions.txt"
 BATCH_RECORDS_FILE="$(mktemp -t legiscope_batch_records.XXXXXX.tsv)"
-trap 'rm -f "$BATCH_RECORDS_FILE"' EXIT
 printf 'jurisdiction_id\tstate\tlocality\tcode_slug\tdocx_path\tslurm_job_id\n' > "$BATCH_RECORDS_FILE"
+
+if [[ "$DRY_RUN" == true ]]; then
+    BATCH_TASKS_FILE="$(mktemp -t legiscope_array_tasks.XXXXXX.tsv)"
+else
+    mkdir -p "$BATCH_DIR"
+    BATCH_TASKS_FILE="${BATCH_DIR}/array_tasks.tsv"
+fi
+trap 'rm -f "$BATCH_RECORDS_FILE" "$BATCH_TASKS_FILE"' EXIT
+: > "$BATCH_TASKS_FILE"
 
 # Ensure log directory exists on HPC
 mkdir -p /gpfs/data/cerdalab/LegalAI/legiscope/logs 2>/dev/null || true
@@ -274,21 +282,6 @@ mkdir -p /gpfs/data/cerdalab/LegalAI/legiscope/logs 2>/dev/null || true
 # ── Iterate DOCX files and submit jobs ────────────────────────────
 SUBMITTED=0
 SKIPPED=0
-SUBMITTED_JOB_IDS=()
-ACTIVE_JOB_POLL_SECONDS=30
-
-count_active_jobs() {
-    local job_ids_csv=""
-
-    if [[ "${#SUBMITTED_JOB_IDS[@]}" -eq 0 ]]; then
-        printf '0\n'
-        return 0
-    fi
-
-    job_ids_csv="$(IFS=,; printf '%s' "${SUBMITTED_JOB_IDS[*]}")"
-
-    squeue -h -j "$job_ids_csv" -t PD,R -o '%i' 2>/dev/null | wc -l | tr -d ' '
-}
 
 echo "=== Legiscope Batch Dispatcher ==="
 echo "DOCX directory: $DOCX_DIR"
@@ -298,7 +291,7 @@ echo "Quantization : ${PROFILE_LABEL}"
 echo "Partition    : ${SBATCH_PARTITION}"
 echo "GRES         : ${SBATCH_GRES}"
 if [[ "$BATCH_SIZE" -gt 0 ]]; then
-    echo "Batch size   : ${BATCH_SIZE} queued/running jobs maximum"
+    echo "Batch size   : ${BATCH_SIZE} concurrent array tasks maximum"
 fi
 echo ""
 
@@ -326,48 +319,13 @@ for docx in "$DOCX_DIR"/*.docx; do
     fi
 
     JURISDICTION_ID="${STATE}-${LOCALITY}"
-    JOB_ID=""
+    printf '%s\t%s\t%s\t%s\n' \
+        "$STATE" "$LOCALITY" "$CODE_SLUG" "$DOCX_ABS" >> "$BATCH_TASKS_FILE"
 
     if [[ "$DRY_RUN" == true ]]; then
         echo "  [dry-run] ${JURISDICTION_ID} (${CODE_SLUG}) ← ${DOCX_ABS} [${PROFILE_LABEL}]"
     else
-        if [[ "$BATCH_SIZE" -gt 0 ]]; then
-            while true; do
-                ACTIVE_JOB_COUNT="$(count_active_jobs)"
-                if [[ "$ACTIVE_JOB_COUNT" -lt "$BATCH_SIZE" ]]; then
-                    break
-                fi
-
-                echo "  Throttling: ${ACTIVE_JOB_COUNT}/${BATCH_SIZE} jobs still queued or running; waiting ${ACTIVE_JOB_POLL_SECONDS}s"
-                sleep "$ACTIVE_JOB_POLL_SECONDS"
-            done
-        fi
-
-        echo "  Submitting: ${JURISDICTION_ID} (${CODE_SLUG}) [${PROFILE_LABEL}]"
-        SBATCH_ARGS=(
-            --partition="${SBATCH_PARTITION}"
-            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,LEGISCOPE_COMPUTE_MODE=${COMPUTE_MODE},VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH}"
-        )
-        if [[ -n "$SBATCH_GRES" ]]; then
-            SBATCH_ARGS+=(--gres="${SBATCH_GRES}")
-        fi
-        SBATCH_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" "$SLURM_SCRIPT")"
-        echo "    ${SBATCH_OUTPUT}"
-        JOB_ID="$(printf '%s\n' "$SBATCH_OUTPUT" | awk '/Submitted batch job/ {print $4}')"
-        if [[ -n "$JOB_ID" && "$BATCH_SIZE" -gt 0 ]]; then
-            SUBMITTED_JOB_IDS+=("$JOB_ID")
-        fi
-    fi
-
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$JURISDICTION_ID" "$STATE" "$LOCALITY" "$CODE_SLUG" "$DOCX_ABS" "$JOB_ID" >> "$BATCH_RECORDS_FILE"
-
-    if [[ "$DRY_RUN" == false ]]; then
-        write_batch_manifest \
-            "$BATCH_RECORDS_FILE" \
-            "$BATCH_DIR" \
-            "$BATCH_MANIFEST_PATH" \
-            "$BATCH_JURISDICTIONS_PATH"
+        echo "  Queued task: ${JURISDICTION_ID} (${CODE_SLUG}) [${PROFILE_LABEL}]"
     fi
 
     SUBMITTED=$((SUBMITTED + 1))
@@ -378,6 +336,46 @@ if [[ "$DRY_RUN" == true ]]; then
     echo "Dry run complete: $SUBMITTED jobs would be submitted, $SKIPPED files skipped."
     echo "Planned batch manifest: ${BATCH_MANIFEST_PATH}"
 else
+    if [[ "$SUBMITTED" -gt 0 ]]; then
+        ARRAY_SPEC="0-$((SUBMITTED - 1))"
+        if [[ "$BATCH_SIZE" -gt 0 ]]; then
+            ARRAY_SPEC="${ARRAY_SPEC}%${BATCH_SIZE}"
+        fi
+
+        SBATCH_ARGS=(
+            --partition="${SBATCH_PARTITION}"
+            --array="${ARRAY_SPEC}"
+            --export="ALL,LEGISCOPE_ARRAY_TASKS_FILE=${BATCH_TASKS_FILE},SLURM_NOTIFY=0,LEGISCOPE_COMPUTE_MODE=${COMPUTE_MODE},VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH}"
+        )
+        if [[ -n "$SBATCH_GRES" ]]; then
+            SBATCH_ARGS+=(--gres="${SBATCH_GRES}")
+        fi
+
+        echo "Submitting array: ${ARRAY_SPEC}"
+        SBATCH_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" "$SLURM_SCRIPT")"
+        echo "  ${SBATCH_OUTPUT}"
+        ARRAY_JOB_ID="$(printf '%s\n' "$SBATCH_OUTPUT" | awk '/Submitted batch job/ {print $4}')"
+
+        if [[ -z "$ARRAY_JOB_ID" ]]; then
+            echo "Error: could not parse submitted array job id." >&2
+            exit 1
+        fi
+
+        TASK_INDEX=0
+        while IFS=$'\t' read -r STATE LOCALITY CODE_SLUG DOCX_ABS; do
+            JURISDICTION_ID="${STATE}-${LOCALITY}"
+            printf '%s\t%s\t%s\t%s\t%s\t%s_%s\n' \
+                "$JURISDICTION_ID" "$STATE" "$LOCALITY" "$CODE_SLUG" "$DOCX_ABS" "$ARRAY_JOB_ID" "$TASK_INDEX" >> "$BATCH_RECORDS_FILE"
+            TASK_INDEX=$((TASK_INDEX + 1))
+        done < "$BATCH_TASKS_FILE"
+
+        write_batch_manifest \
+            "$BATCH_RECORDS_FILE" \
+            "$BATCH_DIR" \
+            "$BATCH_MANIFEST_PATH" \
+            "$BATCH_JURISDICTIONS_PATH"
+    fi
+
     echo "Dispatch complete: $SUBMITTED jobs submitted, $SKIPPED files skipped."
     echo "Batch manifest   : ${BATCH_MANIFEST_PATH}"
     echo "Jurisdiction list: ${BATCH_JURISDICTIONS_PATH}"
