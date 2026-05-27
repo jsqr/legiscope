@@ -206,7 +206,9 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     return (
         "temperature" in message
         and (
-            "only the default" in message
+            "deprecated for this model" in message
+            or "is deprecated" in message
+            or "only the default" in message
             or "does not support" in message
             or "unsupported value" in message
         )

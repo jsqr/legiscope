@@ -246,6 +246,30 @@ class TestAskFunction:
         assert first_call.kwargs["temperature"] == 0.0
         assert "temperature" not in second_call.kwargs
 
+    def test_create_structured_completion_retries_when_temperature_is_deprecated(self):
+        """Anthropic models may reject explicit temperature as deprecated."""
+        mock_client = Mock()
+        mock_response = MockResponseModel(name="fallback", value=12)
+        mock_client.chat.completions.create.side_effect = [
+            Exception("AnthropicException - {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"`temperature` is deprecated for this model.\"}}"),
+            mock_response,
+        ]
+
+        result = create_structured_completion(
+            client=mock_client,
+            messages=[{"role": "user", "content": "hi"}],
+            response_model=MockResponseModel,
+            temperature=0.0,
+            max_retries=1,
+        )
+
+        assert result == mock_response
+        assert mock_client.chat.completions.create.call_count == 2
+        first_call = mock_client.chat.completions.create.call_args_list[0]
+        second_call = mock_client.chat.completions.create.call_args_list[1]
+        assert first_call.kwargs["temperature"] == 0.0
+        assert "temperature" not in second_call.kwargs
+
     @patch("legiscope.llm_config.Config.get_llm_params")
     def test_ask_retries_without_temperature_when_provider_rejects_it(
         self, mock_get_llm_params
