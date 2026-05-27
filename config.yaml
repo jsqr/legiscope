@@ -31,7 +31,9 @@ llm:
     # Kimi, and other Alibaba-hosted models.
     # International: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
     # China/Beijing: https://dashscope.aliyuncs.com/compatible-mode/v1
-    api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    # Some Alibaba token plans expose an account-specific compatible-mode base
+    # URL; prefer that exact value when it is provided in the console.
+    api_base: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
     api_key_env: "DASHSCOPE_API_KEY"
 
   litellm:
