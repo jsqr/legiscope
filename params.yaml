@@ -10,7 +10,7 @@ jurisdiction:
 
 # LLM configuration
 llm:
-  default_provider: novita
+  default_provider: litellm
   # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
   # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
   source: external
@@ -31,8 +31,8 @@ llm:
       powerful: qwen/qwen3.7-max
 
     litellm:
-      fast: xai/grok-4.3
-      powerful: xai/grok-4.3
+      fast: gemini/gemini-2.0-flash-lite
+      powerful: gemini/gemini-2.0-flash-lite
       
     mistral:
       fast: mistral-medium-3-5
