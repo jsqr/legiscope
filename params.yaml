@@ -27,8 +27,8 @@ llm:
       powerful: qwen3.7-max
 
     litellm:
-      fast: gpt-5.5
-      powerful: gpt-5.5
+      fast: claude-opus-4-7
+      powerful: claude-opus-4-7
       
     mistral:
       fast: mistral-small-2506
