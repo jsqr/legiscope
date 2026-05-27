@@ -246,6 +246,23 @@ class TestAskFunction:
         assert first_call.kwargs["temperature"] == 0.0
         assert "temperature" not in second_call.kwargs
 
+    def test_create_structured_completion_uses_model_bound_to_client(self):
+        """OpenAI-compatible clients may require model at request time."""
+        mock_client = Mock()
+        mock_client._legiscope_model = "deepseek-v3"
+        mock_response = MockResponseModel(name="bound-model", value=21)
+        mock_client.chat.completions.create.return_value = mock_response
+
+        result = create_structured_completion(
+            client=mock_client,
+            messages=[{"role": "user", "content": "hi"}],
+            response_model=MockResponseModel,
+            max_retries=1,
+        )
+
+        assert result == mock_response
+        assert mock_client.chat.completions.create.call_args.kwargs["model"] == "deepseek-v3"
+
     def test_create_structured_completion_retries_when_temperature_is_deprecated(self):
         """Anthropic models may reject explicit temperature as deprecated."""
         mock_client = Mock()

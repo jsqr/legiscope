@@ -215,6 +215,19 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     )
 
 
+def _resolve_client_model(client: Instructor, params: dict[str, object]) -> str | None:
+    """Return an explicit model for clients that require it at request time."""
+    model = params.get("model")
+    if isinstance(model, str) and model.strip():
+        return model
+
+    client_model = getattr(client, "_legiscope_model", None)
+    if isinstance(client_model, str) and client_model.strip():
+        return client_model
+
+    return None
+
+
 def create_structured_completion(
     *,
     client: Instructor,
@@ -229,6 +242,9 @@ def create_structured_completion(
         or 0
     )
     request_params = dict(params)
+    request_model = _resolve_client_model(client, request_params)
+    if request_model is not None and not request_params.get("model"):
+        request_params["model"] = request_model
     used_temperature_fallback = False
 
     attempt = 0

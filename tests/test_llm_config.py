@@ -187,6 +187,7 @@ class TestDashScopeClient:
             fake_client,
             mode=instructor.Mode.JSON,
         )
+        assert getattr(mock_from_openai.return_value, "_legiscope_model") == "qwen3.7-max"
 
     def test_dashscope_client_requires_dedicated_api_key(self):
         p = _params_with(**{"llm.default_provider": "dashscope"})
@@ -312,6 +313,7 @@ class TestGetLLMParams:
             params = Config.get_llm_params()
             assert params["temperature"] == 0.0
             assert params["max_retries"] == 3
+            assert "model" not in params
             assert "extra_body" not in params
 
     def test_overrides(self):

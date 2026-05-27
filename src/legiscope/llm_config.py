@@ -114,6 +114,12 @@ def _apply_provider_specific_llm_params(
     return params
 
 
+def _bind_client_model(client: Instructor, model: str) -> Instructor:
+    """Attach the configured model to clients that do not bind it internally."""
+    setattr(client, "_legiscope_model", model)
+    return client
+
+
 def _build_client(
     provider: str, model: str, mode: instructor.Mode | None
 ) -> Instructor:
@@ -128,7 +134,10 @@ def _build_client(
             ) from exc
 
         client = OpenAI(**_get_dashscope_runtime_kwargs())
-        return instructor.from_openai(client, mode=mode or instructor.Mode.JSON)
+        return _bind_client_model(
+            instructor.from_openai(client, mode=mode or instructor.Mode.JSON),
+            model,
+        )
 
     if provider == "litellm":
         try:
@@ -144,15 +153,18 @@ def _build_client(
             model=model,
             **_get_litellm_runtime_kwargs(),
         )
-        return instructor.from_litellm(
-            completion_with_defaults,
-            mode=mode or instructor.Mode.TOOLS,
+        return _bind_client_model(
+            instructor.from_litellm(
+                completion_with_defaults,
+                mode=mode or instructor.Mode.TOOLS,
+            ),
+            model,
         )
 
     provider_string = f"{provider}/{model}"
     if mode is not None:
-        return instructor.from_provider(provider_string, mode=mode)
-    return instructor.from_provider(provider_string)
+        return _bind_client_model(instructor.from_provider(provider_string, mode=mode), model)
+    return _bind_client_model(instructor.from_provider(provider_string), model)
 
 
 class Config:
