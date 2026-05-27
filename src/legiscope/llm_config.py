@@ -39,6 +39,7 @@ def _provider_config() -> dict:
 
     mode_map = {
         "dashscope": instructor.Mode.JSON,
+        "novita": instructor.Mode.JSON,
         "openai": instructor.Mode.JSON,
         "mistral": instructor.Mode.MISTRAL_TOOLS,
         "ollama": None,  # auto-configures
@@ -81,26 +82,44 @@ def _get_litellm_runtime_kwargs() -> dict[str, Any]:
 
 def _get_dashscope_runtime_kwargs() -> dict[str, Any]:
     """Return DashScope OpenAI-compatible client kwargs from config.yaml."""
-    base_url = get_config("llm.dashscope.api_base") or os.getenv(
-        "DASHSCOPE_API_BASE"
+    return _get_openai_compatible_runtime_kwargs(
+        provider="dashscope",
+        default_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        default_api_key_env="DASHSCOPE_API_KEY",
     )
-    api_key_env = get_config("llm.dashscope.api_key_env") or "DASHSCOPE_API_KEY"
+
+
+def _get_novita_runtime_kwargs() -> dict[str, Any]:
+    """Return Novita AI OpenAI-compatible client kwargs from config.yaml."""
+    return _get_openai_compatible_runtime_kwargs(
+        provider="novita",
+        default_base_url="https://api.novita.ai/openai",
+        default_api_key_env="NOVITA_API_KEY",
+    )
+
+
+def _get_openai_compatible_runtime_kwargs(
+    *, provider: str, default_base_url: str, default_api_key_env: str
+) -> dict[str, Any]:
+    """Return OpenAI-compatible client kwargs for a named provider."""
+    base_url = get_config(f"llm.{provider}.api_base") or os.getenv(
+        f"{provider.upper()}_API_BASE"
+    )
+    api_key_env = get_config(f"llm.{provider}.api_key_env") or default_api_key_env
     api_key = os.getenv(str(api_key_env))
 
     if not api_key:
         raise EnvironmentError(
-            "DashScope provider requires a dedicated API key in "
+            f"{provider.capitalize()} provider requires a dedicated API key in "
             f"{api_key_env}. Refusing to fall back to OPENAI_API_KEY because "
             "that produces misleading 401 invalid_api_key errors against the "
-            "DashScope endpoint."
+            f"{provider.capitalize()} endpoint."
         )
 
-    runtime_kwargs: dict[str, Any] = {
-        "base_url": str(base_url or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
+    return {
+        "base_url": str(base_url or default_base_url),
+        "api_key": api_key,
     }
-    runtime_kwargs["api_key"] = api_key
-
-    return runtime_kwargs
 
 
 def _apply_provider_specific_llm_params(
@@ -134,6 +153,21 @@ def _build_client(
             ) from exc
 
         client = OpenAI(**_get_dashscope_runtime_kwargs())
+        return _bind_client_model(
+            instructor.from_openai(client, mode=mode or instructor.Mode.JSON),
+            model,
+        )
+
+    if provider == "novita":
+        try:
+            from openai import OpenAI
+        except ImportError as exc:
+            raise ImportError(
+                "Novita AI support requires the 'openai' package. "
+                'Install dependencies with `uv sync` or `uv pip install -e ".[dev]"`.'
+            ) from exc
+
+        client = OpenAI(**_get_novita_runtime_kwargs())
         return _bind_client_model(
             instructor.from_openai(client, mode=mode or instructor.Mode.JSON),
             model,

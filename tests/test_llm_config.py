@@ -22,6 +22,7 @@ _BASE_PARAMS = {
         "providers": {
             "dashscope": {"fast": "qwen3.7-max", "powerful": "qwen3.7-max"},
             "openai": {"fast": "gpt-4.1-mini", "powerful": "gpt-4.1"},
+                "novita": {"fast": "qwen/qwen3.7-max", "powerful": "qwen/qwen3.7-max"},
             "litellm": {
                 "fast": "gemini/gemini-3.5-flash",
                 "powerful": "gemini/gemini-3.5-flash",
@@ -157,6 +158,19 @@ class TestProviderSwitch:
                 == _BASE_PARAMS["llm"]["providers"]["dashscope"]["powerful"]
             )
 
+    def test_novita_provider_models(self):
+        p = _params_with(**{"llm.default_provider": "novita"})
+        with patch("legiscope.llm_config.load_params", return_value=p):
+            assert Config.get_llm_provider() == "novita"
+            assert (
+                Config.get_fast_model()
+                == _BASE_PARAMS["llm"]["providers"]["novita"]["fast"]
+            )
+            assert (
+                Config.get_powerful_model()
+                == _BASE_PARAMS["llm"]["providers"]["novita"]["powerful"]
+            )
+
 
 class TestDashScopeClient:
     def test_dashscope_client_uses_openai_compatible_runtime_defaults(self):
@@ -204,6 +218,54 @@ class TestDashScopeClient:
             patch.dict("os.environ", {"OPENAI_API_KEY": "wrong-provider-key"}, clear=True),
         ):
             with pytest.raises(EnvironmentError, match="DASHSCOPE_API_KEY"):
+                Config.get_fast_client()
+
+
+class TestNovitaClient:
+    def test_novita_client_uses_openai_compatible_runtime_defaults(self):
+        p = _params_with(**{"llm.default_provider": "novita"})
+        fake_client = Mock()
+
+        with (
+            patch("legiscope.llm_config.load_params", return_value=p),
+            patch(
+                "legiscope.llm_config.get_config",
+                side_effect=lambda key, default=None: {
+                    "llm.novita.api_base": "https://api.novita.ai/openai",
+                    "llm.novita.api_key_env": "NOVITA_API_KEY",
+                }.get(key, default),
+            ),
+            patch.dict("os.environ", {"NOVITA_API_KEY": "secret"}),
+            patch("openai.OpenAI", return_value=fake_client) as mock_openai,
+            patch("legiscope.llm_config.instructor.from_openai") as mock_from_openai,
+        ):
+            Config.get_fast_client()
+
+        mock_openai.assert_called_once_with(
+            base_url="https://api.novita.ai/openai",
+            api_key="secret",
+        )
+        mock_from_openai.assert_called_once_with(
+            fake_client,
+            mode=instructor.Mode.JSON,
+        )
+        assert getattr(mock_from_openai.return_value, "_legiscope_model") == "qwen/qwen3.7-max"
+
+    def test_novita_client_requires_dedicated_api_key(self):
+        p = _params_with(**{"llm.default_provider": "novita"})
+
+        with (
+            patch("legiscope.llm_config.load_params", return_value=p),
+            patch(
+                "legiscope.llm_config.get_config",
+                side_effect=lambda key, default=None: {
+                    "llm.novita.api_base": "https://api.novita.ai/openai",
+                    "llm.novita.api_key_env": "NOVITA_API_KEY",
+                }.get(key, default),
+            ),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "wrong-provider-key"}, clear=True),
+        ):
+            with pytest.raises(EnvironmentError, match="NOVITA_API_KEY"):
                 Config.get_fast_client()
 
 

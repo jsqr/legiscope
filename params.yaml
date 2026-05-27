@@ -10,7 +10,7 @@ jurisdiction:
 
 # LLM configuration
 llm:
-  default_provider: mistral
+  default_provider: dashscope
   # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
   # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
   source: external
@@ -23,8 +23,12 @@ llm:
     dashscope:
       # Swap these for Alibaba-hosted frontier models as needed, e.g.
       # qwen3.7-max, deepseek-v4-pro, kimi-k2.6
-      fast: kimi-k2.6
-      powerful: kimi-k2.6
+      fast: qwen/qwen3.7-max
+      powerful: qwen/qwen3.7-max
+
+    novita:
+      fast: qwen/qwen3.7-max
+      powerful: qwen/qwen3.7-max
 
     litellm:
       fast: xai/grok-4.3

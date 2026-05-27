@@ -23,11 +23,12 @@ uv pip install -e ".[dev]"
 
 ### LLM Provider Configuration
 
-The project supports OpenAI, Mistral, Ollama, and LiteLLM-routed models such as Gemini. Configuration is managed via `params.yaml` (tracked by DVC) and `config.yaml` (infrastructure settings).
+The project supports OpenAI, Novita AI, Mistral, Ollama, and LiteLLM-routed models such as Gemini. Configuration is managed via `params.yaml` (tracked by DVC) and `config.yaml` (infrastructure settings).
 
 #### Environment Variables
 
 - `OPENAI_API_KEY`: Required when using OpenAI provider (secret)
+- `NOVITA_API_KEY`: Required when using Novita AI provider (secret)
 - `MISTRAL_API_KEY`: Required when using Mistral provider (secret)
 - `GOOGLE_API_KEY` or `GEMINI_API_KEY`: Required when using Gemini through LiteLLM without a proxy (secret)
 - `OPENROUTER_API_KEY`: Required when using OpenRouter embedding provider (secret)
@@ -147,7 +148,7 @@ export GOOGLE_API_KEY=your_google_ai_studio_key
 export OPENROUTER_API_KEY=your_openrouter_key
 
 # To change the default provider, edit params.yaml:
-#   llm.default_provider: "litellm"  (or "openai", "mistral", "ollama")
+#   llm.default_provider: "litellm"  (or "openai", "novita", "mistral", "ollama")
 #   llm.providers.litellm.fast: "gemini/gemini-3.5-flash"
 
 # For Ollama (local), ensure server is running: ollama serve

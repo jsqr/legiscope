@@ -5,7 +5,7 @@
 # This script runs on the LOGIN NODE (no GPU needed). It:
 #   1. Scans a directory for *.docx files
 #   2. Parses STATE and Locality from each filename
-#   3. Optionally groups submissions into sequential batches using Slurm dependencies
+#   3. Optionally throttles submissions to keep active jobs under a cap
 #   4. Submits coep/scripts/HPC_scripts/slurm_jurisdiction.sh via sbatch for each file
 #
 # All heavy lifting (init.py, file copy, DOCX conversion, params.yaml editing,
@@ -48,7 +48,7 @@ DRY_RUN=false
 QUANTIZATION="fp16"
 BATCH_ID=""
 COMPUTE_MODE="external"
-BATCH_SIZE=0
+BATCH_SIZE=15
 
 normalize_batch_size() {
     local raw_value="${1:-0}"
@@ -132,7 +132,7 @@ Options:
     --compute-mode MODE       external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
   --quantization MODE       Submission profile for vLLM serving: fp16 or awq
     --batch-id ID             Stable identifier used to tie all submitted jobs together
-    --batch-size N            Limit active jurisdictions by chaining submissions into groups of N
+        --batch-size N            Limit active jurisdictions to at most N concurrent jobs (default: 15)
   -h, --help                Show this help
 
 Examples:
@@ -274,10 +274,21 @@ mkdir -p /gpfs/data/cerdalab/LegalAI/legiscope/logs 2>/dev/null || true
 # ── Iterate DOCX files and submit jobs ────────────────────────────
 SUBMITTED=0
 SKIPPED=0
-CURRENT_BATCH_INDEX=1
-CURRENT_BATCH_COUNT=0
-CURRENT_BATCH_DEPENDENCY=""
-CURRENT_BATCH_JOB_IDS=()
+SUBMITTED_JOB_IDS=()
+ACTIVE_JOB_POLL_SECONDS=30
+
+count_active_jobs() {
+    local job_ids_csv=""
+
+    if [[ "${#SUBMITTED_JOB_IDS[@]}" -eq 0 ]]; then
+        printf '0\n'
+        return 0
+    fi
+
+    job_ids_csv="$(IFS=,; printf '%s' "${SUBMITTED_JOB_IDS[*]}")"
+
+    squeue -h -j "$job_ids_csv" -t R -o '%i' 2>/dev/null | wc -l | tr -d ' '
+}
 
 echo "=== Legiscope Batch Dispatcher ==="
 echo "DOCX directory: $DOCX_DIR"
@@ -287,7 +298,7 @@ echo "Quantization : ${PROFILE_LABEL}"
 echo "Partition    : ${SBATCH_PARTITION}"
 echo "GRES         : ${SBATCH_GRES}"
 if [[ "$BATCH_SIZE" -gt 0 ]]; then
-    echo "Batch size   : ${BATCH_SIZE} sequential jobs per wave"
+    echo "Batch size   : ${BATCH_SIZE} concurrent jobs maximum"
 fi
 echo ""
 
@@ -318,22 +329,25 @@ for docx in "$DOCX_DIR"/*.docx; do
     JOB_ID=""
 
     if [[ "$DRY_RUN" == true ]]; then
-        if [[ "$BATCH_SIZE" -gt 0 && "$CURRENT_BATCH_COUNT" -eq 0 ]]; then
-            echo "  Batch ${CURRENT_BATCH_INDEX}"
-        fi
         echo "  [dry-run] ${JURISDICTION_ID} (${CODE_SLUG}) ← ${DOCX_ABS} [${PROFILE_LABEL}]"
     else
-        if [[ "$BATCH_SIZE" -gt 0 && "$CURRENT_BATCH_COUNT" -eq 0 ]]; then
-            echo "  Batch ${CURRENT_BATCH_INDEX}"
+        if [[ "$BATCH_SIZE" -gt 0 ]]; then
+            while true; do
+                ACTIVE_JOB_COUNT="$(count_active_jobs)"
+                if [[ "$ACTIVE_JOB_COUNT" -lt "$BATCH_SIZE" ]]; then
+                    break
+                fi
+
+                echo "  Throttling: ${ACTIVE_JOB_COUNT}/${BATCH_SIZE} active jobs running; waiting ${ACTIVE_JOB_POLL_SECONDS}s"
+                sleep "$ACTIVE_JOB_POLL_SECONDS"
+            done
         fi
+
         echo "  Submitting: ${JURISDICTION_ID} (${CODE_SLUG}) [${PROFILE_LABEL}]"
         SBATCH_ARGS=(
             --partition="${SBATCH_PARTITION}"
             --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,LEGISCOPE_COMPUTE_MODE=${COMPUTE_MODE},VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH}"
         )
-        if [[ -n "$CURRENT_BATCH_DEPENDENCY" ]]; then
-            SBATCH_ARGS+=(--dependency="afterany:${CURRENT_BATCH_DEPENDENCY}")
-        fi
         if [[ -n "$SBATCH_GRES" ]]; then
             SBATCH_ARGS+=(--gres="${SBATCH_GRES}")
         fi
@@ -341,7 +355,7 @@ for docx in "$DOCX_DIR"/*.docx; do
         echo "    ${SBATCH_OUTPUT}"
         JOB_ID="$(printf '%s\n' "$SBATCH_OUTPUT" | awk '/Submitted batch job/ {print $4}')"
         if [[ -n "$JOB_ID" && "$BATCH_SIZE" -gt 0 ]]; then
-            CURRENT_BATCH_JOB_IDS+=("$JOB_ID")
+            SUBMITTED_JOB_IDS+=("$JOB_ID")
         fi
     fi
 
@@ -357,19 +371,6 @@ for docx in "$DOCX_DIR"/*.docx; do
     fi
 
     SUBMITTED=$((SUBMITTED + 1))
-
-    if [[ "$BATCH_SIZE" -gt 0 ]]; then
-        CURRENT_BATCH_COUNT=$((CURRENT_BATCH_COUNT + 1))
-
-        if [[ "$CURRENT_BATCH_COUNT" -ge "$BATCH_SIZE" ]]; then
-            if [[ "$DRY_RUN" == false && "${#CURRENT_BATCH_JOB_IDS[@]}" -gt 0 ]]; then
-                CURRENT_BATCH_DEPENDENCY="$(IFS=:; printf '%s' "${CURRENT_BATCH_JOB_IDS[*]}")"
-            fi
-            CURRENT_BATCH_JOB_IDS=()
-            CURRENT_BATCH_COUNT=0
-            CURRENT_BATCH_INDEX=$((CURRENT_BATCH_INDEX + 1))
-        fi
-    fi
 done
 
 echo ""

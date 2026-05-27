@@ -36,6 +36,11 @@ llm:
     api_base: "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
     api_key_env: "DASHSCOPE_API_KEY"
 
+  novita:
+    # Novita AI exposes an OpenAI-compatible endpoint for hosted LLM models.
+    api_base: "https://api.novita.ai/openai"
+    api_key_env: "NOVITA_API_KEY"
+
   litellm:
     # Set these when routing through a LiteLLM proxy or gateway.
     # Leave unset when LiteLLM should talk directly to OpenAI/Anthropic/Gemini
