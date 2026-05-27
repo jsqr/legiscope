@@ -23,8 +23,8 @@ llm:
     dashscope:
       # Swap these for Alibaba-hosted frontier models as needed, e.g.
       # qwen3.7-max, deepseek-v4-pro, kimi-k2.6
-      fast: qwen3.7-max
-      powerful: qwen3.7-max
+      fast: kimi-k2.6
+      powerful: kimi-k2.6
 
     litellm:
       fast: xai/grok-4.3
