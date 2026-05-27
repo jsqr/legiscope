@@ -5,7 +5,7 @@
 # This script runs on the LOGIN NODE (no GPU needed). It:
 #   1. Scans a directory for *.docx files
 #   2. Parses STATE and Locality from each filename
-#   3. Optionally throttles submissions to keep active jobs under a cap
+#   3. Optionally throttles submissions to keep queued and running jobs under a cap
 #   4. Submits coep/scripts/HPC_scripts/slurm_jurisdiction.sh via sbatch for each file
 #
 # All heavy lifting (init.py, file copy, DOCX conversion, params.yaml editing,
@@ -287,7 +287,7 @@ count_active_jobs() {
 
     job_ids_csv="$(IFS=,; printf '%s' "${SUBMITTED_JOB_IDS[*]}")"
 
-    squeue -h -j "$job_ids_csv" -t R -o '%i' 2>/dev/null | wc -l | tr -d ' '
+    squeue -h -j "$job_ids_csv" -t PD,R -o '%i' 2>/dev/null | wc -l | tr -d ' '
 }
 
 echo "=== Legiscope Batch Dispatcher ==="
@@ -298,7 +298,7 @@ echo "Quantization : ${PROFILE_LABEL}"
 echo "Partition    : ${SBATCH_PARTITION}"
 echo "GRES         : ${SBATCH_GRES}"
 if [[ "$BATCH_SIZE" -gt 0 ]]; then
-    echo "Batch size   : ${BATCH_SIZE} concurrent jobs maximum"
+    echo "Batch size   : ${BATCH_SIZE} queued/running jobs maximum"
 fi
 echo ""
 
@@ -338,7 +338,7 @@ for docx in "$DOCX_DIR"/*.docx; do
                     break
                 fi
 
-                echo "  Throttling: ${ACTIVE_JOB_COUNT}/${BATCH_SIZE} active jobs running; waiting ${ACTIVE_JOB_POLL_SECONDS}s"
+                echo "  Throttling: ${ACTIVE_JOB_COUNT}/${BATCH_SIZE} jobs still queued or running; waiting ${ACTIVE_JOB_POLL_SECONDS}s"
                 sleep "$ACTIVE_JOB_POLL_SECONDS"
             done
         fi
