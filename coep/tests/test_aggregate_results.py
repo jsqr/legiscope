@@ -252,6 +252,7 @@ class TestAggregateResults:
         assert row["jurisdiction_id"] == "NM-Albuquerque"
         assert row["variable_name"] == "batch"
         assert row["_aggregate_source_file"] == "benchmark_results_batch_batch-50.csv"
+        assert row["_aggregate_source_type"] == "batch"
 
     def test_collect_results_batch_mode_ignores_non_manifest_jurisdictions(
         self, tmp_path
@@ -289,6 +290,67 @@ class TestAggregateResults:
         assert row["jurisdiction_id"] == "CA-LosAngeles"
         assert row["variable_name"] == "batch"
 
+    def test_collect_results_batch_mode_recovers_jurisdictions_missing_from_manifest(
+        self, tmp_path
+    ):
+        output_dir = tmp_path / "output"
+        manifest_dir = output_dir / "all_jurisdictions" / "batches" / "batch-50"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "dispatch_manifest.json").write_text(
+            json.dumps(
+                {
+                    "batch_id": "batch-50",
+                    "jurisdictions": [
+                        {"jurisdiction_id": "CA-LosAngeles"},
+                    ],
+                }
+            )
+        )
+
+        ca_dir = output_dir / "CA-LosAngeles"
+        ca_dir.mkdir(parents=True)
+        pl.DataFrame({"variable_name": ["batch-ca"], "eval_label": ["Correct"]}).write_csv(
+            ca_dir / "benchmark_results_batch_batch-50.csv"
+        )
+
+        tx_dir = output_dir / "TX-Dallas"
+        tx_dir.mkdir(parents=True)
+        pl.DataFrame({"variable_name": ["batch-tx"], "eval_label": ["Correct"]}).write_csv(
+            tx_dir / "benchmark_results_batch_batch-50.csv"
+        )
+
+        combined = aggregate_results.collect_results(output_dir, batch_id="batch-50")
+
+        assert combined.height == 2
+        assert combined["jurisdiction_id"].to_list() == ["CA-LosAngeles", "TX-Dallas"]
+
+    def test_has_stale_batch_manifest_detects_missing_manifest_jurisdictions(
+        self, tmp_path
+    ):
+        output_dir = tmp_path / "output"
+        manifest_dir = output_dir / "all_jurisdictions" / "batches" / "batch-50"
+        manifest_dir.mkdir(parents=True)
+        (manifest_dir / "dispatch_manifest.json").write_text(
+            json.dumps(
+                {
+                    "batch_id": "batch-50",
+                    "jurisdictions": [
+                        {"jurisdiction_id": "CA-LosAngeles"},
+                    ],
+                }
+            )
+        )
+
+        ca_dir = output_dir / "CA-LosAngeles"
+        ca_dir.mkdir(parents=True)
+        (ca_dir / "benchmark_results_batch_batch-50.csv").write_text("value\n1\n")
+
+        tx_dir = output_dir / "TX-Dallas"
+        tx_dir.mkdir(parents=True)
+        (tx_dir / "benchmark_results_batch_batch-50.csv").write_text("value\n1\n")
+
+        assert aggregate_results._has_stale_batch_manifest(output_dir, "batch-50") is True
+
     def test_collect_metrics_batch_mode_does_not_fallback_to_non_batch_files(
         self, tmp_path
     ):
@@ -302,6 +364,19 @@ class TestAggregateResults:
         metrics_df = aggregate_results.collect_metrics(output_dir, batch_id="batch-50")
 
         assert metrics_df.is_empty()
+
+    def test_collect_metrics_batch_mode_marks_source_type_as_batch(self, tmp_path):
+        output_dir = tmp_path / "output"
+        jurisdiction_dir = output_dir / "TX-Dallas"
+        jurisdiction_dir.mkdir(parents=True)
+        (jurisdiction_dir / "benchmark_metrics_batch_batch-50.json").write_text(
+            json.dumps({"avg_score": 8.0, "total": 8})
+        )
+
+        metrics_df = aggregate_results.collect_metrics(output_dir, batch_id="batch-50")
+
+        row = metrics_df.to_dicts()[0]
+        assert row["aggregate_metrics_source_type"] == "batch"
 
     def test_load_batch_manifest_jurisdictions_reads_dispatch_manifest(self, tmp_path):
         manifest_dir = tmp_path / "all_jurisdictions" / "batches" / "batch-50"

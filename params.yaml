@@ -10,7 +10,7 @@ jurisdiction:
 
 # LLM configuration
 llm:
-  default_provider: dashscope
+  default_provider: mistral
   # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
   # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
   source: external
@@ -31,8 +31,8 @@ llm:
       powerful: xai/grok-4.3
       
     mistral:
-      fast: mistral-small-2506
-      powerful: mistral-large-2512
+      fast: mistral-medium-3-5
+      powerful: mistral-medium-3-5
 
     ollama:
       fast: gemma3:4b

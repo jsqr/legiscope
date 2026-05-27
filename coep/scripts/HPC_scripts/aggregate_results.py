@@ -138,6 +138,19 @@ def _iter_jurisdiction_output_dirs(output_dir: Path) -> list[Path]:
     return jurisdiction_dirs
 
 
+def _iter_batch_jurisdiction_output_dirs(output_dir: Path, batch_id: str) -> list[Path]:
+    """Return jurisdiction directories that contain artifacts for the given batch."""
+    jurisdiction_dirs: list[Path] = []
+    batch_results_name = _batch_results_name(batch_id)
+    batch_metrics_name = _batch_metrics_name(batch_id)
+    for child in sorted(output_dir.iterdir()):
+        if not child.is_dir():
+            continue
+        if (child / batch_results_name).exists() or (child / batch_metrics_name).exists():
+            jurisdiction_dirs.append(child)
+    return jurisdiction_dirs
+
+
 def _iter_target_jurisdiction_output_dirs(
     output_dir: Path, batch_id: str | None = None
 ) -> list[Path]:
@@ -145,7 +158,18 @@ def _iter_target_jurisdiction_output_dirs(
     if not batch_id:
         return _iter_jurisdiction_output_dirs(output_dir)
 
+    batch_jurisdiction_dirs = _iter_batch_jurisdiction_output_dirs(output_dir, batch_id)
     manifest_jurisdictions = _load_batch_manifest_jurisdictions(output_dir, batch_id)
+    if batch_jurisdiction_dirs:
+        if not manifest_jurisdictions:
+            return batch_jurisdiction_dirs
+
+        manifest_lookup = set(manifest_jurisdictions)
+        discovered_lookup = {path.name for path in batch_jurisdiction_dirs}
+        missing_from_manifest = discovered_lookup - manifest_lookup
+        if missing_from_manifest:
+            return batch_jurisdiction_dirs
+
     if not manifest_jurisdictions:
         return _iter_jurisdiction_output_dirs(output_dir)
 
@@ -171,6 +195,15 @@ def _extract_metrics_timestamp(metrics_file: Path) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+def _artifact_source_type(file_path: Path, canonical_name: str, batch_glob: str) -> str:
+    """Classify an aggregate source file as canonical, batch, or timestamped."""
+    if file_path.name == canonical_name:
+        return "canonical"
+    if file_path.match(batch_glob):
+        return "batch"
+    return "timestamped"
 
 
 def _select_results_file(
@@ -319,6 +352,18 @@ def _load_batch_manifest_jurisdictions(output_dir: Path, batch_id: str) -> list[
     return results
 
 
+def _has_stale_batch_manifest(output_dir: Path, batch_id: str) -> bool:
+    """Return whether batch-tagged artifacts reveal more jurisdictions than the manifest."""
+    manifest_lookup = set(_load_batch_manifest_jurisdictions(output_dir, batch_id))
+    if not manifest_lookup:
+        return False
+
+    discovered_lookup = {
+        path.name for path in _iter_batch_jurisdiction_output_dirs(output_dir, batch_id)
+    }
+    return bool(discovered_lookup - manifest_lookup)
+
+
 def _prepend_jurisdiction_column(df: pl.DataFrame) -> pl.DataFrame:
     """Add a left-most jurisdiction column derived from jurisdiction_id."""
     if df.is_empty() or "jurisdiction_id" not in df.columns:
@@ -351,10 +396,10 @@ def collect_metrics(output_dir: Path, batch_id: str | None = None) -> pl.DataFra
             data.setdefault("jurisdiction_id", jur_dir.name)
             data["aggregate_metrics_path"] = str(metrics_file)
             data["aggregate_metrics_source_file"] = metrics_file.name
-            data["aggregate_metrics_source_type"] = (
-                "timestamped"
-                if metrics_file.name != CANONICAL_METRICS_NAME
-                else "canonical"
+            data["aggregate_metrics_source_type"] = _artifact_source_type(
+                metrics_file,
+                CANONICAL_METRICS_NAME,
+                BATCH_METRICS_GLOB,
             )
             data["aggregate_metrics_source_timestamp"] = _extract_metrics_timestamp(
                 metrics_file
@@ -391,10 +436,10 @@ def collect_results(output_dir: Path, batch_id: str | None = None) -> pl.DataFra
                 if "jurisdiction_id" in df.columns
                 else pl.lit(jur_dir.name).alias("jurisdiction_id")
             )
-            source_type = (
-                "timestamped"
-                if results_file.name != CANONICAL_RESULTS_NAME
-                else "canonical"
+            source_type = _artifact_source_type(
+                results_file,
+                CANONICAL_RESULTS_NAME,
+                BATCH_RESULTS_GLOB,
             )
             df = df.with_columns(
                 [
@@ -486,6 +531,14 @@ def main() -> None:
         expected = manifest_expected
     else:
         expected = []
+
+    if args.batch_id and _has_stale_batch_manifest(output_dir, args.batch_id):
+        print(
+            "\n  WARNING: Dispatch manifest does not cover all discovered batch-tagged artifacts."
+        )
+        print("  Proceeding with the union of discovered batch artifact directories.")
+        if not args.docx_dir:
+            expected = completed_dirs
 
     if expected:
         missing = [j for j in expected if j not in completed_dirs]
@@ -688,10 +741,17 @@ def main() -> None:
         timestamped_sources = results_df.filter(
             pl.col("_aggregate_source_type") == "timestamped"
         )
+        batch_sources = results_df.filter(pl.col("_aggregate_source_type") == "batch")
         print(
             f"  Combined {results_df.height} rows across {len(completed_dirs)} jurisdictions"
         )
         print(f"  Saved to: {combined_out}")
+        if batch_sources.height > 0:
+            unique_batch = batch_sources["jurisdiction_id"].n_unique()
+            print(
+                "  Used batch-tagged benchmark CSVs for "
+                f"{unique_batch} jurisdiction(s)."
+            )
         if timestamped_sources.height > 0:
             unique_timestamped = timestamped_sources["jurisdiction_id"].n_unique()
             print(
