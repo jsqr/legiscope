@@ -87,11 +87,18 @@ def _get_dashscope_runtime_kwargs() -> dict[str, Any]:
     api_key_env = get_config("llm.dashscope.api_key_env") or "DASHSCOPE_API_KEY"
     api_key = os.getenv(str(api_key_env))
 
+    if not api_key:
+        raise EnvironmentError(
+            "DashScope provider requires a dedicated API key in "
+            f"{api_key_env}. Refusing to fall back to OPENAI_API_KEY because "
+            "that produces misleading 401 invalid_api_key errors against the "
+            "DashScope endpoint."
+        )
+
     runtime_kwargs: dict[str, Any] = {
         "base_url": str(base_url or "https://dashscope-intl.aliyuncs.com/compatible-mode/v1")
     }
-    if api_key:
-        runtime_kwargs["api_key"] = api_key
+    runtime_kwargs["api_key"] = api_key
 
     return runtime_kwargs
 

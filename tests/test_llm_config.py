@@ -188,6 +188,23 @@ class TestDashScopeClient:
             mode=instructor.Mode.JSON,
         )
 
+    def test_dashscope_client_requires_dedicated_api_key(self):
+        p = _params_with(**{"llm.default_provider": "dashscope"})
+
+        with (
+            patch("legiscope.llm_config.load_params", return_value=p),
+            patch(
+                "legiscope.llm_config.get_config",
+                side_effect=lambda key, default=None: {
+                    "llm.dashscope.api_base": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                    "llm.dashscope.api_key_env": "DASHSCOPE_API_KEY",
+                }.get(key, default),
+            ),
+            patch.dict("os.environ", {"OPENAI_API_KEY": "wrong-provider-key"}, clear=True),
+        ):
+            with pytest.raises(EnvironmentError, match="DASHSCOPE_API_KEY"):
+                Config.get_fast_client()
+
 
 class TestLiteLLMClient:
     def test_litellm_gemini_client_uses_direct_provider_env(self):
