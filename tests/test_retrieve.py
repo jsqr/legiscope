@@ -615,6 +615,11 @@ class TestRetrievalConfigBasics:
                     )
 
                     assert len(results.ids[0]) == 2
+                    assert results.original_query == "where can I park"
+                    assert (
+                        results.rewritten_query
+                        == "Municipal code parking regulations"
+                    )
 
 
 class TestSectionRetrievalConfigBasics:
@@ -637,6 +642,74 @@ class TestSectionRetrievalConfigBasics:
                 # Missing sections_parquet_path parameter
                 query_text="test query",
             )
+
+    def test_retrieve_sections_preserves_hyde_rewritten_query_in_query_info(
+        self, tmp_path
+    ):
+        """Section retrieval should expose the rewritten HYDE query in query metadata."""
+        from unittest.mock import Mock, patch
+
+        import polars as pl
+        from chromadb.api.models.Collection import Collection
+
+        from legiscope.retrieve import (
+            HydeRewrite,
+            QueryInfo,
+            SectionRetrievalSettings,
+            retrieve_sections,
+        )
+
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        mock_collection = Mock(spec=Collection)
+        mock_collection.query.return_value = {
+            "ids": [["1"]],
+            "documents": [["doc1"]],
+            "metadatas": [[{"section_ordinal": 0}]],
+            "distances": [[0.1]],
+        }
+
+        mock_hyde_result = HydeRewrite(
+            rewritten_query="Municipal code parking regulations",
+            confidence=0.9,
+            reasoning="Rewritten",
+            query_type="parking",
+        )
+
+        with patch("legiscope.retrieve.hyde_rewriter", return_value=mock_hyde_result):
+            with patch("legiscope.retrieve.get_embedding_client"):
+                with patch(
+                    "legiscope.retrieve.get_embeddings",
+                    return_value=[[0.1, 0.2, 0.3]],
+                ):
+                    mock_client = Mock(spec=Instructor)
+                    settings = SectionRetrievalSettings(
+                        use_hyde=True,
+                        hyde_client=mock_client,
+                    )
+
+                    results = retrieve_sections(
+                        mock_collection,
+                        sections_path,
+                        "where can I park",
+                        settings,
+                    )
+
+        assert results.query_info == QueryInfo(
+            original_query="where can I park",
+            rewritten_query="Municipal code parking regulations",
+            total_segments_found=1,
+            unique_sections=1,
+        )
 
     def test_retrieve_sections_with_config(self, tmp_path):
         """Test retrieve_sections with settings object."""

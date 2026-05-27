@@ -49,6 +49,7 @@ QUANTIZATION="fp16"
 BATCH_ID=""
 COMPUTE_MODE="external"
 BATCH_SIZE=15
+PARAMS_OVERRIDE_FILE=""
 
 normalize_batch_size() {
     local raw_value="${1:-0}"
@@ -122,7 +123,7 @@ resolve_profile_label() {
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--dry-run] [--compute-mode external|self_hosted] [--quantization fp16|awq] [--batch-id ID] [--batch-size N] DOCX_DIR
+Usage: $(basename "$0") [--dry-run] [--compute-mode external|self_hosted] [--quantization fp16|awq] [--batch-id ID] [--batch-size N] [--params-override-file PATH] DOCX_DIR
 
 Scan DOCX_DIR for *.docx files named STATE_Locality[_code-slug].docx and
 submit a SLURM job for each one.
@@ -133,6 +134,8 @@ Options:
   --quantization MODE       Submission profile for vLLM serving: fp16 or awq
     --batch-id ID             Stable identifier used to tie all submitted jobs together
         --batch-size N            Limit active jurisdictions to at most N concurrent jobs (default: 15)
+    --params-override-file PATH
+                                                        YAML file merged into params.yaml inside each jurisdiction job
   -h, --help                Show this help
 
 Examples:
@@ -154,7 +157,7 @@ write_batch_manifest() {
 
     mkdir -p "$batch_dir"
 
-    python3 - "$records_path" "$batch_manifest_path" "$batch_jurisdictions_path" "$BATCH_ID" "$BATCH_SUBMITTED_AT" "$DOCX_DIR" "$QUANTIZATION" "$COMPUTE_MODE" "$PROFILE_LABEL" "$SBATCH_PARTITION" "$SBATCH_GRES" <<'PY'
+    python3 - "$records_path" "$batch_manifest_path" "$batch_jurisdictions_path" "$BATCH_ID" "$BATCH_SUBMITTED_AT" "$DOCX_DIR" "$QUANTIZATION" "$COMPUTE_MODE" "$PROFILE_LABEL" "$SBATCH_PARTITION" "$SBATCH_GRES" "$PARAMS_OVERRIDE_FILE" <<'PY'
 import csv
 import json
 import sys
@@ -171,6 +174,7 @@ compute_mode = sys.argv[8]
 profile_label = sys.argv[9]
 partition = sys.argv[10]
 gres = sys.argv[11]
+params_override_file = sys.argv[12]
 
 jurisdictions = []
 if records_path.exists():
@@ -187,6 +191,7 @@ manifest = {
     "profile_label": profile_label,
     "partition": partition,
     "gres": gres,
+    "params_override_file": params_override_file or None,
     "jurisdiction_count": len(jurisdictions),
     "jurisdictions": jurisdictions,
 }
@@ -223,6 +228,11 @@ while [[ $# -gt 0 ]]; do
             BATCH_SIZE="$2"
             shift 2
             ;;
+        --params-override-file)
+            [[ $# -ge 2 ]] || { echo "Error: --params-override-file requires a value" >&2; usage 1; }
+            PARAMS_OVERRIDE_FILE="$2"
+            shift 2
+            ;;
         -h|--help)   usage 0 ;;
         -*)          echo "Error: unknown option '$1'" >&2; usage 1 ;;
         *)           DOCX_DIR="$1"; shift ;;
@@ -249,6 +259,14 @@ fi
 if [[ ! -f "$SLURM_SCRIPT" ]]; then
     echo "Error: SLURM script not found: $SLURM_SCRIPT" >&2
     exit 1
+fi
+
+if [[ -n "$PARAMS_OVERRIDE_FILE" ]]; then
+    if [[ ! -f "$PARAMS_OVERRIDE_FILE" ]]; then
+        echo "Error: params override file not found: $PARAMS_OVERRIDE_FILE" >&2
+        exit 1
+    fi
+    PARAMS_OVERRIDE_FILE="$(realpath "$PARAMS_OVERRIDE_FILE")"
 fi
 
 if [[ -z "$BATCH_ID" ]]; then
@@ -300,6 +318,9 @@ echo "GRES         : ${SBATCH_GRES}"
 if [[ "$BATCH_SIZE" -gt 0 ]]; then
     echo "Batch size   : ${BATCH_SIZE} queued/running jobs maximum"
 fi
+if [[ -n "$PARAMS_OVERRIDE_FILE" ]]; then
+    echo "Overrides    : ${PARAMS_OVERRIDE_FILE}"
+fi
 echo ""
 
 for docx in "$DOCX_DIR"/*.docx; do
@@ -346,7 +367,7 @@ for docx in "$DOCX_DIR"/*.docx; do
         echo "  Submitting: ${JURISDICTION_ID} (${CODE_SLUG}) [${PROFILE_LABEL}]"
         SBATCH_ARGS=(
             --partition="${SBATCH_PARTITION}"
-            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,LEGISCOPE_COMPUTE_MODE=${COMPUTE_MODE},VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH}"
+            --export="ALL,STATE=${STATE},LOCALITY=${LOCALITY},CODE_SLUG=${CODE_SLUG},DOCX_PATH=${DOCX_ABS},SLURM_NOTIFY=0,LEGISCOPE_COMPUTE_MODE=${COMPUTE_MODE},VLLM_QUANTIZATION=${QUANTIZATION},LEGISCOPE_BATCH_ID=${BATCH_ID},LEGISCOPE_BATCH_SUBMITTED_AT=${BATCH_SUBMITTED_AT},LEGISCOPE_BATCH_MANIFEST=${BATCH_MANIFEST_PATH},LEGISCOPE_PARAM_OVERRIDES_FILE=${PARAMS_OVERRIDE_FILE}"
         )
         if [[ -n "$SBATCH_GRES" ]]; then
             SBATCH_ARGS+=(--gres="${SBATCH_GRES}")

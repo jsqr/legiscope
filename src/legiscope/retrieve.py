@@ -199,6 +199,8 @@ class SegmentCollection:
     distances: list[list[float]]
     metadatas: list[list[dict[str, Any]]] | None = None
     filtering_metadata: FilteringMetadata | None = None
+    original_query: str | None = None
+    rewritten_query: str | None = None
 
 
 @dataclass
@@ -992,14 +994,17 @@ def retrieve_segments(
     if settings is None:
         settings = RetrievalSettings()
 
+    original_query = query_text
+    rewritten_query: str | None = None
+
     # Apply HYDE rewriting if requested
     if settings.use_hyde:
         # hyde_client is guaranteed to be non-None by validation in __post_init__
         assert settings.hyde_client is not None
-        original_query = query_text
         hyde_model = resolve_model_default(settings.hyde_model, use_fast=True)
         result = hyde_rewriter(settings.hyde_client, query_text, hyde_model)
         query_text = result.rewritten_query
+        rewritten_query = result.rewritten_query
         logger.debug(f"Applied HYDE rewrite: '{original_query}' -> '{query_text}'")
 
     logger.info(f"Retrieving embeddings for: '{query_text[:50]}...'")
@@ -1091,6 +1096,8 @@ def retrieve_segments(
         documents=results["documents"],
         distances=results["distances"],
         metadatas=results.get("metadatas"),
+        original_query=original_query,
+        rewritten_query=rewritten_query,
     )
 
 
@@ -1239,10 +1246,8 @@ def retrieve_sections(
     # Retrieve segments using the settings
     segment_results = retrieve_segments(collection, query_text, settings)
 
-    original_query = query_text
-    rewritten_query = (
-        None  # HYDE rewriting is handled in retrieve_segments, not exposed here
-    )
+    original_query = segment_results.original_query or query_text
+    rewritten_query = segment_results.rewritten_query
 
     if _has_no_results(segment_results):
         logger.info("No segment results found")

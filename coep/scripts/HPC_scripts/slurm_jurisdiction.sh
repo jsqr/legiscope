@@ -30,6 +30,7 @@
 #   CODE_SLUG  - Code slug (default: municipal-code)
 #   CODE_NAME  - Display name (default: "{Locality} Municipal Code")
 #   LEGISCOPE_COMPUTE_MODE   - external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
+#   LEGISCOPE_PARAM_OVERRIDES_FILE - Shared YAML file merged into params.yaml after profile rewrite
 #   VLLM_QUANTIZATION      - vLLM serving profile: fp16 (8 GPUs) or awq (4 GPUs)
 #   VLLM_AWQ_MODEL_SOURCE  - Override AWQ checkpoint path/repo for --model
 #   VLLM_FP16_MODEL_SOURCE - Override FP16 checkpoint path/repo for --model
@@ -1184,6 +1185,41 @@ print(
 PY
 }
 
+apply_params_override_file() {
+    local params_path="$1"
+    local override_path="$2"
+
+    python3 - "$params_path" "$override_path" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+
+def deep_merge(base, overrides):
+    for key, value in overrides.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+params_path = Path(sys.argv[1])
+override_path = Path(sys.argv[2])
+
+params = yaml.safe_load(params_path.read_text()) or {}
+overrides = yaml.safe_load(override_path.read_text()) or {}
+
+if not isinstance(overrides, dict):
+    raise SystemExit(f"Override file must contain a YAML mapping: {override_path}")
+
+deep_merge(params, overrides)
+params_path.write_text(yaml.safe_dump(params, sort_keys=False), encoding="utf-8")
+
+print(f"Applied params overrides from {override_path} to {params_path}")
+PY
+}
+
 resolve_vllm_model_source() {
     local served_model="$1"
     local model_source
@@ -1247,6 +1283,15 @@ resolve_prebuilt_code_txt_source() {
 # ── Step 2: Edit params.yaml with jurisdiction metadata ───────────
 echo "Setting params.yaml: ${STATE} / ${LOCALITY} / ${CODE_SLUG}..."
 rewrite_params_for_profile params.yaml
+
+if [[ -n "${LEGISCOPE_PARAM_OVERRIDES_FILE:-}" ]]; then
+    if [[ ! -f "$LEGISCOPE_PARAM_OVERRIDES_FILE" ]]; then
+        echo "ERROR: Override file not found: ${LEGISCOPE_PARAM_OVERRIDES_FILE}" >&2
+        exit 1
+    fi
+    echo "Applying params overrides from ${LEGISCOPE_PARAM_OVERRIDES_FILE}..."
+    apply_params_override_file params.yaml "$LEGISCOPE_PARAM_OVERRIDES_FILE"
+fi
 
 # ── Step 3: Run init.py to create directory structure ─────────────
 echo "Running init.py..."

@@ -6094,6 +6094,86 @@ class TestBatchQueryConfigBasics:
                     == "full completion query\n\nVariable-specific guidance:\nUse enactment-specific coding logic."
                 )
 
+    def test_run_queries_passes_guidance_retrieval_query_into_hyde_enabled_retrieval(
+        self, tmp_path
+    ):
+        """HYDE should operate on the guidance-supplied retrieval query, not the completion query."""
+        sections_path = tmp_path / "sections.parquet"
+        pl.DataFrame(
+            {
+                "section_ordinal": [0],
+                "heading_text": ["# Test"],
+                "body_text": ["Content"],
+                "heading_level": [1],
+                "parent_id": [None],
+            }
+        ).write_parquet(sections_path)
+
+        retrieval_results = SectionCollection(
+            sections=[],
+            query_info=QueryInfo(
+                original_query="Question: When was the ordinance enacted?",
+                rewritten_query="Municipal code enactment provisions",
+                total_segments_found=0,
+                unique_sections=0,
+            ),
+        )
+
+        mock_response = LegalQueryResponse(
+            short_answer="Test answer",
+            reasoning="Test reasoning",
+            citations=[],
+            supporting_passages=[],
+            confidence=0.8,
+            limitations="None",
+        )
+
+        def provider(_request: RetrievalGuidanceRequest) -> RetrievalGuidance | None:
+            return RetrievalGuidance(
+                guidance_topic="date",
+                retrieval_query="Question: When was the ordinance enacted?",
+                completion_instructions="Use enactment-specific coding logic.",
+            )
+
+        with patch(
+            "legiscope.query.retrieve_sections", return_value=retrieval_results
+        ) as mock_retrieve:
+            with patch(
+                "legiscope.query.query_legal_documents",
+                return_value=(mock_response, []),
+            ) as mock_query_legal_documents:
+                mock_client = Mock(spec=Instructor)
+                llm_config = LLMConfig(client=mock_client, model="test-model")
+                settings = BatchQuerySettings(
+                    llm=llm_config,
+                    use_hyde=True,
+                    retrieval_guidance_provider=provider,
+                )
+
+                run_queries(
+                    collection=Mock(),
+                    sections_parquet_path=str(sections_path),
+                    queries=[
+                        QueryInput(
+                            question="full completion query",
+                            variable_name="dp_enacted",
+                        )
+                    ],
+                    jurisdiction_id="IL-WindyTown",
+                    settings=settings,
+                )
+
+        retrieval_settings = mock_retrieve.call_args.kwargs["settings"]
+        assert mock_retrieve.call_args.kwargs["query_text"] == (
+            "Question: When was the ordinance enacted?"
+        )
+        assert retrieval_settings.use_hyde is True
+        assert retrieval_settings.hyde_client is mock_client
+        assert mock_query_legal_documents.call_args.args[1] == (
+            "full completion query\n\nVariable-specific guidance:\n"
+            "Use enactment-specific coding logic."
+        )
+
     def test_run_queries_writes_consolidated_stage_debug_csvs(self, tmp_path):
         """Debug mode should emit one retrieval/relevance/query CSV row per question."""
         sections_path = tmp_path / "sections.parquet"
