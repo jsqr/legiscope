@@ -97,7 +97,7 @@ retrieval:
 
   # HYDE query rewriting (LLM-powered, uses fast model)
   hyde:
-    enabled: false
+    enabled: true
 
   # Post-retrieval LLM relevance filter (uses fast model)
   relevance_filter:
