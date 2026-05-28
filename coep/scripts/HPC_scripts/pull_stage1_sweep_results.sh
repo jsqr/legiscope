@@ -12,6 +12,9 @@ PROJECT_ROOT="/gpfs/data/cerdalab/LegalAI/legiscope"
 LOCAL_DIR="${LOCAL_PROJECT_ROOT}/data/output"
 SSH_JUMP=""
 DRY_RUN=false
+SSH_SOCKET_DIR="/tmp/legiscope-ssh"
+CONTROL_PATH=""
+SSH_MASTER_STARTED=false
 OPEN_AFTER=false
 SWEEP_ID=""
 SSH_COMMON_ARGS=()
@@ -70,25 +73,50 @@ require_cmd() {
     command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
-append_ssh_jump() {
-    if [[ -n "$SSH_JUMP" ]]; then
-        SSH_COMMON_ARGS+=(-J "$SSH_JUMP")
-    fi
-}
-
 build_rsync_rsh() {
     local ssh_parts=(ssh)
-    append_ssh_jump
+
     if [[ -n "$SSH_JUMP" ]]; then
         ssh_parts+=(-J "$SSH_JUMP")
     fi
+
+    if [[ -n "$CONTROL_PATH" ]]; then
+        ssh_parts+=(-o "ControlMaster=auto" -o "ControlPersist=600" -o "ControlPath=${CONTROL_PATH}")
+    fi
+
     RSYNC_RSH="$(printf '%q ' "${ssh_parts[@]}")"
     RSYNC_RSH="${RSYNC_RSH% }"
+}
+
+cleanup_ssh_transport() {
+    if [[ "$SSH_MASTER_STARTED" == true && -n "$REMOTE" ]]; then
+        ssh "${SSH_COMMON_ARGS[@]}" -O exit "$REMOTE" >/dev/null 2>&1 || true
+    fi
 }
 
 ssh_run() {
     local command="$1"
     ssh "${SSH_COMMON_ARGS[@]}" "$REMOTE" "$command"
+}
+
+setup_ssh_transport() {
+    mkdir -p "$SSH_SOCKET_DIR"
+
+    CONTROL_PATH="${SSH_SOCKET_DIR}/%C-$$"
+    SSH_COMMON_ARGS=()
+    if [[ -n "$SSH_JUMP" ]]; then
+        SSH_COMMON_ARGS+=(-J "$SSH_JUMP")
+    fi
+    SSH_COMMON_ARGS+=(-o "ControlMaster=auto" -o "ControlPersist=600" -o "ControlPath=${CONTROL_PATH}")
+
+    build_rsync_rsh
+
+    say ">>> Opening shared SSH connection"
+    if ! ssh "${SSH_COMMON_ARGS[@]}" -o "ControlMaster=yes" -fN "$REMOTE"; then
+        die "failed to open shared SSH connection to ${REMOTE}"
+    fi
+
+    SSH_MASTER_STARTED=true
 }
 
 validate_sweep_id() {
@@ -215,7 +243,8 @@ REMOTE="${NETID}@${HOST}"
 mkdir -p "${LOCAL_DIR%/}/all_jurisdictions/batches"
 mkdir -p "${LOCAL_DIR%/}/all_jurisdictions/sweeps/${SWEEP_ID}"
 
-build_rsync_rsh
+trap cleanup_ssh_transport EXIT INT TERM
+setup_ssh_transport
 
 say "=== Pull Stage 1 Sweep Artifacts ==="
 say "Remote       : ${REMOTE}"
@@ -231,7 +260,11 @@ if [[ -z "$batch_ids_text" ]]; then
     die "no remote batch directories found for sweep prefix ${SWEEP_ID}_"
 fi
 
-mapfile -t BATCH_IDS <<<"$batch_ids_text"
+BATCH_IDS=()
+while IFS= read -r batch_id; do
+    [[ -n "$batch_id" ]] || continue
+    BATCH_IDS+=("$batch_id")
+done <<<"$batch_ids_text"
 
 for batch_id in "${BATCH_IDS[@]}"; do
     remote_batch_dir="$(remote_aggregate_dir_for_batch "$batch_id")" || die "could not resolve latest aggregate directory for batch ${batch_id}"

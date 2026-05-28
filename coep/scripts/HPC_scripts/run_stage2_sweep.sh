@@ -12,8 +12,8 @@ QUANTIZATION="fp16"
 BATCH_SIZE=15
 SWEEP_ID="stage2_$(date '+%Y%m%d_%H%M%S')"
 SWEEP_ROOT="$SWEEP_ROOT_DEFAULT"
-BASE_N_RESULTS=20
-BASE_HYDE_ENABLED=true
+BASE_N_RESULTS=10
+BASE_HYDE_ENABLED=false
 DRY_RUN=false
 DOCX_DIR=""
 
@@ -31,8 +31,8 @@ Options:
   --batch-size N             Per-dispatch queued/running cap (default: 15)
   --sweep-id ID              Stable sweep label (default: stage2_<timestamp>)
   --sweep-root PATH          Shared directory for override files and logs
-  --base-n-results N         Fixed n_results value to carry into all 3 runs (default: 20)
-  --base-hyde-enabled BOOL   Fixed HYDE setting for all 3 runs (default: true)
+	--base-n-results N         Fixed n_results value to carry into all 3 runs (default: 10)
+	--base-hyde-enabled BOOL   Fixed HYDE setting for all 3 runs (default: false)
   --dry-run                  Print dispatch commands without submitting jobs
   -h, --help                 Show this help
 EOF
@@ -146,35 +146,24 @@ else
 	HYDE_TAG="0"
 fi
 
-cat >"${OVERRIDES_DIR}/run01_n${BASE_N_RESULTS}_hyde${HYDE_TAG}_thr05.yaml" <<EOF
-retrieval:
-  n_results: ${BASE_N_RESULTS}
-  hyde:
-	enabled: ${BASE_HYDE_ENABLED}
-  relevance_filter:
-	enabled: true
-	threshold: 0.5
-EOF
+write_override() {
+	local output_path="$1"
+	local relevance_threshold="$2"
 
-cat >"${OVERRIDES_DIR}/run02_n${BASE_N_RESULTS}_hyde${HYDE_TAG}_thr06.yaml" <<EOF
+	cat >"$output_path" <<EOF
 retrieval:
   n_results: ${BASE_N_RESULTS}
   hyde:
-	enabled: ${BASE_HYDE_ENABLED}
+    enabled: ${BASE_HYDE_ENABLED}
   relevance_filter:
-	enabled: true
-	threshold: 0.6
+    enabled: true
+    threshold: ${relevance_threshold}
 EOF
+}
 
-cat >"${OVERRIDES_DIR}/run03_n${BASE_N_RESULTS}_hyde${HYDE_TAG}_thr07.yaml" <<EOF
-retrieval:
-  n_results: ${BASE_N_RESULTS}
-  hyde:
-	enabled: ${BASE_HYDE_ENABLED}
-  relevance_filter:
-	enabled: true
-	threshold: 0.7
-EOF
+write_override "${OVERRIDES_DIR}/run01_n${BASE_N_RESULTS}_hyde${HYDE_TAG}_thr05.yaml" 0.5
+write_override "${OVERRIDES_DIR}/run02_n${BASE_N_RESULTS}_hyde${HYDE_TAG}_thr06.yaml" 0.6
+write_override "${OVERRIDES_DIR}/run03_n${BASE_N_RESULTS}_hyde${HYDE_TAG}_thr07.yaml" 0.7
 
 RUN_LABELS=(
 	"run01_n${BASE_N_RESULTS}_hyde${HYDE_TAG}_thr05"
