@@ -7,7 +7,7 @@ DISPATCH_SCRIPT="${SCRIPT_DIR}/slurm_dispatch.sh"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 SWEEP_ROOT_DEFAULT="${PROJECT_ROOT}/data/output/all_jurisdictions/sweeps"
 
-COMPUTE_MODE="external"
+COMPUTE_MODE="auto"
 QUANTIZATION="fp16"
 BATCH_SIZE=15
 SWEEP_ID="stage1_$(date '+%Y%m%d_%H%M%S')"
@@ -24,7 +24,7 @@ Each dispatcher run is started only after the previous dispatcher finishes
 submitting its throttled batch.
 
 Options:
-  --compute-mode MODE       external or self_hosted (default: external)
+    --compute-mode MODE       auto, external, or self_hosted (default: auto)
   --quantization MODE       fp16 or awq (default: fp16)
   --batch-size N            Per-dispatch queued/running cap (default: 15)
   --sweep-id ID             Stable sweep label (default: stage1_<timestamp>)

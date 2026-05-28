@@ -10,10 +10,10 @@ jurisdiction:
 
 # LLM configuration
 llm:
-  default_provider: novita
+  default_provider: openai
   # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
   # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
-  source: external
+  source: self_hosted
 
   providers:
     openai:

@@ -34,6 +34,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SLURM_SCRIPT="${SCRIPT_DIR}/slurm_jurisdiction.sh"
 PROFILE_HELPER="${SCRIPT_DIR}/slurm_vllm_profile.sh"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 if [[ ! -f "$PROFILE_HELPER" ]]; then
     echo "Error: profile helper not found: $PROFILE_HELPER" >&2
@@ -47,7 +48,8 @@ source "$PROFILE_HELPER"
 DRY_RUN=false
 QUANTIZATION="fp16"
 BATCH_ID=""
-COMPUTE_MODE="external"
+COMPUTE_MODE="auto"
+COMPUTE_MODE_EXPLICIT=false
 BATCH_SIZE=15
 PARAMS_OVERRIDE_FILE=""
 
@@ -63,12 +65,15 @@ normalize_batch_size() {
 }
 
 normalize_compute_mode() {
-    local raw_value="${1:-external}"
+    local raw_value="${1:-auto}"
     local normalized
 
     normalized="$(printf '%s' "$raw_value" | tr '[:upper:]' '[:lower:]')"
 
     case "$normalized" in
+        auto)
+            printf '%s\n' 'auto'
+            ;;
         external|litellm|cpu)
             printf '%s\n' 'external'
             ;;
@@ -77,6 +82,36 @@ normalize_compute_mode() {
             ;;
         *)
             echo "Error: unsupported compute mode '${raw_value}'. Expected external or self_hosted." >&2
+            return 1
+            ;;
+    esac
+}
+
+resolve_compute_mode_from_params() {
+    local provider=""
+    local source=""
+
+    if ! IFS=$'\t' read -r provider source < <(
+        cd "$PROJECT_ROOT" && bash scripts/dvc_python.sh -c '
+from legiscope.llm_config import Config
+print(f"{Config.get_llm_provider()}\t{Config.get_llm_source()}")
+'
+    ); then
+        echo "Error: failed to read llm.source from params.yaml." >&2
+        return 1
+    fi
+
+    if [[ -z "$source" ]]; then
+        echo "Error: llm.source in params.yaml resolved to an empty value." >&2
+        return 1
+    fi
+
+    case "$source" in
+        self_hosted|external)
+            printf '%s\t%s\n' "$provider" "$source"
+            ;;
+        *)
+            echo "Error: unsupported llm.source '$source' in params.yaml." >&2
             return 1
             ;;
     esac
@@ -123,14 +158,14 @@ resolve_profile_label() {
 
 usage() {
     cat <<EOF
-Usage: $(basename "$0") [--dry-run] [--compute-mode external|self_hosted] [--quantization fp16|awq] [--batch-id ID] [--batch-size N] [--params-override-file PATH] DOCX_DIR
+Usage: $(basename "$0") [--dry-run] [--compute-mode auto|external|self_hosted] [--quantization fp16|awq] [--batch-id ID] [--batch-size N] [--params-override-file PATH] DOCX_DIR
 
 Scan DOCX_DIR for *.docx files named STATE_Locality[_code-slug].docx and
 submit a SLURM job for each one.
 
 Options:
   --dry-run                 Show what would be submitted without actually submitting
-    --compute-mode MODE       external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
+    --compute-mode MODE       auto (from params.yaml), external (CPU), or self_hosted (GPU)
   --quantization MODE       Submission profile for vLLM serving: fp16 or awq
     --batch-id ID             Stable identifier used to tie all submitted jobs together
         --batch-size N            Limit active jurisdictions to at most N concurrent jobs (default: 15)
@@ -141,6 +176,7 @@ Options:
 Examples:
     $(basename "$0") /gpfs/data/cerdalab/LegalAI/docx_sources
         $(basename "$0") --batch-size 10 /gpfs/data/cerdalab/LegalAI/docx_sources
+    $(basename "$0") --compute-mode auto /gpfs/data/cerdalab/LegalAI/docx_sources
     $(basename "$0") --compute-mode external /gpfs/data/cerdalab/LegalAI/docx_sources
     $(basename "$0") --compute-mode self_hosted --quantization awq /gpfs/data/cerdalab/LegalAI/docx_sources
     $(basename "$0") --batch-id dpl_all_50_may19 /gpfs/data/cerdalab/LegalAI/docx_sources
@@ -216,6 +252,7 @@ while [[ $# -gt 0 ]]; do
         --compute-mode)
             [[ $# -ge 2 ]] || { echo "Error: --compute-mode requires a value" >&2; usage 1; }
             COMPUTE_MODE="$2"
+            COMPUTE_MODE_EXPLICIT=true
             shift 2
             ;;
         --batch-id)
@@ -240,6 +277,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 COMPUTE_MODE="$(normalize_compute_mode "$COMPUTE_MODE")"
+IFS=$'\t' read -r PARAM_PROVIDER PARAM_SOURCE < <(resolve_compute_mode_from_params)
+if [[ "$COMPUTE_MODE" == "auto" ]]; then
+    COMPUTE_MODE="$PARAM_SOURCE"
+elif [[ "$COMPUTE_MODE_EXPLICIT" == true && "$COMPUTE_MODE" != "$PARAM_SOURCE" ]]; then
+    echo "Error: --compute-mode=${COMPUTE_MODE} conflicts with params.yaml llm.source=${PARAM_SOURCE}." >&2
+    echo "Set llm.source to match or use --compute-mode auto." >&2
+    exit 1
+fi
+
 QUANTIZATION="$(normalize_vllm_quantization "$QUANTIZATION")"
 BATCH_SIZE="$(normalize_batch_size "$BATCH_SIZE")"
 SBATCH_PARTITION="$(resolve_sbatch_partition "$COMPUTE_MODE")"
@@ -312,6 +358,7 @@ echo "=== Legiscope Batch Dispatcher ==="
 echo "DOCX directory: $DOCX_DIR"
 echo "Batch ID     : ${BATCH_ID}"
 echo "Compute mode : ${COMPUTE_MODE}"
+echo "LLM source   : ${PARAM_SOURCE} (provider: ${PARAM_PROVIDER})"
 echo "Quantization : ${PROFILE_LABEL}"
 echo "Partition    : ${SBATCH_PARTITION}"
 echo "GRES         : ${SBATCH_GRES}"

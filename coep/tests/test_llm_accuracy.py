@@ -319,6 +319,120 @@ class TestAggregateQueryScoping:
         assert metrics.fully_correct_queries == 1
         assert round(metrics.query_accuracy_pct, 2) == 100.0
 
+    def test_make_citation_comparison_df_classifies_exact_family_and_missing(self):
+        raw_df = pl.DataFrame(
+            {
+                "jurisdiction_id": ["A", "A", "A"],
+                "dataset": ["DPL", "DPL", "DPL"],
+                "variable_name": ["dp_law", "dp_possession", "dp_type"],
+                "benchmark_row_id": [1, 2, 3],
+                "query_id": ["dp_law", "dp_possession", "dp_type"],
+                "query_metadata": [
+                    json.dumps({"query_id": "dp_law"}),
+                    json.dumps({"query_id": "dp_possession"}),
+                    json.dumps({"query_id": "dp_type"}),
+                ],
+                "ground_truth_citation": [
+                    "Sec. 11-40.",
+                    "Sec. 12-4-10.",
+                    "Sec. 9-101.",
+                ],
+                "citations": [
+                    "['Sec. 11-40.']",
+                    "['Sec. 12-4-10(3)']",
+                    "[]",
+                ],
+                "evaluation_mode": ["whole_answer", "whole_answer", "whole_answer"],
+                "eval_label": ["Correct", "Correct", "Incorrect"],
+                "eval_score": [1.0, 1.0, 0.0],
+            }
+        )
+
+        citation_df = llm_accuracy.make_citation_comparison_df(raw_df)
+
+        by_variable = {
+            row["variable_name"]: row["citation_match_type"]
+            for row in citation_df.to_dicts()
+        }
+        assert by_variable == {
+            "dp_law": "exact_unit_match",
+            "dp_possession": "family_match",
+            "dp_type": "llm_missing",
+        }
+
+    def test_make_citation_comparison_df_deduplicates_query_rows(self):
+        raw_df = pl.DataFrame(
+            {
+                "jurisdiction_id": ["A", "A"],
+                "dataset": ["SSP", "SSP"],
+                "variable_name": ["ssp_law", "ssp_law"],
+                "benchmark_row_id": [10, 10],
+                "query_id": ["ssp_law", "ssp_law"],
+                "query_metadata": [
+                    json.dumps({"query_id": "ssp_law"}),
+                    json.dumps({"query_id": "ssp_law"}),
+                ],
+                "ground_truth_citation": ["§ 607.17", "§ 607.17"],
+                "citations": ["['§ 607.17']", "['§ 607.17']"],
+                "evaluation_mode": ["whole_answer", "response_option"],
+                "eval_label": ["Correct", "Correct"],
+                "eval_score": [1.0, 1.0],
+            }
+        )
+
+        citation_df = llm_accuracy.make_citation_comparison_df(raw_df)
+
+        assert citation_df.height == 1
+        assert citation_df[0, "citation_match_type"] == "exact_unit_match"
+
+    def test_classify_citation_match_handles_bare_numeric_citations(self):
+        match_type, ground_truth_units, llm_units = llm_accuracy.classify_citation_match(
+            "9.10.100   Clean needle a",
+            ["9.10.100", "9.10.100.A"],
+        )
+
+        assert match_type == "exact_unit_match"
+        assert ground_truth_units == ["9.10.100"]
+        assert llm_units == ["9.10.100"]
+
+    def test_classify_citation_match_handles_bare_hyphenated_citations(self):
+        match_type, ground_truth_units, llm_units = llm_accuracy.classify_citation_match(
+            "ARTICLE III. DRUG PARAPHE",
+            ["35-52(B)(7)", "35-52(D)"],
+        )
+
+        assert match_type == "mismatch"
+        assert ground_truth_units == ["iii"]
+        assert llm_units == ["35-52(b)(7)", "35-52(d)"]
+
+    def test_make_citation_match_summary_adds_share_excluding_unparseable(self):
+        citation_df = pl.DataFrame(
+            {
+                "citation_match_type": [
+                    "exact_unit_match",
+                    "family_match",
+                    "llm_unparseable",
+                    "ground_truth_unparseable",
+                    "mismatch",
+                ]
+            }
+        )
+
+        summary = llm_accuracy.make_citation_match_summary(citation_df)
+
+        rows = {
+            row["citation_match_type"]: row
+            for row in summary.to_dicts()
+        }
+        assert round(rows["exact_unit_match"]["share_pct"], 2) == 20.0
+        assert round(
+            rows["exact_unit_match"]["share_pct_excluding_unparseable"], 2
+        ) == 33.33
+        assert round(rows["family_match"]["share_pct_excluding_unparseable"], 2) == 33.33
+        assert round(rows["mismatch"]["share_pct_excluding_unparseable"], 2) == 33.33
+        assert rows["llm_unparseable"]["share_pct_excluding_unparseable"] is None
+        assert rows["ground_truth_unparseable"]["share_pct_excluding_unparseable"] is None
+
 
 class TestOutputRouting:
     def test_extract_results_timestamp_from_aggregate_file(self):

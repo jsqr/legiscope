@@ -51,6 +51,7 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE_HELPER="${SCRIPT_DIR}/slurm_vllm_profile.sh"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
 if [[ ! -f "$PROFILE_HELPER" && -n "${SLURM_SUBMIT_DIR:-}" ]]; then
     PROFILE_HELPER="${SLURM_SUBMIT_DIR}/coep/scripts/HPC_scripts/slurm_vllm_profile.sh"
@@ -65,12 +66,15 @@ fi
 source "$PROFILE_HELPER"
 
 normalize_compute_mode() {
-    local raw_value="${1:-external}"
+    local raw_value="${1:-auto}"
     local normalized
 
     normalized="$(printf '%s' "$raw_value" | tr '[:upper:]' '[:lower:]')"
 
     case "$normalized" in
+        auto)
+            printf '%s\n' 'auto'
+            ;;
         external|litellm|cpu)
             printf '%s\n' 'external'
             ;;
@@ -84,13 +88,43 @@ normalize_compute_mode() {
     esac
 }
 
+resolve_compute_mode_from_params() {
+    local provider=""
+    local source=""
+
+    if ! IFS=$'\t' read -r provider source < <(
+        cd "$PROJECT_ROOT" && bash scripts/dvc_python.sh -c '
+from legiscope.llm_config import Config
+print(f"{Config.get_llm_provider()}\t{Config.get_llm_source()}")
+'
+    ); then
+        echo "ERROR: Failed to read llm.source from params.yaml" >&2
+        return 1
+    fi
+
+    if [[ -z "$source" ]]; then
+        echo "ERROR: llm.source in params.yaml resolved to an empty value" >&2
+        return 1
+    fi
+
+    case "$source" in
+        self_hosted|external)
+            printf '%s\t%s\n' "$provider" "$source"
+            ;;
+        *)
+            echo "ERROR: Unsupported llm.source '${source}' in params.yaml" >&2
+            return 1
+            ;;
+    esac
+}
+
 submit_self() {
     local state=""
     local locality=""
     local docx_path=""
     local code_slug="municipal-code"
     local code_name=""
-    local compute_mode="external"
+    local compute_mode="auto"
     local quantization="fp16"
     local notify="1"
     local notify_events="start,end,fail"
@@ -109,7 +143,7 @@ Options:
   --docx-path PATH             Absolute path to source DOCX file
   --code-slug SLUG             Code slug (default: municipal-code)
   --code-name NAME             Display name override
-    --compute-mode MODE          external (CPU job, remote LiteLLM) or self_hosted (GPU job, local vLLM)
+    --compute-mode MODE          auto (from params.yaml), external (CPU), or self_hosted (GPU)
   --quantization MODE          Submission profile: fp16 or awq
   --notify 0|1                 Enable notifications (default: 1)
   --notify-events CSV          Notification events (default: start,end,fail)
@@ -119,6 +153,7 @@ Options:
 
 Examples:
     $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx
+    $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx --compute-mode auto
     $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx --compute-mode external
     $(basename "$0") --state PA --locality Philadelphia --docx-path /gpfs/.../PA_Philadelphia.docx --compute-mode self_hosted --quantization awq
 EOF
@@ -207,6 +242,9 @@ EOF
     fi
 
     compute_mode="$(normalize_compute_mode "$compute_mode")"
+    if [[ "$compute_mode" == "auto" ]]; then
+        IFS=$'\t' read -r _provider compute_mode < <(resolve_compute_mode_from_params)
+    fi
     quantization="$(normalize_vllm_quantization "$quantization")"
 
     local partition
@@ -256,7 +294,10 @@ JURISDICTION_ID="${STATE}-${LOCALITY}"
 LEGISCOPE_BATCH_ID="${LEGISCOPE_BATCH_ID:-}"
 LEGISCOPE_BATCH_SUBMITTED_AT="${LEGISCOPE_BATCH_SUBMITTED_AT:-}"
 LEGISCOPE_BATCH_MANIFEST="${LEGISCOPE_BATCH_MANIFEST:-}"
-LEGISCOPE_COMPUTE_MODE="$(normalize_compute_mode "${LEGISCOPE_COMPUTE_MODE:-external}")"
+LEGISCOPE_COMPUTE_MODE="$(normalize_compute_mode "${LEGISCOPE_COMPUTE_MODE:-auto}")"
+if [[ "$LEGISCOPE_COMPUTE_MODE" == "auto" ]]; then
+    IFS=$'\t' read -r _provider LEGISCOPE_COMPUTE_MODE < <(resolve_compute_mode_from_params)
+fi
 if [[ -n "$LEGISCOPE_BATCH_ID" && ! "$LEGISCOPE_BATCH_ID" =~ ^[A-Za-z0-9._-]+$ ]]; then
     echo "ERROR: LEGISCOPE_BATCH_ID contains unsupported characters: ${LEGISCOPE_BATCH_ID}" >&2
     exit 1
