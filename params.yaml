@@ -10,10 +10,10 @@ jurisdiction:
 
 # LLM configuration
 llm:
-  default_provider: openai
+  default_provider: litellm
   # `self_hosted` enables local threaded concurrency for vLLM/HPC-style serving.
   # Set to `external` for cloud APIs like Mistral/OpenAI/OpenRouter.
-  source: self_hosted
+  source: external
 
   providers:
     openai:
@@ -23,7 +23,7 @@ llm:
     dashscope:
       # Swap these for Alibaba-hosted frontier models as needed, e.g.
       # qwen3.7-max, deepseek-v4-pro, kimi-k2.6
-      fast: deepseek-v4-pro
+      fast: qwen3.7-max
       powerful: deepseek-v4-pro
 
     novita:
@@ -31,8 +31,8 @@ llm:
       powerful: qwen/qwen3.7-max
 
     litellm:
-      fast: gemini/gemini-3.5-flash
-      powerful: gemini/gemini-3.5-flash
+      fast: openrouter/qwen/qwen3.5-27b
+      powerful: openrouter/qwen/qwen3.5-27b
       
     mistral:
       fast: mistral-medium-3-5
