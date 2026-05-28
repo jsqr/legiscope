@@ -1,26 +1,26 @@
 schema: '2.0'
 stages:
   parse:
-    cmd: bash scripts/dvc_python.sh scripts/parse.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/parse.py --state CO --locality 
+      ColoradoSprings --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/raw
+    - path: data/laws/CO/ColoradoSprings/municipal-code/raw
       hash: md5
-      md5: 68b50f2df420eb326d208024ef0da04a.dir
-      size: 23142398
+      md5: 49f84631eefd123827f038cca611d801.dir
+      size: 9032519
       nfiles: 1
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/parse.py
       hash: md5
       md5: c702515e8f681bc6163fc033787cfcc7
       size: 1111
     - path: src/legiscope/parse
       hash: md5
-      md5: b839f52ec65fc586e4cdf36f38d3c4bf.dir
-      size: 132603
+      md5: 4a389c7bf484538f251a8fa0484a1188.dir
+      size: 302352
       nfiles: 14
     - path: tmp/validate_import.ok
       hash: md5
@@ -29,182 +29,341 @@ stages:
     params:
       params.yaml:
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: CO
+          locality: ColoradoSprings
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: ColoradoSprings Municipal Code
         llm:
-          default_provider: ollama
+          default_provider: novita
+          source: external
           providers:
             openai:
-              fast: Qwen/Qwen2.5-3B-Instruct
-              powerful: Qwen/Qwen2.5-3B-Instruct
+              fast: Qwen/Qwen3.5-27B
+              powerful: Qwen/Qwen3.5-27B
+            dashscope:
+              fast: deepseek-v4-pro
+              powerful: deepseek-v4-pro
+            novita:
+              fast: qwen/qwen3.7-max
+              powerful: qwen/qwen3.7-max
+            litellm:
+              fast: gemini/gemini-3.5-flash
+              powerful: gemini/gemini-3.5-flash
             mistral:
-              fast: mistral-small-2506
-              powerful: mistral-large-2512
+              fast: mistral-medium-3-5
+              powerful: mistral-medium-3-5
             ollama:
               fast: gemma3:4b
               powerful: gemma3:4b
               num_ctx: 4096
           temperature: 0.0
           max_retries: 3
-          timeout: 300
+          timeout: 1200
     outs:
-    - path: data/laws/PA/Philadelphia/municipal-code/code.md
+    - path: data/laws/CO/ColoradoSprings/municipal-code/code.md
       hash: md5
-      md5: 19edf3e768a6365bc679c9cc254f68c4
-      size: 8473712
-    - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
+      md5: a155fb59ea68a8f012749942d1cbaad2
+      size: 4565516
+    - path: data/laws/CO/ColoradoSprings/municipal-code/headings.parquet
       hash: md5
-      md5: a69554ce15a1062263ccca0b0d1db65e
-      size: 18090
+      md5: 974e8bbcb80ff36a4fda26f0382b4ccb
+      size: 110290
+    - path: data/laws/CO/ColoradoSprings/municipal-code/regions.parquet
+      hash: md5
+      md5: 1da06698d5e6d3c4bec9aec5ee0d6da6
+      size: 21175
+    - path: data/output/CO-ColoradoSprings/debug/heading_scan_debug.json
+      hash: md5
+      md5: 7e999e12d9566a0a57f82d3ead097c15
+      size: 36136
   segment:
-    cmd: bash scripts/dvc_python.sh scripts/segment.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/segment.py --state CO --locality 
+      ColoradoSprings --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/code.md
+    - path: data/laws/CO/ColoradoSprings/municipal-code/code.md
       hash: md5
-      md5: 19edf3e768a6365bc679c9cc254f68c4
-      size: 8473712
-    - path: data/laws/PA/Philadelphia/municipal-code/headings.parquet
+      md5: a155fb59ea68a8f012749942d1cbaad2
+      size: 4565516
+    - path: data/laws/CO/ColoradoSprings/municipal-code/headings.parquet
       hash: md5
-      md5: a69554ce15a1062263ccca0b0d1db65e
-      size: 18090
+      md5: 974e8bbcb80ff36a4fda26f0382b4ccb
+      size: 110290
+    - path: data/laws/CO/ColoradoSprings/municipal-code/regions.parquet
+      hash: md5
+      md5: 1da06698d5e6d3c4bec9aec5ee0d6da6
+      size: 21175
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/segment.py
       hash: md5
-      md5: 50b01c5ddbc22131de2f890f89c50e02
-      size: 1541
+      md5: dc1c52cac2d96ce0c0839327fc8a2a96
+      size: 1717
     - path: src/legiscope/segment.py
       hash: md5
-      md5: 79af3f6fcb5d1b9a923864049132b71e
-      size: 35458
+      md5: a0a93d4e715a5de7fad59a623d3472c1
+      size: 70161
     params:
       params.yaml:
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: CO
+          locality: ColoradoSprings
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: ColoradoSprings Municipal Code
         segmentation:
-          token_limit: 1024
+          embedding_model_token_limit: 1024
+          llm_context_limit: 16385
     outs:
-    - path: data/laws/PA/Philadelphia/municipal-code/external_references.parquet
+    - path: data/laws/CO/ColoradoSprings/municipal-code/chunks.parquet
+      hash: md5
+      md5: c63f6235c04cd34fa041743e7c125112
+      size: 1212971
+    - path: 
+        data/laws/CO/ColoradoSprings/municipal-code/external_references.parquet
       hash: md5
       md5: 61a94b29211d82d0d4dd0bbba2d8735e
       size: 1146
-    - path: data/laws/PA/Philadelphia/municipal-code/relations.parquet
+    - path: data/laws/CO/ColoradoSprings/municipal-code/relations.parquet
       hash: md5
       md5: 8438cdbe094beef79e1782de826157c0
       size: 913
-    - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
+    - path: data/laws/CO/ColoradoSprings/municipal-code/sections.parquet
       hash: md5
-      md5: ca9f4b70bebf7de9ae511333f570c090
-      size: 1572
-    - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
+      md5: 8bbd8778b5b1ece89fa5a5b927c11c36
+      size: 1193277
+    - path: data/laws/CO/ColoradoSprings/municipal-code/segments.parquet
       hash: md5
-      md5: e09464f21ae4055c506ad295d00f9c7a
-      size: 1894
+      md5: e5a357910175569f9987437e68d78045
+      size: 1234171
   embed:
-    cmd: bash scripts/dvc_python.sh scripts/embed.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/embed.py --state CO --locality 
+      ColoradoSprings --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/sections.parquet
+    - path: data/laws/CO/ColoradoSprings/municipal-code/sections.parquet
       hash: md5
-      md5: ca9f4b70bebf7de9ae511333f570c090
-      size: 1572
-    - path: data/laws/PA/Philadelphia/municipal-code/segments.parquet
+      md5: 8bbd8778b5b1ece89fa5a5b927c11c36
+      size: 1193277
+    - path: data/laws/CO/ColoradoSprings/municipal-code/segments.parquet
       hash: md5
-      md5: e09464f21ae4055c506ad295d00f9c7a
-      size: 1894
+      md5: e5a357910175569f9987437e68d78045
+      size: 1234171
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/embed.py
       hash: md5
-      md5: 74cde80e0872702b5ef327bf2ea94d9e
-      size: 2480
+      md5: 6825142bfaec08a1eb19ef407798a4d1
+      size: 2544
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: b44226404e62155c563f5a1b37657be6
-      size: 47056
+      md5: f54cbde38342d529d3a390c17d06604a
+      size: 62041
     params:
       params.yaml:
         embeddings:
-          default_provider: openrouter
+          default_provider: mistral
           chroma_batch_size: 100
           providers:
             mistral:
-              model: mistral-embed
-              batch_size: 100
+              model: codestral-embed-2505
+              batch_size: 50
             ollama:
               model: embeddinggemma
               batch_size: 1
             openrouter:
               model: qwen/qwen3-embedding-8b
               batch_size: 100
+            openai:
+              model: text-embedding-3-small
+              batch_size: 100
           dtype: float32
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: CO
+          locality: ColoradoSprings
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: ColoradoSprings Municipal Code
     outs:
-    - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
+    - path: data/laws/CO/ColoradoSprings/municipal-code/embeddings.parquet
       hash: md5
-      md5: 39fb95de6d59faaf796be7a93ca57fd6
-      size: 1133
+      md5: 989b1de3769f5c28df87b53cc7bab461
+      size: 8206094
   index:
-    cmd: bash scripts/dvc_python.sh scripts/index.py --state PA --locality 
-      Philadelphia --code-slug municipal-code
+    cmd: bash scripts/dvc_python.sh scripts/index.py --state CO --locality 
+      ColoradoSprings --code-slug municipal-code
     deps:
-    - path: data/laws/PA/Philadelphia/municipal-code/embeddings.parquet
+    - path: data/laws/CO/ColoradoSprings/municipal-code/embeddings.parquet
       hash: md5
-      md5: 39fb95de6d59faaf796be7a93ca57fd6
-      size: 1133
+      md5: 989b1de3769f5c28df87b53cc7bab461
+      size: 8206094
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: scripts/index.py
       hash: md5
-      md5: c60e4880c09de2a3292db1f0ecc51e89
-      size: 2658
+      md5: b82d34344694d7f8f5dd8b0e2627bbac
+      size: 2951
     - path: src/legiscope/embeddings.py
       hash: md5
-      md5: b44226404e62155c563f5a1b37657be6
-      size: 47056
+      md5: f54cbde38342d529d3a390c17d06604a
+      size: 62041
     params:
       params.yaml:
-        embeddings.default_provider: openrouter
+        embeddings.default_provider: mistral
         jurisdiction:
-          state: PA
-          locality: Philadelphia
+          state: CO
+          locality: ColoradoSprings
           code_slug: municipal-code
-          code_name: Philadelphia Municipal Code
+          code_name: ColoradoSprings Municipal Code
         retrieval.distance_metric: l2
+    outs:
+    - path: data/laws/CO/ColoradoSprings/municipal-code/index.stamp
+      hash: md5
+      md5: f0e2cfc032785245ea54636a8a361bfd
+      size: 58
   validate:
     cmd: "bash -c 'bash scripts/dvc_python.sh -c \"import legiscope; print(f\\\"Package
       import works: {legiscope.__file__}\\\")\" && mkdir -p tmp && echo ok > tmp/validate_import.ok'"
     deps:
     - path: pyproject.toml
       hash: md5
-      md5: 281105843535089764191cf36093417b
-      size: 1269
+      md5: b743bd914220ca1b0d9d74c0a0efb7fc
+      size: 1300
     - path: scripts/dvc_python.sh
       hash: md5
-      md5: f31135e4c5ab09065459fba655222a7b
-      size: 715
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
     - path: src/legiscope/__init__.py
       hash: md5
-      md5: a8b33b5c5e1ef0f62eb486a23ed1cfef
-      size: 2189
+      md5: ebe365f9bcb5ddb104483565508e88b7
+      size: 2408
     outs:
     - path: tmp/validate_import.ok
       hash: md5
       md5: eff5bc1ef8ec9d03e640fc4370f5eacd
       size: 3
+  benchmark:
+    cmd: bash scripts/dvc_python.sh coep/scripts/benchmark_pipeline.py --state 
+      CO --locality ColoradoSprings --code-slug municipal-code
+    deps:
+    - path: coep/data/monqcle_data/Drug_Paraphernalia_Laws_Standard_Report.csv
+      hash: md5
+      md5: 4894e1808fc491d39e24c4b5ba666887
+      size: 851633
+    - path: coep/scripts/benchmark_pipeline.py
+      hash: md5
+      md5: 36a1e7eb663e18b78fe9346bc232321f
+      size: 69020
+    - path: coep/src/eval.py
+      hash: md5
+      md5: 20114a8ea357a35c51d4b8c841a6a45c
+      size: 28577
+    - path: coep/src/query.py
+      hash: md5
+      md5: e398cdeb1be9ab14cc2277ab2e4aabb3
+      size: 2812
+    - path: data/laws/CO/ColoradoSprings/municipal-code/chunks.parquet
+      hash: md5
+      md5: c63f6235c04cd34fa041743e7c125112
+      size: 1212971
+    - path: data/laws/CO/ColoradoSprings/municipal-code/embeddings.parquet
+      hash: md5
+      md5: 989b1de3769f5c28df87b53cc7bab461
+      size: 8206094
+    - path: data/laws/CO/ColoradoSprings/municipal-code/index.stamp
+      hash: md5
+      md5: f0e2cfc032785245ea54636a8a361bfd
+      size: 58
+    - path: data/laws/CO/ColoradoSprings/municipal-code/sections.parquet
+      hash: md5
+      md5: 8bbd8778b5b1ece89fa5a5b927c11c36
+      size: 1193277
+    - path: data/queries/DPL_queries_with_context.csv
+      hash: md5
+      md5: 5012fc22efcc75c2d0e27332f48ce6da
+      size: 35829
+    - path: scripts/dvc_python.sh
+      hash: md5
+      md5: ca9ff3dd32dde8629d278d3c3457c830
+      size: 1912
+    - path: src/legiscope/query.py
+      hash: md5
+      md5: 3b02a0957c59e491e22c0ef5b1e687ee
+      size: 365006
+    - path: src/legiscope/retrieve.py
+      hash: md5
+      md5: ca33560f5d9baf504c801b70462ac644
+      size: 63306
+    params:
+      params.yaml:
+        benchmark:
+          evaluation:
+            max_concurrency: 4
+        jurisdiction:
+          state: CO
+          locality: ColoradoSprings
+          code_slug: municipal-code
+          code_name: ColoradoSprings Municipal Code
+        llm:
+          default_provider: novita
+          source: external
+          providers:
+            openai:
+              fast: Qwen/Qwen3.5-27B
+              powerful: Qwen/Qwen3.5-27B
+            dashscope:
+              fast: deepseek-v4-pro
+              powerful: deepseek-v4-pro
+            novita:
+              fast: qwen/qwen3.7-max
+              powerful: qwen/qwen3.7-max
+            litellm:
+              fast: gemini/gemini-3.5-flash
+              powerful: gemini/gemini-3.5-flash
+            mistral:
+              fast: mistral-medium-3-5
+              powerful: mistral-medium-3-5
+            ollama:
+              fast: gemma3:4b
+              powerful: gemma3:4b
+              num_ctx: 4096
+          temperature: 0.0
+          max_retries: 3
+          timeout: 1200
+        query:
+          validation:
+            enabled: true
+            exact_match_threshold: 1.0
+            fuzzy_match_threshold: 0.9
+          review:
+            enabled: true
+            topics:
+            - prohibited_activity
+            - penalty
+            - exemption_presence
+        retrieval:
+          n_results: 10
+          distance_metric: l2
+          debug: true
+          lexical_overfetch_factor: 3
+          lexical_reranking:
+            enabled: false
+          hyde:
+            enabled: false
+          relevance_filter:
+            enabled: true
+            threshold: 0.5
+            max_concurrency: 4
+            target_concurrent_prompt_tokens: 16000
+            prompt_overhead_tokens: 600
+    outs:
+    - path: data/output/CO-ColoradoSprings/benchmark_metrics.json
+      hash: md5
+      md5: 0da50d6a358136c791d9d710d9a1e26e
+      size: 1336
+    - path: data/output/CO-ColoradoSprings/benchmark_results.csv
+      hash: md5
+      md5: da1b34dcda8691bfba1f3c55efef50f0
+      size: 871705
