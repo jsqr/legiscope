@@ -170,10 +170,10 @@ def _is_excluded_row(row: dict[str, Any]) -> bool:
 def filter_results_for_analysis(results_df: pl.DataFrame) -> pl.DataFrame:
     if results_df.is_empty():
         return results_df
-    rows = [row for row in results_df.to_dicts() if not _is_excluded_row(row)]
-    if not rows:
-        return pl.DataFrame(schema=results_df.schema)
-    return pl.DataFrame(rows)
+    keep_mask = [not _is_excluded_row(row) for row in results_df.to_dicts()]
+    if not any(keep_mask):
+        return results_df.head(0)
+    return results_df.filter(pl.Series(keep_mask))
 
 
 def _counts_toward_query_metrics(row: dict[str, Any]) -> bool:
