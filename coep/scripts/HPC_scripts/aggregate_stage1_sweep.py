@@ -9,6 +9,7 @@ Stage 1 override YAML, and the batch-level aggregate artifacts already written b
 from __future__ import annotations
 
 import argparse
+import importlib.util
 from datetime import datetime
 import json
 import re
@@ -25,9 +26,26 @@ project_root = Path(__file__).resolve().parents[3]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
+script_dir = Path(__file__).resolve().parent
+if str(script_dir) not in sys.path:
+    sys.path.insert(0, str(script_dir))
+
 src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
+
+_ACCURACY_METRICS_PATH = script_dir / "accuracy_metrics.py"
+_ACCURACY_METRICS_SPEC = importlib.util.spec_from_file_location(
+    "stage1_accuracy_metrics",
+    _ACCURACY_METRICS_PATH,
+)
+assert _ACCURACY_METRICS_SPEC is not None and _ACCURACY_METRICS_SPEC.loader is not None
+_ACCURACY_METRICS = importlib.util.module_from_spec(_ACCURACY_METRICS_SPEC)
+_ACCURACY_METRICS_SPEC.loader.exec_module(_ACCURACY_METRICS)
+
+load_benchmark_csv = _ACCURACY_METRICS.load_benchmark_csv
+summarize_batch_metrics = _ACCURACY_METRICS.summarize_batch_metrics
+summarize_benchmark_results = _ACCURACY_METRICS.summarize_benchmark_results
 
 
 ALL_JURISDICTIONS_DIR_NAME = "all_jurisdictions"
@@ -283,18 +301,27 @@ def summarize_batch(output_dir: Path, batch_id: str) -> dict[str, Any]:
         else {}
     )
 
+    benchmark_candidates = sorted(run_dir.glob("all_jurisdictions_benchmark_*.csv"))
     metrics_candidates = sorted(run_dir.glob("all_jurisdictions_metrics_*.csv"))
-    if not metrics_candidates:
-        raise FileNotFoundError(f"No aggregate metrics CSV found under {run_dir}")
-    metrics_path = metrics_candidates[-1]
 
-    summary_path = run_dir / "summary.txt"
-    summary_metrics = (
-        parse_summary_text(summary_path.read_text(encoding="utf-8"))
-        if summary_path.exists()
-        else {}
-    )
-    fallback_metrics = compute_metrics_fallbacks(metrics_path)
+    benchmark_path = benchmark_candidates[-1] if benchmark_candidates else None
+    metrics_path = metrics_candidates[-1] if metrics_candidates else None
+
+    if benchmark_path is not None:
+        raw_results_df = load_benchmark_csv(benchmark_path)
+        metrics_df = summarize_benchmark_results(raw_results_df)
+        summary_metrics = summarize_batch_metrics(metrics_df)
+        jurisdictions_completed = metrics_df.height
+    elif metrics_path is not None:
+        summary_metrics = {}
+        metrics_df = pl.read_csv(metrics_path)
+        jurisdictions_completed = metrics_df.height
+    else:
+        raise FileNotFoundError(f"No aggregate benchmark or metrics CSV found under {run_dir}")
+
+    summary_metrics.setdefault("jurisdictions_detected", jurisdictions_completed)
+
+    fallback_metrics = compute_metrics_fallbacks(metrics_path) if metrics_path is not None else {}
 
     row: dict[str, Any] = {
         "batch_id": batch_id,
@@ -305,7 +332,7 @@ def summarize_batch(output_dir: Path, batch_id: str) -> dict[str, Any]:
         "compute_mode": manifest.get("compute_mode"),
         "quantization": manifest.get("quantization"),
         "jurisdictions_expected": manifest.get("jurisdiction_count"),
-        "jurisdictions_completed": fallback_metrics.get("jurisdictions_completed"),
+        "jurisdictions_completed": jurisdictions_completed,
         "params_override_file": str(override_path) if override_path else None,
         "n_results": get_nested(overrides, "retrieval", "n_results")
         if get_nested(overrides, "retrieval", "n_results") is not None
@@ -332,8 +359,8 @@ def summarize_batch(output_dir: Path, batch_id: str) -> dict[str, Any]:
             "threshold",
         ),
         "llm_context_limit": get_nested(overrides, "segmentation", "llm_context_limit"),
-        "summary_path": str(summary_path) if summary_path.exists() else None,
-        "metrics_path": str(metrics_path),
+        "summary_path": str(benchmark_path) if benchmark_path is not None else None,
+        "metrics_path": str(metrics_path) if metrics_path is not None else None,
     }
 
     if row.get("relevance_filter_enabled") is None and row.get("n_results") is not None:

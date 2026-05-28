@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate Stage 2 sweep batches into publication-friendly summaries."""
+"""Aggregate Stage 3 sweep batches into publication-friendly summaries."""
 
 from __future__ import annotations
 
@@ -20,37 +20,27 @@ project_root = Path(__file__).resolve().parents[3]
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
-script_dir = Path(__file__).resolve().parent
-if str(script_dir) not in sys.path:
-    sys.path.insert(0, str(script_dir))
-
 src_path = project_root / "src"
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
-
-from accuracy_metrics import (
-    load_benchmark_csv,
-    summarize_batch_metrics,
-    summarize_benchmark_results,
-)
 
 
 ALL_JURISDICTIONS_DIR_NAME = "all_jurisdictions"
 BATCHES_DIR_NAME = "batches"
 SWEEPS_DIR_NAME = "sweeps"
 TIMESTAMP_DIR_PATTERN = re.compile(r"^\d{8}_\d{6}$")
-STAGE2_BATCH_PATTERN = re.compile(
-    r"_run(?P<run>\d+)_n(?P<n_results>\d+)_hyde(?P<hyde>[01])_thr(?P<threshold>\d{2})$"
+STAGE3_BATCH_PATTERN = re.compile(
+    r"_run(?P<run>\d+)_n(?P<n_results>\d+)_hyde(?P<hyde>[01])_ctx(?P<context_limit>\d+)$"
 )
-STAGE2_OVERRIDE_PATTERN = re.compile(
-    r"run(?P<run>\d+)_n(?P<n_results>\d+)_hyde(?P<hyde>[01])_thr(?P<threshold>\d{2})\.ya?ml$"
+STAGE3_OVERRIDE_PATTERN = re.compile(
+    r"run(?P<run>\d+)_n(?P<n_results>\d+)_hyde(?P<hyde>[01])_ctx(?P<context_limit>\d+)\.ya?ml$"
 )
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Aggregate Stage 2 sweep batches into publication-friendly per-batch summaries"
+            "Aggregate Stage 3 sweep batches into publication-friendly per-batch summaries"
         )
     )
     parser.add_argument("--output-dir", type=Path, default=None)
@@ -125,18 +115,18 @@ def bool_to_label(value: Any) -> str | None:
     return "on" if bool(value) else "off"
 
 
-def parse_stage2_condition_from_name(name: str) -> dict[str, Any]:
-    match = STAGE2_BATCH_PATTERN.search(name)
+def parse_stage3_condition_from_name(name: str) -> dict[str, Any]:
+    match = STAGE3_BATCH_PATTERN.search(name)
     if not match:
-        match = STAGE2_OVERRIDE_PATTERN.search(name)
+        match = STAGE3_OVERRIDE_PATTERN.search(name)
     if not match:
         return {}
 
     return {
-        "stage2_run_number": int(match.group("run")),
+        "stage3_run_number": int(match.group("run")),
         "n_results": int(match.group("n_results")),
         "hyde_enabled": match.group("hyde") == "1",
-        "relevance_threshold": int(match.group("threshold")) / 100.0,
+        "llm_context_limit": int(match.group("context_limit")),
     }
 
 
@@ -272,49 +262,36 @@ def summarize_batch(output_dir: Path, batch_id: str) -> dict[str, Any]:
     override_path_raw = manifest.get("params_override_file")
     override_path = Path(override_path_raw) if override_path_raw else None
     overrides = load_yaml_mapping(override_path) if override_path and override_path.exists() else {}
-    condition_from_batch_id = parse_stage2_condition_from_name(batch_id)
+    condition_from_batch_id = parse_stage3_condition_from_name(batch_id)
     condition_from_override_name = (
-        parse_stage2_condition_from_name(override_path.name)
+        parse_stage3_condition_from_name(override_path.name)
         if override_path is not None
         else {}
     )
 
-    benchmark_candidates = sorted(run_dir.glob("all_jurisdictions_benchmark_*.csv"))
     metrics_candidates = sorted(run_dir.glob("all_jurisdictions_metrics_*.csv"))
+    if not metrics_candidates:
+        raise FileNotFoundError(f"No aggregate metrics CSV found under {run_dir}")
+    metrics_path = metrics_candidates[-1]
 
-    benchmark_path = benchmark_candidates[-1] if benchmark_candidates else None
-    metrics_path = metrics_candidates[-1] if metrics_candidates else None
-
-    if benchmark_path is not None:
-        raw_results_df = load_benchmark_csv(benchmark_path)
-        metrics_df = summarize_benchmark_results(raw_results_df)
-        summary_metrics = summarize_batch_metrics(metrics_df)
-        jurisdictions_completed = metrics_df.height
-    elif metrics_path is not None:
-        summary_metrics = {}
-        metrics_df = pl.read_csv(metrics_path)
-        jurisdictions_completed = metrics_df.height
-    else:
-        raise FileNotFoundError(f"No aggregate benchmark or metrics CSV found under {run_dir}")
-
-    fallback_metrics = compute_metrics_fallbacks(metrics_path) if metrics_path is not None else {}
-
-    relevance_threshold = get_nested(overrides, "retrieval", "relevance_filter", "threshold")
-    if relevance_threshold is None:
-        relevance_threshold = condition_from_batch_id.get(
-            "relevance_threshold", condition_from_override_name.get("relevance_threshold")
-        )
+    summary_path = run_dir / "summary.txt"
+    summary_metrics = (
+        parse_summary_text(summary_path.read_text(encoding="utf-8"))
+        if summary_path.exists()
+        else {}
+    )
+    fallback_metrics = compute_metrics_fallbacks(metrics_path)
 
     row: dict[str, Any] = {
         "batch_id": batch_id,
-        "stage2_run_number": condition_from_batch_id.get(
-            "stage2_run_number", condition_from_override_name.get("stage2_run_number")
+        "stage3_run_number": condition_from_batch_id.get(
+            "stage3_run_number", condition_from_override_name.get("stage3_run_number")
         ),
         "batch_run_timestamp": run_dir.name,
         "compute_mode": manifest.get("compute_mode"),
         "quantization": manifest.get("quantization"),
         "jurisdictions_expected": manifest.get("jurisdiction_count"),
-        "jurisdictions_completed": jurisdictions_completed,
+        "jurisdictions_completed": fallback_metrics.get("jurisdictions_completed"),
         "params_override_file": str(override_path) if override_path else None,
         "n_results": get_nested(overrides, "retrieval", "n_results")
         if get_nested(overrides, "retrieval", "n_results") is not None
@@ -328,9 +305,14 @@ def summarize_batch(output_dir: Path, batch_id: str) -> dict[str, Any]:
             "relevance_filter",
             "enabled",
         ),
-        "relevance_threshold": relevance_threshold,
-        "summary_path": str(benchmark_path) if benchmark_path is not None else None,
-        "metrics_path": str(metrics_path) if metrics_path is not None else None,
+        "relevance_threshold": get_nested(overrides, "retrieval", "relevance_filter", "threshold"),
+        "llm_context_limit": get_nested(overrides, "segmentation", "llm_context_limit")
+        if get_nested(overrides, "segmentation", "llm_context_limit") is not None
+        else condition_from_batch_id.get(
+            "llm_context_limit", condition_from_override_name.get("llm_context_limit")
+        ),
+        "summary_path": str(summary_path) if summary_path.exists() else None,
+        "metrics_path": str(metrics_path),
     }
 
     if row.get("relevance_filter_enabled") is None:
@@ -396,11 +378,12 @@ def format_int(value: Any) -> str:
 def write_markdown_table(df: pl.DataFrame, output_path: Path) -> None:
     columns = [
         ("batch_id", "Batch ID"),
-        ("stage2_run_number", "Run"),
+        ("stage3_run_number", "Run"),
         ("n_results", "n_results"),
         ("hyde_label", "HYDE"),
-        ("relevance_threshold", "Threshold"),
+        ("llm_context_limit", "LLM context limit"),
         ("relevance_filter_label", "Relevance filter"),
+        ("relevance_threshold", "Threshold"),
         ("query_weighted_score", "Query weighted score"),
         ("evaluation_row_score", "Evaluation row score"),
         ("whole_query_score_alt", "Whole-query score"),
@@ -420,7 +403,7 @@ def write_markdown_table(df: pl.DataFrame, output_path: Path) -> None:
             value = row.get(key)
             if key in {"query_weighted_score", "evaluation_row_score", "whole_query_score_alt", "best_jurisdiction_score", "lowest_jurisdiction_score"}:
                 rendered.append(format_pct(value))
-            elif key in {"n_results", "stage2_run_number"}:
+            elif key in {"n_results", "stage3_run_number", "llm_context_limit"}:
                 rendered.append(format_int(value))
             elif key == "relevance_threshold":
                 rendered.append("" if value is None else f"{float(value):.2f}")
@@ -435,15 +418,15 @@ def write_narrative_summary(df: pl.DataFrame, output_path: Path) -> None:
     top = df.row(0, named=True)
     bottom = df.row(df.height - 1, named=True)
     lines = [
-        f"Stage 2 batches summarized: {df.height}",
+        f"Stage 3 batches summarized: {df.height}",
         (
             f"Top batch by query-weighted score: {top['batch_id']} "
-            f"({format_pct(top.get('query_weighted_score'))}, threshold={top.get('relevance_threshold')}, "
+            f"({format_pct(top.get('query_weighted_score'))}, llm_context_limit={format_int(top.get('llm_context_limit'))}, "
             f"n_results={format_int(top.get('n_results'))}, HYDE={top.get('hyde_label') or ''})"
         ),
         (
             f"Lowest batch by query-weighted score: {bottom['batch_id']} "
-            f"({format_pct(bottom.get('query_weighted_score'))}, threshold={bottom.get('relevance_threshold')}, "
+            f"({format_pct(bottom.get('query_weighted_score'))}, llm_context_limit={format_int(bottom.get('llm_context_limit'))}, "
             f"n_results={format_int(bottom.get('n_results'))}, HYDE={bottom.get('hyde_label') or ''})"
         ),
     ]
@@ -459,7 +442,7 @@ def main() -> None:
         materialize_batch_aggregate(output_dir, batch_id)
 
     rows = [summarize_batch(output_dir, batch_id) for batch_id in batch_ids]
-    df = pl.DataFrame(rows).sort(["stage2_run_number"], descending=False, nulls_last=True)
+    df = pl.DataFrame(rows).sort(["stage3_run_number"], descending=False, nulls_last=True)
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if args.sweep_id:
@@ -473,22 +456,22 @@ def main() -> None:
         aggregate_dir = (
             output_dir
             / ALL_JURISDICTIONS_DIR_NAME
-            / "stage2_batch_aggregate"
+            / "stage3_batch_aggregate"
             / run_timestamp
         )
 
     aggregate_dir.mkdir(parents=True, exist_ok=True)
 
-    csv_path = aggregate_dir / "stage2_batch_summary.csv"
-    markdown_path = aggregate_dir / "stage2_batch_summary.md"
-    text_path = aggregate_dir / "stage2_batch_summary.txt"
+    csv_path = aggregate_dir / "stage3_batch_summary.csv"
+    markdown_path = aggregate_dir / "stage3_batch_summary.md"
+    text_path = aggregate_dir / "stage3_batch_summary.txt"
 
     df.write_csv(csv_path)
     write_markdown_table(df, markdown_path)
     write_narrative_summary(df, text_path)
 
     print("=" * 70)
-    print("LEGISCOPE — Stage 2 Batch Summary")
+    print("LEGISCOPE — Stage 3 Batch Summary")
     print("=" * 70)
     if args.sweep_id:
         print(f"Sweep ID: {args.sweep_id}")
@@ -501,10 +484,10 @@ def main() -> None:
 
     preview_columns = [
         "batch_id",
-        "stage2_run_number",
+        "stage3_run_number",
         "n_results",
         "hyde_label",
-        "relevance_threshold",
+        "llm_context_limit",
         "query_weighted_score",
         "evaluation_row_score",
         "whole_query_score_alt",
